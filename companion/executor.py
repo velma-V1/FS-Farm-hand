@@ -113,13 +113,25 @@ def validated_field_entrances(config) -> dict[str, dict[int, str]]:
     return result
 
 
+def _known(value) -> bool:
+    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
+def power_sufficient(tractor: Equipment, wagon: Equipment) -> bool:
+    """GIANTS' turn-on rule (PowerConsumer:getCanBeTurnedOn): the wagon's PTO torque
+    must not exceed the tractor's capacity. No requirement needs no capacity."""
+    need, capacity = wagon.required_pto_torque, tractor.pto_torque_capacity
+    if not _known(need):
+        return False
+    return need == 0 or (_known(capacity) and capacity >= need)
+
+
 def compatible(tractor: Equipment, wagon: Equipment) -> bool:
+    """Pair-level checks. PTO is checked per planned joint pair in plan_hitch."""
     return (tractor.category == "tractor" and wagon.category == "forage_wagon"
             and bool(tractor.hitches & wagon.hitches)
-            and math.isfinite(tractor.power_kw) and math.isfinite(wagon.required_power_kw)
-            and tractor.power_kw >= wagon.required_power_kw > 0
-            and {"move", "attach", "stop"} <= tractor.capabilities
-            and (not wagon.requires_pto or "pto" in tractor.capabilities))
+            and power_sufficient(tractor, wagon)
+            and {"move", "attach", "stop"} <= tractor.capabilities)
 
 
 def _angle(a: float, b: float) -> float:

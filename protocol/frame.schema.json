@@ -20,6 +20,10 @@
     },
     "yaw": {"type": "number", "minimum": -7, "maximum": 7},
     "jointIndex": {"type": "integer", "minimum": 1, "maximum": 32},
+    "ptoNames": {"oneOf": [{"type": "null"},
+                           {"type": "array", "maxItems": 16, "uniqueItems": true,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 64,
+                                      "not": {"pattern": "[\\u0000-\\u001f\\u007f]"}}}]},
     "jointName": {"type": "string", "minLength": 1, "maxLength": 64, "not": {"pattern": "[^A-Za-z0-9_]"}},
     "hello": {
       "type": "object",
@@ -38,7 +42,8 @@
       "required": ["id", "farm_id", "category", "x", "z", "speed_kmh", "entered",
                    "ai_active", "has_autodrive", "ad_active", "attachment_observed",
                    "attacher_vehicle_id", "implement_ids", "attacher_joints", "input_joints",
-                   "heading", "ai_root", "output_joints", "input_joint_poses"],
+                   "heading", "ai_root", "output_joints", "input_joint_poses",
+                   "forage_wagon", "motor", "pto_torque"],
       "if": {"properties": {"attachment_observed": {"const": false}}},
       "then": {"properties": {"attacher_vehicle_id": {"type": "null"},
                               "implement_ids": {"maxItems": 0}}},
@@ -60,6 +65,13 @@
         "attacher_joints": {"$ref": "#/$defs/jointNames"},
         "input_joints": {"$ref": "#/$defs/jointNames"},
         "heading": {"oneOf": [{"$ref": "#/$defs/yaw"}, {"type": "null"}]},
+        "forage_wagon": {"type": "boolean"},
+        "motor": {"oneOf": [{"type": "null"},
+                            {"type": "object", "additionalProperties": false,
+                             "required": ["peak_torque", "pto_rpm_ratio"],
+                             "properties": {"peak_torque": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000000},
+                                            "pto_rpm_ratio": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000}}}]},
+        "pto_torque": {"oneOf": [{"type": "null"}, {"type": "number", "minimum": 0, "maximum": 1000000}]},
         "ai_root": {"oneOf": [{"type": "null"},
                               {"type": "object", "additionalProperties": false, "required": ["x", "z", "yaw"],
                                "properties": {"x": {"$ref": "#/$defs/coordinate"},
@@ -67,17 +79,17 @@
                                               "yaw": {"$ref": "#/$defs/yaw"}}}]},
         "output_joints": {"type": "array", "maxItems": 32, "items": {
           "type": "object", "additionalProperties": false,
-          "required": ["index", "type", "x", "z", "free"],
+          "required": ["index", "type", "x", "z", "free", "pto_names"],
           "properties": {"index": {"$ref": "#/$defs/jointIndex"}, "type": {"$ref": "#/$defs/jointName"},
                          "x": {"type": "number", "minimum": -50, "maximum": 50},
                          "z": {"type": "number", "minimum": -50, "maximum": 50},
-                         "free": {"type": "boolean"}}}},
+                         "free": {"type": "boolean"}, "pto_names": {"$ref": "#/$defs/ptoNames"}}}},
         "input_joint_poses": {"type": "array", "maxItems": 32, "items": {
           "type": "object", "additionalProperties": false,
-          "required": ["index", "type", "x", "z", "active"],
+          "required": ["index", "type", "x", "z", "active", "pto_names"],
           "properties": {"index": {"$ref": "#/$defs/jointIndex"}, "type": {"$ref": "#/$defs/jointName"},
                          "x": {"$ref": "#/$defs/coordinate"}, "z": {"$ref": "#/$defs/coordinate"},
-                         "active": {"type": "boolean"}}}}
+                         "active": {"type": "boolean"}, "pto_names": {"$ref": "#/$defs/ptoNames"}}}}
       }
     },
     "destination": {

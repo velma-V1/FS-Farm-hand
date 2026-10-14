@@ -11,12 +11,16 @@ import unittest
 from lupa import lua51, lua54
 
 from adapters.fs25 import UNKNOWN_ATTACHMENT, ObservationError, observation_from_snapshot
+from dataclasses import replace
+
+from companion.executor import compatible, power_sufficient
 from companion.hitch import plan_hitch
 from companion.executor import Executor
 from protocol.ipc import PIPE_PATH, parse_frame
 
 ROOT = Path(__file__).resolve().parents[1]
-CATEGORIES = {"STUB_TRACTORS": "tractor", "STUB_WAGONS": "forage_wagon"}
+# Forage wagons are identified by the GIANTS ForageWagon spec, not by this map.
+CATEGORIES = {"STUB_TRACTORS": "tractor"}
 
 STUBS = r"""
 local Observe = ...
@@ -58,6 +62,43 @@ function stubs.vehicle(world, t)
             for i, other in ipairs(t.implements or {}) do list[i] = { object = world.byId[other] } end
             return list
         end
+    end
+    -- PTO outputs per tractor joint and inputs per implement joint, by ptoName
+    -- (PowerTakeOffs:attachPowerTakeOff 749, 753).
+    if t.ptos then
+        function v:getOutputPowerTakeOffsByJointDescIndex(i)
+            if t.ptoBroken then error("engine error") end
+            local outputs = {}
+            for j, name in ipairs(t.ptos[i] or {}) do outputs[j] = { ptoName = name } end
+            return outputs
+        end
+    end
+    if t.ptoInputs then
+        function v:getInputPowerTakeOffsByJointDescIndexAndName(i, name)
+            if t.ptoBroken then error("engine error") end
+            local inputs = {}
+            for _, candidate in ipairs(t.ptoInputs[i] or {}) do
+                if candidate == name then inputs[#inputs + 1] = { ptoName = name } end
+            end
+            return inputs
+        end
+    end
+    -- Loaded motor (actual configuration) and power consumer.
+    if t.peak then
+        function v:getMotor()
+            return { getPeakTorque = function() return t.peak end,
+                     getPtoMotorRpmRatio = function() return t.ratio or 2.0 end }
+        end
+    end
+    if t.ptoTorque then
+        function v:getConsumedPtoTorque(expected, ignoreTurnOnPeak)
+            assert(expected == true and ignoreTurnOnPeak == true)
+            return t.ptoTorque, 1
+        end
+    end
+    -- ForageWagon/Attachable spec tables (ForageWagon:onLoad line 93).
+    if t.file == "STUB_WAGONS" and t.forageWagon ~= false then
+        v.spec_forageWagon, v.spec_attachable = {}, {}
     end
     if t.inputs then
         local inputs = {}
@@ -298,9 +339,9 @@ class LuaContractTests(unittest.TestCase):
         self.assertEqual(record["ai_root"], {"x": 5, "z": 7, "yaw": record["ai_root"]["yaw"]})
         self.assertAlmostEqual(record["ai_root"]["yaw"], 0.5)
         self.assertEqual(record["output_joints"], [
-            {"index": 1, "type": "TRAILER", "x": 0, "z": -2.5, "free": True},
-            {"index": 2, "type": "IMPLEMENT", "x": 0, "z": 3, "free": True},
-            {"index": 3, "type": "TRAILER", "x": 0, "z": -2.6, "free": False}])
+            {"index": 1, "type": "TRAILER", "x": 0, "z": -2.5, "free": True, "pto_names": []},
+            {"index": 2, "type": "IMPLEMENT", "x": 0, "z": 3, "free": True, "pto_names": []},
+            {"index": 3, "type": "TRAILER", "x": 0, "z": -2.6, "free": False, "pto_names": []}])
         self.assertEqual(item.ai_root.x, 5)
         self.assertEqual([j.index for j in item.output_joints if j.free], [1, 2])
 
@@ -312,8 +353,8 @@ class LuaContractTests(unittest.TestCase):
         self.assertIsNone(record["ai_root"])
         self.assertEqual(record["output_joints"], [])
         self.assertEqual(record["input_joint_poses"], [
-            {"index": 1, "type": "TRAILERLOW", "x": 41, "z": 24, "active": False},
-            {"index": 2, "type": "TRAILER", "x": 40.5, "z": 24.25, "active": True}])
+            {"index": 1, "type": "TRAILERLOW", "x": 41, "z": 24, "active": False, "pto_names": []},
+            {"index": 2, "type": "TRAILER", "x": 40.5, "z": 24.25, "active": True, "pto_names": []}])
         self.assertEqual([(j.index, j.position, j.active) for j in item.input_joints],
                          [(1, (41, 24), False), (2, (40.5, 24.25), True)])
 
@@ -333,11 +374,11 @@ class LuaContractTests(unittest.TestCase):
             # Without AIDrivable there are no GIANTS offsets, hence no tractor geometry.
             ('{ id = 31, file = "STUB_TRACTORS", joints = { "TRAILER" } }', "output_joints", []),
             (wagon % "getIsInputAttacherActive = 'returns_nil'", "input_joint_poses",
-             [{"index": 1, "type": "TRAILER", "x": 0, "z": 4, "active": False}]),
+             [{"index": 1, "type": "TRAILER", "x": 0, "z": 4, "active": False, "pto_names": []}]),
             (wagon % "getIsInputAttacherActive = 'raises'", "input_joint_poses",
-             [{"index": 1, "type": "TRAILER", "x": 0, "z": 4, "active": False}]),
+             [{"index": 1, "type": "TRAILER", "x": 0, "z": 4, "active": False, "pto_names": []}]),
             (wagon % "getIsInputAttacherActive = 'missing'", "input_joint_poses",
-             [{"index": 1, "type": "TRAILER", "x": 0, "z": 4, "active": False}]),
+             [{"index": 1, "type": "TRAILER", "x": 0, "z": 4, "active": False, "pto_names": []}]),
         ]
         for spec, field, expected in cases:
             with self.subTest(spec=spec, field=field):
@@ -367,6 +408,79 @@ class LuaContractTests(unittest.TestCase):
         self.assertEqual((plan.tractor_joint, plan.wagon_joint), (2, 1))
         self.assertEqual(plan.target, (43.7, 21.4))
         self.assertAlmostEqual(plan.final.yaw, 1.2)
+
+    def test_power_pto_and_wagon_class_are_observed(self):
+        world = self.stubs.world()
+        # The store lists two motor configurations; only the loaded motor is read.
+        world.env.g_storeManager = self.lua.eval(
+            '{ getItemByXMLFilename = function(self, file) return { categoryName = file,'
+            '  configurations = { motor = { { power = 100 }, { power = 300 } } }, specs = { power = 300 } } end }')
+        self.stubs.vehicle(world, self.lua.eval(
+            '{ id = 31, file = "STUB_TRACTORS", aiDrivable = true, joints = { "IMPLEMENT", "TRAILER" },'
+            '  jointZ = { 3.0, -2.5 }, peak = 1.3, ratio = 2.5, ptos = { [1] = { "frontPto" }, [2] = { "rearPto" } } }'))
+        self.stubs.vehicle(world, self.lua.eval(
+            '{ id = 32, file = "STUB_WAGONS", x = 0, z = 0, inputs = { "TRAILER" }, inputAt = { { 0, -6.5 } },'
+            '  ptoTorque = 1.7, ptoInputs = { [1] = { "rearPto", "ownOnly" } } }'))
+        frame = self.snapshot(world)
+        records = {r["id"]: r for r in frame["vehicles"]}
+        self.assertEqual(records[31]["motor"], {"peak_torque": 1.3, "pto_rpm_ratio": 2.5})
+        self.assertEqual(records[31]["pto_torque"], 0)          # no PowerConsumer: no need
+        self.assertEqual([j["pto_names"] for j in records[31]["output_joints"]], [["frontPto"], ["rearPto"]])
+        self.assertEqual(records[32]["pto_torque"], 1.7)
+        self.assertTrue(records[32]["forage_wagon"])
+        self.assertFalse(records[31]["forage_wagon"])
+        # Only names some farm tractor outputs are probed; "ownOnly" has no output.
+        self.assertEqual(records[32]["input_joint_poses"][0]["pto_names"], ["rearPto"])
+
+        items = {e.id: e for e in observation_from_snapshot(frame, CATEGORIES).equipment}
+        tractor, wagon = items["31"], items["32"]
+        self.assertEqual((tractor.category, wagon.category), ("tractor", "forage_wagon"))
+        self.assertAlmostEqual(tractor.pto_torque_capacity, 0.9 * 1.3 * 2.5)
+        self.assertTrue(power_sufficient(tractor, wagon))         # 2.925 >= 1.7
+        plan = plan_hitch(tractor, wagon)
+        self.assertEqual((plan.tractor_joint, plan.wagon_joint), (2, 1))
+        # Eligible but for the deliberate gate: no command channel grants move/attach.
+        self.assertFalse(compatible(tractor, wagon))
+        self.assertTrue(compatible(replace(tractor, capabilities=frozenset({"move", "attach", "stop"})), wagon))
+        # A weaker loaded motor is rejected by the same GIANTS rule.
+        world.byId[31].getMotor = self.lua.eval(
+            'function() return { getPeakTorque = function() return 0.7 end,'
+            '                    getPtoMotorRpmRatio = function() return 2.5 end } end')
+        items = {e.id: e for e in observation_from_snapshot(self.snapshot(world), CATEGORIES).equipment}
+        self.assertFalse(power_sufficient(items["31"], items["32"]))   # 1.575 < 1.7
+
+    def test_unknown_power_or_pto_is_reported_unknown(self):
+        tractor = '{ id = 31, file = "STUB_TRACTORS", aiDrivable = true, joints = { "TRAILER" }, peak = %s, %s }'
+        wagon = '{ id = 32, file = "STUB_WAGONS", inputs = { "TRAILER" }, %s }'
+        cases = [
+            (tractor % ("0/0", "ptos = {}"), lambda r: r["motor"], None),
+            (tractor % ("1", "ratio = 0, ptos = {}"), lambda r: r["motor"], None),
+            (tractor % ("1", "ptos = {}, modes = { getMotor = 'raises' }"), lambda r: r["motor"], None),
+            (tractor % ("1", "ptos = {}, modes = { getMotor = 'missing' }"), lambda r: r["motor"], None),
+            (tractor % ("1", "ptos = { [1] = { 'rearPto' } }, ptoBroken = true"),
+             lambda r: r["output_joints"][0]["pto_names"], None),
+            (tractor % ("1", "ptos = { [1] = { 7 } }"), lambda r: r["output_joints"][0]["pto_names"], None),
+            # No PowerTakeOffs output method at all: observed, no PTO outputs.
+            (tractor % ("1", "x = 0"), lambda r: r["output_joints"][0]["pto_names"], []),
+            (wagon % "ptoTorque = -1", lambda r: r["pto_torque"], None),
+            (wagon % "ptoTorque = 0/0", lambda r: r["pto_torque"], None),
+            (wagon % "ptoTorque = 1, modes = { getConsumedPtoTorque = 'raises' }", lambda r: r["pto_torque"], None),
+            (wagon % "ptoInputs = {}, ptoBroken = true", lambda r: r["input_joint_poses"][0]["pto_names"], None),
+            # No PowerConsumer / no PTO inputs: observed absence, not unknown.
+            (wagon % "x = 0", lambda r: r["pto_torque"], 0),
+            (wagon % "x = 0", lambda r: r["input_joint_poses"][0]["pto_names"], []),
+            (wagon % "forageWagon = false", lambda r: r["forage_wagon"], False),
+        ]
+        for spec, get, expected in cases:
+            with self.subTest(spec=spec):
+                world = self.stubs.world()
+                # A second tractor provides the candidate name "rearPto" for wagons.
+                self.stubs.vehicle(world, self.lua.eval(
+                    '{ id = 39, file = "STUB_TRACTORS", joints = { "TRAILER" }, ptos = { [1] = { "rearPto" } } }'))
+                self.stubs.vehicle(world, self.lua.eval(spec))
+                records = {r["id"]: r for r in self.snapshot(world)["vehicles"]}
+                record = records[31] if 31 in records else records[32]
+                self.assertEqual(get(record), expected)
 
     def test_without_autodrive_there_are_no_destinations(self):
         world = self.stubs.standard(self.lua.table(noAutoDrive=True))

@@ -21,6 +21,7 @@ def tractor(pose=Pose(0.0, 0.0, 0.0), joints=None, **kw):
 
 def wagon(position=(10.0, 20.0), heading=0.0, joints=None, **kw):
     joints = joints if joints is not None else (InputJoint(1, "TRAILER", position, True),)
+    kw.setdefault("required_pto_torque", 0.0)  # observed: no PTO power needed
     return Equipment("w", "forage_wagon", "farm-a", position, heading=heading,
                      input_joints=tuple(joints), **kw)
 
@@ -135,3 +136,38 @@ class PlanTests(unittest.TestCase):
     def test_plan_is_deterministic(self):
         t, w = tractor(Pose(1.0, 2.0, 0.4)), wagon((30.0, -7.0), 2.1)
         self.assertEqual(plan_hitch(t, w), plan_hitch(t, w))
+
+
+class PtoTests(unittest.TestCase):
+    """PTO is decided for the planned joint pair, as GIANTS' attachPowerTakeOff
+    connects outputs at the tractor joint to inputs at the wagon joint by ptoName."""
+
+    joints = (OutputJoint(1, "TRAILER", 0.0, -2.4, True, frozenset()),           # no PTO here
+              OutputJoint(2, "TRAILER", 0.0, -2.6, True, frozenset({"rearPto"})))
+
+    def plan(self, need, inputs=frozenset({"rearPto"}), outputs=None):
+        w = wagon(joints=(InputJoint(1, "TRAILER", (10.0, 20.0), True, inputs),),
+                  required_pto_torque=need)
+        return plan_hitch(tractor(joints=outputs or self.joints), w)
+
+    def test_pto_requirement_selects_the_joint_with_a_matching_pto(self):
+        self.assertEqual(self.plan(0.4).tractor_joint, 2)
+        # No PTO power needed: the lowest compatible joint, PTO or not.
+        self.assertEqual(self.plan(0.0).tractor_joint, 1)
+        self.assertEqual(self.plan(0.0, inputs=frozenset()).tractor_joint, 1)
+
+    def test_pto_required_without_a_matching_pair_has_no_plan(self):
+        self.assertIsNone(self.plan(0.4, inputs=frozenset({"frontPto"})))
+        self.assertIsNone(self.plan(0.4, inputs=frozenset()))
+        no_pto = (OutputJoint(1, "TRAILER", 0.0, -2.4, True, frozenset()),)
+        self.assertIsNone(self.plan(0.4, outputs=no_pto))
+
+    def test_unknown_pto_or_power_fails_closed(self):
+        unknown_out = (OutputJoint(2, "TRAILER", 0.0, -2.6, True, None),)
+        self.assertIsNone(self.plan(0.4, outputs=unknown_out))
+        self.assertIsNone(self.plan(0.4, inputs=None))
+        # Unknown names do not matter when no PTO power is needed.
+        self.assertEqual(self.plan(0.0, inputs=None, outputs=unknown_out).tractor_joint, 2)
+        for need in (None, float("nan"), -0.1, float("inf")):
+            with self.subTest(need=need):
+                self.assertIsNone(self.plan(need))

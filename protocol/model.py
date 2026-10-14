@@ -29,6 +29,8 @@ class OutputJoint:
     x: float
     z: float
     free: bool
+    # ptoName of each PTO output at this joint; None = unknown.
+    pto_names: frozenset[str] | None = frozenset()
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,8 @@ class InputJoint:
     joint_type: str
     position: Position
     active: bool
+    # ptoNames that have a PTO input at this joint; None = unknown.
+    pto_names: frozenset[str] | None = frozenset()
 
 
 @dataclass(frozen=True)
@@ -49,9 +53,12 @@ class Equipment:
     # Attacher joint type names: every joint a tractor offers, or every input
     # joint a towed implement accepts (FS25 vehicles can expose several).
     hitches: frozenset[str] = frozenset()
-    power_kw: float = 0
-    required_power_kw: float = 0
-    requires_pto: bool = False
+    # GIANTS' own power rule (PowerConsumer:getCanBeTurnedOn), rearranged as
+    # required_pto_torque <= pto_torque_capacity. Both are in GIANTS' torque unit,
+    # so no hp/kW conversion is involved. None = unknown (never sufficient); a
+    # required 0 means the implement needs no PTO power (adapters/EVIDENCE.md).
+    pto_torque_capacity: float | None = None
+    required_pto_torque: float | None = None
     capabilities: frozenset[str] = frozenset()
     available: bool = True
     busy: bool = False

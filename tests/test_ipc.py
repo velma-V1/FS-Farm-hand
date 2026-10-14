@@ -11,13 +11,17 @@ import unittest
 
 from adapters.fs25 import (MULTIPLE_ATTACHMENTS, UNKNOWN_ATTACHMENT, ObservationError,
                            STOPPED_BELOW_KMH, observation_from_snapshot)
-from companion.executor import Executor, compatible, usable
+from dataclasses import replace
+
+from companion.executor import Executor, compatible, power_sufficient, usable
+from companion.hitch import plan_hitch
 from protocol.ipc import MAX_LINE_BYTES, FrameError, FrameReader, parse_frame
 
 TRACTORS = "TEST_TRACTOR_CATEGORY"
 WAGONS = "TEST_WAGON_CATEGORY"
 # Real FS25 store category names are UNVERIFIED; tests inject their own map.
-CATEGORIES = {TRACTORS: "tractor", WAGONS: "forage_wagon"}
+# Forage wagons are identified by GIANTS' ForageWagon spec, not by this map.
+CATEGORIES = {TRACTORS: "tractor"}
 
 
 def vehicle(identifier, kind, x=0.0, z=0.0, **overrides):
@@ -28,10 +32,14 @@ def vehicle(identifier, kind, x=0.0, z=0.0, **overrides):
             "attacher_joints": ["TRAILER", "IMPLEMENT"] if kind == TRACTORS else [],
             "input_joints": ["TRAILER"] if kind == WAGONS else [],
             "heading": 0.0, "ai_root": {"x": x, "z": z, "yaw": 0.0} if kind == TRACTORS else None,
-            "output_joints": [{"index": 1, "type": "TRAILER", "x": 0.0, "z": -2.5, "free": True}]
-            if kind == TRACTORS else [],
-            "input_joint_poses": [{"index": 1, "type": "TRAILER", "x": x, "z": z + 4, "active": True}]
-            if kind == WAGONS else []}
+            "output_joints": [{"index": 1, "type": "TRAILER", "x": 0.0, "z": -2.5, "free": True,
+                               "pto_names": ["rearPto"]}] if kind == TRACTORS else [],
+            "input_joint_poses": [{"index": 1, "type": "TRAILER", "x": x, "z": z + 4, "active": True,
+                                   "pto_names": ["rearPto"]}] if kind == WAGONS else [],
+            "forage_wagon": kind == WAGONS,
+            # GIANTS torque values: capacity 0.9 * 1.0 * 2.0 = 1.8 >= 1.2 required.
+            "motor": {"peak_torque": 1.0, "pto_rpm_ratio": 2.0} if kind == TRACTORS else None,
+            "pto_torque": 1.2 if kind == WAGONS else 0.0}
     item.update(overrides)
     return item
 
@@ -134,7 +142,7 @@ class FrameTests(unittest.TestCase):
 
 
 class MappingTests(unittest.TestCase):
-    def test_compatible_pair_maps_but_stays_ineligible_until_gaps_close(self):
+    def test_real_shaped_pair_is_eligible_except_for_the_command_gate(self):
         frame = parse_frame(line(snapshot([vehicle(11, TRACTORS), vehicle(12, WAGONS, x=40)])))
         observed = observation_from_snapshot(frame, CATEGORIES)
         self.assertEqual(observed.farm_id, "1")
@@ -149,13 +157,18 @@ class MappingTests(unittest.TestCase):
         self.assertEqual([(d.id, d.name, d.position) for d in observed.destinations],
                          [("3", "Yard", (101.0, 199.0))])
         self.assertEqual(observed.map_id, "MapUS")
-        # Power/PTO have no proven source (GAP) and HITCH is not enabled
-        # (UNVERIFIED in FS25), so real data must not yet produce an eligible pair.
-        self.assertEqual((tractor.power_kw, wagon.required_power_kw), (0, 0))
-        self.assertTrue(wagon.requires_pto)
+        # Power and PTO now come from GIANTS data and are sufficient/compatible.
+        self.assertAlmostEqual(tractor.pto_torque_capacity, 1.8)
+        self.assertEqual((tractor.required_pto_torque, wagon.required_pto_torque), (0.0, 1.2))
+        self.assertTrue(power_sufficient(tractor, wagon))
+        plan = plan_hitch(tractor, wagon)
+        self.assertEqual((plan.tractor_joint, plan.wagon_joint), (1, 1))
+        # Only the deliberate gate remains: no command channel grants move/attach.
         self.assertNotIn("move", tractor.capabilities)
         self.assertNotIn("attach", tractor.capabilities)
         self.assertFalse(compatible(tractor, wagon))
+        self.assertTrue(compatible(replace(tractor, capabilities=frozenset({"move", "attach", "stop"})),
+                                   wagon))
 
     def test_state_mapping(self):
         cases = [({"entered": True}, "occupied", True),
@@ -264,8 +277,51 @@ class MappingTests(unittest.TestCase):
         frame = parse_frame(line(snapshot([vehicle(11, TRACTORS)])))
         item, = observation_from_snapshot(frame, {}).equipment
         self.assertEqual(item.category, "unknown")
-        with self.assertRaises(ObservationError):
-            observation_from_snapshot(frame, {TRACTORS: "harvester"})
+        for bad in ({TRACTORS: "harvester"}, {WAGONS: "forage_wagon"}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ObservationError):
+                    observation_from_snapshot(frame, bad)
+
+    def test_forage_wagon_is_identified_by_giants_specialization(self):
+        cases = [({}, "forage_wagon"),                                   # no store category needed
+                 ({"category": None}, "forage_wagon"),
+                 ({"forage_wagon": False}, "unknown"),                    # an ordinary trailer
+                 ({"category": TRACTORS}, "unknown")]                     # contradictory: never guessed
+        for change, expected in cases:
+            with self.subTest(change=change):
+                frame = parse_frame(line(snapshot([vehicle(12, WAGONS, **change)])))
+                item, = observation_from_snapshot(frame, CATEGORIES).equipment
+                self.assertEqual(item.category, expected)
+
+    def test_power_and_pto_mapping_preserves_unknown(self):
+        frame = parse_frame(line(snapshot([
+            vehicle(11, TRACTORS, motor=None,
+                    output_joints=[{"index": 1, "type": "TRAILER", "x": 0.0, "z": -2.5, "free": True,
+                                    "pto_names": None}]),
+            vehicle(12, WAGONS, pto_torque=None,
+                    input_joint_poses=[{"index": 1, "type": "TRAILER", "x": 0.0, "z": 4.0, "active": True,
+                                        "pto_names": []}])])))
+        items = {e.id: e for e in observation_from_snapshot(frame, CATEGORIES).equipment}
+        tractor, wagon = items["11"], items["12"]
+        self.assertIsNone(tractor.pto_torque_capacity)
+        self.assertIsNone(wagon.required_pto_torque)
+        self.assertIsNone(tractor.output_joints[0].pto_names)
+        self.assertEqual(wagon.input_joints[0].pto_names, frozenset())   # observed: no PTO input
+        self.assertFalse(power_sufficient(tractor, wagon))
+        self.assertIsNone(plan_hitch(tractor, wagon))
+        # A wagon that observably needs no PTO power is not rejected for it.
+        no_need = replace(wagon, required_pto_torque=0.0)
+        self.assertTrue(power_sufficient(tractor, no_need))
+        self.assertIsNotNone(plan_hitch(tractor, no_need))
+
+    def test_invalid_power_values_are_rejected_by_the_schema(self):
+        for change in ({"motor": {"peak_torque": 0, "pto_rpm_ratio": 2.0}},
+                       {"motor": {"peak_torque": 1.0, "pto_rpm_ratio": 0}},
+                       {"motor": {"peak_torque": 1.0}},
+                       {"pto_torque": -0.5}):
+            with self.subTest(change=change):
+                with self.assertRaises(FrameError):
+                    parse_frame(line(snapshot([vehicle(11, TRACTORS, **change)])))
 
     def test_mapped_real_data_cannot_reach_movement(self):
         # Even a perfect-looking snapshot cannot start physical work today.

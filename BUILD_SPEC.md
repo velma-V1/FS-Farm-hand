@@ -50,10 +50,12 @@ local service code supplies request/session authority such as request_id and far
 before executor validation. This build uses an explicit fixture and makes no claim
 of natural-language understanding.
 
-No vehicle IDs come from the LLM. Selection checks categories, same-farm permission,
-availability, no driver/job/attachment/reservation, a shared attacher joint type
-(FS25 tractors expose several joints), sufficient tractor power, PTO when required,
-and movement/attachment/stop capabilities. IDs are opaque;
+No vehicle IDs come from the LLM. Selection checks categories (forage wagons by
+GIANTS' ForageWagon specialization), same-farm permission, availability, no
+driver/job/attachment/reservation, a shared attacher joint type (FS25 tractors
+expose several joints), sufficient tractor power by GIANTS' own PTO torque rule, a
+shared PTO at the planned joints when the wagon needs PTO power, and
+movement/attachment/stop capabilities. IDs are opaque;
 a lexical tie-break provides repeatability but carries no equipment semantics.
 
 ## Architecture and boundaries
@@ -138,8 +140,9 @@ observation, AutoDrive marker delivery and stop, and every HITCH primitive (join
 geometry, GIANTS GOTO navigation, driveToPoint reversing, attach-range detection,
 normal attachment, attachment observation) are backed by GIANTS/upstream source.
 Their composition on a real tractor and forage wagon is UNVERIFIED until an FS25
-test; tractor/implement power and PTO data remain GAPs, so real snapshots still map
-to ineligible equipment. The local IPC is a companion-hosted Windows named pipe
+test. Power and PTO now come from GIANTS data on the loaded vehicles; a real pair is
+selectable once the user's tractor store category is configured and a command
+channel grants move/attach. The local IPC is a companion-hosted Windows named pipe
 (game → companion, protocol v1, implemented as a decoder) plus a polled XML command
 file (companion → game, design only). Do not build navigation beyond ALIGN_REVERSE.
 

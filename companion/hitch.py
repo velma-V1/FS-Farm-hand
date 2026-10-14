@@ -17,13 +17,20 @@ def _finite(*values) -> bool:
     return all(type(v) in (int, float) and math.isfinite(v) for v in values)
 
 
+def _pto_connects(outputs, inputs) -> bool:
+    """GIANTS' PowerTakeOffs:attachPowerTakeOff (747-766) connects each output at
+    the tractor joint to the wagon inputs at the wagon joint with the same ptoName."""
+    return outputs is not None and inputs is not None and bool(outputs & inputs)
+
+
 def plan_hitch(tractor: Equipment, wagon: Equipment,
                staging_distance: float = STAGING_DISTANCE_M) -> HitchPlan | None:
     """Plan a rear hitch of ``wagon`` to ``tractor``, or None if geometry is unusable.
 
     Joint choice: a free tractor joint behind the AI root (z < 0) and an active
-    wagon input joint of the same joint type; the lowest (tractor, wagon) index
-    pair wins, independent of observation order. The tractor faces the wagon's
+    wagon input joint of the same joint type which, if the wagon needs PTO power,
+    share a PTO name; the lowest (tractor, wagon) index pair wins, independent of
+    observation order. Unknown power or PTO data yields no plan. The tractor faces the wagon's
     forward heading, so the last move is a straight reverse along the wagon axis.
     """
     if not _finite(staging_distance) or not 0 < staging_distance <= MAX_STAGING_DISTANCE_M:
@@ -33,12 +40,16 @@ def plan_hitch(tractor: Equipment, wagon: Equipment,
     root, heading = tractor.ai_root, wagon.heading
     if root is None or not _finite(root.x, root.z, root.yaw, heading):
         return None
+    need = wagon.required_pto_torque
+    if not _finite(need) or need < 0:
+        return None
     for joints in (tractor.output_joints, wagon.input_joints):
         if len({joint.index for joint in joints}) != len(joints):
             return None  # Contradictory observation: joint indices must be unique.
     pairs = sorted(((out, inp) for out in tractor.output_joints for inp in wagon.input_joints
                     if out.free and inp.active and out.joint_type == inp.joint_type
-                    and _finite(out.x, out.z, *inp.position) and out.z < 0),
+                    and _finite(out.x, out.z, *inp.position) and out.z < 0
+                    and (need == 0 or _pto_connects(out.pto_names, inp.pto_names))),
                    key=lambda pair: (pair[0].index, pair[1].index))
     if not pairs:
         return None

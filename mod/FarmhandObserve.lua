@@ -215,7 +215,45 @@ local function yawOf(env, node)
     return yaw
 end
 
-function Observe.hitchGeometry(env, v)
+-- PTO names, matched exactly as GIANTS' PowerTakeOffs:attachPowerTakeOff does
+-- (lines 747-766): outputs at the tractor joint, inputs at the implement joint by
+-- ptoName. A missing method means no PTO on that side (GIANTS line 752; Manual
+-- Attach PowerTakeOffExtension.lua:20-26); an unreadable one is unknown (nil).
+local function ptoName(output)
+    local name = output.ptoName
+    assert(text(name) ~= nil and #name <= 64)
+    return name
+end
+
+function Observe.outputPtoNames(v, jointIndex)
+    if type(v.getOutputPowerTakeOffsByJointDescIndex) ~= "function" then return Observe.array() end
+    local outputs = v:getOutputPowerTakeOffsByJointDescIndex(jointIndex)
+    assert(type(outputs) == "table")
+    local names, seen = Observe.array(), {}
+    for _, output in ipairs(outputs) do
+        local name = ptoName(output)
+        if not seen[name] then seen[name] = true; names[#names + 1] = name end
+    end
+    assert(#names <= 16)
+    table.sort(names)
+    return names
+end
+
+local function inputPtoNames(v, jointIndex, candidates)
+    if type(v.getInputPowerTakeOffsByJointDescIndexAndName) ~= "function" then return Observe.array() end
+    local names = Observe.array()
+    for _, name in ipairs(candidates) do
+        local inputs = v:getInputPowerTakeOffsByJointDescIndexAndName(jointIndex, name)
+        assert(type(inputs) == "table")
+        if #inputs > 0 then names[#names + 1] = name end
+    end
+    assert(#names <= 16)
+    return names
+end
+
+-- `ptoNames`: every output PTO name on the farm's vehicles (sorted), the only
+-- names an input could be matched against.
+function Observe.hitchGeometry(env, v, ptoNames)
     local byValue = jointTypeNames(env.AttacherJoints)
     local heading = try(function() return yawOf(env, v.rootNode) end)
 
@@ -243,7 +281,8 @@ function Observe.hitchGeometry(env, v)
                     and math.abs(offset.x) <= 50 and math.abs(offset.z) <= 50 then
                 -- jointIndex == 0 is GIANTS' "joint free" test (AttacherJoints 1910, 3063).
                 result[#result + 1] = { index = i, type = name, x = offset.x, z = offset.z,
-                                        free = joint.jointIndex == 0 }
+                                        free = joint.jointIndex == 0,
+                                        pto_names = nullable(try(function() return Observe.outputPtoNames(v, i) end)) }
             end
         end
         return result
@@ -261,7 +300,10 @@ function Observe.hitchGeometry(env, v)
             if name ~= nil and finite(x) and finite(z) then
                 local okActive, active = pcall(function() return v:getIsInputAttacherActive(joint) end)
                 result[#result + 1] = { index = i, type = name, x = x, z = z,
-                                        active = okActive and active == true }
+                                        active = okActive and active == true,
+                                        pto_names = nullable(try(function()
+                                            return inputPtoNames(v, i, ptoNames or {})
+                                        end)) }
             end
         end
         return result
@@ -272,7 +314,7 @@ end
 
 -- Returns one vehicle record, or nil when identity, position or hitch joints
 -- cannot be observed (the vehicle is then counted as skipped).
-function Observe.vehicle(env, v)
+function Observe.vehicle(env, v, ptoNames)
     local id = try(function() return env.NetworkUtil.getObjectId(v) end)
     local farmId = try(function() return v.ownerFarmId end)
     local x, _, z = try(function() return env.getWorldTranslation(v.rootNode) end)
@@ -337,7 +379,29 @@ function Observe.vehicle(env, v)
         end)
     end
 
-    local heading, aiRoot, outputJoints, inputJointPoses = Observe.hitchGeometry(env, v)
+    local heading, aiRoot, outputJoints, inputJointPoses = Observe.hitchGeometry(env, v, ptoNames)
+
+    -- GIANTS' ForageWagon specialization (ForageWagon:onLoad line 93, as Courseplay
+    -- reads it) on a towed implement identifies a forage wagon.
+    local forageWagon = try(function() return v.spec_forageWagon ~= nil and v.spec_attachable ~= nil end) == true
+
+    -- Power in GIANTS' own terms (PowerConsumer:getCanBeTurnedOn 271-294), read
+    -- from the loaded vehicle, so the actual motor/consumer configuration applies.
+    local motor = try(function()
+        local m = v:getMotor()
+        local peak, ratio = m:getPeakTorque(), m:getPtoMotorRpmRatio()
+        assert(finite(peak) and peak > 0 and finite(ratio) and ratio > 0)
+        return { peak_torque = peak, pto_rpm_ratio = ratio }
+    end)
+    -- Without PowerConsumer GIANTS sets no power condition: no PTO torque needed.
+    local ptoTorque = 0
+    if type(v.getConsumedPtoTorque) == "function" then
+        ptoTorque = try(function()
+            local torque = v:getConsumedPtoTorque(true, true)
+            assert(finite(torque) and torque >= 0)
+            return torque
+        end)
+    end
 
     return {
         id = id,
@@ -356,6 +420,9 @@ function Observe.vehicle(env, v)
         attacher_joints = Observe.array(attacherJoints),
         input_joints = Observe.array(inputJoints),
         heading = nullable(heading),
+        forage_wagon = forageWagon,
+        motor = nullable(motor),
+        pto_torque = nullable(ptoTorque),
         ai_root = nullable(aiRoot),
         output_joints = outputJoints,
         input_joint_poses = inputJointPoses,
@@ -394,11 +461,28 @@ function Observe.snapshot(env, seq)
         or try(function() return env.g_currentMission.vehicles end)
     if type(vehicles) ~= "table" then return nil, "NO_VEHICLES" end
 
+    -- First pass: the output PTO names of the farm's vehicles. Unreadable ones
+    -- are simply not candidates; their joints report unknown PTO names.
+    local seenPto, ptoNames = {}, {}
+    for _, v in pairs(vehicles) do
+        local owned = try(function() return v.ownerFarmId == farmId end)
+        if owned then
+            local joints = try(function() return v:getAttacherJoints() end)
+            for i = 1, type(joints) == "table" and #joints or 0 do
+                local names = try(function() return Observe.outputPtoNames(v, i) end) or {}
+                for _, name in ipairs(names) do
+                    if not seenPto[name] then seenPto[name] = true; ptoNames[#ptoNames + 1] = name end
+                end
+            end
+        end
+    end
+    table.sort(ptoNames)
+
     local records, skipped, truncated = Observe.array(), 0, false
     for _, v in pairs(vehicles) do
         local owned = try(function() return v.ownerFarmId == farmId end)
         if owned then
-            local record = Observe.vehicle(env, v)
+            local record = Observe.vehicle(env, v, ptoNames)
             if record == nil then
                 skipped = skipped + 1
             elseif #records >= Observe.MAX_VEHICLES then

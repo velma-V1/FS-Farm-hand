@@ -42,7 +42,11 @@ Executable mapping (`python scripts/check.py`):
 - `test_physical_failures`: stage/align/attach/delivery errors and timeouts stop and
   fail; no later physical step runs; no fabricated success.
 - `tests/test_hitch.py`: joint selection among many joints, incompatible/unknown
-  geometry, final and staging pose for random poses, orientation, determinism.
+  geometry, final and staging pose for random poses, orientation, determinism; PTO
+  matched on the planned joints only when PTO power is needed; unknown fails closed.
+- `PowerAndPtoTests`: GIANTS' torque rule accepts adequate/exact capacity, rejects
+  insufficient or unknown power, never rejects a wagon needing no PTO power, and
+  matches PTO on the planned joint pair (not any joint).
 - `HitchCompositionTests`: steps use the plan exactly; AutoDrive TRAVEL_NEAR only
   when far (and unobserved arrival stops); unreachable or unplannable pairs block
   before reservation; staging not observed, wagon moved or rotated, joint occupied,

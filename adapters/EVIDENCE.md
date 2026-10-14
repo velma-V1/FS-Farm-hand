@@ -21,7 +21,10 @@ described. That proves the API exists and how a shipped FS25 mod uses it; it doe
 | MA | stijnwop/manualAttach @ `6e1536f576e1` (2026-09-13) | 1.1.1.0 | GPL-3.0 | Evidence of the attach-range rule's shape only; no code copied |
 | GDN | GIANTS FS25 LUADOC, Script v1.20.0.0 ([index](https://gdn.giants-software.com/documentation_scripting_fs25.php?version=script)) | FS25 1.20 | proprietary docs | Authoritative game-script source, read via the official pages |
 
-GDN class pages cited below: `AIDrivable` (`&category=78&class=619`), `AIJobVehicle`
+GDN class pages cited below: `AIDrivable` (`&category=78&class=619`), `PowerConsumer`
+(`&class=778`), `PowerTakeOffs` (`&class=779`), `ForageWagon` (`&class=676`),
+`Motorized` (`&class=698`), `VehicleMotor` (`&category=91&class=896`),
+`VehicleConfigurationItemMotor` (`&category=15&class=178`), `AIJobVehicle`
 (`&class=622`), `Attachable` (`&class=628`), `AttacherJoints` (`&class=630`),
 `AIJobGoTo` (`&category=54&class=539`), `AITaskDriveTo` (`&category=81&class=846`),
 `AIJobTypeManager` (`&category=3&class=153`), `AISystem` (`&category=3&class=154`),
@@ -44,7 +47,8 @@ for API usage only.
 | Farm ownership | PROVEN | FH `Collectors.lua:332` `v.ownerFarmId == farmId`; AD `scripts/Specialization.lua:395-396` `getOwnerFarmId()` | `Equipment.farm_id` |
 | Requester farm | PROVEN | FH `scripts/Farmhand.lua:245` `g_currentMission:getFarmId()` | snapshot `farm_id` → trusted session farm |
 | Opaque stable ID | PROVEN | FH `Collectors.lua:400` `NetworkUtil.getObjectId(v)` (inverse `NetworkUtil.getObject`, FH `Commands.lua:1389`) | `Equipment.id` (stringified) |
-| Category | PROVEN call / UNVERIFIED names | FH `Collectors.lua:97-106` `g_storeManager:getItemByXMLFilename(v.configFileName).categoryName`, noted there as the only reliable class signal (`typeName` calls wheel loaders "tractor") | category map → `tractor` / `forage_wagon`; **no store category names are proven**, so the map ships empty |
+| Category: tractor | PROVEN call / UNVERIFIED names | FH `Collectors.lua:97-106` `g_storeManager:getItemByXMLFilename(v.configFileName).categoryName`, noted there as the only reliable class signal (`typeName` calls wheel loaders "tractor") | category map → `tractor` only; **no store category names are proven**, so the map ships empty |
+| Category: forage wagon | PROVEN | GIANTS `ForageWagon` specialization ("Specialization for a forage wagon"; `onLoad` line 93 `self.spec_forageWagon`); Courseplay identifies forage wagons the same way (`ForageWagonController.lua:10`, `FillLevelUtil.lua:132`) | `forage_wagon` = `spec_forageWagon` on an attachable (`spec_attachable`) vehicle; no store category needed. A store category mapping such a vehicle to `tractor` is contradictory → unknown |
 | Position | PROVEN | FH `Collectors.lua:465` `getWorldTranslation(v.rootNode)` | `Equipment.position` (x, z) |
 | Player position | PROVEN | FH `Collectors.lua:592-598` `g_localPlayer:getPosition()` else `getWorldTranslation(p.rootNode)` | requester position |
 | Occupied | PROVEN (SP) | AD `scripts/Utils/AutoDriveUtilFuncs.lua:770-786` `getIsEntered() or getIsControlled()`; AD notes this differs on dedicated servers | `Equipment.occupied` |
@@ -58,7 +62,11 @@ for API usage only.
 | Marker ID stability | PROVEN negative | IDs are array indices (`Manager/GraphManager.lua:365-371`) and are renumbered when a marker is deleted (`:496-499`) | A marker ID is valid only for a live selection; stored config refers to marker **names** |
 | Field → marker association | **GAP** | AD markers hold only `name` and a UI `group` (`GraphManager.lua:371`); AD field IDs (`Utils/FieldPointGenerator.lua:40-50`) are not linked to markers | Field targets resolve only via trusted local `field_entrances[map_id][field] = marker name`; no nearest-marker guess |
 | Version detection | PROVEN | AD `scripts/AutoDrive.lua:2` `AutoDrive.version`; AD `register.lua:153` `g_modManager:getModByName(g_currentModName).version` | `hello` frame |
-| Tractor power, implement power need, PTO need | **GAP** | Not read by any inspected source | mapped as 0 kW / PTO required → never compatible |
+| Power sufficiency | PROVEN | GIANTS' own gate is `PowerConsumer:getCanBeTurnedOn` 271-294: refuse when `getConsumedPtoTorque(true)` (+ other implements, 277) `/ rootMotor:getPtoMotorRpmRatio()` exceeds `0.9 * rootMotor:getPeakTorque()` (279-282). `getConsumedPtoTorque` 236-260 is `neededPtoPower / (ptoRpm*pi/30)`, 0 when `ptoRpm <= 0.001`; `neededMin/MaxPtoPower` are "in kW at ptoRpm" (`loadPowerSetup` 197-198) for the vehicle's actual `powerConsumer` configuration (`onLoad` 111-129) | Same rule as two numbers: wagon `required_pto_torque` = `getConsumedPtoTorque(true, true)`; tractor `pto_torque_capacity` = `0.9 * getPeakTorque() * getPtoMotorRpmRatio()` of the **loaded** motor (actual configuration). GIANTS units on both sides, so no hp/kW conversion. Other implements' load is 0 because only unattached tractors are selected. No PowerConsumer → required 0 (GIANTS sets no condition) |
+| Power value semantics | PROVEN detail / UNVERIFIED in game | `getConsumedPtoTorque` uses the current consuming load (`ForageWagon:getConsumingLoad` 396-403), i.e. the value GIANTS uses at turn-on; `VehicleMotor:getPeakTorque` and `getPtoMotorRpmRatio` bodies are index only (page truncated) but GIANTS calls them at 279-282 | Sufficiency means "GIANTS would let it switch on now", not full-load performance |
+| Shop power numbers | PROVEN, not used | `VehicleConfigurationItemMotor:loadFromXML` line 31 `self.power = #hp`, registered as "Horse power to be shown in the shop" (43); `PowerConsumer.getSpecValueNeededPower` 529-556 formats `storeItem.specs.neededPower` (base or per-configuration, `loadSpecValueNeededPower` 500-520) for display; `Motorized.getSpecValuePower` body index only | Display values, not GIANTS' power gate; comparing shop hp with PTO kW would invent a model |
+| PTO compatibility | PROVEN | `PowerTakeOffs` ("both output (e.g. tractor) and input (e.g. tool)"): `attachPowerTakeOff` 747-766 connects each output of `getOutputPowerTakeOffsByJointDescIndex(jointDescIndex)` (749) to `getInputPowerTakeOffsByJointDescIndexAndName(inputJointDescIndex, output.ptoName)` (753); missing input method → nothing connected (752); same check in Manual Attach `PowerTakeOffExtension.lua:20-48` | Per-joint `pto_names` (tractor outputs; implement inputs probed with the farm's output names). The plan requires a shared name at the planned joints when `required_pto_torque > 0`; unreadable → unknown → no plan |
+| PTO connected by normal attach | UNVERIFIED (strong indirect) | Manual Attach's `onPostAttach` detaches the PTO right after a normal attach (`ManualAttachPowerTakeOff.lua:187-197`); `PowerTakeOffs:onPostAttachImplement` body is index only | Not needed for selection or towing. With Manual Attach installed the PTO stays disconnected and its `getCanBeTurnedOn` override (line 34) blocks switching on |
 | Yaw convention | PROVEN | GDN `MathUtil` `eulerToDirection` line 246 (`x = sin(yaw)`, `z = cos(yaw)`), `directionToPitchYaw` line 257 (`atan2(dx, dz)`); AD `ExternalInterface.lua:23` uses the same | `Pose.yaw`, `Pose.to_world` |
 | Heading | PROVEN call / UNVERIFIED meaning | `localDirectionToWorld(rootNode, 0, 0, 1)` → `MathUtil.getYRotationFromDirection` (GDN, index only); a towed implement's root forward is the approach heading in CP `AIDriveStrategyAttachHeader.lua:228-230` | `Equipment.heading`. That every forage wagon's root faces its drawbar is UNVERIFIED |
 | AI root pose | PROVEN | GDN `AIDrivable:getAIRootNode` 515-516 returns `components[1].node` | `Equipment.ai_root` |
@@ -153,13 +161,19 @@ engine XML API (`XMLFile.loadIfExists`), and files live under
 - Farmhand's `attach` command is player-input simulation, not an unattended attach API.
 - "Hitching is unavailable" (previous classification here): superseded. Each
   primitive exists in GIANTS; only their composition is unverified.
+- "Tractor power, implement power need and PTO need: GAP" (previous classification
+  here): wrong. GIANTS loads them on the vehicle (`PowerConsumer`, `VehicleMotor`,
+  `PowerTakeOffs`), and its own turn-on rule and PTO pairing use exactly them.
+- "Store motor-configuration `power` is the tractor's kW rating": rejected. It is
+  shop horsepower (`#hp`, "to be shown in the shop").
 
 ## Still unresolved (first in-game checks)
 
-1. Real store `categoryName` values for tractors and forage wagons (FH ships a
-   `dumpCategories` diagnostic because guessed names failed).
+1. Real store `categoryName` values for tractors (FH ships a `dumpCategories`
+   diagnostic because guessed names failed). Forage wagons no longer need one.
 2. That the observation calls behave as in upstream use on the user's FS25 version.
-3. Tractor power and implement power/PTO requirements: GAP.
+3. Live values of `getPeakTorque`, `getPtoMotorRpmRatio`, `getConsumedPtoTorque`
+   and PTO names on the user's equipment, and the switch-on result GIANTS gives.
 4. The HITCH composition on real equipment: observed joint transforms, the
    computed final/staging pose, GOTO arrival accuracy and which node it targets,
    `driveToPoint` reversing outside a running AI job, GIANTS naming the exact pair

@@ -76,10 +76,13 @@ class MockWorld:
         if (tractor.category != "tractor" or wagon.category != "forage_wagon"
                 or not {"move", "attach", "stop"} <= tractor.capabilities
                 or not tractor.hitches & wagon.hitches
-                or not math.isfinite(tractor.power_kw)
-                or not math.isfinite(wagon.required_power_kw)
-                or not tractor.power_kw >= wagon.required_power_kw > 0
-                or wagon.requires_pto and "pto" not in tractor.capabilities
+                or wagon.required_pto_torque is None
+                or not math.isfinite(wagon.required_pto_torque)
+                or wagon.required_pto_torque < 0
+                or wagon.required_pto_torque > 0 and not (
+                    tractor.pto_torque_capacity is not None
+                    and math.isfinite(tractor.pto_torque_capacity)
+                    and tractor.pto_torque_capacity >= wagon.required_pto_torque)
                 or tractor.farm_id != wagon.farm_id):
             raise ValueError("Incompatible equipment")
 
@@ -152,6 +155,8 @@ class MockWorld:
             inp = next((j for j in wagon.input_joints if j.index == joints[1]), None)
             if (out is None or inp is None or tractor.ai_root is None
                     or not out.free or not inp.active or out.joint_type != inp.joint_type
+                    or wagon.required_pto_torque and not (out.pto_names and inp.pto_names
+                                                          and out.pto_names & inp.pto_names)
                     or not tractor.stopped or not wagon.stopped
                     or math.dist(tractor.ai_root.to_world(out.x, out.z), inp.position)
                     > MOCK_ATTACH_RANGE_M):
