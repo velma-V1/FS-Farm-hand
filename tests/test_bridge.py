@@ -241,6 +241,15 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("BLOCKED", "NO_ELIGIBLE_PAIR"))
         self.assertEqual(game.commands, [])
 
+    def test_observation_trouble_before_reservation_only_blocks(self):
+        game = FakeGame()
+        self.addCleanup(game.stop)
+        game.faults["silent_snapshots"] = True
+        with unittest.mock.patch.object(bridge, "SNAPSHOT_TIMEOUT_S", 0.05):
+            result = Executor(FS25World(game.link, CATEGORIES)).execute(intent())
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "STALE_SNAPSHOT"))
+        self.assertEqual(game.commands, [])
+
     def test_stale_snapshot_never_reads_as_current(self):
         game = FakeGame()
         self.addCleanup(game.stop)

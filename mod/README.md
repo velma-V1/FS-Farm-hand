@@ -26,9 +26,11 @@ On the Windows PC with FS25, AutoDrive and Python 3.12:
 
 1. Copy the `FS25_Farmhand` folder from the CI artifact (or this `mod/` folder) to
    `Documents/My Games/FarmingSimulator2025/mods/FS25_Farmhand/` (a folder, not a
-   ZIP). In a single-player save, enable it with AutoDrive. Own one tractor and one
-   forage wagon on an AutoDrive network, with a marker near the wagon and one near
-   you. Get out of the tractor.
+   ZIP). In a single-player save, enable it with AutoDrive. Own one tractor with
+   nothing attached (no front weight either) and one forage wagon on an AutoDrive network, with a marker near the wagon and one near
+   you. In the tractor's AutoDrive HUD leave "start helper" off (Farmhand refuses
+   to drive while AutoDrive would hand the tractor to another AI). Don't pause the
+   game during the run. Get out of the tractor.
 2. Open the console (`~`) and run `fhHitchList`; note the tractor's `store=` value.
 3. Copy `farmhand.example.json` to `farmhand.json` and put that value in
    `tractor_store_categories`.

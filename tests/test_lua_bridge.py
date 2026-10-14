@@ -30,6 +30,7 @@ function W.new()
     tractor.ad.stateModule = {
         setMode = function(_, mode) call("setMode:" .. mode) end,
         isActive = function() return w.adActive end,
+        getStartHelper = function() return w.startHelper == true end,   -- StateModule.lua:406-408
     }
     function tractor:getLastSpeed() return w.speed end
     function tractor:getIsEntered() return w.entered end
@@ -185,6 +186,13 @@ class LuaBridgeTests(unittest.TestCase):
                 self.W.run(self.w, ms)
                 self.assertEqual(self.results(1)[-1], (1, "FAILED", code))
                 self.assertEqual("stopAutoDrive" in self.calls(), attr == "entered")
+
+    def test_drive_refuses_when_autodrive_would_hand_off_to_another_ai(self):
+        self.adopt()
+        self.w.startHelper = True
+        self.send(1, "drive", {"tractor": 11, "marker": 3})
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "AD_START_HELPER_ON"))
+        self.assertEqual(self.calls(), [])                                  # setting untouched, no start
 
     def test_unknown_marker_and_vehicle_never_move(self):
         self.adopt()

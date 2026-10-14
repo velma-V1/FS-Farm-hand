@@ -98,7 +98,7 @@ occupancy and AI state on every frame and stops what a lost or replaced
 companion session started.
 
 Results: COMPLETE = all observations verified; BLOCKED = invalid input, unavailable
-pair/capability or reservation conflict; FAILED = adapter rejected/failed a step
+pair/capability, reservation conflict, or any failure before RESERVE (nothing moved); FAILED = adapter rejected/failed a step
 and stop was confirmed; UNVERIFIED = observation mismatch or unconfirmed stop.
 Reservations release only after a confirmed stop following attempted physical work.
 Failure to stop/release retains ownership conservatively. Repeated identical

@@ -39,7 +39,7 @@ HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
 DONE_TIMEOUT_S = {"drive": 1230.0, "stage": 135.0, "align": 70.0, "attach": 25.0, "stop": 25.0}
-TERMINAL = ("DONE", "FAILED", "UNVERIFIED", "REJECTED")
+TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
 
 class CommandLink:
@@ -116,7 +116,7 @@ class CommandLink:
             raise StepFailed("REJECTED_" + first[1])
 
         def terminal():
-            done = [r for r in self._results.get(command_id, ()) if r[0] in TERMINAL[:3]]
+            done = [r for r in self._results.get(command_id, ()) if r[0] in TERMINAL]
             if done:
                 return done[0]
             # The game sends snapshots while linked; silence means the link is gone.
@@ -144,15 +144,12 @@ class FS25World:
         self.categories = dict(categories)
         self._lock = threading.RLock()
         self._reservations: dict[str, tuple[str, tuple[str, str]]] = {}
-        self._observation: Observation | None = None
 
     # ------------------------------------------------------------ observation
     def _observe(self) -> Observation:
         frame = self.link.fresh_snapshot()
-        observation = observation_from_snapshot(frame, self.categories,
-                                                bridge_ready=frame["session"] == self.link.session)
-        self._observation = observation
-        return observation
+        return observation_from_snapshot(frame, self.categories,
+                                         bridge_ready=frame["session"] == self.link.session)
 
     def snapshot(self) -> tuple[Equipment, ...]:
         observation = self._observe()

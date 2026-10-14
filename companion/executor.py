@@ -1,6 +1,7 @@
 """One deterministic task. No LLM calls, game physics, transport, or simulator import."""
 import copy
 import json
+import logging
 import math
 from pathlib import Path
 from threading import Lock
@@ -11,6 +12,7 @@ from adapters.world import StepUnverified, World
 from companion.hitch import plan_hitch
 from protocol.model import Destination, Equipment, HitchPlan, Position, Result
 
+log = logging.getLogger("farmhand")
 SCHEMA = json.loads((Path(__file__).resolve().parents[1] / "protocol/intent.schema.json").read_text())
 VALIDATOR = Draft202012Validator(SCHEMA)
 
@@ -221,6 +223,8 @@ class Executor:
         if (not tractor.stopped or not wagon.stopped
                 or math.dist(tractor.position, target) > TRACTOR_ARRIVAL_TOLERANCE_M
                 or math.dist(wagon.position, target) > WAGON_ARRIVAL_TOLERANCE_M):
+            log.info("arrival not observed: tractor %s wagon %s target %s stopped %s/%s",
+                     tractor.position, wagon.position, target, tractor.stopped, wagon.stopped)
             raise ObservationMismatch("DELIVERY_NOT_OBSERVED")
 
     def _run(self, command):
@@ -247,6 +251,7 @@ class Executor:
                 if destination is None:
                     return Result("BLOCKED", failure, states=tuple(states))
             target = tuple(destination.position)
+            log.info("destination %s %r at %s", destination.id, destination.name, target)
             items = sorted(self.world.snapshot(), key=lambda item: item.id)
             free = [item for item in items if usable(item, farm_id)
                     and item.attached_to is None and item.stopped]
@@ -254,6 +259,8 @@ class Executor:
             if pair is None:
                 return Result(status, failure, states=tuple(states))
             ids = tuple(item.id for item in pair)
+            log.info("selected tractor %s wagon %s joints %d/%d staging %s travel %s", *ids,
+                     plan.tractor_joint, plan.wagon_joint, plan.staging, travel and travel.id)
             states.append("RESERVE")
             if not self.world.reserve(ids, owner):
                 return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
@@ -310,6 +317,9 @@ class Executor:
             # An unexpected adapter failure must not fabricate completion.
             status, reason = "UNVERIFIED", type(error).__name__
         finally:
+            if not reserved:
+                # Nothing can have moved before RESERVE: observation trouble only blocks.
+                status = "BLOCKED"
             if reserved:
                 try:
                     if physical_attempted:
@@ -328,4 +338,5 @@ class Executor:
                         raise ObservationMismatch("RELEASE_NOT_OBSERVED")
                 except Exception:
                     status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, ids, tuple(states))

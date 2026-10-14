@@ -39,7 +39,6 @@ local function log(fmt, ...)
     local ok, msg = pcall(string.format, fmt, ...)
     print("[Farmhand] " .. (ok and msg or tostring(fmt)))
 end
-Bridge.log = log
 
 local function finite(n)
     return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
@@ -95,6 +94,10 @@ function starters.drive(env, spec)
     local denied = idle(v, spec.farmId)
     if denied ~= nil then return nil, denied end
     if v.ad == nil or env.AutoDrive == nil then return nil, "NO_AUTODRIVE" end
+    -- With the vehicle's "start helper" on, AutoDrive's own stop hands the vehicle
+    -- to Courseplay or a GIANTS AI job (Specialization.lua:1251-1285), which would
+    -- drive off with the pair. That setting is the user's; refuse, never change it.
+    if v.ad.stateModule:getStartHelper() ~= false then return nil, "AD_START_HELPER_ON" end
     local markers = env.AutoDrive:GetAvailableDestinations()
     if type(spec.marker) ~= "number" or markers[spec.marker] == nil then return nil, "UNKNOWN_MARKER" end
     v.ad.stateModule:setMode(env.AutoDrive.MODE_DRIVETO)

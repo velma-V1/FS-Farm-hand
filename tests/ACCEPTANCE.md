@@ -74,7 +74,8 @@ Executable mapping (`python scripts/check.py`):
   drives first, explicit targets resolve before any command, every step failure
   stops with its own reason and sends nothing further, AutoDrive "ended" away from
   the destination is not arrival, an unconfirmed stop keeps the reservation, moving
-  equipment is never released, a replayed request sends no command, and wrong
+  equipment is never released, observation trouble before RESERVE only blocks, a
+  replayed request sends no command, and wrong
   reservations never reach the game; atomic command file; Windows pipe server (on
   Windows CI).
 - `tests/test_lua_bridge.py` (Lua 5.1 and 5.4): the game bridge is inert without a
@@ -85,7 +86,8 @@ Executable mapping (`python scripts/check.py`):
   time, a stop pre-empts and is DONE only at rest (else NOT_STOPPED); a lost
   heartbeat or a new session stops the old session's motion and is never
   re-adopted; stop cancels only a GOTO it saw running; attach needs the align that
-  found the candidate; the probe cannot start during a companion session.
+  found the candidate; the probe cannot start during a companion session; drive
+  refuses while AutoDrive's start helper would hand the tractor to another AI.
 - `tests/test_lua_probe.py` (Lua 5.1 and 5.4): the diagnostic console probe loads
   as mod globals in modDesc order and registers its three commands only in
   `loadMap`; nothing runs untyped; `fhHitchList` is read-only; one attempt at a
