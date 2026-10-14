@@ -27,9 +27,12 @@ class Equipment:
 
 @dataclass(frozen=True)
 class Destination:
-    """A routable delivery point, e.g. an AutoDrive map marker. Opaque ID."""
+    """A routable delivery point, e.g. an AutoDrive map marker. Opaque ID.
+
+    ``name`` is the marker's display name, used only for exact explicit selection."""
     id: str
     position: Position
+    name: str = ""
 
 
 @dataclass(frozen=True)

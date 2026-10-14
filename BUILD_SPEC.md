@@ -31,9 +31,16 @@ and bring them here.”** One farm, one requester, one running executor process.
 “Here” means the requester's position sampled once when the validated intent is
 accepted, not a moving follow target. Coordinates are horizontal metres (x, z).
 AutoDrive routes only to map markers (adapters/EVIDENCE.md), so delivery goes to the
-nearest valid routable destination within 50 metres of that captured position; with
-none, the task is BLOCKED before reservation. Delivery tolerance at that destination
-is 3 metres for the tractor and 15 metres for the wagon (allows trailer length); both
+nearest valid routable destination within 50 metres of that captured position.
+The intent may instead name an explicit destination: an existing AutoDrive marker
+(by live ID, or by name matched exactly after whitespace/case normalization), or a
+field number, which resolves only through a trusted local
+`field_entrances[map_id][field] → marker name` table because no verified
+field-to-marker association exists. A field target means travel to that entrance;
+it never starts fieldwork. Arbitrary coordinates are unsupported. Missing, ambiguous,
+invalid, or unmapped destinations are BLOCKED before reservation, with no fallback
+to a nearby marker. Delivery tolerance at the resolved destination is 3 metres for
+the tractor and 15 metres for the wagon (allows trailer length); both
 must be stopped and mutually attached. These are provisional contract values to
 validate against real equipment and AutoDrive marker accuracy in FS25.
 

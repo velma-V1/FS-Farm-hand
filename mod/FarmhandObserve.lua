@@ -45,6 +45,40 @@ local function token(s)
     return s
 end
 
+-- Strict UTF-8 (no overlongs or surrogates), so one bad name cannot make the
+-- whole frame undecodable by the companion.
+local function validUtf8(s)
+    local i, n = 1, #s
+    while i <= n do
+        local c = s:byte(i)
+        local len, low, high = 1, 0x80, 0xBF
+        if c >= 0xC2 and c <= 0xDF then len = 2
+        elseif c >= 0xE0 and c <= 0xEF then
+            len = 3
+            if c == 0xE0 then low = 0xA0 elseif c == 0xED then high = 0x9F end
+        elseif c >= 0xF0 and c <= 0xF4 then
+            len = 4
+            if c == 0xF0 then low = 0x90 elseif c == 0xF4 then high = 0x8F end
+        elseif c >= 0x80 then return false end
+        if i + len - 1 > n then return false end
+        for j = i + 1, i + len - 1 do
+            local b = s:byte(j)
+            if j == i + 1 and (b < low or b > high) then return false end
+            if b < 0x80 or b > 0xBF then return false end
+        end
+        i = i + len
+    end
+    return true
+end
+
+-- Free text (map IDs, marker names): non-empty, bounded, no control characters.
+local function text(s)
+    if type(s) ~= "string" or #s < 1 or #s > 128 or s:find("%c") or not validUtf8(s) then
+        return nil
+    end
+    return s
+end
+
 local function nullable(v)
     if v == nil then return Observe.NULL end
     return v
@@ -116,46 +150,66 @@ function Observe.jointNames(joints, attacherJoints)
     return names
 end
 
--- Returns one vehicle record, or nil when identity, position or attachment
--- state cannot be observed (the vehicle is then counted as skipped).
-function Observe.vehicle(env, v)
-    local function objectId(object)
-        return env.NetworkUtil.getObjectId(object)
-    end
+-- Observation states: a method that exists and returns a real boolean is
+-- OBSERVED; one that exists but errors or returns anything else is UNKNOWN (nil,
+-- encoded as JSON null). A MISSING method is NOT APPLICABLE only where upstream
+-- code treats it that way (adapters/EVIDENCE.md); unknown is never coerced.
+local function observedBool(v, method)
+    local ok, value = pcall(function() return v[method](v) end)
+    if ok and type(value) == "boolean" then return value end
+    return nil
+end
 
-    local id = try(function() return objectId(v) end)
+-- Returns attacherId|nil, implementIds, observed. Missing methods mean "no such
+-- attachment side" (AD Specialization.lua:1795, FH Commands.lua:340) only when
+-- the vehicle also has no joints for that side; otherwise attachment is unknown.
+function Observe.attachment(env, v)
+    local function objectId(object)
+        local id = env.NetworkUtil.getObjectId(object)
+        assert(integer(id))
+        return id
+    end
+    local ok, attacher, implements = pcall(function()
+        local attacherId = nil
+        if type(v.getAttacherVehicle) == "function" then
+            local attacherVehicle = v:getAttacherVehicle()
+            if attacherVehicle ~= nil then attacherId = objectId(attacherVehicle) end
+        else
+            assert(type(v.getInputAttacherJoints) ~= "function")
+        end
+        local ids, seen = {}, {}
+        if type(v.getAttachedImplements) == "function" then
+            local list = v:getAttachedImplements()
+            assert(type(list) == "table")
+            for _, implement in ipairs(list) do
+                local implementId = objectId(implement.object)
+                if not seen[implementId] then
+                    seen[implementId] = true
+                    ids[#ids + 1] = implementId
+                end
+            end
+        else
+            assert(type(v.getAttacherJoints) ~= "function")
+        end
+        assert(#ids <= 32)
+        table.sort(ids)
+        return attacherId, ids
+    end)
+    if not ok then return nil, {}, false end
+    return attacher, implements, true
+end
+
+-- Returns one vehicle record, or nil when identity, position or hitch joints
+-- cannot be observed (the vehicle is then counted as skipped).
+function Observe.vehicle(env, v)
+    local id = try(function() return env.NetworkUtil.getObjectId(v) end)
     local farmId = try(function() return v.ownerFarmId end)
     local x, _, z = try(function() return env.getWorldTranslation(v.rootNode) end)
     if not integer(id) or not integer(farmId) or farmId > 255 or not finite(x) or not finite(z) then
         return nil
     end
 
-    -- Attachment must be fully observable: an error here must not read as "free".
-    local ok, attacher, implements = pcall(function()
-        local attacherId = nil
-        if type(v.getAttacherVehicle) == "function" then
-            local attacherVehicle = v:getAttacherVehicle()
-            if attacherVehicle ~= nil then
-                attacherId = objectId(attacherVehicle)
-                assert(integer(attacherId))
-            end
-        end
-        local ids, seen = {}, {}
-        if type(v.getAttachedImplements) == "function" then
-            for _, implement in ipairs(v:getAttachedImplements() or {}) do
-                local implementId = objectId(implement.object)
-                assert(integer(implementId))
-                if not seen[implementId] then
-                    seen[implementId] = true
-                    ids[#ids + 1] = implementId
-                end
-            end
-        end
-        assert(#ids <= 32)
-        table.sort(ids)
-        return attacherId, ids
-    end)
-    if not ok then return nil end
+    local attacher, implements, attachmentObserved = Observe.attachment(env, v)
 
     local okJoints, attacherJoints, inputJoints = pcall(function()
         local outputs, inputs = {}, {}
@@ -177,25 +231,39 @@ function Observe.vehicle(env, v)
     local speed = try(function() return v:getLastSpeed() end)
     if not finite(speed) or math.abs(speed) > 1000 then speed = nil end
 
-    -- AutoDrive's single-player occupancy rule (AutoDriveUtilFuncs.lua:776-782).
-    local entered = try(function()
-        if type(v.getIsEntered) ~= "function" then return nil end
-        local isEntered = v:getIsEntered() == true
+    -- AutoDrive's single-player occupancy rule (AutoDriveUtilFuncs.lua:770-786):
+    -- entered or controlled; a missing getIsEntered means not entered, and a
+    -- missing getIsControlled means getIsEntered alone decides.
+    local entered = false
+    if type(v.getIsEntered) == "function" then
+        entered = observedBool(v, "getIsEntered")
         if type(v.getIsControlled) == "function" then
-            isEntered = isEntered or v:getIsControlled() == true
+            local controlled = observedBool(v, "getIsControlled")
+            if entered == true or controlled == true then
+                entered = true
+            elseif entered == nil or controlled == nil then
+                entered = nil
+            end
         end
-        return isEntered
-    end)
+    end
 
-    local aiActive = try(function()
-        if type(v.getIsAIActive) ~= "function" then return nil end
-        return v:getIsAIActive() == true
-    end)
+    -- A missing getIsAIActive means not AI-active (AD HarvestManager.lua:104,
+    -- FH Collectors.lua:457).
+    local aiActive = false
+    if type(v.getIsAIActive) == "function" then
+        aiActive = observedBool(v, "getIsAIActive")
+    end
 
-    local hasAutoDrive = try(function() return v.ad ~= nil and v.ad.stateModule ~= nil end) == true
+    -- vehicle.ad is AutoDrive's own presence test (ExternalInterface.lua:116).
+    -- Once present, an unreadable state module is unknown, not "no AutoDrive".
+    local hasAutoDrive = try(function() return v.ad ~= nil end) == true
     local adActive = nil
     if hasAutoDrive then
-        adActive = try(function() return v.ad.stateModule:isActive() == true end)
+        adActive = try(function()
+            local value = v.ad.stateModule:isActive()
+            if type(value) == "boolean" then return value end
+            return nil
+        end)
     end
 
     return {
@@ -209,6 +277,7 @@ function Observe.vehicle(env, v)
         ai_active = nullable(aiActive),
         has_autodrive = hasAutoDrive,
         ad_active = nullable(adActive),
+        attachment_observed = attachmentObserved,
         attacher_vehicle_id = nullable(attacher),
         implement_ids = Observe.array(implements),
         attacher_joints = Observe.array(attacherJoints),
@@ -272,7 +341,9 @@ function Observe.snapshot(env, seq)
                 if #destinations >= Observe.MAX_DESTINATIONS then
                     truncated = true
                 else
-                    destinations[#destinations + 1] = { id = marker.id, x = marker.x, z = marker.z }
+                    -- An unusable name leaves the marker selectable by ID only.
+                    destinations[#destinations + 1] = { id = marker.id, name = text(marker.name) or "",
+                                                        x = marker.x, z = marker.z }
                 end
             else
                 skipped = skipped + 1
@@ -285,6 +356,8 @@ function Observe.snapshot(env, seq)
         protocol = Observe.PROTOCOL,
         seq = seq,
         farm_id = farmId,
+        -- CP keys per-map field data on missionInfo.mapId (CustomFieldManager.lua:284).
+        map_id = nullable(text(try(function() return env.g_currentMission.missionInfo.mapId end))),
         player = playerPosition(env),
         truncated = truncated,
         skipped = skipped,

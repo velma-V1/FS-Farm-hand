@@ -9,10 +9,10 @@ import json
 import random
 import unittest
 
-from adapters.fs25 import (MULTIPLE_ATTACHMENTS, ObservationError, STOPPED_BELOW_KMH,
-                           observation_from_snapshot)
+from adapters.fs25 import (MULTIPLE_ATTACHMENTS, UNKNOWN_ATTACHMENT, ObservationError,
+                           STOPPED_BELOW_KMH, observation_from_snapshot)
 from companion.executor import Executor, compatible, usable
-from protocol.ipc import FrameError, FrameReader, parse_frame
+from protocol.ipc import MAX_LINE_BYTES, FrameError, FrameReader, parse_frame
 
 TRACTORS = "TEST_TRACTOR_CATEGORY"
 WAGONS = "TEST_WAGON_CATEGORY"
@@ -24,7 +24,7 @@ def vehicle(identifier, kind, x=0.0, z=0.0, **overrides):
     item = {"id": identifier, "farm_id": 1, "category": kind, "x": x, "z": z,
             "speed_kmh": 0.0, "entered": False, "ai_active": False,
             "has_autodrive": kind == TRACTORS, "ad_active": False if kind == TRACTORS else None,
-            "attacher_vehicle_id": None, "implement_ids": [],
+            "attachment_observed": True, "attacher_vehicle_id": None, "implement_ids": [],
             "attacher_joints": ["TRAILER", "IMPLEMENT"] if kind == TRACTORS else [],
             "input_joints": ["TRAILER"] if kind == WAGONS else []}
     item.update(overrides)
@@ -32,10 +32,10 @@ def vehicle(identifier, kind, x=0.0, z=0.0, **overrides):
 
 
 def snapshot(vehicles, destinations=(), **overrides):
-    frame = {"event": "snapshot", "protocol": 1, "seq": 7, "farm_id": 1,
+    frame = {"event": "snapshot", "protocol": 1, "seq": 7, "farm_id": 1, "map_id": "MapUS",
              "player": {"x": 100.0, "z": 200.0}, "truncated": False, "skipped": 0,
              "vehicles": list(vehicles),
-             "destinations": list(destinations) or [{"id": 3, "x": 101.0, "z": 199.0}]}
+             "destinations": list(destinations) or [{"id": 3, "name": "Yard", "x": 101.0, "z": 199.0}]}
     frame.update(overrides)
     return frame
 
@@ -100,6 +100,33 @@ class FrameTests(unittest.TestCase):
         self.assertEqual(reader.feed(b"y" * 300), [])
         self.assertEqual(reader.feed(b"\n" + line(good)), [good])
 
+    def test_deeply_nested_input_is_a_controlled_error(self):
+        # Below the 1 MiB line limit, but deep enough to exhaust the decoder's
+        # recursion budget on any CPython version.
+        good = {"event": "hello", "protocol": 1, "mod_version": "1", "autodrive_version": None}
+        frame = snapshot([vehicle(11, TRACTORS)])
+        deep_cases = [b"[" * 10_000 + b"]" * 10_000,
+                      b"[" * 200_000 + b"]" * 200_000,
+                      b'{"a":' * 100_000 + b"1" + b"}" * 100_000,
+                      # Deep value inside an otherwise well-formed frame.
+                      json.dumps(frame).replace('"vehicles": [', '"vehicles": [' + "[" * 100_000, 1)
+                      .replace(']', ']' * 100_000 + ']', 1).encode()]
+        for deep in deep_cases:
+            with self.subTest(length=len(deep), start=deep[:12]):
+                self.assertLess(len(deep), MAX_LINE_BYTES)
+                with self.assertRaises(FrameError) as caught:
+                    parse_frame(deep)
+                self.assertIn(caught.exception.code, ("TOO_DEEP", "MALFORMED", "SCHEMA_VIOLATION"))
+                reader = FrameReader()
+                results = reader.feed(deep + b"\n" + line(good) + line(frame))
+                self.assertEqual(len(results), 3)
+                self.assertIsInstance(results[0], FrameError)
+                self.assertEqual(results[1:], [good, frame])
+                self.assertEqual(reader.feed(line(good)), [good])
+        with self.assertRaises(FrameError) as caught:
+            parse_frame(b"[" * 200_000 + b"]" * 200_000)
+        self.assertEqual(caught.exception.code, "TOO_DEEP")
+
 
 class MappingTests(unittest.TestCase):
     def test_compatible_pair_maps_but_stays_ineligible_until_gaps_close(self):
@@ -114,7 +141,9 @@ class MappingTests(unittest.TestCase):
         self.assertTrue(tractor.hitches & wagon.hitches)
         self.assertTrue(usable(tractor, "1") and usable(wagon, "1"))
         self.assertTrue(tractor.stopped and wagon.stopped)
-        self.assertEqual([(d.id, d.position) for d in observed.destinations], [("3", (101.0, 199.0))])
+        self.assertEqual([(d.id, d.name, d.position) for d in observed.destinations],
+                         [("3", "Yard", (101.0, 199.0))])
+        self.assertEqual(observed.map_id, "MapUS")
         # Power, PTO, unattended approach and attach have no proven source (GAP /
         # UNVERIFIED), so real data must not yet produce an eligible pair.
         self.assertEqual((tractor.power_kw, wagon.required_power_kw), (0, 0))
@@ -145,6 +174,60 @@ class MappingTests(unittest.TestCase):
                 self.assertEqual(getattr(item, field), expected)
                 self.assertIsNone(item.reserved_by)
 
+    def test_unknown_booleans_never_read_as_free(self):
+        # Observed False is free; None (unknown) is unavailable AND occupied/busy.
+        base = vehicle(11, TRACTORS)
+        for field, flag in (("entered", "occupied"), ("ai_active", "busy"), ("ad_active", "busy")):
+            with self.subTest(field=field):
+                item, = observation_from_snapshot(
+                    parse_frame(line(snapshot([{**base, field: False}]))), CATEGORIES).equipment
+                self.assertFalse(getattr(item, flag))
+                self.assertTrue(item.available)
+                self.assertTrue(usable(item, "1"))
+                item, = observation_from_snapshot(
+                    parse_frame(line(snapshot([{**base, field: None}]))), CATEGORIES).equipment
+                self.assertTrue(getattr(item, flag))
+                self.assertFalse(item.available)
+                self.assertFalse(usable(item, "1"))
+        # Without AutoDrive, ad_active is not applicable and does not block.
+        item, = observation_from_snapshot(parse_frame(line(snapshot(
+            [{**base, "has_autodrive": False, "ad_active": None}]))), CATEGORIES).equipment
+        self.assertFalse(item.busy)
+        self.assertTrue(item.available)
+
+    def test_unknown_attachment_is_not_empty_attachment(self):
+        observed_empty = parse_frame(line(snapshot([vehicle(12, WAGONS)])))
+        item, = observation_from_snapshot(observed_empty, CATEGORIES).equipment
+        self.assertIsNone(item.attached_to)
+        self.assertTrue(item.available)
+        unknown = parse_frame(line(snapshot([vehicle(12, WAGONS, attachment_observed=False)])))
+        item, = observation_from_snapshot(unknown, CATEGORIES).equipment
+        self.assertEqual(item.attached_to, UNKNOWN_ATTACHMENT)
+        self.assertFalse(item.available)
+        # The schema forbids attachment claims alongside an unobserved state.
+        for claim in ({"attacher_vehicle_id": 11}, {"implement_ids": [13]}):
+            with self.subTest(claim=claim):
+                with self.assertRaises(FrameError):
+                    parse_frame(line(snapshot([vehicle(12, WAGONS, attachment_observed=False, **claim)])))
+
+    def test_attachment_claims_by_other_vehicles_are_honoured(self):
+        # The wagon reports itself free, but a tractor reports it as its implement.
+        frame = parse_frame(line(snapshot([vehicle(11, TRACTORS, implement_ids=[12]),
+                                           vehicle(12, WAGONS)])))
+        items = {e.id: e for e in observation_from_snapshot(frame, CATEGORIES).equipment}
+        self.assertEqual((items["11"].attached_to, items["12"].attached_to), ("12", "11"))
+        frame = parse_frame(line(snapshot([vehicle(11, TRACTORS), vehicle(13, TRACTORS),
+                                           vehicle(12, WAGONS, attacher_vehicle_id=13)])))
+        items = {e.id: e for e in observation_from_snapshot(frame, CATEGORIES).equipment}
+        self.assertEqual((items["13"].attached_to, items["12"].attached_to), ("12", "13"))
+        self.assertIsNone(items["11"].attached_to)
+        # Conflicting claims are never resolved to a single partner.
+        frame = parse_frame(line(snapshot([vehicle(11, TRACTORS, implement_ids=[12]),
+                                           vehicle(12, WAGONS, attacher_vehicle_id=13),
+                                           vehicle(13, TRACTORS)])))
+        items = {e.id: e for e in observation_from_snapshot(frame, CATEGORIES).equipment}
+        self.assertEqual(items["12"].attached_to, MULTIPLE_ATTACHMENTS)
+
     def test_attachment_mapping_is_bidirectional_and_fails_closed(self):
         frame = parse_frame(line(snapshot([
             vehicle(11, TRACTORS, implement_ids=[12]),
@@ -162,7 +245,7 @@ class MappingTests(unittest.TestCase):
                                   "autodrive_version": None}))
         duplicate = snapshot([vehicle(11, TRACTORS), vehicle(11, WAGONS)])
         duplicate_marker = snapshot([vehicle(11, TRACTORS)], destinations=[
-            {"id": 3, "x": 0, "z": 0}, {"id": 3, "x": 1, "z": 1}])
+            {"id": 3, "name": "a", "x": 0, "z": 0}, {"id": 3, "name": "b", "x": 1, "z": 1}])
         for frame in (hello, snapshot([], truncated=True), duplicate, duplicate_marker):
             with self.subTest(frame=frame.get("event")):
                 with self.assertRaises(ObservationError):

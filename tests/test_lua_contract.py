@@ -10,7 +10,7 @@ import unittest
 
 from lupa import lua51, lua54
 
-from adapters.fs25 import ObservationError, observation_from_snapshot
+from adapters.fs25 import UNKNOWN_ATTACHMENT, ObservationError, observation_from_snapshot
 from companion.executor import Executor
 from protocol.ipc import PIPE_PATH, parse_frame
 
@@ -61,6 +61,25 @@ function stubs.vehicle(world, t)
     if t.autodrive and world.env.AutoDrive ~= nil then
         v.ad = { stateModule = { isActive = function(self) return t.adActive == true end } }
     end
+    -- Per-method behaviour: absent, returns nil, returns a non-boolean, or raises.
+    local behaviours = {
+        missing = function() return nil end,
+        returns_nil = function() return function() return nil end end,
+        returns_string = function() return function() return "true" end end,
+        raises = function() return function() error("engine error") end end,
+        returns_empty = function() return function() return {} end end,
+        returns_unknown_object = function() return function() return {} end end,
+        returns_unknown_implement = function() return function() return { { object = {} } } end end,
+    }
+    for method, behaviour in pairs(t.modes or {}) do
+        if method == "stateModule" then
+            v.ad.stateModule = nil
+        elseif method == "isActive" then
+            v.ad.stateModule.isActive = behaviours[behaviour]()
+        else
+            v[method] = behaviours[behaviour]()
+        end
+    end
     world.byId[t.id] = v
     world.env.g_currentMission.vehicleSystem.vehicles[#world.env.g_currentMission.vehicleSystem.vehicles + 1] = v
     return v
@@ -79,6 +98,7 @@ function stubs.world(options)
             return { categoryName = file }
         end },
         g_currentMission = { getFarmId = function(self) return options.farm or 1 end,
+                             missionInfo = { mapId = options.mapId or "MapUS" },
                              vehicleSystem = { vehicles = {} } },
         g_localPlayer = { getPosition = function(self) return 100, 0, 200 end },
         g_modManager = { getModByName = function(self, name) return { version = "0.1.0.0" } end },
@@ -89,7 +109,9 @@ function stubs.world(options)
         function env.AutoDrive:GetAvailableDestinations()
             if options.brokenDestinations then error("graph not loaded") end
             return { [1] = { name = "Yard", x = 101, y = 0, z = 199, id = 1 },
-                     [7] = { name = 'Field "7" \n', x = 900.5, y = 3, z = -12.25, id = 7 } }
+                     [7] = { name = 'Field "7" \n', x = 900.5, y = 3, z = -12.25, id = 7 },
+                     [8] = { name = "Hof S\195\188d", x = 5, y = 0, z = 6, id = 8 },
+                     [9] = { name = "bad \255 utf8", x = 7, y = 0, z = 8, id = 9 } }
         end
     end
     world.env = env
@@ -107,6 +129,14 @@ function stubs.standard(options)
     v { id = 16, file = "STUB_TRACTORS", joints = { "TRAILER" }, brokenImplements = true }
     v { id = 17, file = "STUB_TRACTORS", joints = { "TRAILER" }, speed = 0 / 0, entered = false, controlled = true }
     v { id = 18, file = 'BAD"CATEGORY', inputs = { "TRAILER" } }
+    v { id = 19, file = "STUB_WAGONS", x = 0 / 0, inputs = { "TRAILER" } }
+    return world
+end
+
+-- One farm-1 vehicle with the given spec, for method-behaviour matrices.
+function stubs.single(spec)
+    local world = stubs.world()
+    stubs.vehicle(world, spec)
     return world
 end
 
@@ -142,13 +172,20 @@ class LuaContractTests(unittest.TestCase):
         frame = self.snapshot(self.stubs.standard(), seq=42)
         self.assertEqual((frame["seq"], frame["farm_id"], frame["player"]),
                          (42, 1, {"x": 100, "z": 200}))
-        self.assertEqual(frame["skipped"], 1)        # vehicle 16: attachment unobservable
+        self.assertEqual(frame["skipped"], 1)        # vehicle 19: position unobservable
         self.assertFalse(frame["truncated"])
-        self.assertEqual(sorted((d["id"], d["x"], d["z"]) for d in frame["destinations"]),
-                         [(1, 101, 199), (7, 900.5, -12.25)])
+        self.assertEqual(frame["map_id"], "MapUS")
+        # Control characters or invalid UTF-8 blank a name, not the frame.
+        self.assertEqual(sorted((d["id"], d["name"], d["x"], d["z"]) for d in frame["destinations"]),
+                         [(1, "Yard", 101, 199), (7, "", 900.5, -12.25),
+                          (8, "Hof S\u00fcd", 5, 6), (9, "", 7, 8)])
         observed = observation_from_snapshot(frame, CATEGORIES)
         items = {e.id: e for e in observed.equipment}
-        self.assertEqual(sorted(items), ["11", "12", "13", "14", "17", "18"])  # farm 2 excluded
+        self.assertEqual(sorted(items), ["11", "12", "13", "14", "16", "17", "18"])  # farm 2 excluded
+        # Vehicle 16's getAttachedImplements raises: reported as unknown, never as free.
+        self.assertEqual(items["16"].attached_to, UNKNOWN_ATTACHMENT)
+        self.assertFalse(items["16"].available)
+        self.assertEqual(observed.map_id, "MapUS")
         self.assertEqual((items["11"].category, items["12"].category), ("tractor", "forage_wagon"))
         self.assertEqual(items["11"].hitches, frozenset({"TRAILER", "IMPLEMENT"}))
         self.assertEqual(items["14"].hitches, frozenset({"TRAILER", "TRAILERLOW"}))
@@ -160,6 +197,73 @@ class LuaContractTests(unittest.TestCase):
         self.assertTrue(items["17"].occupied)                   # getIsControlled()
         self.assertEqual(items["18"].category, "unknown")       # unsafe category rejected
         self.assertEqual(observed.farm_id, "1")
+
+    def vehicle_record(self, spec):
+        frame = self.snapshot(self.stubs.single(self.lua.eval(spec)))
+        record, = frame["vehicles"]
+        item, = observation_from_snapshot(frame, CATEGORIES).equipment
+        return record, item
+
+    def test_occupancy_and_ai_unknown_versus_observed(self):
+        tractor = ('{ id = 21, file = "STUB_TRACTORS", joints = { "TRAILER" }, autodrive = true,'
+                   '  entered = %s, controlled = %s, ai = %s, adActive = %s, modes = { %s } }')
+        cases = [
+            # (entered, controlled, ai, adActive, modes) -> (field, frame value)
+            (("false", "false", "false", "false", ""), {"entered": False, "ai_active": False, "ad_active": False}),
+            (("true", "false", "false", "false", ""), {"entered": True}),
+            (("false", "true", "false", "false", ""), {"entered": True}),
+            (("false", "false", "true", "false", ""), {"ai_active": True}),
+            (("false", "false", "false", "true", ""), {"ad_active": True}),
+            (("false", "false", "false", "false", "getIsEntered = 'returns_nil'"), {"entered": None}),
+            (("false", "false", "false", "false", "getIsEntered = 'returns_string'"), {"entered": None}),
+            (("false", "false", "false", "false", "getIsEntered = 'raises'"), {"entered": None}),
+            (("false", "false", "false", "false", "getIsControlled = 'returns_nil'"), {"entered": None}),
+            (("true", "false", "false", "false", "getIsControlled = 'returns_nil'"), {"entered": True}),
+            (("false", "false", "false", "false", "getIsAIActive = 'returns_nil'"), {"ai_active": None}),
+            (("false", "false", "false", "false", "getIsAIActive = 'raises'"), {"ai_active": None}),
+            (("false", "false", "false", "false", "isActive = 'returns_nil'"), {"ad_active": None, "has_autodrive": True}),
+            (("false", "false", "false", "false", "stateModule = 'missing'"), {"ad_active": None, "has_autodrive": True}),
+            # Not applicable by upstream rule (EVIDENCE.md): a missing method is false.
+            (("false", "false", "false", "false", "getIsControlled = 'missing'"), {"entered": False}),
+            (("false", "false", "false", "false", "getIsEntered = 'missing', getIsControlled = 'missing'"),
+             {"entered": False}),
+            (("false", "false", "false", "false", "getIsAIActive = 'missing'"), {"ai_active": False}),
+        ]
+        for args, expected in cases:
+            with self.subTest(args=args):
+                record, item = self.vehicle_record(tractor % args)
+                for field, value in expected.items():
+                    self.assertIs(record[field], value)
+                unknown = any(record[f] is None for f in ("entered", "ai_active", "ad_active"))
+                free = not any(record[f] for f in ("entered", "ai_active", "ad_active"))
+                self.assertEqual(item.available, not unknown)
+                self.assertEqual(not item.occupied and not item.busy, free and not unknown)
+
+    def test_attachment_unknown_versus_empty(self):
+        tractor = '{ id = 21, file = "STUB_TRACTORS", joints = { "TRAILER" }, modes = { %s } }'
+        wagon = '{ id = 22, file = "STUB_WAGONS", inputs = { "TRAILER" }, modes = { %s } }'
+        no_joints = '{ id = 23, file = "STUB_WAGONS", modes = { %s } }'
+        cases = [
+            (tractor % "", True),
+            (tractor % "getAttachedImplements = 'returns_empty'", True),
+            (wagon % "", True),                                   # getAttacherVehicle() -> nil
+            (no_joints % "", True),                               # no attachment side at all
+            (tractor % "getAttachedImplements = 'returns_nil'", False),
+            (tractor % "getAttachedImplements = 'returns_string'", False),
+            (tractor % "getAttachedImplements = 'raises'", False),
+            (tractor % "getAttachedImplements = 'returns_unknown_implement'", False),
+            (tractor % "getAttachedImplements = 'missing'", False),  # has joints, no state
+            (wagon % "getAttacherVehicle = 'raises'", False),
+            (wagon % "getAttacherVehicle = 'returns_unknown_object'", False),
+            (wagon % "getAttacherVehicle = 'missing'", False),       # has joints, no state
+        ]
+        for spec, observed in cases:
+            with self.subTest(spec=spec):
+                record, item = self.vehicle_record(spec)
+                self.assertIs(record["attachment_observed"], observed)
+                self.assertEqual((record["attacher_vehicle_id"], record["implement_ids"]), (None, []))
+                self.assertEqual(item.attached_to, None if observed else UNKNOWN_ATTACHMENT)
+                self.assertEqual(item.available, observed)
 
     def test_without_autodrive_there_are_no_destinations(self):
         world = self.stubs.standard(self.lua.table(noAutoDrive=True))

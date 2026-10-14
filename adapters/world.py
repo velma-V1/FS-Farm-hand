@@ -19,6 +19,10 @@ class World(Protocol):
         """Return fresh routable delivery destinations (AutoDrive map markers)."""
         ...
 
+    def map_id(self) -> str | None:
+        """Return the loaded map's identity (missionInfo.mapId), or None if unknown."""
+        ...
+
     def reserve(self, ids: tuple[str, str], owner: str) -> bool:
         """Atomically bind a fresh owner to this pair and farm, or change nothing."""
         ...

@@ -34,13 +34,36 @@ because nothing of FH is reproduced, but FH is credited here for the IPC design.
 | Category | PROVEN call / UNVERIFIED names | FH `Collectors.lua:97-106` `g_storeManager:getItemByXMLFilename(v.configFileName).categoryName`, noted there as the only reliable class signal (`typeName` calls wheel loaders "tractor") | category map → `tractor` / `forage_wagon`; **no store category names are proven**, so the map ships empty |
 | Position | PROVEN | FH `Collectors.lua:465` `getWorldTranslation(v.rootNode)` | `Equipment.position` (x, z) |
 | Player position | PROVEN | FH `Collectors.lua:592-598` `g_localPlayer:getPosition()` else `getWorldTranslation(p.rootNode)` | requester position |
-| Occupied | PROVEN (SP) | AD `scripts/Utils/AutoDriveUtilFuncs.lua:770-782` `getIsEntered() or getIsControlled()`; AD notes this differs on dedicated servers | `Equipment.occupied` |
+| Occupied | PROVEN (SP) | AD `scripts/Utils/AutoDriveUtilFuncs.lua:770-786` `getIsEntered() or getIsControlled()`; AD notes this differs on dedicated servers | `Equipment.occupied` |
 | Busy (any AI) | PROVEN | FH `Collectors.lua:412` `getIsAIActive()`; AD overrides it to include AutoDrive driving, `Specialization.lua:1794-1800` | `Equipment.busy` |
 | AutoDrive present / active | PROVEN | AD `ExternalInterface.lua:116` `vehicle.ad`, `scripts/Modules/StateModule.lua:677` `isActive()` | `has_autodrive`, `ad_active` → busy |
-| Attached implements | PROVEN | FH `Collectors.lua:269-274` `getAttachedImplements()` → `imp.object`; AD `Specialization.lua:1795` `getAttacherVehicle()` | `Equipment.attached_to` (both ends; >1 link → `*multiple*`) |
+| Attached implements | PROVEN | FH `Collectors.lua:269-274` `getAttachedImplements()` → `imp.object`; AD `Specialization.lua:1795` `getAttacherVehicle()` | `Equipment.attached_to`; claims by either end are merged; >1 link → `*multiple*`; unobserved → `*unknown*` |
+| Map identity | PROVEN | CP `scripts/field/CustomFieldManager.lua:284` keys per-map field data on `g_currentMission.missionInfo.mapId` | snapshot `map_id` → `World.map_id()` |
 | Moving / stopped | PROVEN call / UNVERIFIED threshold | FH `Collectors.lua:204`, AD `DrivePathModule.lua:222` `getLastSpeed()` (km/h); AD treats `lastSpeedReal*3600 < 1` as not moving, `TrailerModule.lua:502` | `stopped` = \|speed\| < 1 km/h |
 | Hitch joint types | PROVEN data / UNVERIFIED rule | CP `ai/controllers/AttacherJointController.lua:11-12` `getAttacherJoints()[i].jointType`; CP `AttachableController.lua:13` `getInputAttacherJoints()`; names via `AttacherJoints.JOINTTYPE_*`, AD `AutoDriveUtilFuncs.lua:953-955` | `Equipment.hitches`; compatible if any type is shared. The game's real attach rule is inside closed GIANTS code; `isAttachAllowed` remains the action-time authority |
-| AutoDrive destinations | PROVEN | AD `scripts/ExternalInterface.lua:84-94` `AutoDrive:GetAvailableDestinations()` → `{name,x,y,z,id}` keyed by marker ID | `Destination` |
+| AutoDrive destinations | PROVEN | AD `scripts/ExternalInterface.lua:84-94` `AutoDrive:GetAvailableDestinations()` → `{name,x,y,z,id}` keyed by marker ID | `Destination(id, position, name)` |
+| Marker ID stability | PROVEN negative | IDs are array indices (`Manager/GraphManager.lua:365-371`) and are renumbered when a marker is deleted (`:496-499`) | A marker ID is valid only for a live selection; stored config refers to marker **names** |
+| Field → marker association | **GAP** | AD markers hold only `name` and a UI `group` (`GraphManager.lua:371`); AD field IDs (`Utils/FieldPointGenerator.lua:40-50`) are not linked to markers | Field targets resolve only via trusted local `field_entrances[map_id][field] = marker name`; no nearest-marker guess |
+
+### Unknown versus not applicable
+
+The mod reports a boolean only when the method exists and returns a real
+boolean. A method that exists but errors or returns anything else is **unknown**
+(JSON `null`). A **missing** method means "not applicable" only where upstream code
+treats it the same way:
+
+| Missing method | Treated as | Upstream rule |
+| --- | --- | --- |
+| `getIsEntered` | not entered | AD `AutoDriveUtilFuncs.lua:777,785` falls through to `return user ~= nil` (false) |
+| `getIsControlled` | `getIsEntered` alone decides | AD `AutoDriveUtilFuncs.lua:778-782` |
+| `getIsAIActive` | not AI-active | AD `Manager/HarvestManager.lua:104`; FH `Collectors.lua:457` |
+| `getAttacherVehicle` / `getAttachedImplements` | no attachment on that side, **only if** the vehicle also lacks input / attacher joints | AD `Specialization.lua:1795`; FH `Commands.lua:340`. The joint condition is our own conservative addition |
+| `vehicle.ad` | no AutoDrive | AD `ExternalInterface.lua:116`. Once `vehicle.ad` exists, an unreadable `stateModule` is unknown |
+
+The Python mapping (`adapters/fs25.py`) turns unknown into `available=False`, and
+also into `occupied=True`, `busy=True` or `attached_to="*unknown*"`, so no single
+check can read it as free. Whether these upstream rules hold for every vehicle type
+on the user's install is UNVERIFIED.
 | Version detection | PROVEN | AD `scripts/AutoDrive.lua:2` `AutoDrive.version`; AD `register.lua:153` `g_modManager:getModByName(g_currentModName).version` | `hello` frame |
 | Tractor power, implement power need, PTO need | **GAP** | Not read by any inspected source | mapped as 0 kW / PTO required → never compatible |
 
@@ -49,7 +72,7 @@ because nothing of FH is reproduced, but FH is credited here for the IPC design.
 | Step | State | Evidence and conclusion |
 | --- | --- | --- |
 | DELIVER: long-range travel | PROVEN API, UNVERIFIED use | AD `ExternalInterface.lua:114-161` `AutoDrive:StartDriving(vehicle, destinationID, unloadDestinationID, …)`. It routes **only to map-marker IDs**. It does nothing unless `unloadDestinationID` is a valid marker; it starts the vehicle's *current* mode, so `vehicle.ad.stateModule:setMode(AutoDrive.MODE_DRIVETO)` (`StateModule.lua:664`, `AutoDrive.lua:23`) must precede it; it is ignored if AD is already active and returns nothing. Intended call: `setMode(MODE_DRIVETO)` then `StartDriving(v, marker, marker)`. Not executed anywhere yet. |
-| "Here" geometry | PROVEN constraint | No ExternalInterface function accepts coordinates. The executor therefore resolves "here" to the nearest AD marker within 50 m (provisional) of the captured requester position, and verifies arrival at that marker. |
+| Destination geometry | PROVEN constraint | No ExternalInterface function accepts coordinates, so arbitrary points or map clicks stay unsupported. Targets: "here" = nearest AD marker within 50 m (provisional) of the captured requester position; an explicit marker by live ID or exact (normalized) name; a field via the local map-specific entrance table. All resolve before reservation; arrival is verified at the resolved marker. |
 | Completion signal | PROVEN negative | The `callBackFunction` stored at `ExternalInterface.lua:117-119` is never invoked anywhere in AD source. DriveTo ends via `StopAndDisableADTask` → `stopAutoDrive()` (`DriveToMode.lua:42`, `StopAndDisableADTask.lua:22`), **and** a pathfinding failure also calls `stopAutoDrive()` (`DriveToDestinationTask.lua:35-37`). "AD inactive" therefore cannot distinguish arrival from failure: arrival must be observed by position and speed, which the executor already does. |
 | Route availability pre-check | UNVERIFIED | `AutoDrive:GetPath` (`ExternalInterface.lua:7-34`) returns a path to a marker only if a waypoint lies 1–20 m from the start in a matching heading; its fallback `GetClosestPointToLocation` only searches when the graph is empty (`:99`), so it never helps. Vehicles >30 m off-network are routed by AD's async pathfinder at drive time (`DriveToDestinationTask.lua:18-21`), with no pre-check. Not implemented. |
 | Stop / cancel | PROVEN API, UNVERIFIED use | `vehicle:stopAutoDrive()` registered at AD `Specialization.lua:70`, defined at `:1186`; **server only** (`:1290`). Stop must still be confirmed by observed speed. |
@@ -71,7 +94,7 @@ engine XML API (`XMLFile.loadIfExists`), and files live under
   `\\.\pipe\fs_farmhand_ac001` (not FH's name: one server per name). The mod writes
   newline-delimited JSON (`hello`, `snapshot`) per `protocol/frame.schema.json`.
   `protocol/ipc.py` decodes untrusted frames (bounded lines, no NaN, no duplicate
-  keys, strict schema). Hosting the pipe is Windows-only and not implemented.
+  keys, nesting deep enough to exhaust the decoder → `TOO_DEEP`, strict schema). Hosting the pipe is Windows-only and not implemented.
 - **Companion → game (design only):** an atomically renamed XML command file in
   `modSettings/<mod>/`, with a monotonically increasing ID, deleted by the mod after
   reading; deletion acknowledges receipt only. Plus a session-ID file so the mod
@@ -95,3 +118,5 @@ engine XML API (`XMLFile.loadIfExists`), and files live under
    will be built. Options for the user: manual pre-positioning, or a proven mod later.
 5. Unattended attach of a drawbar wagon via the CP-proven API after alignment.
 6. AD arrival accuracy at a marker versus the 3 m / 15 m tolerances.
+7. The upstream missing-method rules above, and `missionInfo.mapId` values, on the
+   user's install; plus the marker names the user wants in `field_entrances`.

@@ -413,3 +413,162 @@ class AcceptanceTests(unittest.TestCase):
                                    replace(wagon, hitches=frozenset(wagon_hitches))],
                                   PLAYERS, DESTINATIONS)
                 self.assertEqual(Executor(world).execute(intent()).status, expected)
+
+
+# ------------------------------------------------------------ explicit destinations
+MARKERS = (Destination("1", (100, 200), "Home Yard"),
+           Destination("7", (640, -120), "Field 12 gate"),
+           Destination("9", (900, 900), "Silo"),
+           Destination("10", (300, 300), "Dup"),
+           Destination("11", (310, 310), "dup"),
+           Destination("12", (float("nan"), 5), "Broken"))
+FIELD_ENTRANCES = {"MapUS": {12: "Field 12 gate", 3: "Dup", 4: "Nowhere", 5: "Broken"}}
+
+
+def explicit_world(markers=MARKERS, map_id="MapUS"):
+    base = simple_world()
+    return MockWorld(base.snapshot(), PLAYERS, markers, map_id=map_id)
+
+
+def target_intent(target, request_id="request-001"):
+    return {**intent(request_id), "target": target}
+
+
+class ExplicitDestinationTests(unittest.TestCase):
+    def run_target(self, target, world=None, field_entrances=FIELD_ENTRANCES):
+        world = world or explicit_world()
+        before = world.snapshot()
+        result = Executor(world, field_entrances=field_entrances).execute(target_intent(target))
+        return world, before, result
+
+    def assert_delivered_to(self, world, result, position):
+        self.assertEqual(result.status, "COMPLETE", result)
+        tractor, wagon = (world.items[x] for x in result.equipment_ids)
+        self.assertEqual((tractor.position, wagon.position), (position, position))
+        self.assertEqual((tractor.attached_to, wagon.attached_to), (wagon.id, tractor.id))
+
+    def test_explicit_marker_by_id_and_by_name(self):
+        for target in ({"type": "autodrive_marker", "marker_id": "9"},
+                       {"type": "autodrive_marker", "marker_name": "Silo"},
+                       {"type": "autodrive_marker", "marker_name": "  silo "}):
+            with self.subTest(target=target):
+                world, _, result = self.run_target(target)
+                # Far from the requester: explicit selection is not limited to 50 m.
+                self.assert_delivered_to(world, result, (900, 900))
+
+    def test_field_resolves_through_explicit_map_entry(self):
+        world, _, result = self.run_target({"type": "field_entrance", "field": 12})
+        self.assert_delivered_to(world, result, (640, -120))
+
+    def test_unresolvable_targets_block_before_reservation(self):
+        cases = [
+            ({"type": "autodrive_marker", "marker_id": "404"}, None, "DESTINATION_NOT_FOUND"),
+            ({"type": "autodrive_marker", "marker_name": "Sil"}, None, "DESTINATION_NOT_FOUND"),
+            ({"type": "autodrive_marker", "marker_name": "Home Yard 2"}, None, "DESTINATION_NOT_FOUND"),
+            ({"type": "autodrive_marker", "marker_name": "DUP"}, None, "DESTINATION_AMBIGUOUS"),
+            ({"type": "autodrive_marker", "marker_name": "Broken"}, None, "DESTINATION_INVALID"),
+            ({"type": "autodrive_marker", "marker_id": "12"}, None, "DESTINATION_INVALID"),
+            ({"type": "field_entrance", "field": 99}, None, "FIELD_NOT_MAPPED"),
+            ({"type": "field_entrance", "field": 3}, None, "DESTINATION_AMBIGUOUS"),
+            ({"type": "field_entrance", "field": 4}, None, "DESTINATION_NOT_FOUND"),
+            ({"type": "field_entrance", "field": 5}, None, "DESTINATION_INVALID"),
+            # Field numbers are per map: another or unknown map never resolves.
+            ({"type": "field_entrance", "field": 12}, explicit_world(map_id="OtherMap"), "FIELD_NOT_MAPPED"),
+            ({"type": "field_entrance", "field": 12}, explicit_world(map_id=None), "MAP_UNKNOWN"),
+            ({"type": "field_entrance", "field": 12}, explicit_world(map_id=""), "MAP_UNKNOWN"),
+            ({"type": "field_entrance", "field": 12}, explicit_world(map_id=["MapUS"]), "MAP_UNKNOWN"),
+        ]
+        for target, world, reason in cases:
+            with self.subTest(target=target, reason=reason):
+                world, before, result = self.run_target(target, world)
+                self.assertEqual((result.status, result.reason), ("BLOCKED", reason))
+                self.assertEqual(result.equipment_ids, ())
+                self.assertNotIn("RESERVE", result.states)
+                self.assertEqual(world.snapshot(), before)
+        # A field target without any configured mapping is unresolved, not guessed.
+        world, before, result = self.run_target({"type": "field_entrance", "field": 12},
+                                                field_entrances=None)
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "FIELD_NOT_MAPPED"))
+        self.assertEqual(world.snapshot(), before)
+
+    def test_no_nearby_substitution_for_explicit_targets(self):
+        # A marker at the requester exists, but a missing explicit marker must not
+        # fall back to it, nor to the nearest marker of a similar name.
+        world, before, result = self.run_target(
+            {"type": "autodrive_marker", "marker_name": "Home"})
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "DESTINATION_NOT_FOUND"))
+        self.assertEqual(world.snapshot(), before)
+
+    def test_explicit_target_does_not_need_requester_position(self):
+        world = explicit_world()
+        world.players["farm-a"] = None
+        result = Executor(world).execute(target_intent({"type": "autodrive_marker", "marker_id": "9"}))
+        self.assert_delivered_to(world, result, (900, 900))
+
+    def test_arrival_is_verified_at_the_resolved_destination(self):
+        class WrongMarkerWorld(FaultWorld):
+            def deliver(self, tractor_id, destination_id, owner):
+                # Drives somewhere else (the requester's marker) and reports success.
+                return super().deliver(tractor_id, "1", owner)
+
+        world = WrongMarkerWorld(None)
+        world.destination_map.update({d.id: d for d in MARKERS})
+        world.current_map_id = "MapUS"
+        result = Executor(world, field_entrances=FIELD_ENTRANCES).execute(
+            target_intent({"type": "field_entrance", "field": 12}))
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "DELIVERY_NOT_OBSERVED"))
+
+    def test_field_travel_performs_only_delivery_steps(self):
+        calls = []
+
+        class RecordingWorld(MockWorld):
+            def __getattribute__(self, name):
+                if name in ("reserve", "approach", "attach", "deliver", "stop", "release"):
+                    calls.append(name)
+                return super().__getattribute__(name)
+
+        base = explicit_world()
+        world = RecordingWorld(base.snapshot(), PLAYERS, MARKERS, map_id="MapUS")
+        result = Executor(world, field_entrances=FIELD_ENTRANCES).execute(
+            target_intent({"type": "field_entrance", "field": 12}))
+        self.assertEqual(result.status, "COMPLETE")
+        self.assertEqual(calls, ["reserve", "approach", "attach", "deliver", "stop", "release"])
+
+    def test_schema_rejects_work_coordinates_and_mixed_selectors(self):
+        for target in ({"type": "field_entrance", "field": 12, "operation": "harvest"},
+                       {"type": "field_work", "field": 12},
+                       {"type": "point", "x": 10, "z": 20},
+                       {"type": "autodrive_marker", "marker_id": "9", "marker_name": "Silo"},
+                       {"type": "autodrive_marker"},
+                       {"type": "autodrive_marker", "marker_name": ""},
+                       {"type": "autodrive_marker", "marker_name": "Silo\n"},
+                       {"type": "autodrive_marker", "marker_id": "../9"},
+                       {"type": "field_entrance", "field": 0},
+                       {"type": "field_entrance", "field": True},
+                       {"type": "field_entrance", "field": 12.5},
+                       {"type": "field_entrance", "field": "12"}):
+            with self.subTest(target=target):
+                world, before, result = self.run_target(target)
+                self.assertEqual((result.status, result.reason), ("BLOCKED", "INVALID_INTENT"))
+                self.assertEqual(world.snapshot(), before)
+        work = {**target_intent({"type": "field_entrance", "field": 12}), "task": "work_field"}
+        self.assertEqual(Executor(explicit_world()).execute(work).reason, "INVALID_INTENT")
+
+    def test_replay_is_detached_from_caller_target(self):
+        world = explicit_world()
+        executor = Executor(world)
+        command = target_intent({"type": "autodrive_marker", "marker_id": "9"})
+        first = executor.execute(command)
+        self.assertEqual(first.status, "COMPLETE")
+        command["target"]["marker_id"] = "1"
+        self.assertEqual(executor.execute(command).reason, "REQUEST_ID_CONFLICT")
+        self.assertEqual(executor.execute(target_intent({"type": "autodrive_marker", "marker_id": "9"})),
+                         first)
+
+    def test_field_entrance_config_is_validated(self):
+        for config in ({"": {12: "Gate"}}, {"MapUS": {0: "Gate"}}, {"MapUS": {True: "Gate"}},
+                       {"MapUS": {"12": "Gate"}}, {"MapUS": {12: ""}}, {"MapUS": {12: 7}},
+                       {"MapUS": [12]}):
+            with self.subTest(config=config):
+                with self.assertRaises(ValueError):
+                    Executor(explicit_world(), field_entrances=config)

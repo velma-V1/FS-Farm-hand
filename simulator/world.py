@@ -7,7 +7,7 @@ from protocol.model import Destination, Equipment
 
 
 class MockWorld:
-    def __init__(self, equipment, players, destinations=()):
+    def __init__(self, equipment, players, destinations=(), map_id=None):
         equipment, destinations = tuple(equipment), tuple(destinations)
         self.items: dict[str, Equipment] = {item.id: item for item in equipment}
         if len(self.items) != len(equipment):
@@ -16,6 +16,7 @@ class MockWorld:
         if len(self.destination_map) != len(destinations):
             raise ValueError("Duplicate destination IDs")
         self.players = dict(players)
+        self.current_map_id = map_id
         self._lock = RLock()
         self._reservations: dict[str, tuple[str, tuple[str, str]]] = {}
 
@@ -30,6 +31,10 @@ class MockWorld:
     def destinations(self):
         with self._lock:
             return tuple(self.destination_map.values())
+
+    def map_id(self):
+        with self._lock:
+            return self.current_map_id
 
     def reserve(self, ids, owner):
         with self._lock:

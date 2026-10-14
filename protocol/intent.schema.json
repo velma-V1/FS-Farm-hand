@@ -35,7 +35,72 @@
       }
     },
     "target": {
-      "const": "player_at_acceptance"
+      "oneOf": [
+        {
+          "const": "player_at_acceptance"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "marker_id"
+          ],
+          "properties": {
+            "type": {
+              "const": "autodrive_marker"
+            },
+            "marker_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "not": {
+                "pattern": "[^A-Za-z0-9_-]"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "marker_name"
+          ],
+          "properties": {
+            "type": {
+              "const": "autodrive_marker"
+            },
+            "marker_name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "not": {
+                "pattern": "[\\u0000-\\u001f\\u007f]"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "field"
+          ],
+          "properties": {
+            "type": {
+              "const": "field_entrance"
+            },
+            "field": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9999
+            }
+          }
+        }
+      ]
     }
-  }
+  },
+  "description": "Deliver a tractor and forage wagon to a destination. Every target is travel only; no target starts fieldwork. Arbitrary coordinates are unsupported."
 }

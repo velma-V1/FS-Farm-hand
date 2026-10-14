@@ -44,11 +44,19 @@ def parse_frame(raw: bytes) -> dict:
     """Decode and validate one line. Raises FrameError; never returns partial data."""
     try:
         text = raw.decode("utf-8").rstrip("\r\n")
+    except UnicodeDecodeError:
+        raise FrameError("MALFORMED") from None
+    try:
         frame = json.loads(text, parse_constant=_reject_constant, object_pairs_hook=_unique_keys)
     except FrameError:
         raise
-    except (UnicodeDecodeError, ValueError):
+    except ValueError:
         raise FrameError("MALFORMED") from None
+    except RecursionError:
+        # The json decoder recurses per nesting level, so a deep line far below
+        # MAX_LINE_BYTES exhausts the interpreter's budget. Only this call is
+        # guarded; the recursion limit itself is left unchanged.
+        raise FrameError("TOO_DEEP") from None
     if not VALIDATOR.is_valid(frame):
         raise FrameError("SCHEMA_VIOLATION")
     return frame
