@@ -25,6 +25,11 @@ Executable mapping (`python scripts/check.py`):
 - `test_no_pair`, `test_pair_search`: no suitable pair blocks without movement;
   search considers alternative tractors and wagons.
 - `test_atomic_contention`: only one of simultaneous requests owns a pair.
+- `test_action_time_farm_change_prevents_movement` and
+  `test_action_time_compatibility_change_prevents_delivery`: changes between a
+  snapshot and the physical call are rejected before world positions mutate.
+- `test_active_owner_collision_preserves_unselected_equipment` and
+  `test_stop_without_owner_is_rejected`: cleanup cannot claim unrelated assets.
 - `test_changed_after_reservation`: fresh eligibility prevents stale selection use.
 - `test_physical_failures`: approach/attach/delivery errors and timeouts stop and
   fail; no fabricated success.

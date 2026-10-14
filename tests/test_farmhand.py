@@ -284,3 +284,50 @@ class AcceptanceTests(unittest.TestCase):
             snapshot[0].busy = True
         with self.assertRaises(ValueError):
             MockWorld([snapshot[0], snapshot[0]], world.players)
+
+    def test_action_time_farm_change_prevents_movement(self):
+        class FarmChangeWorld(FaultWorld):
+            def move(self, tractor_id, target, owner):
+                self.items[tractor_id] = replace(self.items[tractor_id], farm_id="other-farm")
+                return super().move(tractor_id, target, owner)
+
+        world = FarmChangeWorld(None)
+        positions = {x.id: x.position for x in world.snapshot()}
+        result = Executor(world).execute(intent())
+        self.assertNotEqual(result.status, "COMPLETE")
+        self.assertEqual({x.id: x.position for x in world.snapshot()}, positions)
+
+    def test_active_owner_collision_preserves_unselected_equipment(self):
+        world = simple_world()
+        tractor = world.snapshot()[0]
+        foreign = replace(tractor, id="foreign", farm_id="other-farm", stopped=False,
+                          reserved_by=intent()["request_id"])
+        world.items[foreign.id] = foreign
+        before = world.snapshot()
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertEqual(world.snapshot(), before)
+
+    def test_action_time_compatibility_change_prevents_delivery(self):
+        for change in ({"power_kw": 1}, {"hitch": "wrong"},
+                       {"capabilities": frozenset({"move", "attach", "stop"})}):
+            with self.subTest(change=change):
+                class CompatibilityChangeWorld(FaultWorld):
+                    def move(self, tractor_id, target, owner):
+                        if self.moves == 1:
+                            self.items[tractor_id] = replace(self.items[tractor_id], **change)
+                        return super().move(tractor_id, target, owner)
+
+                world = CompatibilityChangeWorld(None)
+                wagon_position = world.snapshot()[1].position
+                result = Executor(world).execute(intent())
+                self.assertNotEqual(result.status, "COMPLETE")
+                self.assertTrue(all(x.position == wagon_position for x in world.snapshot()))
+
+    def test_stop_without_owner_is_rejected(self):
+        world = simple_world()
+        tractor = world.snapshot()[0]
+        world.items[tractor.id] = replace(tractor, stopped=False)
+        before = world.snapshot()
+        self.assertFalse(world.stop(tractor.id, None))
+        self.assertEqual(world.snapshot(), before)

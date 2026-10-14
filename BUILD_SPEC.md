@@ -42,6 +42,9 @@ Only the adapter can mutate world state. It must recheck authority and physical
 preconditions atomically at the point of action. Production adapters must provide
 bounded operations and fresh authoritative snapshots; acknowledgements are not
 completion evidence. The in-process mock enforces this with a lock and snapshots.
+Reservations bind an unused owner ID to the exact equipment pair and its farm.
+The mock rechecks this binding and compatibility atomically before movement;
+stop/release cannot sweep unrelated equipment sharing a request ID.
 The synchronous executor cannot preempt a hung adapter: timeout injection tests
 error handling, not a working production watchdog.
 
