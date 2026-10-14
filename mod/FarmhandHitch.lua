@@ -315,7 +315,7 @@ end
 -- AttacherJointController.lua:79) and the wagon names the tractor. Otherwise
 -- ATTACH_IN_PROGRESS, ATTACH_ABSENT, ATTACH_MISMATCH, ATTACH_TIMEOUT or
 -- UNKNOWN_OBSERVATION. The executor still verifies from a fresh snapshot.
-function Hitch.attachState(env, s, dt)
+function Hitch.attachState(_env, s, dt)
     if not s.attachRequested then return "ATTACH_ABSENT" end
     s.attachElapsed = (s.attachElapsed or 0) + dt
     local ok, code = pcall(function()
