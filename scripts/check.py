@@ -21,5 +21,6 @@ if __name__ == "__main__":
         compile_lua = lua.eval("function(source, name) assert((loadstring or load)(source, name)) end")
         for path in sorted((ROOT / "mod").rglob("*.lua")):
             compile_lua(path.read_text(), str(path.relative_to(ROOT)))
+    run(sys.executable, "scripts/package_probe.py", "--check-source")
     run("git", "diff", "--check", "HEAD")
-    print("All CI checks passed (Python, schema, Lua, whitespace).", flush=True)
+    print("All CI checks passed (Python, schema, Lua, package layout, whitespace).", flush=True)
