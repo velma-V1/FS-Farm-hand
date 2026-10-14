@@ -1,8 +1,10 @@
 name: Dependency review
 
+# The official dependency-review action requires GitHub's repository Dependency
+# Graph. It is currently disabled for this repository, so keep this ready as a
+# manual gate rather than making every push fail for a platform setting. Enable
+# Dependency Graph in repository security settings, then dispatch this workflow.
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -17,11 +19,11 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-      - name: Review dependency changes
+      - name: Review dependency changes against main
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: moderate
           fail-on-scopes: runtime, development, unknown
           show-patched-versions: true
-          base-ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || 'main' }}
-          head-ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          base-ref: main
+          head-ref: ${{ github.sha }}
