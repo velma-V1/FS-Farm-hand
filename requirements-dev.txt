@@ -1,2 +1,2 @@
 -r requirements.txt
-lupa==2.6
+lupa==2.8
