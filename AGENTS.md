@@ -42,7 +42,7 @@ have precedence; report conflicts instead of silently changing the scope.
 - Keep unfinished project work off the user's PC until a genuine live FS25 test is
   required. GitHub and remote CI may be used for source control, development,
   review, static checks, mock tests, and release packaging before that point.
-- This remote development workflow does NOT make the product cloud-based.
+- This remote development workflow does NOT change the local runtime architecture.
 - The finished farmhand must be able to run locally beside FS25 without GitHub or a
   hosted service being required for ordinary operation.
 - Live FS25 behavior, Windows service behavior, local IPC, local model execution,

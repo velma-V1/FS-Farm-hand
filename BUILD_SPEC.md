@@ -23,7 +23,7 @@ The intended finished runtime is local:
 
 The repository may remain remote during development so unfinished code does not
 need to be installed on the user's PC before live game testing is justified. That
-is a development workflow constraint, not a cloud-runtime architecture.
+is a development workflow constraint, not a runtime architecture decision.
 
 ## Strict scope
 One task: **“Go grab an available tractor and forage wagon, hook them together,
