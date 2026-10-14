@@ -6,7 +6,7 @@ upstream data is unproven, the mapping fails closed (ineligible equipment).
 """
 from dataclasses import dataclass
 
-from protocol.model import Destination, Equipment, Position
+from protocol.model import Destination, Equipment, InputJoint, OutputJoint, Pose, Position
 
 # AutoDrive treats ``lastSpeedReal * 3600 < 1`` (km/h) as not moving
 # (scripts/Modules/TrailerModule.lua:502); getLastSpeed() reports km/h. Whether
@@ -79,8 +79,8 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
         power_kw=0,
         required_power_kw=0,
         requires_pto=True,
-        # Only stopAutoDrive() is a proven control; approach is a GAP and
-        # unattended attach is UNVERIFIED, so "move"/"attach" are not granted.
+        # Only stopAutoDrive() is granted: no companion -> game command channel
+        # exists yet and the HITCH composition is UNVERIFIED in FS25.
         capabilities=frozenset({"stop"}) if has_autodrive else frozenset(),
         available=observed,
         busy=(vehicle["ai_active"] is not False
@@ -89,6 +89,12 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
         # Reservations are owned by the companion, never by game state.
         reserved_by=None,
         attached_to=_attached_to(vehicle, set(links)),
+        heading=vehicle["heading"],
+        ai_root=None if vehicle["ai_root"] is None else Pose(**vehicle["ai_root"]),
+        output_joints=tuple(OutputJoint(j["index"], j["type"], j["x"], j["z"], j["free"])
+                            for j in vehicle["output_joints"]),
+        input_joints=tuple(InputJoint(j["index"], j["type"], (j["x"], j["z"]), j["active"])
+                           for j in vehicle["input_joint_poses"]),
         stopped=speed is not None and abs(speed) < STOPPED_BELOW_KMH,
     )
 

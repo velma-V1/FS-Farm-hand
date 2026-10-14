@@ -66,10 +66,17 @@ a lexical tie-break provides repeatability but carries no equipment semantics.
 | simulator/ | Synthetic inventory, atomic reservations, simplified movement/coupling | Mock only |
 | tests/ | Executable acceptance, negative, schema and Lua checks | CI runnable |
 
-FIND resolves “here” to a destination and selects an eligible pair. RESERVE
-atomically owns both or neither. MOVE asks the adapter to bring the tractor to the
-reserved wagon (approach and alignment). ATTACH requests coupling. VERIFY reads
-fresh attachment state before DELIVER requests transport to the chosen destination. Final observation verifies attachment, both positions, and stopped state.
+FIND resolves the destination and selects an eligible pair with a hitch plan
+(companion/hitch.py) and, if the tractor is far, an AutoDrive marker near the
+staging pose. RESERVE atomically owns both or neither. MOVE is HITCH: VALIDATE (fresh
+reserved, unattached, stopped pair; wagon unmoved; same planned joints) before and
+after every step → TRAVEL_NEAR (AutoDrive, only when far) → STAGE (GIANTS AIJobGoTo
+to a pose a few metres ahead of the final hitch pose, facing the wagon's heading) →
+ALIGN_REVERSE (bounded reverse; stops when GIANTS reports the exact planned joints
+as the attach candidate). ATTACH uses GIANTS' normal attachment after re-checking
+that candidate and isAttachAllowed. VERIFY reads fresh attachment state and a
+stopped tractor before DELIVER requests transport to the chosen destination. One
+deterministic attempt: no retries, re-angling or alternate hitch search. Final observation verifies attachment, both positions, and stopped state.
 Each physical step rechecks reservation and equipment eligibility. Failures do not
 advance the task. No automatic retry or fallback to custom driving.
 
@@ -127,16 +134,27 @@ integration exists yet. The first PC installation should occur only when a real
 FS25 integration test is necessary.
 
 The upstream feasibility probe is recorded in adapters/EVIDENCE.md. Result: read-only
-observation, AutoDrive marker delivery and stop, and the game's in-range attach
-mechanism are backed by upstream source; tractor/implement power and PTO data and
-any proven approach-and-alignment to a wagon hitch are GAPs. Real snapshots
-therefore map to ineligible equipment until those are resolved. The local IPC is
-a companion-hosted Windows named pipe (game → companion, protocol v1, implemented
-as a decoder) plus a polled XML command file (companion → game, design only).
-Do not build a navigation replacement to close the approach GAP.
+observation, AutoDrive marker delivery and stop, and every HITCH primitive (joint
+geometry, GIANTS GOTO navigation, driveToPoint reversing, attach-range detection,
+normal attachment, attachment observation) are backed by GIANTS/upstream source.
+Their composition on a real tractor and forage wagon is UNVERIFIED until an FS25
+test; tractor/implement power and PTO data remain GAPs, so real snapshots still map
+to ineligible equipment. The local IPC is a companion-hosted Windows named pipe
+(game → companion, protocol v1, implemented as a decoder) plus a polled XML command
+file (companion → game, design only). Do not build navigation beyond ALIGN_REVERSE.
 
-The next step needs the user's PC: load a minimal mod that writes `hello` and
-`snapshot` frames, and compare them with the live game (see EVIDENCE.md).
+The first FS25 test should prove only the HITCH composition, by hand-triggered
+console calls on one owned tractor and one forage wagon, with nothing else enabled:
+1. log the tractor's `output_joints` and AI root and the wagon's `input_joint_poses`
+   and heading from `FarmhandObserve`;
+2. compute the plan (companion/hitch.py) and compare the final/staging poses with
+   where the tractor visibly needs to be;
+3. `Hitch.startStaging` to the staging pose; record the observed AI-root pose;
+4. run `Hitch.alignStep` each frame until it stops; record the result code;
+5. confirm GIANTS named exactly the planned pair (`CANDIDATE`);
+6. `Hitch.attach`, then poll `Hitch.attachState` until `ATTACHED`;
+7. independently confirm both ends of the attachment in a fresh snapshot.
+Tune `STAGING_DISTANCE_M` and the reverse limits from what this shows.
 
 Before claiming production usability, an actual FS25 runtime on the user's PC must
 prove mod load, current game/mod versions, ownership enforcement, equipment detection,

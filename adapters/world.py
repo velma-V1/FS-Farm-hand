@@ -3,7 +3,7 @@
 See adapters/EVIDENCE.md for which upstream capability backs each operation.
 """
 from typing import Protocol
-from protocol.model import Destination, Equipment, Position
+from protocol.model import Destination, Equipment, HitchPlan, Pose, Position
 
 
 class World(Protocol):
@@ -27,14 +27,26 @@ class World(Protocol):
         """Atomically bind a fresh owner to this pair and farm, or change nothing."""
         ...
 
-    def approach(self, tractor_id: str, wagon_id: str, owner: str) -> None:
-        """Recheck authority/compatibility; bring the tractor hitch to the wagon.
+    # HITCH steps. Each rechecks authority, reservation and compatibility at action
+    # time, is bounded, and its normal return is never evidence: the executor
+    # verifies every step from a fresh snapshot. Sources: adapters/EVIDENCE.md.
 
-        No proven upstream provider exists (GAP); a real adapter must refuse."""
+    def travel(self, tractor_id: str, destination_id: str, owner: str) -> None:
+        """TRAVEL_NEAR: AutoDrive marker travel of the reserved, unattached tractor."""
         ...
 
-    def attach(self, tractor_id: str, wagon_id: str, owner: str) -> None:
-        """Delegate bounded coupling; a normal return is not attachment evidence."""
+    def stage(self, tractor_id: str, wagon_id: str, pose: Pose, owner: str) -> None:
+        """STAGE: GIANTS AIJobGoTo of the tractor's AI root to ``pose``."""
+        ...
+
+    def align(self, tractor_id: str, wagon_id: str, plan: HitchPlan, owner: str) -> None:
+        """ALIGN_REVERSE: bounded reverse (mod/FarmhandHitch.lua) that stops as soon
+        as GIANTS reports exactly the planned joints as the attach candidate."""
+        ...
+
+    def attach(self, tractor_id: str, wagon_id: str, joints: tuple[int, int], owner: str) -> None:
+        """ATTACH: re-check GIANTS' candidate is exactly (tractor joint, wagon joint),
+        ask isAttachAllowed, then attachImplementFromInfo. Not attachment evidence."""
         ...
 
     def deliver(self, tractor_id: str, destination_id: str, owner: str) -> None:

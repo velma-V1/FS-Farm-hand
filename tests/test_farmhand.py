@@ -6,7 +6,8 @@ import random
 import unittest
 
 from companion.executor import Executor
-from protocol.model import Destination, Equipment
+from companion.hitch import plan_hitch
+from protocol.model import Destination, Equipment, InputJoint, OutputJoint, Pose
 from simulator.world import MockWorld
 
 
@@ -31,9 +32,13 @@ def inventory(seed=0):
 
     tractor = Equipment(identity(), "tractor", "farm-a", (0, 0),
                         hitches=frozenset({"drawbar"}), power_kw=180,
-                        capabilities=frozenset({"move", "attach", "stop", "pto"}))
+                        capabilities=frozenset({"move", "attach", "stop", "pto"}),
+                        heading=0.0, ai_root=Pose(0.0, 0.0, 0.0),
+                        output_joints=(OutputJoint(3, "drawbar", 0.0, -2.5, True),))
+    # Wagon faces +z with its drawbar eye 4 m ahead of its root.
     wagon = Equipment(identity(), "forage_wagon", "farm-a", (40, 20),
-                      hitches=frozenset({"drawbar"}), required_power_kw=100, requires_pto=True)
+                      hitches=frozenset({"drawbar"}), required_power_kw=100, requires_pto=True,
+                      heading=0.0, input_joints=(InputJoint(1, "drawbar", (40.0, 24.0), True),))
     decoys = [replace(tractor, id=identity(), category="truck"),
               replace(tractor, id=identity(), farm_id="other-farm"),
               replace(tractor, id=identity(), busy=True),
@@ -80,6 +85,7 @@ class FaultWorld(MockWorld):
         super().__init__(base.snapshot(), base.players, base.destinations())
         self.fault = fault
         self.moves = 0
+        self.attach_calls = []
 
     def reserve(self, ids, owner):
         if self.fault == "reserve_conflict":
@@ -96,11 +102,29 @@ class FaultWorld(MockWorld):
         if self.fault == stage + "_timeout":
             raise TimeoutError("operation deadline")
 
-    def approach(self, tractor_id, wagon_id, owner):
-        self._fault("approach")
-        super().approach(tractor_id, wagon_id, owner)
+    def travel(self, tractor_id, destination_id, owner):
+        self._fault("travel")
+        super().travel(tractor_id, destination_id, owner)
+
+    def stage(self, tractor_id, wagon_id, pose, owner):
+        self._fault("stage")
+        if self.fault == "stage_elsewhere":
+            pose = Pose(pose.x + 5, pose.z, pose.yaw)
+        super().stage(tractor_id, wagon_id, pose, owner)
         if self.fault == "player_moved":
             self.players["farm-a"] = (900, 900)
+        if self.fault == "wagon_moved_after_stage":
+            wagon = self.items[wagon_id]
+            moved = tuple(replace(j, position=(j.position[0] + 1.0, j.position[1])) for j in wagon.input_joints)
+            self.items[wagon_id] = replace(wagon, input_joints=moved)
+        if self.fault == "reservation_lost_after_stage":
+            self.items[wagon_id] = replace(self.items[wagon_id], reserved_by="thief")
+
+    def align(self, tractor_id, wagon_id, plan, owner):
+        self._fault("align")
+        if self.fault == "align_no_progress":
+            return
+        super().align(tractor_id, wagon_id, plan, owner)
 
     def deliver(self, tractor_id, destination_id, owner):
         self._fault("delivery")
@@ -109,23 +133,26 @@ class FaultWorld(MockWorld):
         wagon_id = self.items[tractor_id].attached_to
         old_position = self.items[wagon_id].position if wagon_id else None
         super().deliver(tractor_id, destination_id, owner)
-        if self.moves == 2 and self.fault == "lost_attachment":
+        if self.fault == "lost_attachment":
             self.items[tractor_id] = replace(self.items[tractor_id], attached_to=None)
-        if self.moves == 2 and self.fault == "wagon_left":
+        if self.fault == "wagon_left":
             self.items[wagon_id] = replace(self.items[wagon_id], position=old_position)
-        if self.moves == 2 and self.fault == "moving":
+        if self.fault == "moving":
             self.items[tractor_id] = replace(self.items[tractor_id], stopped=False)
 
-    def attach(self, tractor_id, wagon_id, owner):
+    def attach(self, tractor_id, wagon_id, joints, owner):
+        self.attach_calls.append(joints)
         if self.fault == "attach":
             raise RuntimeError("coupling failed")
         if self.fault == "attach_timeout":
             raise TimeoutError("coupling deadline")
         if self.fault == "false_attach":
             return
-        super().attach(tractor_id, wagon_id, owner)
+        super().attach(tractor_id, wagon_id, joints, owner)
         if self.fault == "wrong_attachment":
             self.items[wagon_id] = replace(self.items[wagon_id], attached_to="stranger")
+        if self.fault == "still_moving_after_attach":
+            self.items[tractor_id] = replace(self.items[tractor_id], stopped=False)
 
     def stop(self, tractor_id, owner):
         if self.fault == "stop":
@@ -141,7 +168,8 @@ class AcceptanceTests(unittest.TestCase):
                 before = {x.id: x for x in world.snapshot()}
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, "COMPLETE", result)
-                self.assertEqual(result.states, ("FIND", "RESERVE", "MOVE", "ATTACH", "VERIFY", "DELIVER"))
+                self.assertEqual(result.states, ("FIND", "RESERVE", "STAGE", "ALIGN_REVERSE",
+                                                 "ATTACH", "VERIFY", "DELIVER"))
                 tractor, wagon = (world.items[x] for x in result.equipment_ids)
                 self.assertEqual((tractor.category, wagon.category), ("tractor", "forage_wagon"))
                 for item in (tractor, wagon):
@@ -216,14 +244,17 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(world.moves, 0)
 
     def test_physical_failures(self):
-        for fault in ("approach", "attach", "delivery", "approach_timeout", "attach_timeout", "delivery_timeout"):
+        for fault in ("stage", "align", "attach", "delivery", "stage_timeout", "align_timeout",
+                      "attach_timeout", "delivery_timeout"):
             with self.subTest(fault=fault):
                 world = FaultWorld(fault)
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, "FAILED", result)
                 self.assertTrue(all(x.stopped and x.reserved_by is None for x in world.snapshot()))
-                if fault.startswith("attach"):
-                    self.assertEqual(world.moves, 1)
+                # No physical step runs after the failing one.
+                expected_moves = {"stage": 1, "align": 2, "attach": 2, "delivery": 3}[fault.split("_")[0]]
+                self.assertEqual(world.moves, expected_moves)
+                self.assertEqual(len(world.attach_calls), 0 if fault.startswith(("stage", "align")) else 1)
 
     def test_false_observations(self):
         for fault in ("false_attach", "wrong_attachment", "false_arrival", "lost_attachment", "wagon_left", "moving"):
@@ -232,7 +263,7 @@ class AcceptanceTests(unittest.TestCase):
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, "UNVERIFIED", result)
                 if fault in ("false_attach", "wrong_attachment"):
-                    self.assertEqual(world.moves, 1)
+                    self.assertEqual(world.moves, 2)  # stage + align; never delivery
 
     def test_stop_failure_retains_reservation(self):
         world = FaultWorld("stop")
@@ -281,14 +312,23 @@ class AcceptanceTests(unittest.TestCase):
         world = simple_world()
         tractor, wagon = world.snapshot()
         self.assertTrue(world.reserve((tractor.id, wagon.id), "owner"))
+        plan = plan_hitch(tractor, wagon)
         with self.assertRaises(ValueError):
-            world.approach(tractor.id, wagon.id, "intruder")
+            world.travel(tractor.id, DESTINATIONS[0].id, "intruder")
+        with self.assertRaises(ValueError):
+            world.stage(tractor.id, wagon.id, plan.staging, "intruder")
+        with self.assertRaises(ValueError):
+            world.align(tractor.id, wagon.id, plan, "intruder")
         with self.assertRaises(ValueError):
             world.deliver(tractor.id, DESTINATIONS[0].id, "intruder")
         with self.assertRaises(ValueError):
-            world.attach(tractor.id, wagon.id, "intruder")
+            world.attach(tractor.id, wagon.id, (1, 1), "intruder")
         with self.assertRaises(ValueError):
-            world.attach(tractor.id, wagon.id, "owner")  # Too far apart.
+            world.stage(wagon.id, tractor.id, plan.staging, "owner")  # Not the reserved order.
+        with self.assertRaises(RuntimeError):
+            world.attach(tractor.id, wagon.id, (1, 1), "owner")  # Joints too far apart.
+        with self.assertRaises(RuntimeError):
+            world.align(tractor.id, wagon.id, plan, "owner")      # Not staged yet.
         self.assertFalse(world.stop(tractor.id, "intruder"))
 
     def test_snapshot_is_immutable(self):
@@ -303,9 +343,9 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_action_time_farm_change_prevents_movement(self):
         class FarmChangeWorld(FaultWorld):
-            def approach(self, tractor_id, wagon_id, owner):
+            def stage(self, tractor_id, wagon_id, pose, owner):
                 self.items[tractor_id] = replace(self.items[tractor_id], farm_id="other-farm")
-                return super().approach(tractor_id, wagon_id, owner)
+                return super().stage(tractor_id, wagon_id, pose, owner)
 
         world = FarmChangeWorld(None)
         positions = {x.id: x.position for x in world.snapshot()}
@@ -330,15 +370,14 @@ class AcceptanceTests(unittest.TestCase):
             with self.subTest(change=change):
                 class CompatibilityChangeWorld(FaultWorld):
                     def deliver(self, tractor_id, destination_id, owner):
-                        if self.moves == 1:
-                            self.items[tractor_id] = replace(self.items[tractor_id], **change)
+                        self.items[tractor_id] = replace(self.items[tractor_id], **change)
+                        self.before_delivery = {x.id: x.position for x in self.snapshot()}
                         return super().deliver(tractor_id, destination_id, owner)
 
                 world = CompatibilityChangeWorld(None)
-                wagon_position = world.snapshot()[1].position
                 result = Executor(world).execute(intent())
                 self.assertNotEqual(result.status, "COMPLETE")
-                self.assertTrue(all(x.position == wagon_position for x in world.snapshot()))
+                self.assertEqual({x.id: x.position for x in world.snapshot()}, world.before_delivery)
 
     def test_stop_without_owner_is_rejected(self):
         world = simple_world()
@@ -523,7 +562,7 @@ class ExplicitDestinationTests(unittest.TestCase):
 
         class RecordingWorld(MockWorld):
             def __getattribute__(self, name):
-                if name in ("reserve", "approach", "attach", "deliver", "stop", "release"):
+                if name in ("reserve", "travel", "stage", "align", "attach", "deliver", "stop", "release"):
                     calls.append(name)
                 return super().__getattribute__(name)
 
@@ -532,7 +571,7 @@ class ExplicitDestinationTests(unittest.TestCase):
         result = Executor(world, field_entrances=FIELD_ENTRANCES).execute(
             target_intent({"type": "field_entrance", "field": 12}))
         self.assertEqual(result.status, "COMPLETE")
-        self.assertEqual(calls, ["reserve", "approach", "attach", "deliver", "stop", "release"])
+        self.assertEqual(calls, ["reserve", "stage", "align", "attach", "deliver", "stop", "release"])
 
     def test_schema_rejects_work_coordinates_and_mixed_selectors(self):
         for target in ({"type": "field_entrance", "field": 12, "operation": "harvest"},
@@ -572,3 +611,128 @@ class ExplicitDestinationTests(unittest.TestCase):
             with self.subTest(config=config):
                 with self.assertRaises(ValueError):
                     Executor(explicit_world(), field_entrances=config)
+
+
+# ------------------------------------------------------------------------- HITCH
+class HitchCompositionTests(unittest.TestCase):
+    def run_fault(self, fault):
+        world = FaultWorld(fault)
+        result = Executor(world).execute(intent())
+        return world, result
+
+    def test_steps_follow_the_plan_exactly(self):
+        calls = []
+
+        class Recording(FaultWorld):
+            def stage(self, tractor_id, wagon_id, pose, owner):
+                calls.append(("stage", tractor_id, wagon_id, pose))
+                return super().stage(tractor_id, wagon_id, pose, owner)
+
+            def align(self, tractor_id, wagon_id, plan, owner):
+                calls.append(("align", tractor_id, wagon_id, plan))
+                return super().align(tractor_id, wagon_id, plan, owner)
+
+        world = Recording(None)
+        tractor, wagon = world.snapshot()
+        plan = plan_hitch(tractor, wagon)
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual(calls, [("stage", tractor.id, wagon.id, plan.staging),
+                                 ("align", tractor.id, wagon.id, plan)])
+        self.assertEqual(world.attach_calls, [(plan.tractor_joint, plan.wagon_joint)])
+
+    def test_far_tractor_travels_by_autodrive_first(self):
+        base = simple_world()
+        tractor, wagon = base.snapshot()
+        far = replace(tractor, position=(600.0, 600.0), ai_root=Pose(600.0, 600.0, 0.0))
+        staging = plan_hitch(tractor, wagon).staging
+        near_wagon = Destination("marker-near-wagon", (staging.x + 10, staging.z))
+        world = MockWorld([far, wagon], PLAYERS, DESTINATIONS + (near_wagon,))
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual(result.states, ("FIND", "RESERVE", "TRAVEL_NEAR", "STAGE", "ALIGN_REVERSE",
+                                         "ATTACH", "VERIFY", "DELIVER"))
+
+        class ShortTravel(MockWorld):
+            def travel(self, tractor_id, destination_id, owner):
+                super().travel(tractor_id, destination_id, owner)
+                tractor = self.items[tractor_id]
+                self.items[tractor_id] = replace(tractor, position=(0.0, 0.0), ai_root=Pose(0.0, 0.0, 0.0))
+
+            def stage(self, *args):
+                raise AssertionError("staged after unobserved travel")
+
+        world = ShortTravel([far, wagon], PLAYERS, DESTINATIONS + (near_wagon,))
+        result = Executor(world).execute(intent())
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "TRAVEL_NOT_OBSERVED"))
+
+    def test_unreachable_or_unplannable_pairs_block_before_reservation(self):
+        base = simple_world()
+        tractor, wagon = base.snapshot()
+        far = replace(tractor, position=(600.0, 600.0), ai_root=Pose(600.0, 600.0, 0.0))
+        cases = [
+            ([far, wagon], "NO_DESTINATION_NEAR_WAGON"),        # far, and no marker near the wagon
+            ([replace(tractor, ai_root=None), wagon], "NO_HITCH_GEOMETRY"),
+            ([tractor, replace(wagon, heading=None)], "NO_HITCH_GEOMETRY"),
+            ([replace(tractor, output_joints=(OutputJoint(1, "drawbar", 0.0, 3.0, True),)), wagon],
+             "NO_HITCH_GEOMETRY"),                               # only a front joint
+            ([tractor, replace(wagon, input_joints=(InputJoint(1, "drawbar", (40.0, 24.0), False),))],
+             "NO_HITCH_GEOMETRY"),                               # inactive input joint
+        ]
+        for items, reason in cases:
+            with self.subTest(reason=reason):
+                world = MockWorld(items, PLAYERS, DESTINATIONS)
+                before = world.snapshot()
+                result = Executor(world).execute(intent())
+                self.assertEqual((result.status, result.reason), ("BLOCKED", reason))
+                self.assertNotIn("RESERVE", result.states)
+                self.assertEqual(world.snapshot(), before)
+
+    def test_observed_step_failures_stop_without_further_action(self):
+        cases = {
+            # fault: (reason, physical steps run, attach attempted)
+            "stage_elsewhere": ("STAGE_NOT_OBSERVED", 1, False),
+            "wagon_moved_after_stage": ("WAGON_MOVED", 1, False),
+            "reservation_lost_after_stage": ("CLEANUP_NOT_CONFIRMED", 1, False),
+            "align_no_progress": ("ALIGN_NOT_OBSERVED", 2, False),
+            "false_attach": ("ATTACHMENT_MISMATCH", 2, True),
+            "still_moving_after_attach": ("EQUIPMENT_MOVING", 2, True),
+        }
+        for fault, (reason, moves, attached) in cases.items():
+            with self.subTest(fault=fault):
+                world, result = self.run_fault(fault)
+                self.assertEqual((result.status, result.reason), ("UNVERIFIED", reason))
+                self.assertEqual(world.moves, moves)
+                self.assertEqual(len(world.attach_calls), 1 if attached else 0)
+                self.assertNotIn("DELIVER", result.states)
+
+    def test_lost_reservation_is_never_released_or_reused(self):
+        world, result = self.run_fault("reservation_lost_after_stage")
+        tractor, wagon = world.snapshot()
+        # The executor does not sweep or release equipment it no longer owns.
+        self.assertEqual(wagon.reserved_by, "thief")
+        self.assertEqual(tractor.reserved_by, intent()["request_id"])
+
+    def test_wagon_rotation_after_staging_is_detected(self):
+        class Rotate(FaultWorld):
+            def stage(self, tractor_id, wagon_id, pose, owner):
+                super().stage(tractor_id, wagon_id, pose, owner)
+                self.items[wagon_id] = replace(self.items[wagon_id], heading=0.3)
+
+        world = Rotate(None)
+        result = Executor(world).execute(intent())
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "WAGON_MOVED"))
+        self.assertEqual(world.attach_calls, [])
+
+    def test_joint_occupied_after_reservation_is_detected(self):
+        class Occupy(FaultWorld):
+            def stage(self, tractor_id, wagon_id, pose, owner):
+                super().stage(tractor_id, wagon_id, pose, owner)
+                tractor = self.items[tractor_id]
+                joints = tuple(replace(j, free=False) for j in tractor.output_joints)
+                self.items[tractor_id] = replace(tractor, output_joints=joints)
+
+        world = Occupy(None)
+        result = Executor(world).execute(intent())
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "HITCH_GEOMETRY_CHANGED"))
+        self.assertEqual(world.attach_calls, [])

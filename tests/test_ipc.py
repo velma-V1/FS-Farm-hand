@@ -26,7 +26,12 @@ def vehicle(identifier, kind, x=0.0, z=0.0, **overrides):
             "has_autodrive": kind == TRACTORS, "ad_active": False if kind == TRACTORS else None,
             "attachment_observed": True, "attacher_vehicle_id": None, "implement_ids": [],
             "attacher_joints": ["TRAILER", "IMPLEMENT"] if kind == TRACTORS else [],
-            "input_joints": ["TRAILER"] if kind == WAGONS else []}
+            "input_joints": ["TRAILER"] if kind == WAGONS else [],
+            "heading": 0.0, "ai_root": {"x": x, "z": z, "yaw": 0.0} if kind == TRACTORS else None,
+            "output_joints": [{"index": 1, "type": "TRAILER", "x": 0.0, "z": -2.5, "free": True}]
+            if kind == TRACTORS else [],
+            "input_joint_poses": [{"index": 1, "type": "TRAILER", "x": x, "z": z + 4, "active": True}]
+            if kind == WAGONS else []}
     item.update(overrides)
     return item
 
@@ -144,8 +149,8 @@ class MappingTests(unittest.TestCase):
         self.assertEqual([(d.id, d.name, d.position) for d in observed.destinations],
                          [("3", "Yard", (101.0, 199.0))])
         self.assertEqual(observed.map_id, "MapUS")
-        # Power, PTO, unattended approach and attach have no proven source (GAP /
-        # UNVERIFIED), so real data must not yet produce an eligible pair.
+        # Power/PTO have no proven source (GAP) and HITCH is not enabled
+        # (UNVERIFIED in FS25), so real data must not yet produce an eligible pair.
         self.assertEqual((tractor.power_kw, wagon.required_power_kw), (0, 0))
         self.assertTrue(wagon.requires_pto)
         self.assertNotIn("move", tractor.capabilities)

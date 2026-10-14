@@ -131,13 +131,18 @@ Observe.encode = encode
 -- Reverse-map numeric joint types through AttacherJoints.JOINTTYPE_* keys
 -- (AutoDrive scripts/Utils/AutoDriveUtilFuncs.lua:952-955 uses the same keys).
 -- Unnamed joint types are dropped, which can only remove hitch options.
-function Observe.jointNames(joints, attacherJoints)
-    local byValue, names, seen = {}, {}, {}
+local function jointTypeNames(attacherJoints)
+    local byValue = {}
     for key, value in pairs(attacherJoints or {}) do
         if type(key) == "string" and key:sub(1, 10) == "JOINTTYPE_" and token(key:sub(11)) then
             byValue[value] = key:sub(11)
         end
     end
+    return byValue
+end
+
+function Observe.jointNames(joints, attacherJoints)
+    local byValue, names, seen = jointTypeNames(attacherJoints), {}, {}
     for _, joint in ipairs(joints or {}) do
         local name = byValue[joint.jointType]
         if name ~= nil and not seen[name] then
@@ -197,6 +202,72 @@ function Observe.attachment(env, v)
     end)
     if not ok then return nil, {}, false end
     return attacher, implements, true
+end
+
+-- Hitch geometry, read only through GIANTS' own transforms (adapters/EVIDENCE.md).
+-- Anything unreadable is reported as absent (nil / empty), which makes the vehicle
+-- unhitchable; it is never filled in with a guess.
+local function yawOf(env, node)
+    local dx, _, dz = env.localDirectionToWorld(node, 0, 0, 1)
+    assert(finite(dx) and finite(dz) and (dx ~= 0 or dz ~= 0))
+    local yaw = env.MathUtil.getYRotationFromDirection(dx, dz)
+    assert(finite(yaw))
+    return yaw
+end
+
+function Observe.hitchGeometry(env, v)
+    local byValue = jointTypeNames(env.AttacherJoints)
+    local heading = try(function() return yawOf(env, v.rootNode) end)
+
+    local aiRoot = try(function()
+        local node = v:getAIRootNode()
+        local x, _, z = env.getWorldTranslation(node)
+        assert(finite(x) and finite(z))
+        return { x = x, z = z, yaw = yawOf(env, node) }
+    end)
+
+    -- Tractor joints: GIANTS' own offsets of each jointTransform in the AI root
+    -- frame, built 1:1 in getAttacherJoints() order (AIDrivable:onPostLoad 186-196).
+    -- The list position must be GIANTS' joint desc index, or nothing is reported.
+    local outputs = try(function()
+        local joints, offsets = v:getAttacherJoints(), v.spec_aiDrivable.attacherJointOffsets
+        assert(type(joints) == "table" and type(offsets) == "table" and #joints == #offsets)
+        assert(#joints <= Observe.MAX_JOINTS)
+        local result = Observe.array()
+        for i, joint in ipairs(joints) do
+            if type(v.getAttacherJointByJointDescIndex) == "function" then
+                assert(v:getAttacherJointByJointDescIndex(i) == joint)
+            end
+            local name, offset = byValue[joint.jointType], offsets[i]
+            if name ~= nil and finite(offset.x) and finite(offset.z)
+                    and math.abs(offset.x) <= 50 and math.abs(offset.z) <= 50 then
+                -- jointIndex == 0 is GIANTS' "joint free" test (AttacherJoints 1910, 3063).
+                result[#result + 1] = { index = i, type = name, x = offset.x, z = offset.z,
+                                        free = joint.jointIndex == 0 }
+            end
+        end
+        return result
+    end) or Observe.array()
+
+    -- Implement input joints at their world positions. An activity check that is
+    -- missing or unreadable reports inactive (unusable), never active.
+    local inputs = try(function()
+        local joints = v:getInputAttacherJoints()
+        assert(type(joints) == "table" and #joints <= Observe.MAX_JOINTS)
+        local result = Observe.array()
+        for i, joint in ipairs(joints) do
+            local name = byValue[joint.jointType]
+            local x, _, z = env.getWorldTranslation(joint.node)
+            if name ~= nil and finite(x) and finite(z) then
+                local okActive, active = pcall(function() return v:getIsInputAttacherActive(joint) end)
+                result[#result + 1] = { index = i, type = name, x = x, z = z,
+                                        active = okActive and active == true }
+            end
+        end
+        return result
+    end) or Observe.array()
+
+    return heading, aiRoot, outputs, inputs
 end
 
 -- Returns one vehicle record, or nil when identity, position or hitch joints
@@ -266,6 +337,8 @@ function Observe.vehicle(env, v)
         end)
     end
 
+    local heading, aiRoot, outputJoints, inputJointPoses = Observe.hitchGeometry(env, v)
+
     return {
         id = id,
         farm_id = farmId,
@@ -282,6 +355,10 @@ function Observe.vehicle(env, v)
         implement_ids = Observe.array(implements),
         attacher_joints = Observe.array(attacherJoints),
         input_joints = Observe.array(inputJoints),
+        heading = nullable(heading),
+        ai_root = nullable(aiRoot),
+        output_joints = outputJoints,
+        input_joint_poses = inputJointPoses,
     }
 end
 

@@ -11,10 +11,11 @@ project provides each capability, with pinned commits, files, line numbers, and
 
 | Upstream | Reuse | Status |
 | --- | --- | --- |
-| GIANTS FS25 API (as used by the mods below) | Inventory, ownership, position, attachment, speed, attach mechanism | Calls PROVEN by upstream use; untested in our FS25 runtime |
-| [AutoDrive](https://github.com/Stephan-S/FS25_AutoDrive) (MIT) | Delivery travel to map markers, destinations, stop | API PROVEN; marker-only; not yet called |
+| GIANTS FS25 API ([GDN LUADOC](https://gdn.giants-software.com/documentation_scripting_fs25.php)) | Inventory, ownership, position, attachment, speed; HITCH geometry, GOTO navigation, `driveToPoint` reversing, attach-range detection and attach | Calls PROVEN by GDN source or upstream use; composition untested in our FS25 runtime |
+| [AutoDrive](https://github.com/Stephan-S/FS25_AutoDrive) (MIT) | Delivery and TRAVEL_NEAR travel to map markers, destinations, stop | API PROVEN; marker-only; not yet called |
 | [Farmhand Companion](https://github.com/getflowkits/fs25-farmhand-mod) (MIT) | Local IPC design: named pipe out, XML file in | Design reused; no code copied |
-| [Courseplay](https://github.com/Courseplay/Courseplay_FS25) (GPL-3.0) | Evidence of the game's attach API usage | Reference only; never copied |
+| [Courseplay](https://github.com/Courseplay/Courseplay_FS25) (GPL-3.0) | Evidence of the attach API usage and the HITCH composition pattern | Reference only; never copied |
+| [Manual Attach](https://github.com/stijnwop/manualAttach) (GPL-3.0) | Evidence of the attach-range rule's shape | Reference only; never copied |
 | [Follow Me](https://github.com/DeckerMMIV/FarmSim_Mod_FollowMe) | Follows a leader vehicle only | Not used |
 | [Universal Autoload](https://github.com/loki79uk/FS25_UniversalAutoload) | Loading | Not needed to tow a wagon |
 

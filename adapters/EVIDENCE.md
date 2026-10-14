@@ -18,10 +18,23 @@ described. That proves the API exists and how a shipped FS25 mod uses it; it doe
 | CP | Courseplay/Courseplay_FS25 @ `150dcd51f8a1` (2026-09-02) | 8.1.0.3 | GPL-3.0 | API-usage evidence only; no code copied |
 | FM | DeckerMMIV/FarmSim_Mod_FollowMe @ `adc555010f90` (2025-05-21) | 1.2.0.0 | no LICENSE file | Not used |
 | UAL | loki79uk/FS25_UniversalAutoload | — | — | Not inspected; loading only, not needed to tow a wagon |
+| MA | stijnwop/manualAttach @ `6e1536f576e1` (2026-09-13) | 1.1.1.0 | GPL-3.0 | Evidence of the attach-range rule's shape only; no code copied |
+| GDN | GIANTS FS25 LUADOC, Script v1.20.0.0 ([index](https://gdn.giants-software.com/documentation_scripting_fs25.php?version=script)) | FS25 1.20 | proprietary docs | Authoritative game-script source, read via the official pages |
 
-No upstream code is vendored or copied. `mod/FarmhandObserve.lua` is original code
-that calls the same public game/mod functions; FH's MIT notice is not required
-because nothing of FH is reproduced, but FH is credited here for the IPC design.
+GDN class pages cited below: `AIDrivable` (`&category=78&class=619`), `AIJobVehicle`
+(`&class=622`), `Attachable` (`&class=628`), `AttacherJoints` (`&class=630`),
+`AIJobGoTo` (`&category=54&class=539`), `AITaskDriveTo` (`&category=81&class=846`),
+`AIJobTypeManager` (`&category=3&class=153`), `AISystem` (`&category=3&class=154`),
+`AIVehicleUtil` (`&category=91&class=881`), `MathUtil` (`&category=90&class=871`).
+The GDN pages are long and the official renderer truncates late, alphabetically
+sorted functions; where a body could not be read it is marked "index only", and the
+call shape is taken from GIANTS' own callers or from AD/CP usage instead.
+
+No upstream code is vendored or copied. `mod/FarmhandObserve.lua` and
+`mod/FarmhandHitch.lua` are original code that call the same public game/mod
+functions; FH's MIT notice is not required because nothing of FH is reproduced,
+but FH is credited here for the IPC design. CP and MA are GPL-3.0 and were read
+for API usage only.
 
 ## Observation (read-only) — implemented in `mod/FarmhandObserve.lua`
 
@@ -44,6 +57,15 @@ because nothing of FH is reproduced, but FH is credited here for the IPC design.
 | AutoDrive destinations | PROVEN | AD `scripts/ExternalInterface.lua:84-94` `AutoDrive:GetAvailableDestinations()` → `{name,x,y,z,id}` keyed by marker ID | `Destination(id, position, name)` |
 | Marker ID stability | PROVEN negative | IDs are array indices (`Manager/GraphManager.lua:365-371`) and are renumbered when a marker is deleted (`:496-499`) | A marker ID is valid only for a live selection; stored config refers to marker **names** |
 | Field → marker association | **GAP** | AD markers hold only `name` and a UI `group` (`GraphManager.lua:371`); AD field IDs (`Utils/FieldPointGenerator.lua:40-50`) are not linked to markers | Field targets resolve only via trusted local `field_entrances[map_id][field] = marker name`; no nearest-marker guess |
+| Version detection | PROVEN | AD `scripts/AutoDrive.lua:2` `AutoDrive.version`; AD `register.lua:153` `g_modManager:getModByName(g_currentModName).version` | `hello` frame |
+| Tractor power, implement power need, PTO need | **GAP** | Not read by any inspected source | mapped as 0 kW / PTO required → never compatible |
+| Yaw convention | PROVEN | GDN `MathUtil` `eulerToDirection` line 246 (`x = sin(yaw)`, `z = cos(yaw)`), `directionToPitchYaw` line 257 (`atan2(dx, dz)`); AD `ExternalInterface.lua:23` uses the same | `Pose.yaw`, `Pose.to_world` |
+| Heading | PROVEN call / UNVERIFIED meaning | `localDirectionToWorld(rootNode, 0, 0, 1)` → `MathUtil.getYRotationFromDirection` (GDN, index only); a towed implement's root forward is the approach heading in CP `AIDriveStrategyAttachHeader.lua:228-230` | `Equipment.heading`. That every forage wagon's root faces its drawbar is UNVERIFIED |
+| AI root pose | PROVEN | GDN `AIDrivable:getAIRootNode` 515-516 returns `components[1].node` | `Equipment.ai_root` |
+| Tractor joint offsets | PROVEN | GDN `AIDrivable:onPostLoad` 186-196: for each `getAttacherJoints()` joint, `localToLocal(attacherJoint.jointTransform, aiRootNode, 0, 0, 0)` and direction vectors into `spec.attacherJointOffsets` | `OutputJoint.x/z`, read from GIANTS' own table, not recomputed |
+| Joint free | PROVEN | GDN `AttacherJoints` 1910 (`attacherJoints[i].jointIndex == 0` before attaching) and 3063 (`jointIndex ~= 0` = in use) | `OutputJoint.free` |
+| Joint desc index | UNVERIFIED (runtime-checked) | `attachImplementFromInfo` indexes `spec_attacherJoints.attacherJoints[info.attacherVehicleJointDescIndex]` (GDN 1909-1910); `getAttacherJoints`/`getAttacherJointByJointDescIndex` bodies are index only | Index = list position; the mod checks `getAttacherJointByJointDescIndex(i) == joint` and reports no joints on mismatch |
+| Wagon input joints | PROVEN | GDN `Attachable:getInputAttacherJoints` 1222-1223 (`spec_attachable.inputAttacherJoints`); joint `.node`, `.jointType` in CP `AttachableController.lua:13-25` and MA `VehicleAttachmentHandler.lua:494-533`; `getIsInputAttacherActive` GDN `Attachable` 1458-1459 (default `true`) | `InputJoint` at `getWorldTranslation(joint.node)`; unreadable activity → inactive |
 
 ### Unknown versus not applicable
 
@@ -64,10 +86,12 @@ The Python mapping (`adapters/fs25.py`) turns unknown into `available=False`, an
 also into `occupied=True`, `busy=True` or `attached_to="*unknown*"`, so no single
 check can read it as free. Whether these upstream rules hold for every vehicle type
 on the user's install is UNVERIFIED.
-| Version detection | PROVEN | AD `scripts/AutoDrive.lua:2` `AutoDrive.version`; AD `register.lua:153` `g_modManager:getModByName(g_currentModName).version` | `hello` frame |
-| Tractor power, implement power need, PTO need | **GAP** | Not read by any inspected source | mapped as 0 kW / PTO required → never compatible |
 
 ## Physical operations — all still fail closed (`mod/FarmhandBoundary.lua`)
+
+No physical command is enabled: the companion → game channel is not built and the
+boundary advertises no capabilities. `mod/FarmhandHitch.lua` is a tested library
+waiting for that channel.
 
 | Step | State | Evidence and conclusion |
 | --- | --- | --- |
@@ -77,10 +101,30 @@ on the user's install is UNVERIFIED.
 | Route availability pre-check | UNVERIFIED | `AutoDrive:GetPath` (`ExternalInterface.lua:7-34`) returns a path to a marker only if a waypoint lies 1–20 m from the start in a matching heading; its fallback `GetClosestPointToLocation` only searches when the graph is empty (`:99`), so it never helps. Vehicles >30 m off-network are routed by AD's async pathfinder at drive time (`DriveToDestinationTask.lua:18-21`), with no pre-check. Not implemented. |
 | Stop / cancel | PROVEN API, UNVERIFIED use | `vehicle:stopAutoDrive()` registered at AD `Specialization.lua:70`, defined at `:1186`; **server only** (`:1290`). Stop must still be confirmed by observed speed. |
 | AD refuses AI-job vehicles | PROVEN | `Specialization.lua:1129-1135`; consistent with treating `getIsAIActive()` as busy. |
-| APPROACH + ALIGN to the wagon | **GAP** | AD's ExternalInterface cannot target a vehicle or point. AD's internal `PathFinderModule:startPathPlanningToVehicle` (`PathFinderModule.lua:335-349`) targets a point 35 m **behind** the target, facing its direction (`DriveToVehicleTask.lua:3`), used only by `CombineUnloaderMode.lua:360` — a chase position, not a reverse onto a drawbar. CP's only attach driving is for harvester headers (`AttacherJointController.lua:3`). FM follows a leader **vehicle** only (`AIJobFollowVehicle.lua:16`). No inspected mod reverses a tractor onto a towed implement's hitch. |
-| ATTACH | PROVEN API, UNVERIFIED for drawbar wagons | CP `AttacherJointController.lua:44-49,77`: `AttacherJoints.updateVehiclesInAttachRange(vehicle, MAX_ATTACH_DISTANCE_SQ, MAX_ATTACH_ANGLE, true)` fills `spec_attacherJoints.attachableInfo`; then `info.attachable:isAttachAllowed(farmId, info.attacherVehicle)`; then `vehicle:attachImplementFromInfo(info)`. This is the game's normal in-range mechanism and requires prior physical alignment (the GAP above). CP uses it only for cutters. FH's `attach` command just raises the player's ATTACH input action on the vehicle the player is in (`Commands.lua:1615`), so it cannot attach unattended. |
-| Observe attachment | PROVEN calls | Verify both ends from a fresh snapshot (`getAttacherVehicle`, `getAttachedImplements`), waiting while `getImplementByObject(...).attachingIsInProgress` (CP `AttacherJointController.lua:49,79`). Command acknowledgement is never evidence. |
-| Reservation | Our code | No upstream concept. The companion owns reservations; a future game-side guard must re-check them before any command. |
+| Reservation | Our code | No upstream concept. The companion owns reservations; `FarmhandHitch` takes an `isReserved` check and the farm ID and re-checks both on every step. |
+
+### HITCH: VALIDATE → TRAVEL_NEAR → STAGE → ALIGN_REVERSE → ATTACH → VERIFY
+
+The pattern is Courseplay's header pickup (`AIDriveStrategyAttachHeader.lua`): target
+the implement's joint position and heading (228-230), pathfind to an offset pose
+(244-245), make a short straight final approach (292-295), ask GIANTS whether the
+joint can attach (170), attach (178), wait for the animation (185) and check the
+result (297). CP does this forwards, for cutters only, with GPL code; Farmhand
+re-implements only the composition, for a rear drawbar, on GIANTS primitives.
+
+| Primitive | State | Source | Farmhand use |
+| --- | --- | --- | --- |
+| Hitch geometry | PROVEN API | Tractor joint offsets in the AI root frame (GIANTS `AIDrivable:onPostLoad` 186-196); wagon input joint `node` world position; yaw convention (`MathUtil`) | `companion/hitch.py` `plan_hitch`: final AI-root pose puts the tractor joint on the wagon joint, facing the wagon's heading; staging is `STAGING_DISTANCE_M` (4 m, provisional) straight ahead. Pure arithmetic, no transform engine |
+| TRAVEL_NEAR | PROVEN API, UNVERIFIED use | AutoDrive `StartDriving` to a marker (DELIVER row above) | Only when the tractor is farther than 60 m (provisional) from staging; a marker within 60 m of staging is required, else BLOCKED before reservation. AutoDrive stays long-range only; it exposes no reliable hitch-scale mechanism and its graph is not modified |
+| Local pose navigation (STAGE) | PROVEN API | GDN `AIJobTypeManager` 35 registers `"GOTO"` → `AIJobGoTo`; `createJob` 92-106. `AIJobGoTo.new` 22-44 (`AITaskDriveTo`, `positionAngleParameter`), `setValues` 147-157 (`getDirectionFromYRotation(angle)` → `setTargetDirection`, `setTargetPosition`). `AITaskDriveTo:startDriving` 135-151 → `vehicle:setAITarget(task, x, y, z, dirX, 0, dirZ)`; `stop` 123-131 → `unsetAITarget()`. Start sequence `createJob → applyCurrentState → setValues → validate → aiSystem:startJob` from AD `Specialization.lua:1518-1527`. Running ⇔ `getIsAIActive()` (GDN `AIJobVehicle` 396-397). Cancel: `stopCurrentAIJob(AIMessageSuccessStoppedByUser.new())` (GDN `AIJobVehicle` 431) | `Hitch.startStaging`, `Hitch.cancelStaging`. GIANTS' navigation agent owns the collision-aware path. `AIDrivable:setAITarget`'s body is index only, so which vehicle node the target pose refers to and the arrival accuracy are UNVERIFIED; the executor observes the AI-root pose (1 m, 10°) |
+| Reverse point-driving primitive (ALIGN_REVERSE) | PROVEN API | GDN `AIVehicleUtil.driveToPoint(self, dt, acceleration, allowedToDrive, moveForwards, tX, tZ, maxSpeed, doNotSteer)` line 26: local target; steering inverted under the reverser (47-48); `moveForwards=false` negates acceleration (90-91); `allowedToDrive=false` gives zero acceleration and handbrake (82-94). Local target via `worldToLocal(getAIReverserNode() or getAISteeringNode(), …)` as CP `CpAIWorker.lua:396-409` (functions registered in GDN `AIJobVehicle` 67-69). Motor/active handling as AD `DrivePathModule.lua:380-381`, `Specialization.lua:1295` | `Hitch.alignStep`: the only custom physical behaviour. ≤ 2 km/h (cap 3), ≤ staging + margin metres (cap 10), 30 s timeout (cap 60), stall after 4 s without 5 cm progress, wagon may not move 25 cm, stops on lost reservation, farm change, entered tractor, unknown observation, or any other candidate. Steering is GIANTS'; Farmhand only picks a target 3 m past the joint on the wagon axis |
+| Attach candidate / range detection | PROVEN API | CP `AttacherJointController.lua:77` `AttacherJoints.updateVehiclesInAttachRange(vehicle, MAX_ATTACH_DISTANCE_SQ, MAX_ATTACH_ANGLE, true)` → `spec_attacherJoints.attachableInfo` (44); field names from GDN `attachImplementFromInfo` 1907-1934. MA `VehicleAttachmentHandler.lua:447-533` shows the rule's shape (equal joint types, horizontal/vertical distance, angle on `attachAngleLimitAxis`, active and free input) | Not recreated. The reverse stops the instant `attachableInfo` names exactly (tractor, planned joint, wagon, planned input joint) |
+| Attach operation | PROVEN API | GDN `AttacherJoints:attachImplementFromInfo` 1907-1940 → `info.attacherVehicle:attachImplement(info.attachable, info.attachableJointDescIndex, info.attacherVehicleJointDescIndex)`, returns `true`; `Attachable:isAttachAllowed` (GDN index only; call shape `isAttachAllowed(vehicle:getActiveFarm(), info.attacherVehicle)` from CP `AttacherJointController.lua:36,46`) | `Hitch.attach`: fresh exact candidate, stopped, reserved, farm match, `isAttachAllowed == true`, then one `attachImplementFromInfo` call. `true` is only "requested" |
+| Attachment observation | PROVEN API | `getImplementByObject(...).attachingIsInProgress` (CP `AttacherJointController.lua:49,79`); `getAttacherVehicle` (GDN `Attachable` 1211-1212); `getAttachedImplements` (FH `Collectors.lua:269-274`) | `Hitch.attachState` waits for the animation (15 s bound); then the executor's VERIFY requires both ends from a fresh snapshot and a stopped tractor |
+| Complete unattended tractor → forage-wagon composition | **UNVERIFIED until FS25 test** | — | Mock and Lua-stub tests prove orchestration and guards only, not driving, alignment or GIANTS' acceptance |
+
+FH's `attach` command only raises the player's ATTACH input action on the vehicle the
+player is in (`Commands.lua:1615`), so it cannot attach unattended and is not used.
 
 ## Local IPC decision — implemented as a protocol, not yet as a transport
 
@@ -107,6 +151,8 @@ engine XML API (`XMLFile.loadIfExists`), and files live under
 - DeepWiki stated AutoDrive's `startPathPlanningToVehicle` is useful "for hitching a
   trailer". Source shows a 35 m chase offset behind the target; rejected.
 - Farmhand's `attach` command is player-input simulation, not an unattended attach API.
+- "Hitching is unavailable" (previous classification here): superseded. Each
+  primitive exists in GIANTS; only their composition is unverified.
 
 ## Still unresolved (first in-game checks)
 
@@ -114,9 +160,12 @@ engine XML API (`XMLFile.loadIfExists`), and files live under
    `dumpCategories` diagnostic because guessed names failed).
 2. That the observation calls behave as in upstream use on the user's FS25 version.
 3. Tractor power and implement power/PTO requirements: GAP.
-4. Final approach and alignment to the wagon hitch: GAP; no navigation replacement
-   will be built. Options for the user: manual pre-positioning, or a proven mod later.
-5. Unattended attach of a drawbar wagon via the CP-proven API after alignment.
+4. The HITCH composition on real equipment: observed joint transforms, the
+   computed final/staging pose, GOTO arrival accuracy and which node it targets,
+   `driveToPoint` reversing outside a running AI job, GIANTS naming the exact pair
+   as candidate, and the normal attach completing. See BUILD_SPEC.md for the test.
+5. Whether a forage wagon's root forward is its approach heading, and whether
+   the lowest-index joint pair is the one GIANTS picks when several match.
 6. AD arrival accuracy at a marker versus the 3 m / 15 m tolerances.
 7. The upstream missing-method rules above, and `missionInfo.mapId` values, on the
    user's install; plus the marker names the user wants in `field_entrances`.

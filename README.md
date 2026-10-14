@@ -16,9 +16,11 @@ attach them, and bring them to the requester.
 **Status: executable mock acceptance harness, not an installable or game-verified
 mod.** Upstream capabilities are recorded with source evidence in
 [adapters/EVIDENCE.md](adapters/EVIDENCE.md). A read-only Lua observation module,
-the local IPC frame protocol, and fail-closed FS25 data mapping exist and are tested
-off-PC only. Physical adapters, the Windows pipe host, actual movement/attachment,
-LLM integration, speech, and Windows service behavior are not implemented yet.
+the local IPC frame protocol, fail-closed FS25 data mapping, and the HITCH
+composition (pure geometry plan, executor steps, game-side GIANTS GOTO staging,
+bounded reverse and normal attach) exist and are tested off-PC only. The command
+channel to the game, the Windows pipe host, any executed movement/attachment, LLM
+integration, speech, and Windows service behavior are not implemented yet.
 The project can remain off the user's PC until a real FS25 integration test is needed.
 
 ## Pre-game CI checks

@@ -12,8 +12,12 @@ including an available compatible tractor/wagon pair and misleading decoys:
 1. FIND must select by category, same farm, availability, capabilities, power,
    hitch and PTO. Do not assert specific fixture IDs; inspect selected properties.
 2. RESERVE owns both units atomically; concurrent requests cannot steal either.
-3. MOVE delegates approach; ATTACH delegates coupling; VERIFY checks both ends
-   of the attachment from fresh state before any delivery movement.
+3. MOVE is HITCH: a pure plan picks the joints and the final/staging poses before
+   reservation; STAGE (GIANTS GOTO) and ALIGN_REVERSE (bounded, game-side) are each
+   followed by a fresh check that the pair is still reserved, the wagon has not
+   moved and the step's outcome is observed. ATTACH re-checks GIANTS' exact
+   candidate; VERIFY checks both ends of the attachment from fresh state before any
+   delivery movement.
 4. DELIVER delegates travel to the resolved destination: by default the nearest
    routable AutoDrive marker within 50 m of the requester's position captured at
    acceptance; or an explicit marker (live ID or exact normalized name); or a field
@@ -35,8 +39,22 @@ Executable mapping (`python scripts/check.py`):
 - `test_active_owner_collision_preserves_unselected_equipment` and
   `test_stop_without_owner_is_rejected`: cleanup cannot claim unrelated assets.
 - `test_changed_after_reservation`: fresh eligibility prevents stale selection use.
-- `test_physical_failures`: approach/attach/delivery errors and timeouts stop and
-  fail; no fabricated success.
+- `test_physical_failures`: stage/align/attach/delivery errors and timeouts stop and
+  fail; no later physical step runs; no fabricated success.
+- `tests/test_hitch.py`: joint selection among many joints, incompatible/unknown
+  geometry, final and staging pose for random poses, orientation, determinism.
+- `HitchCompositionTests`: steps use the plan exactly; AutoDrive TRAVEL_NEAR only
+  when far (and unobserved arrival stops); unreachable or unplannable pairs block
+  before reservation; staging not observed, wagon moved or rotated, joint occupied,
+  reservation lost, no reverse progress, acknowledged-but-absent attach and a moving
+  tractor after attach all stop with no further action.
+- `tests/test_lua_hitch.py` (Lua 5.1 and 5.4): GIANTS GOTO start/cancel sequence;
+  ALIGN_REVERSE refuses unsafe limits and joints, reverses only, stops the instant
+  GIANTS reports the exact pair, and fails closed on timeout, distance limit, stall,
+  wagon moved/attached, lost reservation, farm change, occupied tractor, other
+  candidate (implement or joint), unreadable state and missing motor; a terminal
+  result never resumes; ATTACH refuses unless exact, stopped, reserved and allowed,
+  calls GIANTS once, and an acknowledged attach is not success.
 - `test_false_observations`: false attach/arrival acknowledgements, moving vehicles,
   wrong attachment, wagon left behind and lost attachment never complete.
 - `test_stop_failure_retains_reservation`: uncertain cleanup remains UNVERIFIED.

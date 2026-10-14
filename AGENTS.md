@@ -20,6 +20,10 @@ have precedence; report conflicts instead of silently changing the scope.
 - FS25 and existing mods perform physical work. No navigation, pathfinding,
   driving, Courseplay, or AutoDrive replacements. No generalized agent platform,
   autonomous purchasing, fieldwork, or unrelated features in the current task.
+- Sole user-authorized exception: HITCH's ALIGN_REVERSE, a bounded reverse of the
+  last few metres (mod/FarmhandHitch.lua) whose steering is delegated to GIANTS'
+  AIVehicleUtil.driveToPoint and which stops as soon as GIANTS reports the exact
+  planned joints attachable. Keep it capped; never extend it into navigation.
 - Keep Python orchestration in companion/, pure contracts in protocol/ and
   adapters/, game-side Lua in mod/, synthetic state in simulator/, tests in tests/.
   Never import simulator into companion or mod. No simulated success in real adapters.

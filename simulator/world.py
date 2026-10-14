@@ -3,7 +3,13 @@ from dataclasses import replace
 import math
 from threading import RLock
 
-from protocol.model import Destination, Equipment
+from protocol.model import Destination, Equipment, Pose
+
+# Mock-only stand-ins for GIANTS' attach-range decision and AIJobGoTo accuracy.
+# They are NOT GIANTS' rules (adapters/EVIDENCE.md); they only let orchestration
+# tests distinguish "where the plan said" from "somewhere else".
+MOCK_ATTACH_RANGE_M = 0.3
+MOCK_POSE_TOLERANCE_M = 0.5
 
 
 class MockWorld:
@@ -85,13 +91,45 @@ class MockWorld:
         self._compatible(tractor, wagon)
         return tractor, wagon
 
-    def approach(self, tractor_id, wagon_id, owner):
+    def _unattached_pair(self, tractor_id, wagon_id, owner):
+        tractor, wagon = self._reserved_pair(tractor_id, wagon_id, owner)
+        if tractor.attached_to is not None or wagon.attached_to is not None:
+            raise ValueError("Hitch steps require an unattached pair")
+        return tractor, wagon
+
+    def _place(self, tractor, pose):
+        # Mock-only teleport, never a substitute for real navigation or reversing.
+        if not all(math.isfinite(v) for v in (pose.x, pose.z, pose.yaw)):
+            raise ValueError("Invalid pose")
+        self.items[tractor.id] = replace(tractor, position=(pose.x, pose.z), ai_root=pose,
+                                         heading=pose.yaw, stopped=True)
+
+    def travel(self, tractor_id, destination_id, owner):
         with self._lock:
-            tractor, wagon = self._reserved_pair(tractor_id, wagon_id, owner)
-            if tractor.attached_to is not None or wagon.attached_to is not None:
-                raise ValueError("Approach requires an unattached pair")
-            # Mock-only teleport, never a substitute for real navigation or alignment.
-            self.items[tractor.id] = replace(tractor, position=wagon.position, stopped=True)
+            ids = self._reservations.get(owner, (None, (None, None)))[1]
+            tractor, _ = self._unattached_pair(tractor_id, ids[1], owner)
+            destination = self.destination_map.get(destination_id)
+            if destination is None or not all(math.isfinite(v) for v in destination.position):
+                raise ValueError("Unknown destination")
+            yaw = tractor.ai_root.yaw if tractor.ai_root else 0.0
+            self._place(tractor, Pose(*destination.position, yaw))
+
+    def stage(self, tractor_id, wagon_id, pose, owner):
+        with self._lock:
+            tractor, _ = self._unattached_pair(tractor_id, wagon_id, owner)
+            self._place(tractor, pose)
+
+    def align(self, tractor_id, wagon_id, plan, owner):
+        with self._lock:
+            tractor, wagon = self._unattached_pair(tractor_id, wagon_id, owner)
+            joint = next((j for j in wagon.input_joints if j.index == plan.wagon_joint), None)
+            root = tractor.ai_root
+            # Like the real step, only reverse from the staging pose towards an unmoved wagon.
+            if (joint is None or root is None
+                    or math.dist(joint.position, plan.target) > MOCK_POSE_TOLERANCE_M
+                    or math.dist((root.x, root.z), (plan.staging.x, plan.staging.z)) > MOCK_POSE_TOLERANCE_M):
+                raise RuntimeError("Not staged for this wagon")
+            self._place(tractor, plan.final)
 
     def deliver(self, tractor_id, destination_id, owner):
         with self._lock:
@@ -103,18 +141,24 @@ class MockWorld:
             if destination is None or not all(math.isfinite(v) for v in destination.position):
                 raise ValueError("Unknown destination")
             # Mock-only teleport of the coupled pair; AutoDrive does real routing.
-            for item in (tractor, wagon):
-                self.items[item.id] = replace(item, position=destination.position, stopped=True)
+            yaw = tractor.ai_root.yaw if tractor.ai_root else 0.0
+            self._place(tractor, Pose(*destination.position, yaw))
+            self.items[wagon.id] = replace(wagon, position=destination.position, stopped=True)
 
-    def attach(self, tractor_id, wagon_id, owner):
+    def attach(self, tractor_id, wagon_id, joints, owner):
         with self._lock:
-            tractor, wagon = self._owned(tractor_id, owner), self._owned(wagon_id, owner)
-            self._compatible(tractor, wagon)
-            if (tractor.attached_to is not None or wagon.attached_to is not None
+            tractor, wagon = self._unattached_pair(tractor_id, wagon_id, owner)
+            out = next((j for j in tractor.output_joints if j.index == joints[0]), None)
+            inp = next((j for j in wagon.input_joints if j.index == joints[1]), None)
+            if (out is None or inp is None or tractor.ai_root is None
+                    or not out.free or not inp.active or out.joint_type != inp.joint_type
                     or not tractor.stopped or not wagon.stopped
-                    or math.dist(tractor.position, wagon.position) > 2):
-                raise ValueError("Cannot attach")
-            self.items[tractor.id] = replace(tractor, attached_to=wagon.id)
+                    or math.dist(tractor.ai_root.to_world(out.x, out.z), inp.position)
+                    > MOCK_ATTACH_RANGE_M):
+                raise RuntimeError("Attach rejected")
+            joints_after = tuple(replace(j, free=False) if j.index == out.index else j
+                                 for j in tractor.output_joints)
+            self.items[tractor.id] = replace(tractor, attached_to=wagon.id, output_joints=joints_after)
             self.items[wagon.id] = replace(wagon, attached_to=tractor.id)
 
     def stop(self, tractor_id, owner):

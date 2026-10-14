@@ -11,6 +11,7 @@ import unittest
 from lupa import lua51, lua54
 
 from adapters.fs25 import UNKNOWN_ATTACHMENT, ObservationError, observation_from_snapshot
+from companion.hitch import plan_hitch
 from companion.executor import Executor
 from protocol.ipc import PIPE_PATH, parse_frame
 
@@ -21,11 +22,11 @@ STUBS = r"""
 local Observe = ...
 local stubs = {}
 
-local function node(x, z) return { x = x, y = 0, z = z } end
+local function node(x, z, yaw) return { x = x, y = 0, z = z, yaw = yaw or 0 } end
 
 -- Build a vehicle exposing only upstream-evidenced members.
 function stubs.vehicle(world, t)
-    local v = { ownerFarmId = t.farm or 1, rootNode = node(t.x or 0, t.z or 0),
+    local v = { ownerFarmId = t.farm or 1, rootNode = node(t.x or 0, t.z or 0, t.yaw),
                 configFileName = t.file }
     world.ids[v] = t.id
     function v:getLastSpeed() return t.speed or 0 end
@@ -33,12 +34,23 @@ function stubs.vehicle(world, t)
     function v:getIsControlled() return t.controlled == true end
     function v:getIsAIActive() return t.ai == true end
     if t.joints then
-        function v:getAttacherJoints()
-            local joints = {}
-            for i, name in ipairs(t.joints) do
-                joints[i] = { jointType = world.env.AttacherJoints["JOINTTYPE_" .. name], index = i }
-            end
-            return joints
+        -- GIANTS returns the same joint tables each call; jointIndex 0 means free
+        -- (AttacherJoints lines 1910, 3063). Offsets mirror AIDrivable:onPostLoad.
+        local joints, offsets = {}, {}
+        for i, name in ipairs(t.joints) do
+            joints[i] = { jointType = world.env.AttacherJoints["JOINTTYPE_" .. name],
+                          jointIndex = (t.occupied or {})[i] and 1 or 0 }
+            offsets[i] = { x = 0, y = 0.5, z = (t.jointZ or {})[i] or -2.5 }
+        end
+        function v:getAttacherJoints() return joints end
+        function v:getAttacherJointByJointDescIndex(i)
+            if t.badIndexMap then return joints[i + 1] end
+            return joints[i]
+        end
+        if t.extraOffset then offsets[#offsets + 1] = { x = 0, y = 0, z = -1 } end
+        if t.aiDrivable then
+            v.spec_aiDrivable = { attacherJointOffsets = offsets }
+            function v:getAIRootNode() return v.rootNode end
         end
         function v:getAttachedImplements()
             if t.brokenImplements then error("engine error") end
@@ -48,12 +60,18 @@ function stubs.vehicle(world, t)
         end
     end
     if t.inputs then
-        function v:getInputAttacherJoints()
-            local joints = {}
-            for i, name in ipairs(t.inputs) do
-                joints[i] = { jointType = world.env.AttacherJoints["JOINTTYPE_" .. name] }
+        local inputs = {}
+        for i, name in ipairs(t.inputs) do
+            local at = (t.inputAt or {})[i] or { t.x or 0, (t.z or 0) + 4 }
+            inputs[i] = { jointType = world.env.AttacherJoints["JOINTTYPE_" .. name],
+                          node = node(at[1], at[2]) }
+        end
+        function v:getInputAttacherJoints() return inputs end
+        function v:getIsInputAttacherActive(joint)
+            for i, candidate in ipairs(inputs) do
+                if candidate == joint then return not (t.inactive or {})[i] end
             end
-            return joints
+            return nil
         end
         function v:getAttacherVehicle() return world.byId[t.attacher] end
     end
@@ -93,6 +111,12 @@ function stubs.world(options)
                            JOINTTYPE_TRAILERLOW = 4, JOINTTYPE_SEMITRAILER = 5 },
         NetworkUtil = { getObjectId = function(object) return world.ids[object] end },
         getWorldTranslation = function(n) return n.x, n.y, n.z end,
+        -- Only the forward axis is ever queried; GIANTS yaw convention (EVIDENCE.md).
+        localDirectionToWorld = function(n, x, y, z)
+            assert(x == 0 and y == 0 and z == 1)
+            return math.sin(n.yaw), 0, math.cos(n.yaw)
+        end,
+        MathUtil = { getYRotationFromDirection = function(dx, dz) return (math.atan2 or math.atan)(dx, dz) end },
         g_storeManager = { getItemByXMLFilename = function(self, file)
             if file == nil then return nil end
             return { categoryName = file }
@@ -264,6 +288,85 @@ class LuaContractTests(unittest.TestCase):
                 self.assertEqual((record["attacher_vehicle_id"], record["implement_ids"]), (None, []))
                 self.assertEqual(item.attached_to, None if observed else UNKNOWN_ATTACHMENT)
                 self.assertEqual(item.available, observed)
+
+    def test_hitch_geometry_is_observed(self):
+        tractor = ('{ id = 31, file = "STUB_TRACTORS", x = 5, z = 7, yaw = 0.5, aiDrivable = true,'
+                   '  joints = { "TRAILER", "IMPLEMENT", "TRAILER" }, jointZ = { -2.5, 3.0, -2.6 },'
+                   '  occupied = { [3] = true } }')
+        record, item = self.vehicle_record(tractor)
+        self.assertAlmostEqual(record["heading"], 0.5)
+        self.assertEqual(record["ai_root"], {"x": 5, "z": 7, "yaw": record["ai_root"]["yaw"]})
+        self.assertAlmostEqual(record["ai_root"]["yaw"], 0.5)
+        self.assertEqual(record["output_joints"], [
+            {"index": 1, "type": "TRAILER", "x": 0, "z": -2.5, "free": True},
+            {"index": 2, "type": "IMPLEMENT", "x": 0, "z": 3, "free": True},
+            {"index": 3, "type": "TRAILER", "x": 0, "z": -2.6, "free": False}])
+        self.assertEqual(item.ai_root.x, 5)
+        self.assertEqual([j.index for j in item.output_joints if j.free], [1, 2])
+
+        wagon = ('{ id = 32, file = "STUB_WAGONS", x = 40, z = 20, yaw = -1.0,'
+                 '  inputs = { "TRAILERLOW", "TRAILER" }, inputAt = { { 41, 24 }, { 40.5, 24.25 } },'
+                 '  inactive = { [1] = true } }')
+        record, item = self.vehicle_record(wagon)
+        self.assertAlmostEqual(record["heading"], -1.0)
+        self.assertIsNone(record["ai_root"])
+        self.assertEqual(record["output_joints"], [])
+        self.assertEqual(record["input_joint_poses"], [
+            {"index": 1, "type": "TRAILERLOW", "x": 41, "z": 24, "active": False},
+            {"index": 2, "type": "TRAILER", "x": 40.5, "z": 24.25, "active": True}])
+        self.assertEqual([(j.index, j.position, j.active) for j in item.input_joints],
+                         [(1, (41, 24), False), (2, (40.5, 24.25), True)])
+
+    def test_unknown_hitch_geometry_is_never_usable(self):
+        tractor = ('{ id = 31, file = "STUB_TRACTORS", aiDrivable = true, joints = { "TRAILER" },'
+                   '  modes = { %s } }')
+        wagon = '{ id = 32, file = "STUB_WAGONS", inputs = { "TRAILER" }, modes = { %s } }'
+        cases = [
+            # Index mapping disagrees with GIANTS' own lookup: geometry unknown.
+            ('{ id = 31, file = "STUB_TRACTORS", aiDrivable = true, joints = { "TRAILER" }, badIndexMap = true }',
+             "output_joints", []),
+            # Offsets not 1:1 with joints (joints changed since onPostLoad): unknown.
+            ('{ id = 31, file = "STUB_TRACTORS", aiDrivable = true, joints = { "TRAILER" }, extraOffset = true }',
+             "output_joints", []),
+            (tractor % "getAIRootNode = 'raises'", "ai_root", None),
+            (tractor % "getAIRootNode = 'missing'", "ai_root", None),
+            # Without AIDrivable there are no GIANTS offsets, hence no tractor geometry.
+            ('{ id = 31, file = "STUB_TRACTORS", joints = { "TRAILER" } }', "output_joints", []),
+            (wagon % "getIsInputAttacherActive = 'returns_nil'", "input_joint_poses",
+             [{"index": 1, "type": "TRAILER", "x": 0, "z": 4, "active": False}]),
+            (wagon % "getIsInputAttacherActive = 'raises'", "input_joint_poses",
+             [{"index": 1, "type": "TRAILER", "x": 0, "z": 4, "active": False}]),
+            (wagon % "getIsInputAttacherActive = 'missing'", "input_joint_poses",
+             [{"index": 1, "type": "TRAILER", "x": 0, "z": 4, "active": False}]),
+        ]
+        for spec, field, expected in cases:
+            with self.subTest(spec=spec, field=field):
+                record, _ = self.vehicle_record(spec)
+                self.assertEqual(record[field], expected)
+        # Unreadable joint lists drop the whole vehicle from the frame (skipped).
+        for spec in (tractor % "getAttacherJoints = 'raises'", wagon % "getInputAttacherJoints = 'raises'"):
+            with self.subTest(spec=spec):
+                frame = self.snapshot(self.stubs.single(self.lua.eval(spec)))
+                self.assertEqual((frame["vehicles"], frame["skipped"]), ([], 1))
+        # A vehicle whose root direction cannot be read has no heading.
+        world = self.stubs.single(self.lua.eval(wagon % ""))
+        world.env.localDirectionToWorld = self.lua.eval("function() error('engine error') end")
+        record, = self.snapshot(world)["vehicles"]
+        self.assertIsNone(record["heading"])
+
+    def test_lua_observed_pair_produces_a_hitch_plan(self):
+        world = self.stubs.world()
+        self.stubs.vehicle(world, self.lua.eval(
+            '{ id = 31, file = "STUB_TRACTORS", x = 0, z = 0, aiDrivable = true,'
+            '  joints = { "IMPLEMENT", "TRAILER" }, jointZ = { 3.0, -2.5 } }'))
+        self.stubs.vehicle(world, self.lua.eval(
+            '{ id = 32, file = "STUB_WAGONS", x = 40, z = 20, yaw = 1.2, inputs = { "TRAILER" },'
+            '  inputAt = { { 43.7, 21.4 } } }'))
+        items = {e.id: e for e in observation_from_snapshot(self.snapshot(world), CATEGORIES).equipment}
+        plan = plan_hitch(items["31"], items["32"])
+        self.assertEqual((plan.tractor_joint, plan.wagon_joint), (2, 1))
+        self.assertEqual(plan.target, (43.7, 21.4))
+        self.assertAlmostEqual(plan.final.yaw, 1.2)
 
     def test_without_autodrive_there_are_no_destinations(self):
         world = self.stubs.standard(self.lua.table(noAutoDrive=True))
