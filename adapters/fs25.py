@@ -26,7 +26,9 @@ GIANTS_PTO_TORQUE_SHARE = 0.9
 
 
 class ObservationError(ValueError):
-    pass
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -71,11 +73,12 @@ def _pto_names(names) -> frozenset[str] | None:
 
 
 def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
-                           links: frozenset[int] = frozenset()) -> Equipment:
+                           links: frozenset[int] = frozenset(), bridge_ready: bool = False) -> Equipment:
     """``vehicle`` must already be schema-validated by protocol.ipc.parse_frame.
 
     ``links`` adds attachments other vehicles report for this one. Unknown (None)
     occupancy/AI state maps to occupied/busy AND unavailable, never to free.
+    ``bridge_ready``: the snapshot names this companion's live command session.
     """
     category = _category(vehicle, categories)
     speed = vehicle["speed_kmh"]
@@ -96,9 +99,9 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
         pto_torque_capacity=None if motor is None else
         GIANTS_PTO_TORQUE_SHARE * motor["peak_torque"] * motor["pto_rpm_ratio"],
         required_pto_torque=vehicle["pto_torque"],
-        # Only stopAutoDrive() is granted: no companion -> game command channel
-        # exists yet and the HITCH composition is UNVERIFIED in FS25.
-        capabilities=frozenset({"stop"}) if has_autodrive else frozenset(),
+        # Physical capability exists only through the live command bridge
+        # (mod/FarmhandBridge.lua); travel and delivery need AutoDrive on the tractor.
+        capabilities=frozenset({"move", "attach", "stop"}) if bridge_ready and has_autodrive else frozenset(),
         available=observed,
         busy=(vehicle["ai_active"] is not False
               or (has_autodrive and vehicle["ad_active"] is not False)),
@@ -118,7 +121,8 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
     )
 
 
-def observation_from_snapshot(frame: dict, categories: dict[str, str]) -> Observation:
+def observation_from_snapshot(frame: dict, categories: dict[str, str],
+                              bridge_ready: bool = False) -> Observation:
     """Build an authoritative observation, or raise ObservationError."""
     if not set(categories.values()) <= ALLOWED_CATEGORIES:
         raise ObservationError("INVALID_CATEGORY_MAP")
@@ -127,7 +131,7 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str]) -> Observ
     if frame["truncated"]:
         raise ObservationError("SNAPSHOT_TRUNCATED")
     links = _claimed_links(frame["vehicles"])
-    equipment = tuple(equipment_from_vehicle(v, categories, frozenset(links.get(v["id"], ())))
+    equipment = tuple(equipment_from_vehicle(v, categories, frozenset(links.get(v["id"], ())), bridge_ready)
                       for v in frame["vehicles"])
     if len({e.id for e in equipment}) != len(equipment):
         raise ObservationError("DUPLICATE_VEHICLE_ID")

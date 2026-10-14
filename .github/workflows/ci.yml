@@ -72,7 +72,7 @@ jobs:
           python -m pip_audit -r requirements-dev.txt --strict
 
   package-probe:
-    name: Build exact FS25 probe artifact
+    name: Build exact FS25 mod artifact
     needs:
       - acceptance
       - lua-static
@@ -87,11 +87,11 @@ jobs:
         with:
           python-version: '3.12'
       - name: Build and validate exact install folder
-        run: python scripts/package_probe.py --build dist/FS25_FarmhandProbe
-      - name: Upload qualified probe
+        run: python scripts/package_probe.py --build dist/FS25_Farmhand
+      - name: Upload qualified mod
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: FS25_FarmhandProbe-${{ github.sha }}
+          name: FS25_Farmhand-${{ github.sha }}
           path: dist/
           if-no-files-found: error
           retention-days: 14

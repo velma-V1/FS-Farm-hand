@@ -445,7 +445,7 @@ end
 
 -- Returns (line, nil), or (nil, reason) when the farm, the vehicle list or the
 -- AutoDrive destination list cannot be observed (nothing is sent in that case).
-function Observe.snapshot(env, seq)
+function Observe.snapshot(env, seq, session)
     local farmId = try(function() return env.g_currentMission:getFarmId() end)
     if not integer(farmId) or farmId < 1 or farmId > 255 then return nil, "NO_FARM" end
     local vehicles = try(function() return env.g_currentMission.vehicleSystem.vehicles end)
@@ -491,6 +491,8 @@ function Observe.snapshot(env, seq)
         event = "snapshot",
         protocol = Observe.PROTOCOL,
         seq = seq,
+        -- The companion session this game currently accepts commands from.
+        session = nullable(token(session)),
         farm_id = farmId,
         -- CP keys per-map field data on missionInfo.mapId (CustomFieldManager.lua:284).
         map_id = nullable(text(try(function() return env.g_currentMission.missionInfo.mapId end))),

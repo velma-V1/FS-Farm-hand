@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8" standalone="no" ?>
-<!-- Development build for the first FS25 HITCH experiment only (mod/README.md).
+<!-- FS25_Farmhand: the AC-001 game-side bridge plus the diagnostic hitch probe (mod/README.md).
      descVersion as AutoDrive 3.0.1.4 and Manual Attach 1.1.1.0. No icon: FS25
      loads a folder mod without one (Farmhand Companion modDesc.xml comment),
      and this build is never shipped as a ZIP. -->
@@ -7,15 +7,16 @@
     <author>FS-Farm-hand</author>
     <version>0.1.0.0</version>
     <title>
-        <en>Farmhand hitch probe (development)</en>
+        <en>Farmhand AC-001 (development)</en>
     </title>
     <description>
-        <en>Development probe for one tractor and forage wagon hitch. Nothing runs until the fhHitchList or fhHitchProbe console command is typed.</en>
+        <en>Fetches an owned tractor and forage wagon, hitches them and delivers them, only when the local Farmhand companion asks. The fhHitch* console commands are diagnostics. Nothing moves on load.</en>
     </description>
     <multiplayer supported="false"/>
     <extraSourceFiles>
         <sourceFile filename="FarmhandObserve.lua"/>
         <sourceFile filename="FarmhandHitch.lua"/>
+        <sourceFile filename="FarmhandBridge.lua"/>
         <sourceFile filename="FarmhandProbe.lua"/>
     </extraSourceFiles>
 </modDesc>

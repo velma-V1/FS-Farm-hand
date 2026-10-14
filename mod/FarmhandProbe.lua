@@ -1,6 +1,8 @@
--- DEVELOPMENT-ONLY probe for the first FS25 HITCH experiment. It is not the
--- production farmhand: no companion, no IPC, nothing automatic. Nothing happens
--- until the player types one of these console commands (server side only):
+-- DIAGNOSTIC console probe for the HITCH part of AC-001. Production AC-001 runs
+-- from the companion (companion/run.py) through mod/FarmhandBridge.lua; this
+-- probe drives the very same bridge operations by hand, one attempt at a time,
+-- and refuses while a companion session owns the bridge. Nothing happens until
+-- the player types one of these console commands (server side only):
 --
 --   fhHitchList
 --       read-only: owned vehicles with name, store category, forage-wagon spec,
@@ -28,8 +30,6 @@ Probe.STAGING_DISTANCE_M = 4.0           -- companion/hitch.py STAGING_DISTANCE_
 Probe.STAGE_POSITION_TOLERANCE_M = 1.0   -- executor STAGE_POSITION_TOLERANCE_M
 Probe.STAGE_YAW_TOLERANCE_DEG = 10       -- executor STAGE_YAW_TOLERANCE_RAD
 Probe.PLAN_TOLERANCE_M = 0.25            -- executor WAGON_MOVED_TOLERANCE_M
-Probe.STAGE_TIMEOUT_MS = 120000
-Probe.SETTLE_TIMEOUT_MS = 5000
 
 local function log(fmt, ...)
     local ok, msg = pcall(string.format, fmt, ...)
@@ -127,13 +127,13 @@ local function fmtPose(p)
     return string.format("x=%.3f z=%.3f yaw=%.4f", p.x, p.z, p.yaw)
 end
 
--- Single exit: exactly one RESULT line per attempt, then the probe is idle.
+-- Single exit: exactly one RESULT line per attempt, then the probe is idle and
+-- releases the bridge. A running operation is aborted first (its own motion only).
 function Probe:finish(status, reason)
-    local task = self.task
-    self.token = (self.token or 0) + 1        -- every isReserved() is now false
-    if task ~= nil and task.session ~= nil then
-        self.Hitch.alignStep(self.env, task.session, 0)   -- latched: brake + cruise off only
-    end
+    local task, Bridge = self.task, self.Bridge
+    if task ~= nil and task.op ~= nil then Bridge.abort(self.env, task.op, reason) end
+    if Bridge.owner == self.owner then Bridge.owner = nil end
+    Bridge.lastAlign = nil
     self.task = nil
     log("RESULT %s %s", status, reason)
 end
@@ -181,7 +181,11 @@ local function unsafe(r, farmId, null)
 end
 
 function Probe:consoleProbe(tractorId, wagonId, radius, vertical, speed)
-    if self.task ~= nil then log("fhHitchProbe: BUSY - one attempt at a time (fhHitchStop aborts)") return end
+    local Bridge = self.Bridge
+    if self.task ~= nil or Bridge.owner ~= nil then
+        log("fhHitchProbe: BUSY - one attempt at a time and never during a companion session")
+        return
+    end
     local env, O = self.env, self.Observe
     if env.g_server == nil then log("fhHitchProbe: server only") return end
     local args = { maxDistanceM = math.min(Probe.STAGING_DISTANCE_M + 2, self.Hitch.LIMITS.maxDistanceM),
@@ -201,6 +205,10 @@ function Probe:consoleProbe(tractorId, wagonId, radius, vertical, speed)
             self.Hitch.LIMITS.maxVerticalM, self.Hitch.LIMITS.minSpeedKmh, self.Hitch.LIMITS.maxSpeedKmh)
         return
     end
+    self.attempt = (self.attempt or 0) + 1
+    self.owner = "probe:" .. self.attempt
+    Bridge.owner = self.owner
+    local owner = self.owner
     self.task = { phase = "validate" }
     local ok, err = pcall(function()
         local farmId = env.g_currentMission:getFarmId()
@@ -219,11 +227,10 @@ function Probe:consoleProbe(tractorId, wagonId, radius, vertical, speed)
         log("limits assistRadiusM=%s maxVerticalM=%.2f maxSpeedKmh=%.1f maxDistanceM=%.1f",
             tostring(args.assistRadiusM or "GIANTS default"), limits.maxVerticalM, limits.maxSpeedKmh,
             limits.maxDistanceM)
-        local started, reason = self.Hitch.startStaging(env, tractor, farmId, plan.staging.x, plan.staging.z,
-                                                        plan.staging.yaw)
-        if not started then return self:finish("FAILED", "STAGE_" .. tostring(reason)) end
-        self.task = { phase = "stage", tractor = tractor, wagon = wagon, farmId = farmId, plan = plan,
-                      args = args, elapsed = 0, seenActive = false }
+        local task = { phase = "stage", tractor = tractor, wagon = wagon, farmId = farmId, plan = plan,
+                       args = args, owned = function() return Bridge.owner == owner end }
+        self.task = task
+        self:startOp(task, { op = "stage", x = plan.staging.x, z = plan.staging.z, yaw = plan.staging.yaw })
     end)
     if not ok then
         log("fhHitchProbe error: %s", tostring(err))
@@ -232,18 +239,21 @@ function Probe:consoleProbe(tractorId, wagonId, radius, vertical, speed)
 end
 
 function Probe:consoleStop()
-    local task = self.task
-    if task == nil then log("fhHitchStop: nothing running") return end
-    -- Only the GOTO this probe started and saw running is cancelled.
-    if task.phase == "stage" and task.seenActive then
-        self.Hitch.cancelStaging(self.env, task.tractor)
-    end
+    if self.task == nil then log("fhHitchStop: nothing running") return end
     self:finish("FAILED", "STOPPED_BY_USER")
 end
 
 -- ---------------------------------------------------------- per frame
 
-local function stageEnded(self, task)
+-- Start one bridge operation for the attempt, or finish with its refusal.
+function Probe:startOp(task, spec)
+    spec.tractor, spec.wagon, spec.farmId, spec.owned = task.tractor, task.wagon, task.farmId, task.owned
+    local op, code, status = self.Bridge.start(self.env, spec)
+    if op == nil then return self:finish(status, code) end
+    task.op = op
+end
+
+local function stageObserved(self, task)
     local env = self.env
     local node = task.tractor:getAIRootNode()
     local x, _, z = env.getWorldTranslation(node)
@@ -253,34 +263,17 @@ local function stageEnded(self, task)
     local err = math.sqrt((root.x - p.x) ^ 2 + (root.z - p.z) ^ 2)
     local yawErr = math.deg(math.abs((root.yaw - p.yaw + math.pi) % (2 * math.pi) - math.pi))
     log("stage observed %s error=%.3f m %.2f deg", fmtPose(root), err, yawErr)
-    if not (err <= Probe.STAGE_POSITION_TOLERANCE_M and yawErr <= Probe.STAGE_YAW_TOLERANCE_DEG) then
-        return self:finish("FAILED", "STAGE_NOT_OBSERVED")
-    end
-    task.phase, task.elapsed = "settle", 0
+    return err <= Probe.STAGE_POSITION_TOLERANCE_M and yawErr <= Probe.STAGE_YAW_TOLERANCE_DEG
 end
 
-local function startAlign(self, task)
-    -- The wagon and joints must still be exactly what was planned.
+-- The wagon and joints must still be exactly what was planned.
+local function planUnchanged(self, task)
     local t, w = observePair(self, task.tractor, task.wagon)
     local fresh = t and w and Probe.plan(t, w, Probe.STAGING_DISTANCE_M, self.Observe.NULL)
     local plan = task.plan
-    if fresh == nil or fresh.tractorJoint ~= plan.tractorJoint or fresh.wagonJoint ~= plan.wagonJoint
-            or math.sqrt((fresh.target.x - plan.target.x) ^ 2 + (fresh.target.z - plan.target.z) ^ 2)
-               > Probe.PLAN_TOLERANCE_M then
-        return self:finish("FAILED", "PLAN_CHANGED")
-    end
-    local token = self.token
-    local args = {
-        tractor = task.tractor, wagon = task.wagon, tractorJoint = plan.tractorJoint,
-        wagonJoint = plan.wagonJoint, farmId = task.farmId,
-        isReserved = function() return self.token == token and self.task == task end,
-    }
-    for k, v in pairs(task.args) do args[k] = v end
-    local session, reason = self.Hitch.newAlign(self.env, args)
-    if session == nil then return self:finish("FAILED", "ALIGN_" .. tostring(reason)) end
-    log("reverse started attachDistanceSq=%.4f maxVerticalM=%.2f maxSpeedKmh=%.1f",
-        session.attachDistanceSq, session.maxVerticalM, session.maxSpeedKmh)
-    task.phase, task.session = "align", session
+    return fresh ~= nil and fresh.tractorJoint == plan.tractorJoint and fresh.wagonJoint == plan.wagonJoint
+        and math.sqrt((fresh.target.x - plan.target.x) ^ 2 + (fresh.target.z - plan.target.z) ^ 2)
+            <= Probe.PLAN_TOLERANCE_M
 end
 
 -- PASS only from a fresh observation of exactly this pair on the planned tractor
@@ -305,52 +298,43 @@ local function verify(self, task)
 end
 
 local function step(self, task, dt)
-    local env, Hitch = self.env, self.Hitch
-    if task.phase == "stage" then
-        task.elapsed = task.elapsed + dt
-        local active = task.tractor:getIsAIActive()
-        if active == true then task.seenActive = true end
-        if task.seenActive and active == false then return stageEnded(self, task) end
-        if task.elapsed > Probe.STAGE_TIMEOUT_MS then
-            if task.seenActive then Hitch.cancelStaging(env, task.tractor) end
-            return self:finish("FAILED", task.seenActive and "STAGE_TIMEOUT" or "GOTO_NOT_STARTED")
-        end
-    elseif task.phase == "settle" then
-        task.elapsed = task.elapsed + dt
-        local speed = task.tractor:getLastSpeed()
-        if finite(speed) and math.abs(speed) < 1 then return startAlign(self, task) end
-        if task.elapsed > Probe.SETTLE_TIMEOUT_MS then return self:finish("FAILED", "NOT_STOPPED") end
-    elseif task.phase == "align" then
-        local s = task.session
-        local code = Hitch.alignStep(env, s, dt)
-        if code == "CONTINUE" then return end
+    local status, code = self.Bridge.step(self.env, task.op, dt)
+    if status == nil then return end
+    local s = task.op.session
+    if s ~= nil and task.phase == "align" then
         log("reverse result=%s elapsedMs=%d gap=%.3f bestGap=%.3f dy=%s", code, s.elapsed, s.lastGap,
             s.bestGap, tostring(s.lastDy))
-        if code ~= "CANDIDATE" then
-            return self:finish(code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code)
+    end
+    if status ~= "DONE" then return self:finish(status, code) end
+    task.op = nil
+    if task.phase == "stage" then
+        if not stageObserved(self, task) then return self:finish("FAILED", "STAGE_NOT_OBSERVED") end
+        if not planUnchanged(self, task) then return self:finish("FAILED", "PLAN_CHANGED") end
+        task.phase = "align"
+        local spec = { op = "align", tractorJoint = task.plan.tractorJoint, wagonJoint = task.plan.wagonJoint }
+        for k, v in pairs(task.args) do spec[k] = v end
+        self:startOp(task, spec)
+        if self.task == task then
+            s = task.op.session
+            log("reverse started attachDistanceSq=%.4f maxVerticalM=%.2f maxSpeedKmh=%.1f",
+                s.attachDistanceSq, s.maxVerticalM, s.maxSpeedKmh)
         end
-        local attach = Hitch.attach(env, s)
-        log("attach: %s", attach)
-        if attach ~= "ATTACH_REQUESTED" then
-            return self:finish(attach == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", attach)
-        end
+    elseif task.phase == "align" then
         task.phase = "attach"
+        log("attach: requested")
+        self:startOp(task, { op = "attach", tractorJoint = task.plan.tractorJoint, wagonJoint = task.plan.wagonJoint })
     elseif task.phase == "attach" then
-        local state = Hitch.attachState(env, task.session, dt)
-        if state == "ATTACH_IN_PROGRESS" then return end
-        log("attach state: %s", state)
-        if state ~= "ATTACHED" then return self:finish("UNVERIFIED", state) end
+        log("attach state: %s", code)
         return verify(self, task)
     end
 end
 
 function Probe:update(dt)
     local task = self.task
-    if task == nil or task.phase == "validate" then return end
+    if task == nil or task.op == nil then return end
     local ok, err = pcall(step, self, task, dt)
     if not ok then
         log("probe error: %s", tostring(err))
-        if task.phase == "stage" and task.seenActive then pcall(self.Hitch.cancelStaging, self.env, task.tractor) end
         self:finish("UNVERIFIED", "UNKNOWN_OBSERVATION")
     end
 end
@@ -369,9 +353,10 @@ function Probe:deleteMap()
 end
 
 -- FS25 discards a sourceFile's return value (see FarmhandObserve.lua); the
--- modDesc loads FarmhandObserve.lua and FarmhandHitch.lua before this file.
+-- modDesc loads FarmhandObserve, FarmhandHitch and FarmhandBridge before this.
 Probe.Observe = FarmhandObserve
 Probe.Hitch = FarmhandHitch
+Probe.Bridge = FarmhandBridge
 FarmhandProbe = Probe
 if type(addModEventListener) == "function" then addModEventListener(Probe) end
 return Probe

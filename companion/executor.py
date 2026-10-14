@@ -7,7 +7,7 @@ from threading import Lock
 
 from jsonschema import Draft202012Validator
 
-from adapters.world import World
+from adapters.world import StepUnverified, World
 from companion.hitch import plan_hitch
 from protocol.model import Destination, Equipment, HitchPlan, Position, Result
 
@@ -301,8 +301,11 @@ class Executor:
             status, reason = "COMPLETE", "DELIVERY_OBSERVED"
         except ObservationMismatch as error:
             status, reason = "UNVERIFIED", str(error)
+        except StepUnverified as error:
+            status, reason = "UNVERIFIED", error.code
         except (RuntimeError, TimeoutError, ValueError, KeyError) as error:
-            status, reason = "FAILED", type(error).__name__
+            # Adapter codes (StepFailed, ObservationError) are kept as the reason.
+            status, reason = "FAILED", getattr(error, "code", None) or type(error).__name__
         except Exception as error:
             # An unexpected adapter failure must not fabricate completion.
             status, reason = "UNVERIFIED", type(error).__name__
@@ -310,6 +313,7 @@ class Executor:
             if reserved:
                 try:
                     if physical_attempted:
+                        states.append("STOP")
                         if not self.world.stop(ids[0], owner):
                             raise ObservationMismatch("STOP_NOT_CONFIRMED")
                         stopped = {item.id: item for item in self.world.snapshot()}
@@ -318,6 +322,7 @@ class Executor:
                             raise ObservationMismatch("STOP_NOT_OBSERVED")
                     if status == "COMPLETE":
                         self._arrival(ids, farm_id, owner, target)
+                    states.append("RELEASE")
                     self.world.release(owner)
                     if any(item.reserved_by == owner for item in self.world.snapshot()):
                         raise ObservationMismatch("RELEASE_NOT_OBSERVED")

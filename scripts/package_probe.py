@@ -1,4 +1,4 @@
-"""Validate and build the exact development FS25 hitch-probe install folder."""
+"""Validate and build the exact FS25_Farmhand install folder (AC-001 bridge + diagnostic probe)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ RUNTIME_FILES = (
     "modDesc.xml",
     "FarmhandObserve.lua",
     "FarmhandHitch.lua",
+    "FarmhandBridge.lua",
     "FarmhandProbe.lua",
 )
 SOURCE_FILES = RUNTIME_FILES[1:]
@@ -45,7 +46,7 @@ def validate_mod(path: Path, *, exact_files: bool) -> None:
 
     multiplayer = root.find("multiplayer")
     if multiplayer is None or multiplayer.attrib.get("supported") != "false":
-        fail("development probe must remain single-player only")
+        fail("the AC-001 mod must remain single-player only")
 
     extra = root.find("extraSourceFiles")
     if extra is None:
@@ -91,7 +92,7 @@ def build(destination: Path) -> None:
         digest = hashlib.sha256(data).hexdigest()
         rows.append(f"{digest}  {destination.name}/{name}")
     manifest.write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
-    print(f"Qualified FS25 probe built at {destination}")
+    print(f"Qualified FS25 mod built at {destination}")
     print(manifest.read_text(encoding="utf-8"), end="")
 
 
@@ -104,7 +105,7 @@ def main() -> None:
 
     if args.check_source:
         validate_mod(SOURCE, exact_files=False)
-        print("FS25 probe source layout valid.")
+        print("FS25 mod source layout valid.")
     else:
         build(args.build.resolve())
 

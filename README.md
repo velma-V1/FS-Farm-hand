@@ -13,15 +13,14 @@ It is not part of the farmhand's runtime architecture.
 Current vertical slice: select an available compatible tractor and forage wagon,
 attach them, and bring them to the requester.
 
-**Status: executable mock acceptance harness, not an installable or game-verified
-mod.** Upstream capabilities are recorded with source evidence in
-[adapters/EVIDENCE.md](adapters/EVIDENCE.md). A read-only Lua observation module,
-the local IPC frame protocol, fail-closed FS25 data mapping, and the HITCH
-composition (pure geometry plan, executor steps, game-side GIANTS GOTO staging,
-bounded reverse and normal attach) exist and are tested off-PC only. The command
-channel to the game, the Windows pipe host, any executed movement/attachment, LLM
-integration, speech, and Windows service behavior are not implemented yet.
-The project can remain off the user's PC until a real FS25 integration test is needed.
+**Status: AC-001 is implemented end to end and tested off-PC only; it has never
+run inside FS25.** Upstream capabilities are recorded with source evidence in
+[adapters/EVIDENCE.md](adapters/EVIDENCE.md). The FS25 mod (`FS25_Farmhand`:
+observation, HITCH primitives, command bridge, diagnostic probe), the local
+companion bridge (Windows named pipe in, atomic XML command file and session
+heartbeat out), the real World adapter and a one-shot runner
+(`python -m companion.run`) exist. LLM integration, speech and a Windows service
+are not part of AC-001. First-run steps: [mod/README.md](mod/README.md).
 
 ## Pre-game CI checks
 
@@ -41,10 +40,10 @@ prove anything that requires the actual FS25 runtime.
 | --- | --- |
 | AGENTS.md | Authoritative rules for all coding agents |
 | BUILD_SPEC.md | Local runtime architecture, scope, acceptance and runtime gates |
-| companion/ | Deterministic one-task executor |
+| companion/ | Deterministic executor, FS25 command bridge and World adapter, runner |
 | protocol/ | Executor contract, shared types, local IPC frame protocol |
 | adapters/ | World interface, FS25 snapshot mapping, upstream evidence |
-| mod/ | Fail-closed Lua boundary and read-only FS25 observation |
+| mod/ | FS25_Farmhand: observation, HITCH, command bridge, diagnostic probe |
 | simulator/ | In-memory mock FS25 world |
 | tests/ | AC-001 specification and executable checks |
 | scripts/check.py | Single CI verification command |

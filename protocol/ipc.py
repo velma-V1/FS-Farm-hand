@@ -1,13 +1,17 @@
-"""Local IPC frame protocol v1: game mod -> companion, newline-delimited JSON.
+"""Local IPC protocol v1 (Farmhand Companion pattern: PROTOCOL.md, Transport.lua).
 
-Transport (see adapters/EVIDENCE.md, Farmhand Companion PROTOCOL.md/Transport.lua):
-the FS25 Lua sandbox has no sockets, so the mod opens a Windows named pipe that
-the companion hosts, with ``io.open(PIPE_PATH, "w")``, and writes one JSON
-object per line. Hosting the pipe is Windows-only and is not implemented here;
-this module is the transport-independent, untrusted-input decoder.
+Game -> companion: the FS25 Lua sandbox has no sockets, so the mod opens the
+Windows named pipe the companion hosts with ``io.open(PIPE_PATH, "w")`` and
+writes one JSON object per line (``hello``, ``snapshot``, ``result``).
+Companion -> game: the sandbox reads files only through the engine XML API, so
+one command at a time is an XML file renamed into place (``encode_command``).
+This module is the transport-independent part: untrusted-frame decoding and
+strict command encoding. The I/O lives in companion/bridge.py.
 """
 import json
+import math
 from pathlib import Path
+import re
 
 from jsonschema import Draft202012Validator
 
@@ -98,3 +102,50 @@ class FrameReader:
                 results.append(parse_frame(line))
             except FrameError as error:
                 results.append(error)
+
+
+# ------------------------------------------------------------------ commands
+# The only operations mod/FarmhandBridge.lua executes, with their required
+# arguments; nothing else can be encoded. XML attribute names match the mod.
+COMMAND_ARGS = {
+    "drive": ("tractor", "marker"),
+    "stage": ("tractor", "x", "z", "yaw"),
+    "align": ("tractor", "wagon", "tractorJoint", "wagonJoint", "maxDistanceM"),
+    "attach": ("tractor", "wagon", "tractorJoint", "wagonJoint"),
+    "stop": ("tractor",),
+}
+_ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "x", "z": "z",
+              "yaw": "yaw", "tractorJoint": "tj", "wagonJoint": "wj", "maxDistanceM": "dist"}
+_INTEGER = {"tractor", "wagon", "marker", "tractorJoint", "wagonJoint"}
+_TOKEN = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+MAX_COMMAND_ID = 2147483647
+
+
+def encode_command(session: str, command_id: int, op: str, args: dict) -> str:
+    """One command file's text. Raises ValueError on anything outside the contract."""
+    if not isinstance(session, str) or not _TOKEN.fullmatch(session):
+        raise ValueError("INVALID_SESSION")
+    if type(command_id) is not int or not 1 <= command_id <= MAX_COMMAND_ID:
+        raise ValueError("INVALID_COMMAND_ID")
+    if op not in COMMAND_ARGS or set(args) != set(COMMAND_ARGS[op]):
+        raise ValueError("INVALID_COMMAND")
+    parts = [f'session="{session}"', f'id="{command_id}"', f'op="{op}"']
+    for name in COMMAND_ARGS[op]:
+        value = args[name]
+        if name in _INTEGER:
+            if type(value) is not int or not 0 <= value <= MAX_COMMAND_ID:
+                raise ValueError("INVALID_ARGUMENT")
+            text = str(value)
+        else:
+            if type(value) not in (int, float) or not math.isfinite(value) or abs(value) > 100000:
+                raise ValueError("INVALID_ARGUMENT")
+            text = repr(float(value))
+        parts.append(f'{_ATTRIBUTE[name]}="{text}"')
+    return '<?xml version="1.0" encoding="utf-8" standalone="no" ?>\n<command ' + " ".join(parts) + " />\n"
+
+
+def encode_session(session: str, beat: int) -> str:
+    """The session file: names the companion; ``beat`` changes while it lives."""
+    if not isinstance(session, str) or not _TOKEN.fullmatch(session) or type(beat) is not int or beat < 0:
+        raise ValueError("INVALID_SESSION")
+    return f'<?xml version="1.0" encoding="utf-8" standalone="no" ?>\n<session id="{session}" beat="{beat}" />\n'

@@ -6,8 +6,9 @@ reusing GIANTS FS25 and existing mods. The finished system runs on the user's
 Windows PC alongside Farming Simulator 25. GitHub and hosted CI are development
 tools only, not runtime infrastructure.
 
-This foundation is a CI-tested control contract, not a production-ready or
-installable FS25 mod.
+This build is the complete AC-001 vertical slice on paper: a CI-tested
+companion, command bridge and FS25 mod (`FS25_Farmhand`, built by CI) that has
+not yet run inside FS25.
 
 ## Runtime architecture
 The intended finished runtime is local:
@@ -61,10 +62,10 @@ a lexical tie-break provides repeatability but carries no equipment semantics.
 ## Architecture and boundaries
 | Area | Responsibility | This build |
 | --- | --- | --- |
-| companion/ | Validate intent, deterministic executor, observed completion | Implemented Python core; no daemon or transport |
+| companion/ | Validate intent, deterministic executor, observed completion; command bridge and real World adapter (bridge.py); one-shot runner (run.py) | Implemented; Windows pipe/file I/O tested on Windows CI only |
 | protocol/ | Versioned intent schema, equipment/result types, local IPC frame schema and decoder | Internal contracts; not an FS25 API |
-| adapters/ | World port, FS25 snapshot mapping, upstream evidence (EVIDENCE.md) | Mapping implemented and fail-closed; no physical adapter |
-| mod/ | Read-only observation, HITCH primitives, development console probe | No production command path; never run in FS25 |
+| adapters/ | World port, FS25 snapshot mapping, upstream evidence (EVIDENCE.md) | Mapping implemented and fail-closed; capability only through the live bridge session |
+| mod/ | Observation, HITCH primitives, AC-001 command bridge, diagnostic console probe | Never run in FS25 |
 | simulator/ | Synthetic inventory, atomic reservations, simplified movement/coupling | Mock only |
 | tests/ | Executable acceptance, negative, schema and Lua checks | CI runnable |
 
@@ -89,8 +90,12 @@ completion evidence. The in-process mock enforces this with a lock and snapshots
 Reservations bind an unused owner ID to the exact equipment pair and its farm.
 The mock rechecks this binding and compatibility atomically before movement;
 stop/release cannot sweep unrelated equipment sharing a request ID.
-The synchronous executor cannot preempt a hung adapter: timeout injection tests
-error handling, not a working production watchdog.
+The real adapter is `companion/bridge.py` `FS25World`: every physical step is
+one bounded bridge operation (`drive`, `stage`, `align`, `attach`, `stop`;
+adapters/EVIDENCE.md) whose terminal result is awaited with a bound, and a step
+that ends without a known outcome is UNVERIFIED. The game re-checks ownership,
+occupancy and AI state on every frame and stops what a lost or replaced
+companion session started.
 
 Results: COMPLETE = all observations verified; BLOCKED = invalid input, unavailable
 pair/capability or reservation conflict; FAILED = adapter rejected/failed a step
@@ -99,8 +104,10 @@ Reservations release only after a confirmed stop following attempted physical wo
 Failure to stop/release retains ownership conservatively. Repeated identical
 request IDs return the cached outcome within the same executor instance; changed
 payloads with the same ID are blocked. Execution is serialized in that instance.
-There is no durable replay prevention or crash recovery; do not connect this core
-to a live game until a transport/authority/recovery design is validated.
+Replay across companion restarts is prevented by the bridge, not by persistence:
+a new companion is a new session, and the game never runs another session's or an
+already-seen command. There is no crash recovery: a companion crash stops its motion
+in game after 10 s, leaves the equipment where it stopped, and needs no replay.
 
 ## Non-goals
 No generalized game-agent framework, custom navigation replacement, custom
@@ -130,10 +137,9 @@ Use Python 3.12 and the pinned dependencies. Run `python scripts/check.py` in
 GitHub Actions or another development checkout. Lua is checked through the pinned
 Lua runtime binding in Python; that is not proof of the FS25 embedded runtime.
 
-No FS25 binaries/assets are downloaded or packaged in this foundation. mod/
-deliberately omits a modDesc.xml and install ZIP because no functioning game
-integration exists yet. The first PC installation should occur only when a real
-FS25 integration test is necessary.
+No FS25 binaries/assets are downloaded or packaged. CI builds the exact
+`FS25_Farmhand` folder (scripts/package_probe.py); it is installed as a folder,
+never a ZIP, only for the first FS25 test.
 
 The upstream feasibility probe is recorded in adapters/EVIDENCE.md. Result: read-only
 observation, AutoDrive marker delivery and stop, and every HITCH primitive (joint
@@ -141,19 +147,18 @@ geometry, GIANTS GOTO navigation, driveToPoint reversing, attach-range detection
 normal attachment, attachment observation) are backed by GIANTS/upstream source.
 Their composition on a real tractor and forage wagon is UNVERIFIED until an FS25
 test. Power and PTO now come from GIANTS data on the loaded vehicles; a real pair is
-selectable once the user's tractor store category is configured and a command
-channel grants move/attach. The local IPC is a companion-hosted Windows named pipe
-(game → companion, protocol v1, implemented as a decoder) plus a polled XML command
-file (companion → game, design only). Do not build navigation beyond ALIGN_REVERSE.
+selectable once the user's tractor store category is configured and the
+companion's bridge session is live. The local IPC is the Farmhand Companion
+pattern: a companion-hosted Windows named pipe (game → companion) plus an atomically
+renamed XML command file and a beating session file (companion → game). Do not
+build navigation beyond ALIGN_REVERSE.
 
-The first FS25 test proves only the HITCH composition, with the development
-console probe (`mod/FarmhandProbe.lua`; steps in mod/README.md): `fhHitchList`,
-then `fhHitchProbe <tractorId> <wagonId> [assistRadiusM] [maxVerticalM]
-[maxSpeedKmh]`, which validates, plans (a dev-only Lua copy of companion/hitch.py,
-checked equal in CI), stages with GIANTS GOTO, checks the staged AI-root pose,
-reverses, attaches the exact candidate and verifies exactly that pair and joint,
-ending with one `RESULT` line. Tune `STAGING_DISTANCE_M`, the assist radius,
-vertical guard and reverse speed from the logged values.
+The first FS25 test runs the whole of AC-001 from a structured request
+(`python -m companion.run --config farmhand.json here`; steps in mod/README.md),
+with nothing else enabled. If HITCH fails there, the diagnostic console probe
+(`fhHitchList`, `fhHitchProbe`) repeats just that part with the same bridge
+operations and logs the geometry, so the assist radius, vertical guard and
+reverse speed can be tuned from logged values.
 
 Before claiming production usability, an actual FS25 runtime on the user's PC must
 prove mod load, current game/mod versions, ownership enforcement, equipment detection,

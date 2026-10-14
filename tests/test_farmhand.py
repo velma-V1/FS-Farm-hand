@@ -175,7 +175,7 @@ class AcceptanceTests(unittest.TestCase):
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, "COMPLETE", result)
                 self.assertEqual(result.states, ("FIND", "RESERVE", "STAGE", "ALIGN_REVERSE",
-                                                 "ATTACH", "VERIFY", "DELIVER"))
+                                                 "ATTACH", "VERIFY", "DELIVER", "STOP", "RELEASE"))
                 tractor, wagon = (world.items[x] for x in result.equipment_ids)
                 self.assertEqual((tractor.category, wagon.category), ("tractor", "forage_wagon"))
                 for item in (tractor, wagon):
@@ -676,7 +676,7 @@ class HitchCompositionTests(unittest.TestCase):
         result = Executor(world).execute(intent())
         self.assertEqual(result.status, "COMPLETE", result)
         self.assertEqual(result.states, ("FIND", "RESERVE", "TRAVEL_NEAR", "STAGE", "ALIGN_REVERSE",
-                                         "ATTACH", "VERIFY", "DELIVER"))
+                                         "ATTACH", "VERIFY", "DELIVER", "STOP", "RELEASE"))
 
         class ShortTravel(MockWorld):
             def travel(self, tractor_id, destination_id, owner):

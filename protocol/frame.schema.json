@@ -4,7 +4,8 @@
   "description": "One JSON object per line, written by mod/FarmhandObserve.lua. Field sources are recorded in adapters/EVIDENCE.md.",
   "oneOf": [
     {"$ref": "#/$defs/hello"},
-    {"$ref": "#/$defs/snapshot"}
+    {"$ref": "#/$defs/snapshot"},
+    {"$ref": "#/$defs/result"}
   ],
   "$defs": {
     "coordinate": {"type": "number", "minimum": -100000, "maximum": 100000},
@@ -97,12 +98,13 @@
     "snapshot": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["event", "protocol", "seq", "farm_id", "map_id", "player", "truncated",
+      "required": ["event", "protocol", "seq", "session", "farm_id", "map_id", "player", "truncated",
                    "skipped", "vehicles", "destinations"],
       "properties": {
         "event": {"const": "snapshot"},
         "protocol": {"const": 1},
         "seq": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "session": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},
         "farm_id": {"type": "integer", "minimum": 1, "maximum": 255},
         "map_id": {"oneOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
         "player": {
@@ -116,6 +118,21 @@
         "skipped": {"type": "integer", "minimum": 0, "maximum": 100000},
         "vehicles": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/vehicle"}},
         "destinations": {"type": "array", "maxItems": 2000, "items": {"$ref": "#/$defs/destination"}}
+      }
+    },
+    "result": {
+      "description": "One command's acceptance or terminal outcome (mod/FarmhandBridge.lua). DONE is the observed end of the operation, never on its own proof of arrival or attachment.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "protocol", "session", "id", "op", "status", "code"],
+      "properties": {
+        "event": {"const": "result"},
+        "protocol": {"const": 1},
+        "session": {"$ref": "#/$defs/token"},
+        "id": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "op": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},
+        "status": {"enum": ["ACCEPTED", "DONE", "FAILED", "UNVERIFIED", "REJECTED"]},
+        "code": {"$ref": "#/$defs/token"}
       }
     }
   }

@@ -64,7 +64,29 @@ Executable mapping (`python scripts/check.py`):
   pair; the vertical guard applies at any radius; ATTACH refuses unless exact,
   stopped, reserved, unoccupied, AI-free and allowed, calls GIANTS once; an
   acknowledged attach, or one on other joints, is not success.
-- `tests/test_lua_probe.py` (Lua 5.1 and 5.4): the development console probe loads
+- `tests/test_bridge.py`: strict command framing (only five operations, exact typed
+  arguments, session-bound ids); results from other sessions ignored; ACCEPTED is
+  never completion (unread file → NOT_ACCEPTED, read but silent → unverified,
+  REJECTED, no terminal → RESULT_TIMEOUT, silent game → LINK_LOST); capability only
+  with this companion's live session (an unlinked game blocks before reservation);
+  stale snapshots never read as current; the full AC-001 executor over
+  `FS25World` against a fake game: near tractor skips AutoDrive pickup, far tractor
+  drives first, explicit targets resolve before any command, every step failure
+  stops with its own reason and sends nothing further, AutoDrive "ended" away from
+  the destination is not arrival, an unconfirmed stop keeps the reservation, moving
+  equipment is never released, a replayed request sends no command, and wrong
+  reservations never reach the game; atomic command file; Windows pipe server (on
+  Windows CI).
+- `tests/test_lua_bridge.py` (Lua 5.1 and 5.4): the game bridge is inert without a
+  session; adoption opens the pipe and stamps snapshots; AutoDrive drive reports
+  ACCEPTED, then DONE only once ended and at rest, or AD_NOT_STARTED,
+  AD_STOPPED_WITH_ERROR, OCCUPIED (AD stopped); unknown marker/vehicle never move;
+  stale sessions are rejected and replayed or lower ids never run; one command at a
+  time, a stop pre-empts and is DONE only at rest (else NOT_STOPPED); a lost
+  heartbeat or a new session stops the old session's motion and is never
+  re-adopted; stop cancels only a GOTO it saw running; attach needs the align that
+  found the candidate; the probe cannot start during a companion session.
+- `tests/test_lua_probe.py` (Lua 5.1 and 5.4): the diagnostic console probe loads
   as mod globals in modDesc order and registers its three commands only in
   `loadMap`; nothing runs untyped; `fhHitchList` is read-only; one attempt at a
   time; bad arguments or unsafe vehicles never move anything; staging failure never

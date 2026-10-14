@@ -1,9 +1,26 @@
-"""The minimal physical-world port for AC-001; no real adapter is implemented.
+"""The minimal physical-world port for AC-001. Real adapter: companion/bridge.py
+FS25World; mock: simulator/world.py.
 
 See adapters/EVIDENCE.md for which upstream capability backs each operation.
 """
 from typing import Protocol
 from protocol.model import Destination, Equipment, HitchPlan, Pose, Position
+
+
+class StepFailed(RuntimeError):
+    """A physical step was refused or failed and ended in a known state."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+class StepUnverified(Exception):
+    """A physical step's outcome cannot be established (unknown state, lost link)."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
 
 
 class World(Protocol):

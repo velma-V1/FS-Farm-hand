@@ -277,6 +277,13 @@ function Hitch.alignStep(env, s, dt)
     return code
 end
 
+-- End a session from outside (e.g. a stop command): latched like any terminal
+-- result, so it brakes, switches cruise control off and never drives again.
+function Hitch.abort(env, s, code)
+    if s.result == nil then s.result = code end
+    Hitch.halt(env, s, 0)
+end
+
 -- ------------------------------------------------------------------ ATTACH
 
 -- Attach only if GIANTS' fresh candidate is exactly the planned pair and GIANTS

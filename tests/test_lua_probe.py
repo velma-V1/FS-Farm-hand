@@ -16,6 +16,7 @@ from adapters.fs25 import equipment_from_vehicle
 from companion import executor, hitch
 
 ROOT = Path(__file__).resolve().parents[1]
+MODULES = ("FarmhandObserve.lua", "FarmhandHitch.lua", "FarmhandBridge.lua", "FarmhandProbe.lua")
 
 WORLD = r"""
 local Probe, Observe, Hitch = ...
@@ -190,8 +191,7 @@ class LuaProbeTests(unittest.TestCase):
         self.output = []
         self.lua.globals().print = lambda *args: self.output.append(" ".join(str(a) for a in args))
         load = lambda name: self.lua.execute((ROOT / "mod" / name).read_text())
-        self.observe, self.hitch, self.probe = (load(n) for n in
-                                                ("FarmhandObserve.lua", "FarmhandHitch.lua", "FarmhandProbe.lua"))
+        self.observe, self.hitch, self.bridge, self.probe = (load(n) for n in MODULES)
         self.W = self.lua.execute(WORLD, self.probe, self.observe, self.hitch)
 
     def world(self, **opts):
@@ -216,9 +216,10 @@ class LuaProbeTests(unittest.TestCase):
 
     # ----------------------------------------------------------- loading
     def test_modules_are_mod_globals_and_nothing_auto_runs(self):
-        same = self.lua.eval("function(a, b, c) return FarmhandObserve == a and FarmhandHitch == b "
-                             "and FarmhandProbe == c and c.Observe == a and c.Hitch == b end")
-        self.assertTrue(same(self.observe, self.hitch, self.probe))
+        same = self.lua.eval("function(a, b, c, d) return FarmhandObserve == a and FarmhandHitch == b "
+                             "and FarmhandBridge == c and FarmhandProbe == d and d.Observe == a "
+                             "and d.Hitch == b and d.Bridge == c and c.Hitch == b and c.Observe == a end")
+        self.assertTrue(same(self.observe, self.hitch, self.bridge, self.probe))
         # Loading with the game's listener hook only registers the listener.
         lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
         lua.execute("listeners, commands = {}, {}\n"
@@ -226,20 +227,24 @@ class LuaProbeTests(unittest.TestCase):
                     "function addConsoleCommand(name) commands[#commands + 1] = name end\n"
                     "function removeConsoleCommand(name) end\n"
                     "function getfenv() return {} end")
-        for name in ("FarmhandObserve.lua", "FarmhandHitch.lua", "FarmhandProbe.lua"):
+        for name in MODULES:
             lua.execute((ROOT / "mod" / name).read_text())
         g = lua.globals()
-        self.assertEqual(len(g.listeners), 1)
+        self.assertEqual(len(g.listeners), 2)                # bridge, probe
         self.assertEqual(len(g.commands), 0)
-        g.listeners[1].update(g.listeners[1], 16)            # no task: does nothing at all
-        self.assertIsNone(g.listeners[1].task)
-        g.listeners[1].loadMap(g.listeners[1])
+        bridge, probe = g.listeners[1], g.listeners[2]
+        for listener in (bridge, probe):                     # nothing loaded yet: does nothing
+            listener.update(listener, 16)
+        self.assertIsNone(probe.task)
+        bridge.loadMap(bridge)                               # client (no g_server): stays inert
+        self.assertIsNone(bridge.env)
+        probe.loadMap(probe)
         self.assertEqual(list(g.commands.values()), ["fhHitchList", "fhHitchProbe", "fhHitchStop"])
 
     def test_moddesc_loads_the_dependencies_first(self):
         desc = ET.parse(ROOT / "mod/modDesc.xml").getroot()
         files = [f.get("filename") for f in desc.iter("sourceFile")]
-        self.assertEqual(files, ["FarmhandObserve.lua", "FarmhandHitch.lua", "FarmhandProbe.lua"])
+        self.assertEqual(tuple(files), MODULES)
         self.assertTrue(all((ROOT / "mod" / f).is_file() for f in files))
         self.assertEqual(desc.find("multiplayer").get("supported"), "false")
 

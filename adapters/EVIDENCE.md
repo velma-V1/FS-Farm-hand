@@ -95,22 +95,24 @@ also into `occupied=True`, `busy=True` or `attached_to="*unknown*"`, so no singl
 check can read it as free. Whether these upstream rules hold for every vehicle type
 on the user's install is UNVERIFIED.
 
-## Physical operations — no production command path
+## Physical operations — through the AC-001 command bridge
 
-No production physical command is enabled: the companion → game channel is not
-built, so `adapters/fs25.py` grants only `stop` and no real pair is selectable.
-`mod/FarmhandHitch.lua` is called only by the development console probe
-(`mod/FarmhandProbe.lua`, below), by hand.
+Every physical step is one bridge operation (`mod/FarmhandBridge.lua`: `drive`,
+`stage`, `align`, `attach`, `stop`) sent by the companion (`companion/bridge.py`)
+and executed with the primitives below. `adapters/fs25.py` grants `move`,
+`attach`, `stop` only for a tractor with AutoDrive in a snapshot that names this
+companion's live session; otherwise no capability, so no pair is selectable.
+The diagnostic console probe (`mod/FarmhandProbe.lua`) drives the same operations.
 
-| Step | State | Evidence and conclusion |
-| --- | --- | --- |
-| DELIVER: long-range travel | PROVEN API, UNVERIFIED use | AD `ExternalInterface.lua:114-161` `AutoDrive:StartDriving(vehicle, destinationID, unloadDestinationID, …)`. It routes **only to map-marker IDs**. It does nothing unless `unloadDestinationID` is a valid marker; it starts the vehicle's *current* mode, so `vehicle.ad.stateModule:setMode(AutoDrive.MODE_DRIVETO)` (`StateModule.lua:664`, `AutoDrive.lua:23`) must precede it; it is ignored if AD is already active and returns nothing. Intended call: `setMode(MODE_DRIVETO)` then `StartDriving(v, marker, marker)`. Not executed anywhere yet. |
+| Step | State | Evidence and conclusion | Farmhand use |
+| --- | --- | --- | --- |
+| DELIVER and TRAVEL_NEAR: long-range travel | PROVEN API, UNVERIFIED use | AD `ExternalInterface.lua:114-161` `AutoDrive:StartDriving(vehicle, destinationID, unloadDestinationID, …)`. It routes **only to map-marker IDs**. It does nothing unless `unloadDestinationID` is a valid marker; it starts the vehicle's *current* mode, so `vehicle.ad.stateModule:setMode(AutoDrive.MODE_DRIVETO)` (`StateModule.lua:664`, `AutoDrive.lua:23`) must precede it; it is ignored if AD is already active and returns nothing. `DriveToMode:start` drives to the first marker (`DriveToMode.lua:16-33`); `startAutoDrive` refuses vehicles in an AI job (`Specialization.lua:1129-1135`) | Bridge `drive`: idle check (owned, unentered, no AI, at rest), marker present in `GetAvailableDestinations`, `setMode(MODE_DRIVETO)`, `StartDriving(v, marker, marker)`. Then: not active within 5 s → `AD_NOT_STARTED`; active → wait (20 min bound); inactive → `AD_STOPPED_WITH_ERROR` if `vehicle.ad.isStoppingWithError` (set on AD's own error stops: `DrivePathModule.lua:67,100`, `TaskModule.lua:142`; reset by `startAutoDrive`), else `DONE AD_ENDED` once at rest. Entering the tractor or losing ownership stops AD (`stopAutoDrive`) and fails |
 | Destination geometry | PROVEN constraint | No ExternalInterface function accepts coordinates, so arbitrary points or map clicks stay unsupported. Targets: "here" = nearest AD marker within 50 m (provisional) of the captured requester position; an explicit marker by live ID or exact (normalized) name; a field via the local map-specific entrance table. All resolve before reservation; arrival is verified at the resolved marker. |
-| Completion signal | PROVEN negative | The `callBackFunction` stored at `ExternalInterface.lua:117-119` is never invoked anywhere in AD source. DriveTo ends via `StopAndDisableADTask` → `stopAutoDrive()` (`DriveToMode.lua:42`, `StopAndDisableADTask.lua:22`), **and** a pathfinding failure also calls `stopAutoDrive()` (`DriveToDestinationTask.lua:35-37`). "AD inactive" therefore cannot distinguish arrival from failure: arrival must be observed by position and speed, which the executor already does. |
+| Completion signal | PROVEN negative | The `callBackFunction` stored at `ExternalInterface.lua:117-119` is never invoked anywhere in AD source. DriveTo ends via `StopAndDisableADTask` → `stopAutoDrive()` (`DriveToMode.lua:42`, `StopAndDisableADTask.lua:22`), **and** a pathfinding failure also calls `stopAutoDrive()` (`DriveToDestinationTask.lua:35-37`) without setting `isStoppingWithError`. "AD ended" therefore never means "arrived": the executor verifies arrival by position (3 m tractor, 15 m wagon), attachment and speed from a fresh snapshot. |
 | Route availability pre-check | UNVERIFIED | `AutoDrive:GetPath` (`ExternalInterface.lua:7-34`) returns a path to a marker only if a waypoint lies 1–20 m from the start in a matching heading; its fallback `GetClosestPointToLocation` only searches when the graph is empty (`:99`), so it never helps. Vehicles >30 m off-network are routed by AD's async pathfinder at drive time (`DriveToDestinationTask.lua:18-21`), with no pre-check. Not implemented. |
-| Stop / cancel | PROVEN API, UNVERIFIED use | `vehicle:stopAutoDrive()` registered at AD `Specialization.lua:70`, defined at `:1186`; **server only** (`:1290`). Stop must still be confirmed by observed speed. |
+| Stop / cancel | PROVEN API, UNVERIFIED use | `vehicle:stopAutoDrive()` registered at AD `Specialization.lua:70`, defined at `:1186`; **server only** (`:1290`). GIANTS job cancel `stopCurrentAIJob` (AIJobVehicle 431) | Bridge `stop`: aborts the running operation on that tractor — `stopAutoDrive` only for the AD drive it saw running, GOTO cancel only for the GOTO it saw running, reverse latched (brake + cruise off) — never detaches, never touches another controller's job; `DONE STOPPED` only once the tractor is observed at rest and its own motion has ended (15 s bound, else `NOT_STOPPED`) |
 | AD refuses AI-job vehicles | PROVEN | `Specialization.lua:1129-1135`; consistent with treating `getIsAIActive()` as busy. |
-| Reservation | Our code | No upstream concept. The companion owns reservations; `FarmhandHitch` takes an `isReserved` check and the farm ID and re-checks both on every step. |
+| Reservation | Our code | No upstream concept | `FS25World` (single companion process) owns reservations of the exact pair from RESERVE to RELEASE; every command re-checks it. In game, each operation's `owned()` is "the bridge is still owned by this companion session", re-checked every frame with farm, occupancy and AI state |
 
 ### HITCH: VALIDATE → TRAVEL_NEAR → STAGE → ALIGN_REVERSE → ATTACH → VERIFY
 
@@ -146,30 +148,28 @@ re-implements only the composition, for a rear drawbar, on GIANTS primitives.
 | Console commands, update | PROVEN | `addConsoleCommand(name, desc, funcName, target)` / `removeConsoleCommand(name)` (CP `ConsoleCommands.lua:40,47`); `addModEventListener` with `loadMap`/`update(dt)`/`deleteMap` (FH `Farmhand.lua:259-263, 387, 403`) | Commands are registered in `loadMap`; nothing runs until one is typed |
 | Folder mod without icon | PROVEN (FH comment) | FH `modDesc.xml` comment: a folder mod loads without `iconFilename`; only a ZIP is rejected | The probe is installed as a folder, never zipped |
 | `descVersion="113"` | UNVERIFIED for the user's patch | AD 3.0.1.4 and MA 1.1.1.0 use 113 | If the game reports an unknown descVersion, use the one its log names |
-| Plan in Lua | Our code, dev only | Same rule as `companion/hitch.py`, which stays the only production planner | `Probe.plan`; a CI test compares both on random inputs |
+| Plan in Lua | Our code, diagnostic only | Same rule as `companion/hitch.py`, which stays the only production planner | `Probe.plan`; a CI test compares both on random inputs. The probe's physical steps are the bridge's own operations |
 
 FH's `attach` command only raises the player's ATTACH input action on the vehicle the
 player is in (`Commands.lua:1615`), so it cannot attach unattended and is not used.
 
-## Local IPC decision — implemented as a protocol, not yet as a transport
+## Local IPC — the AC-001 command bridge (implemented)
 
-Source: FH `PROTOCOL.md:14,48,157` and `scripts/Transport.lua:16,53,77,175-213`.
-The FS25 Lua sandbox has no sockets; `io.open(pipePath, "w")` on a Windows named
-pipe works (FH `Transport.lua:5-7` reports sustained 4 Hz in game), reads are only possible through the
-engine XML API (`XMLFile.loadIfExists`), and files live under
-`getUserProfileAppPath() .. "modSettings/"`.
+Source pattern: FH `PROTOCOL.md:14,48,157` and `scripts/Transport.lua:16,53,77,166-213`
+(MIT; the design is reused, no code is copied). The FS25 Lua sandbox has no
+sockets; `io.open(pipePath, "w")` on a Windows named pipe works (FH
+`Transport.lua:5-7`: sustained 4 Hz in game); files can be read only through the
+engine XML API (`XMLFile.loadIfExists`, `getString`), and live under
+`getUserProfileAppPath() .. "modSettings/"` (`createFolder`, `deleteFile`, `fileExists`).
 
-- **Game → companion (implemented, protocol v1):** the companion hosts
-  `\\.\pipe\fs_farmhand_ac001` (not FH's name: one server per name). The mod writes
-  newline-delimited JSON (`hello`, `snapshot`) per `protocol/frame.schema.json`.
-  `protocol/ipc.py` decodes untrusted frames (bounded lines, no NaN, no duplicate
-  keys, nesting deep enough to exhaust the decoder → `TOO_DEEP`, strict schema). Hosting the pipe is Windows-only and not implemented.
-- **Companion → game (design only):** an atomically renamed XML command file in
-  `modSettings/<mod>/`, with a monotonically increasing ID, deleted by the mod after
-  reading; deletion acknowledges receipt only. Plus a session-ID file so the mod
-  reopens the pipe after a companion restart, because writes to a dead pipe do not
-  reliably fail on Windows (FH `PROTOCOL.md:157`). Not built until a physical
-  command can be enabled.
+| Part | State | Design |
+| --- | --- | --- |
+| Game → companion | Implemented, UNVERIFIED on Windows/FS25 | The companion hosts `\\.\pipe\fs_farmhand_ac001` (`companion/bridge.py` `PipeServer`, Win32 `CreateNamedPipeW`/`ReadFile`); the mod writes `hello`, a `snapshot` every 0.5 s and `result` frames (`protocol/frame.schema.json`), one JSON object per line, in one single-threaded `update()`, so frames arrive in the order they were produced. `protocol/ipc.py` decodes untrusted lines |
+| Companion → game | Implemented, UNVERIFIED in FS25 | `modSettings/FS25_Farmhand/command.xml`, written to a temporary name and renamed into place (retried briefly while the game holds it), one command at a time. `encode_command` allows only the five operations with exactly their typed arguments. The mod reads it every frame and deletes it: deletion is receipt only |
+| Session | Implemented | `session.xml` (`id`, `beat`) is rewritten every second. The mod adopts a new id (stopping and failing anything an older session started), stamps it into every snapshot, accepts only that session's commands with strictly increasing ids (lower or repeated ids are ignored, so a re-read or replayed file never runs twice), and if the beat stops for 10 s stops this session's motion (`COMPANION_LOST`) and never re-adopts that id |
+| Results | Implemented | `ACCEPTED` after validation, then exactly one of `DONE` (the game's observed end of the operation), `FAILED`, `UNVERIFIED`; `REJECTED` (stale session, unknown op/vehicle, busy). The companion: no result in 5 s → removes the file (`NOT_ACCEPTED` if it was still there, else `NO_ACCEPTANCE`, unverified); no terminal result within the operation's bound, or no frame for 9 s → `RESULT_TIMEOUT` / `LINK_LOST`, unverified. `DONE` is never completion: the executor verifies every step from a snapshot received after it |
+| Capability | Implemented | `move`/`attach`/`stop` only when the snapshot's `session` equals this companion's; stale snapshots (none within 3 s) end the step as `STALE_SNAPSHOT` (unverified) and are never read as current |
+| Exclusivity | Implemented | One owner of the bridge at a time: the adopted companion session or one diagnostic probe attempt; the probe refuses while a session exists |
 
 ## Rejected claims
 
@@ -209,3 +209,8 @@ engine XML API (`XMLFile.loadIfExists`), and files live under
 9. AD arrival accuracy at a marker versus the 3 m / 15 m tolerances.
 10. The upstream missing-method rules above, and `missionInfo.mapId` values, on the
    user's install; plus the marker names the user wants in `field_entrances`.
+11. The bridge on the user's PC: the mod's `io.open` on the companion's pipe, the
+   engine reading `command.xml`/`session.xml` while the companion renames them,
+   whether `update()` (and so the heartbeat clock) runs while the game is paused,
+   AutoDrive driving an unentered tractor with the wagon attached, and whether an
+   unentered tractor stays braked between the end of ALIGN and the attach.
