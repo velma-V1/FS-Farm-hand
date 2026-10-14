@@ -10,8 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ContractTests(unittest.TestCase):
     def test_schema_is_valid(self):
-        schema = json.loads((ROOT / "protocol/intent.schema.json").read_text())
-        Draft202012Validator.check_schema(schema)
+        for name in ("intent.schema.json", "frame.schema.json"):
+            with self.subTest(schema=name):
+                schema = json.loads((ROOT / "protocol" / name).read_text())
+                Draft202012Validator.check_schema(schema)
 
     def test_lua_boundary(self):
         lua = LuaRuntime(unpack_returned_tuples=True)

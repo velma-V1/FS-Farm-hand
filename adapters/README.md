@@ -1,21 +1,22 @@
 # Compatibility boundary
 
-`World` is our internal Python port, not an API claimed to exist in any mod.
-No external adapter is implemented; `mod/FarmhandBoundary.lua` is fail-closed.
-Every real adapter needs version-pinned upstream inspection and runtime evidence.
+`World` (`world.py`) is our internal Python port, not an API claimed to exist in any
+mod. `fs25.py` maps validated FS25 snapshot frames into that contract and fails
+closed wherever upstream data is unproven. No real `World` adapter performs physical
+work yet; `mod/FarmhandBoundary.lua` refuses every physical operation.
 
-| Upstream reference | Intended reuse | Current status |
+**[EVIDENCE.md](EVIDENCE.md) is the authoritative record** of which upstream
+project provides each capability, with pinned commits, files, line numbers, and
+`PROVEN` / `UNVERIFIED` / `GAP` states. Summary:
+
+| Upstream | Reuse | Status |
 | --- | --- | --- |
-| [GIANTS GDN](https://gdn.giants-software.com/) | Authoritative inventory, ownership, attachment and game observations | API mapping unverified |
-| [AutoDrive FS25](https://github.com/Stephan-S/FS25_AutoDrive) | Existing transport execution where supported | No integration; approach/coupling and destination mapping unverified |
-| [Courseplay FS25](https://github.com/Courseplay/Courseplay_FS25) | Future existing fieldwork delegation | Outside AC-001 |
-| [Follow Me](https://github.com/DeckerMMIV/FarmSim_Mod_FollowMe) | Future following delegation | Outside AC-001 |
-| [Universal Autoload](https://github.com/loki79uk/FS25_UniversalAutoload) | Future loading delegation | Outside AC-001; not needed to tow a wagon |
-| [Farmhand Companion](https://github.com/getflowkits/fs25-farmhand-mod) | Inspect state/action interface concepts | No code copied or dependency added |
-
-References identify projects only; they do not establish supported functions,
-compatible versions, or permission to redistribute. Check each exact license and
-version before implementation. Do not fork/vendor merely to create a placeholder.
+| GIANTS FS25 API (as used by the mods below) | Inventory, ownership, position, attachment, speed, attach mechanism | Calls PROVEN by upstream use; untested in our FS25 runtime |
+| [AutoDrive](https://github.com/Stephan-S/FS25_AutoDrive) (MIT) | Delivery travel to map markers, destinations, stop | API PROVEN; marker-only; not yet called |
+| [Farmhand Companion](https://github.com/getflowkits/fs25-farmhand-mod) (MIT) | Local IPC design: named pipe out, XML file in | Design reused; no code copied |
+| [Courseplay](https://github.com/Courseplay/Courseplay_FS25) (GPL-3.0) | Evidence of the game's attach API usage | Reference only; never copied |
+| [Follow Me](https://github.com/DeckerMMIV/FarmSim_Mod_FollowMe) | Follows a leader vehicle only | Not used |
+| [Universal Autoload](https://github.com/loki79uk/FS25_UniversalAutoload) | Loading | Not needed to tow a wagon |
 
 A real adapter must enforce farm authority, reservation ownership, live availability
 and command preconditions at action time; reject unsupported operations; await

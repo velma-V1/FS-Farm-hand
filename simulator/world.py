@@ -3,15 +3,18 @@ from dataclasses import replace
 import math
 from threading import RLock
 
-from protocol.model import Equipment, Position
+from protocol.model import Destination, Equipment
 
 
 class MockWorld:
-    def __init__(self, equipment, players):
-        equipment = tuple(equipment)
+    def __init__(self, equipment, players, destinations=()):
+        equipment, destinations = tuple(equipment), tuple(destinations)
         self.items: dict[str, Equipment] = {item.id: item for item in equipment}
         if len(self.items) != len(equipment):
             raise ValueError("Duplicate equipment IDs")
+        self.destination_map: dict[str, Destination] = {d.id: d for d in destinations}
+        if len(self.destination_map) != len(destinations):
+            raise ValueError("Duplicate destination IDs")
         self.players = dict(players)
         self._lock = RLock()
         self._reservations: dict[str, tuple[str, tuple[str, str]]] = {}
@@ -23,6 +26,10 @@ class MockWorld:
     def player_position(self, farm_id):
         with self._lock:
             return self.players[farm_id]
+
+    def destinations(self):
+        with self._lock:
+            return tuple(self.destination_map.values())
 
     def reserve(self, ids, owner):
         with self._lock:
@@ -57,7 +64,7 @@ class MockWorld:
         # Independent mock-side check at mutation time, under the world lock.
         if (tractor.category != "tractor" or wagon.category != "forage_wagon"
                 or not {"move", "attach", "stop"} <= tractor.capabilities
-                or not tractor.hitch or tractor.hitch != wagon.hitch
+                or not tractor.hitches & wagon.hitches
                 or not math.isfinite(tractor.power_kw)
                 or not math.isfinite(wagon.required_power_kw)
                 or not tractor.power_kw >= wagon.required_power_kw > 0
@@ -65,27 +72,34 @@ class MockWorld:
                 or tractor.farm_id != wagon.farm_id):
             raise ValueError("Incompatible equipment")
 
-    def move(self, tractor_id, target: Position, owner):
+    def _reserved_pair(self, tractor_id, wagon_id, owner):
+        tractor = self._owned(tractor_id, owner)
+        if (tractor_id, wagon_id) != self._reservations[owner][1]:
+            raise ValueError("Not the reserved pair")
+        wagon = self._owned(wagon_id, owner)
+        self._compatible(tractor, wagon)
+        return tractor, wagon
+
+    def approach(self, tractor_id, wagon_id, owner):
         with self._lock:
-            tractor = self._owned(tractor_id, owner)
-            ids = self._reservations[owner][1]
-            if tractor_id != ids[0]:
-                raise ValueError("Not the reserved tractor")
-            reserved_wagon = self._owned(ids[1], owner)
-            self._compatible(tractor, reserved_wagon)
-            if len(target) != 2 or not all(math.isfinite(v) for v in target):
-                raise ValueError("Invalid target")
-            wagon = None
-            if tractor.attached_to is not None:
-                wagon = reserved_wagon
-                if tractor.attached_to != wagon.id or wagon.attached_to != tractor.id:
-                    raise ValueError("Invalid attachment")
-            elif reserved_wagon.attached_to is not None:
-                raise ValueError("Reserved wagon is already attached")
-            # Mock-only teleport, never a substitute for real navigation.
-            self.items[tractor.id] = replace(tractor, position=tuple(target), stopped=True)
-            if wagon is not None:
-                self.items[wagon.id] = replace(wagon, position=tuple(target), stopped=True)
+            tractor, wagon = self._reserved_pair(tractor_id, wagon_id, owner)
+            if tractor.attached_to is not None or wagon.attached_to is not None:
+                raise ValueError("Approach requires an unattached pair")
+            # Mock-only teleport, never a substitute for real navigation or alignment.
+            self.items[tractor.id] = replace(tractor, position=wagon.position, stopped=True)
+
+    def deliver(self, tractor_id, destination_id, owner):
+        with self._lock:
+            ids = self._reservations.get(owner, (None, (None, None)))[1]
+            tractor, wagon = self._reserved_pair(tractor_id, ids[1], owner)
+            if tractor.attached_to != wagon.id or wagon.attached_to != tractor.id:
+                raise ValueError("Invalid attachment")
+            destination = self.destination_map.get(destination_id)
+            if destination is None or not all(math.isfinite(v) for v in destination.position):
+                raise ValueError("Unknown destination")
+            # Mock-only teleport of the coupled pair; AutoDrive does real routing.
+            for item in (tractor, wagon):
+                self.items[item.id] = replace(item, position=destination.position, stopped=True)
 
     def attach(self, tractor_id, wagon_id, owner):
         with self._lock:

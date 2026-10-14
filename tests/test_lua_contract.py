@@ -1,0 +1,223 @@
+"""Cross-language contract: mod/FarmhandObserve.lua -> protocol.ipc -> adapters.fs25.
+
+The Lua stubs below implement ONLY the game calls recorded as PROVEN upstream
+usage in adapters/EVIDENCE.md, with the shapes those upstream mods rely on.
+Passing proves our two halves agree; it does not prove FS25 behaves this way.
+"""
+import json
+from pathlib import Path
+import unittest
+
+from lupa import lua51, lua54
+
+from adapters.fs25 import ObservationError, observation_from_snapshot
+from companion.executor import Executor
+from protocol.ipc import PIPE_PATH, parse_frame
+
+ROOT = Path(__file__).resolve().parents[1]
+CATEGORIES = {"STUB_TRACTORS": "tractor", "STUB_WAGONS": "forage_wagon"}
+
+STUBS = r"""
+local Observe = ...
+local stubs = {}
+
+local function node(x, z) return { x = x, y = 0, z = z } end
+
+-- Build a vehicle exposing only upstream-evidenced members.
+function stubs.vehicle(world, t)
+    local v = { ownerFarmId = t.farm or 1, rootNode = node(t.x or 0, t.z or 0),
+                configFileName = t.file }
+    world.ids[v] = t.id
+    function v:getLastSpeed() return t.speed or 0 end
+    function v:getIsEntered() return t.entered == true end
+    function v:getIsControlled() return t.controlled == true end
+    function v:getIsAIActive() return t.ai == true end
+    if t.joints then
+        function v:getAttacherJoints()
+            local joints = {}
+            for i, name in ipairs(t.joints) do
+                joints[i] = { jointType = world.env.AttacherJoints["JOINTTYPE_" .. name], index = i }
+            end
+            return joints
+        end
+        function v:getAttachedImplements()
+            if t.brokenImplements then error("engine error") end
+            local list = {}
+            for i, other in ipairs(t.implements or {}) do list[i] = { object = world.byId[other] } end
+            return list
+        end
+    end
+    if t.inputs then
+        function v:getInputAttacherJoints()
+            local joints = {}
+            for i, name in ipairs(t.inputs) do
+                joints[i] = { jointType = world.env.AttacherJoints["JOINTTYPE_" .. name] }
+            end
+            return joints
+        end
+        function v:getAttacherVehicle() return world.byId[t.attacher] end
+    end
+    -- vehicle.ad only exists when the AutoDrive specialization is installed.
+    if t.autodrive and world.env.AutoDrive ~= nil then
+        v.ad = { stateModule = { isActive = function(self) return t.adActive == true end } }
+    end
+    world.byId[t.id] = v
+    world.env.g_currentMission.vehicleSystem.vehicles[#world.env.g_currentMission.vehicleSystem.vehicles + 1] = v
+    return v
+end
+
+function stubs.world(options)
+    options = options or {}
+    local world = { ids = {}, byId = {} }
+    local env = {
+        AttacherJoints = { JOINTTYPE_IMPLEMENT = 1, JOINTTYPE_TRAILER = 3,
+                           JOINTTYPE_TRAILERLOW = 4, JOINTTYPE_SEMITRAILER = 5 },
+        NetworkUtil = { getObjectId = function(object) return world.ids[object] end },
+        getWorldTranslation = function(n) return n.x, n.y, n.z end,
+        g_storeManager = { getItemByXMLFilename = function(self, file)
+            if file == nil then return nil end
+            return { categoryName = file }
+        end },
+        g_currentMission = { getFarmId = function(self) return options.farm or 1 end,
+                             vehicleSystem = { vehicles = {} } },
+        g_localPlayer = { getPosition = function(self) return 100, 0, 200 end },
+        g_modManager = { getModByName = function(self, name) return { version = "0.1.0.0" } end },
+        g_currentModName = "FS25_FarmhandAC001",
+    }
+    if not options.noAutoDrive then
+        env.AutoDrive = { version = "3.0.1.4" }
+        function env.AutoDrive:GetAvailableDestinations()
+            if options.brokenDestinations then error("graph not loaded") end
+            return { [1] = { name = "Yard", x = 101, y = 0, z = 199, id = 1 },
+                     [7] = { name = 'Field "7" \n', x = 900.5, y = 3, z = -12.25, id = 7 } }
+        end
+    end
+    world.env = env
+    return world
+end
+
+function stubs.standard(options)
+    local world = stubs.world(options)
+    local v = function(t) return stubs.vehicle(world, t) end
+    v { id = 11, file = "STUB_TRACTORS", x = 0, z = 0, joints = { "TRAILER", "IMPLEMENT" }, autodrive = true }
+    v { id = 12, file = "STUB_WAGONS", x = 40, z = 20, inputs = { "TRAILER" } }
+    v { id = 13, file = "STUB_TRACTORS", joints = { "TRAILER" }, implements = { 14 }, autodrive = true, adActive = true }
+    v { id = 14, file = "STUB_WAGONS", inputs = { "TRAILERLOW", "TRAILER" }, attacher = 13 }
+    v { id = 15, file = "STUB_TRACTORS", farm = 2, joints = { "TRAILER" } }
+    v { id = 16, file = "STUB_TRACTORS", joints = { "TRAILER" }, brokenImplements = true }
+    v { id = 17, file = "STUB_TRACTORS", joints = { "TRAILER" }, speed = 0 / 0, entered = false, controlled = true }
+    v { id = 18, file = 'BAD"CATEGORY', inputs = { "TRAILER" } }
+    return world
+end
+
+return stubs
+"""
+
+
+class LuaContractTests(unittest.TestCase):
+    runtime = lua54  # CI's default Lua; FS25's embedded Lua version is UNVERIFIED.
+
+    def setUp(self):
+        self.lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
+        self.observe = self.lua.execute((ROOT / "mod/FarmhandObserve.lua").read_text())
+        self.stubs = self.lua.execute(STUBS, self.observe)
+
+    def snapshot(self, world, seq=1):
+        line, reason = self.observe.snapshot(world.env, seq)
+        self.assertIsNotNone(line, reason)
+        return parse_frame(line.encode() + b"\n")
+
+    def test_pipe_path_matches(self):
+        self.assertEqual(self.observe.PIPE_PATH, PIPE_PATH)
+
+    def test_hello_frame(self):
+        world = self.stubs.standard()
+        hello = parse_frame(self.observe.hello(world.env).encode())
+        self.assertEqual(hello, {"event": "hello", "protocol": 1, "mod_version": "0.1.0.0",
+                                 "autodrive_version": "3.0.1.4"})
+        bare = self.stubs.world(self.lua.table(noAutoDrive=True))
+        self.assertIsNone(parse_frame(self.observe.hello(bare.env).encode())["autodrive_version"])
+
+    def test_snapshot_frame_maps_through_the_contract(self):
+        frame = self.snapshot(self.stubs.standard(), seq=42)
+        self.assertEqual((frame["seq"], frame["farm_id"], frame["player"]),
+                         (42, 1, {"x": 100, "z": 200}))
+        self.assertEqual(frame["skipped"], 1)        # vehicle 16: attachment unobservable
+        self.assertFalse(frame["truncated"])
+        self.assertEqual(sorted((d["id"], d["x"], d["z"]) for d in frame["destinations"]),
+                         [(1, 101, 199), (7, 900.5, -12.25)])
+        observed = observation_from_snapshot(frame, CATEGORIES)
+        items = {e.id: e for e in observed.equipment}
+        self.assertEqual(sorted(items), ["11", "12", "13", "14", "17", "18"])  # farm 2 excluded
+        self.assertEqual((items["11"].category, items["12"].category), ("tractor", "forage_wagon"))
+        self.assertEqual(items["11"].hitches, frozenset({"TRAILER", "IMPLEMENT"}))
+        self.assertEqual(items["14"].hitches, frozenset({"TRAILER", "TRAILERLOW"}))
+        self.assertEqual(items["12"].position, (40, 20))
+        self.assertTrue(items["11"].available and items["11"].stopped)
+        self.assertEqual((items["13"].attached_to, items["14"].attached_to), ("14", "13"))
+        self.assertTrue(items["13"].busy)                       # AutoDrive active
+        self.assertFalse(items["17"].available)                 # NaN speed is unobserved
+        self.assertTrue(items["17"].occupied)                   # getIsControlled()
+        self.assertEqual(items["18"].category, "unknown")       # unsafe category rejected
+        self.assertEqual(observed.farm_id, "1")
+
+    def test_without_autodrive_there_are_no_destinations(self):
+        world = self.stubs.standard(self.lua.table(noAutoDrive=True))
+        frame = self.snapshot(world)
+        self.assertEqual(frame["destinations"], [])
+        self.assertFalse(any(v["has_autodrive"] for v in frame["vehicles"]))
+
+    def test_unobservable_inputs_send_nothing(self):
+        for options, reason in ((dict(farm=0), "NO_FARM"),
+                                (dict(brokenDestinations=True), "NO_DESTINATIONS")):
+            with self.subTest(reason=reason):
+                world = self.stubs.standard(self.lua.table(**options))
+                self.assertEqual(tuple(self.observe.snapshot(world.env, 1)), (None, reason))
+        world = self.stubs.standard()
+        world.env.g_currentMission.vehicleSystem = None
+        self.assertEqual(tuple(self.observe.snapshot(world.env, 1)), (None, "NO_VEHICLES"))
+
+    def test_truncated_snapshot_is_not_authoritative(self):
+        self.observe.MAX_VEHICLES = 2
+        frame = self.snapshot(self.stubs.standard())
+        self.assertTrue(frame["truncated"])
+        with self.assertRaises(ObservationError):
+            observation_from_snapshot(frame, CATEGORIES)
+
+    def test_encoder_round_trips_awkward_values(self):
+        value = self.lua.eval('''{ s = 'q"\\\\ \\n\\t\\1 ü', n = -0.5, i = 3, big = 2^40,
+                                   t = true, f = false, a = (...).array({ 1, 2 }), e = (...).array() }''',
+                              self.observe)
+        decoded = json.loads(self.observe.encode(value))
+        self.assertEqual(decoded, {"s": 'q"\\ \n\t\x01 ü', "n": -0.5, "i": 3, "big": 2 ** 40,
+                                   "t": True, "f": False, "a": [1, 2], "e": []})
+        self.assertIsNone(json.loads(self.observe.encode(self.lua.eval("{ x = 0/0 }")))["x"])
+
+    def test_lua_frame_cannot_start_physical_work(self):
+        observed = observation_from_snapshot(self.snapshot(self.stubs.standard()), CATEGORIES)
+
+        class FrameWorld:
+            calls = []
+
+            def snapshot(self):
+                return observed.equipment
+
+            def player_position(self, farm_id):
+                return observed.player
+
+            def destinations(self):
+                return observed.destinations
+
+            def __getattr__(self, name):
+                FrameWorld.calls.append(name)
+                raise AssertionError(name)
+
+        intent = {"version": 1, "request_id": "r-1", "task": "deliver_tractor_and_forage_wagon",
+                  "farm_id": observed.farm_id, "target": "player_at_acceptance"}
+        result = Executor(FrameWorld()).execute(intent)
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "NO_ELIGIBLE_PAIR"))
+        self.assertEqual(FrameWorld.calls, [])
+
+
+class Lua51ContractTests(LuaContractTests):
+    runtime = lua51

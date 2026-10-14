@@ -6,7 +6,7 @@ import random
 import unittest
 
 from companion.executor import Executor
-from protocol.model import Equipment
+from protocol.model import Destination, Equipment
 from simulator.world import MockWorld
 
 
@@ -14,6 +14,12 @@ def intent(request_id="request-001"):
     return {"version": 1, "request_id": request_id,
             "task": "deliver_tractor_and_forage_wagon", "farm_id": "farm-a",
             "target": "player_at_acceptance"}
+
+
+PLAYERS = {"farm-a": (100, 200)}
+# A routable AutoDrive-style marker at the requester; IDs are opaque.
+DESTINATIONS = (Destination("marker-at-requester", (100, 200)),
+                Destination("marker-far-away", (900, 900)))
 
 
 def inventory(seed=0):
@@ -24,10 +30,10 @@ def inventory(seed=0):
         return f"asset-{next(identifiers)}"
 
     tractor = Equipment(identity(), "tractor", "farm-a", (0, 0),
-                        hitch="drawbar", power_kw=180,
+                        hitches=frozenset({"drawbar"}), power_kw=180,
                         capabilities=frozenset({"move", "attach", "stop", "pto"}))
     wagon = Equipment(identity(), "forage_wagon", "farm-a", (40, 20),
-                      hitch="drawbar", required_power_kw=100, requires_pto=True)
+                      hitches=frozenset({"drawbar"}), required_power_kw=100, requires_pto=True)
     decoys = [replace(tractor, id=identity(), category="truck"),
               replace(tractor, id=identity(), farm_id="other-farm"),
               replace(tractor, id=identity(), busy=True),
@@ -36,7 +42,7 @@ def inventory(seed=0):
               replace(tractor, id=identity(), reserved_by="other-request"),
               replace(tractor, id=identity(), attached_to="some-trailer"),
               replace(tractor, id=identity(), power_kw=30),
-              replace(tractor, id=identity(), hitch="three_point"),
+              replace(tractor, id=identity(), hitches=frozenset({"three_point"})),
               replace(tractor, id=identity(), capabilities=frozenset({"move", "attach", "stop"})),
               replace(tractor, id=identity(), capabilities=frozenset({"pto"})),
               replace(wagon, id=identity(), category="bale_trailer"),
@@ -46,7 +52,7 @@ def inventory(seed=0):
               replace(wagon, id=identity(), available=False),
               replace(wagon, id=identity(), reserved_by="other-request"),
               replace(wagon, id=identity(), attached_to="other-tractor"),
-              replace(wagon, id=identity(), hitch="incompatible"),
+              replace(wagon, id=identity(), hitches=frozenset({"incompatible"})),
               replace(wagon, id=identity(), required_power_kw=500)]
     items = [tractor, wagon, *decoys]
     rng.shuffle(items)
@@ -59,19 +65,19 @@ def simple_world():
     tractor = next(x for x in items if x.category == "tractor" and x.farm_id == "farm-a"
                    and not x.busy and not x.occupied and x.available
                    and x.reserved_by is None and x.attached_to is None
-                   and x.hitch == "drawbar" and x.power_kw == 180
+                   and x.hitches == frozenset({"drawbar"}) and x.power_kw == 180
                    and x.capabilities == frozenset({"move", "attach", "stop", "pto"}))
     wagon = next(x for x in items if x.category == "forage_wagon" and x.farm_id == "farm-a"
                  and not x.busy and not x.occupied and x.available
                  and x.reserved_by is None and x.attached_to is None
-                 and x.hitch == "drawbar" and x.required_power_kw == 100)
-    return MockWorld([tractor, wagon], {"farm-a": (100, 200)})
+                 and x.hitches == frozenset({"drawbar"}) and x.required_power_kw == 100)
+    return MockWorld([tractor, wagon], PLAYERS, DESTINATIONS)
 
 
 class FaultWorld(MockWorld):
     def __init__(self, fault):
         base = simple_world()
-        super().__init__(base.snapshot(), base.players)
+        super().__init__(base.snapshot(), base.players, base.destinations())
         self.fault = fault
         self.moves = 0
 
@@ -83,26 +89,32 @@ class FaultWorld(MockWorld):
             self.items[ids[1]] = replace(self.items[ids[1]], busy=True)
         return ok
 
-    def move(self, tractor_id, target, owner):
+    def _fault(self, stage):
         self.moves += 1
-        stage = "approach" if self.moves == 1 else "delivery"
         if self.fault == stage:
             raise RuntimeError("physical failure")
         if self.fault == stage + "_timeout":
             raise TimeoutError("operation deadline")
-        if self.fault == "false_arrival" and self.moves == 2:
+
+    def approach(self, tractor_id, wagon_id, owner):
+        self._fault("approach")
+        super().approach(tractor_id, wagon_id, owner)
+        if self.fault == "player_moved":
+            self.players["farm-a"] = (900, 900)
+
+    def deliver(self, tractor_id, destination_id, owner):
+        self._fault("delivery")
+        if self.fault == "false_arrival":
             return
         wagon_id = self.items[tractor_id].attached_to
         old_position = self.items[wagon_id].position if wagon_id else None
-        super().move(tractor_id, target, owner)
+        super().deliver(tractor_id, destination_id, owner)
         if self.moves == 2 and self.fault == "lost_attachment":
             self.items[tractor_id] = replace(self.items[tractor_id], attached_to=None)
         if self.moves == 2 and self.fault == "wagon_left":
             self.items[wagon_id] = replace(self.items[wagon_id], position=old_position)
         if self.moves == 2 and self.fault == "moving":
             self.items[tractor_id] = replace(self.items[tractor_id], stopped=False)
-        if self.moves == 1 and self.fault == "player_moved":
-            self.players["farm-a"] = (900, 900)
 
     def attach(self, tractor_id, wagon_id, owner):
         if self.fault == "attach":
@@ -125,7 +137,7 @@ class AcceptanceTests(unittest.TestCase):
     def test_selection_is_behavioral(self):
         for seed in range(40):
             with self.subTest(seed=seed):
-                world = MockWorld(inventory(seed), {"farm-a": (100, 200)})
+                world = MockWorld(inventory(seed), PLAYERS, DESTINATIONS)
                 before = {x.id: x for x in world.snapshot()}
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, "COMPLETE", result)
@@ -141,7 +153,7 @@ class AcceptanceTests(unittest.TestCase):
                     self.assertIsNone(original.attached_to)
                     self.assertTrue(item.stopped)
                     self.assertIsNone(item.reserved_by)
-                self.assertEqual(tractor.hitch, wagon.hitch)
+                self.assertTrue(tractor.hitches & wagon.hitches)
                 self.assertGreaterEqual(tractor.power_kw, wagon.required_power_kw)
                 self.assertTrue({"move", "attach", "stop", "pto"} <= tractor.capabilities)
                 self.assertEqual(tractor.attached_to, wagon.id)
@@ -164,7 +176,7 @@ class AcceptanceTests(unittest.TestCase):
                 elif mutation == "no_pto":
                     world.items[tractor.id] = replace(tractor, capabilities=frozenset({"move", "attach", "stop"}))
                 else:
-                    world.items[wagon.id] = replace(wagon, hitch="incompatible")
+                    world.items[wagon.id] = replace(wagon, hitches=frozenset({"incompatible"}))
                 before = world.snapshot()
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, "BLOCKED")
@@ -270,7 +282,9 @@ class AcceptanceTests(unittest.TestCase):
         tractor, wagon = world.snapshot()
         self.assertTrue(world.reserve((tractor.id, wagon.id), "owner"))
         with self.assertRaises(ValueError):
-            world.move(tractor.id, (1, 1), "intruder")
+            world.approach(tractor.id, wagon.id, "intruder")
+        with self.assertRaises(ValueError):
+            world.deliver(tractor.id, DESTINATIONS[0].id, "intruder")
         with self.assertRaises(ValueError):
             world.attach(tractor.id, wagon.id, "intruder")
         with self.assertRaises(ValueError):
@@ -284,12 +298,14 @@ class AcceptanceTests(unittest.TestCase):
             snapshot[0].busy = True
         with self.assertRaises(ValueError):
             MockWorld([snapshot[0], snapshot[0]], world.players)
+        with self.assertRaises(ValueError):
+            MockWorld(snapshot, world.players, DESTINATIONS * 2)
 
     def test_action_time_farm_change_prevents_movement(self):
         class FarmChangeWorld(FaultWorld):
-            def move(self, tractor_id, target, owner):
+            def approach(self, tractor_id, wagon_id, owner):
                 self.items[tractor_id] = replace(self.items[tractor_id], farm_id="other-farm")
-                return super().move(tractor_id, target, owner)
+                return super().approach(tractor_id, wagon_id, owner)
 
         world = FarmChangeWorld(None)
         positions = {x.id: x.position for x in world.snapshot()}
@@ -309,14 +325,14 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(world.snapshot(), before)
 
     def test_action_time_compatibility_change_prevents_delivery(self):
-        for change in ({"power_kw": 1}, {"hitch": "wrong"},
+        for change in ({"power_kw": 1}, {"hitches": frozenset({"wrong"})},
                        {"capabilities": frozenset({"move", "attach", "stop"})}):
             with self.subTest(change=change):
                 class CompatibilityChangeWorld(FaultWorld):
-                    def move(self, tractor_id, target, owner):
+                    def deliver(self, tractor_id, destination_id, owner):
                         if self.moves == 1:
                             self.items[tractor_id] = replace(self.items[tractor_id], **change)
-                        return super().move(tractor_id, target, owner)
+                        return super().deliver(tractor_id, destination_id, owner)
 
                 world = CompatibilityChangeWorld(None)
                 wagon_position = world.snapshot()[1].position
@@ -331,3 +347,69 @@ class AcceptanceTests(unittest.TestCase):
         before = world.snapshot()
         self.assertFalse(world.stop(tractor.id, None))
         self.assertEqual(world.snapshot(), before)
+
+    def test_destination_is_nearest_routable_marker(self):
+        # AutoDrive only routes to map markers: "here" resolves to the nearest
+        # valid marker within range, and arrival is verified at that marker.
+        for seed in range(10):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                markers = [Destination(f"m-{rng.randrange(10**6)}-near", (104, 203)),
+                           Destination(f"m-{rng.randrange(10**6)}-mid", (120, 200)),
+                           Destination(f"m-{rng.randrange(10**6)}-nan", (float("nan"), 200)),
+                           Destination(f"m-{rng.randrange(10**6)}-far", (100, 400))]
+                rng.shuffle(markers)
+                base = simple_world()
+                world = MockWorld(base.snapshot(), PLAYERS, markers)
+                result = Executor(world).execute(intent())
+                self.assertEqual(result.status, "COMPLETE", result)
+                tractor, wagon = (world.items[x] for x in result.equipment_ids)
+                self.assertEqual(tractor.position, (104, 203))
+                self.assertEqual(wagon.position, (104, 203))
+
+    def test_destination_tie_break_is_order_independent(self):
+        markers = [Destination("b", (103, 200)), Destination("a", (97, 200))]
+        for ordering in (markers, markers[::-1]):
+            base = simple_world()
+            world = MockWorld(base.snapshot(), PLAYERS, ordering)
+            result = Executor(world).execute(intent())
+            self.assertEqual(result.status, "COMPLETE")
+            self.assertEqual(world.items[result.equipment_ids[0]].position, (97, 200))
+
+    def test_no_destination_near_requester(self):
+        for markers in ((), (Destination("far", (100, 400)),),
+                        (Destination("bad", (float("inf"), 200)),),
+                        (Destination("", (100, 200)),)):
+            with self.subTest(markers=markers):
+                base = simple_world()
+                world = MockWorld(base.snapshot(), PLAYERS, markers)
+                before = world.snapshot()
+                result = Executor(world).execute(intent())
+                self.assertEqual((result.status, result.reason),
+                                 ("BLOCKED", "NO_DESTINATION_NEAR_REQUESTER"))
+                self.assertEqual(world.snapshot(), before)
+
+    def test_unknown_destination_fails_closed(self):
+        class VanishingMarkerWorld(FaultWorld):
+            def deliver(self, tractor_id, destination_id, owner):
+                self.destination_map.clear()
+                return super().deliver(tractor_id, destination_id, owner)
+
+        world = VanishingMarkerWorld(None)
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "FAILED", result)
+        self.assertTrue(all(x.reserved_by is None and x.stopped for x in world.snapshot()))
+
+    def test_multi_joint_tractor_matches_any_shared_joint(self):
+        base = simple_world()
+        tractor, wagon = base.snapshot()
+        for tractor_hitches, wagon_hitches, expected in (
+                ({"three_point", "trailer"}, {"trailer"}, "COMPLETE"),
+                ({"three_point", "trailer"}, {"trailerlow", "trailer"}, "COMPLETE"),
+                ({"three_point", "trailerlow"}, {"trailer"}, "BLOCKED"),
+                (set(), set(), "BLOCKED")):
+            with self.subTest(tractor=tractor_hitches, wagon=wagon_hitches):
+                world = MockWorld([replace(tractor, hitches=frozenset(tractor_hitches)),
+                                   replace(wagon, hitches=frozenset(wagon_hitches))],
+                                  PLAYERS, DESTINATIONS)
+                self.assertEqual(Executor(world).execute(intent()).status, expected)

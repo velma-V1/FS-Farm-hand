@@ -30,9 +30,12 @@ One task: **“Go grab an available tractor and forage wagon, hook them together
 and bring them here.”** One farm, one requester, one running executor process.
 “Here” means the requester's position sampled once when the validated intent is
 accepted, not a moving follow target. Coordinates are horizontal metres (x, z).
-Delivery tolerance is 3 metres for the tractor and 15 metres for the wagon (allows
-trailer length); both must be stopped and mutually attached. These are provisional
-contract tolerances to validate against real equipment lengths in FS25.
+AutoDrive routes only to map markers (adapters/EVIDENCE.md), so delivery goes to the
+nearest valid routable destination within 50 metres of that captured position; with
+none, the task is BLOCKED before reservation. Delivery tolerance at that destination
+is 3 metres for the tractor and 15 metres for the wagon (allows trailer length); both
+must be stopped and mutually attached. These are provisional contract values to
+validate against real equipment and AutoDrive marker accuracy in FS25.
 
 Input to the deterministic executor is versioned structured intent. A future local
 language layer interprets the user's speech/text into a task proposal; trusted
@@ -41,24 +44,25 @@ before executor validation. This build uses an explicit fixture and makes no cla
 of natural-language understanding.
 
 No vehicle IDs come from the LLM. Selection checks categories, same-farm permission,
-availability, no driver/job/attachment/reservation, hitch match, sufficient tractor
-power, PTO when required, and movement/attachment/stop capabilities. IDs are opaque;
+availability, no driver/job/attachment/reservation, a shared attacher joint type
+(FS25 tractors expose several joints), sufficient tractor power, PTO when required,
+and movement/attachment/stop capabilities. IDs are opaque;
 a lexical tie-break provides repeatability but carries no equipment semantics.
 
 ## Architecture and boundaries
 | Area | Responsibility | This build |
 | --- | --- | --- |
 | companion/ | Validate intent, deterministic executor, observed completion | Implemented Python core; no daemon or transport |
-| protocol/ | Versioned intent JSON Schema and equipment/result types | Internal contract; not an FS25 API |
-| adapters/ | Typed physical-world boundary; reuse/version evidence | Protocol only; upstream adapters deferred |
-| mod/ | Game-side capability boundary | Pure Lua unsupported stub, no game hooks |
+| protocol/ | Versioned intent schema, equipment/result types, local IPC frame schema and decoder | Internal contracts; not an FS25 API |
+| adapters/ | World port, FS25 snapshot mapping, upstream evidence (EVIDENCE.md) | Mapping implemented and fail-closed; no physical adapter |
+| mod/ | Game-side capability boundary and read-only observation | Physical ops unsupported; observation never run in FS25 |
 | simulator/ | Synthetic inventory, atomic reservations, simplified movement/coupling | Mock only |
 | tests/ | Executable acceptance, negative, schema and Lua checks | CI runnable |
 
-FIND selects an eligible pair. RESERVE atomically owns both or neither. MOVE
-requests approach to the wagon through the adapter. ATTACH requests coupling.
-VERIFY reads fresh attachment state before DELIVER requests transport to captured
-“here”. Final observation verifies attachment, both positions, and stopped state.
+FIND resolves “here” to a destination and selects an eligible pair. RESERVE
+atomically owns both or neither. MOVE asks the adapter to bring the tractor to the
+reserved wagon (approach and alignment). ATTACH requests coupling. VERIFY reads
+fresh attachment state before DELIVER requests transport to the chosen destination. Final observation verifies attachment, both positions, and stopped state.
 Each physical step rechecks reservation and equipment eligibility. Failures do not
 advance the task. No automatic retry or fallback to custom driving.
 
@@ -115,11 +119,17 @@ deliberately omits a modDesc.xml and install ZIP because no functioning game
 integration exists yet. The first PC installation should occur only when a real
 FS25 integration test is necessary.
 
-Next justified work is a version-pinned GIANTS/AutoDrive integration feasibility
-probe: inventory extraction, authority, a LOCAL communication mechanism, safe
-approach/coupling capability, bounded execution and stop/cancel semantics. Do not
-assume arbitrary coordinates or automated coupling are exposed by any upstream mod.
-If not supported, report the gap; do not build a navigation replacement.
+The upstream feasibility probe is recorded in adapters/EVIDENCE.md. Result: read-only
+observation, AutoDrive marker delivery and stop, and the game's in-range attach
+mechanism are backed by upstream source; tractor/implement power and PTO data and
+any proven approach-and-alignment to a wagon hitch are GAPs. Real snapshots
+therefore map to ineligible equipment until those are resolved. The local IPC is
+a companion-hosted Windows named pipe (game → companion, protocol v1, implemented
+as a decoder) plus a polled XML command file (companion → game, design only).
+Do not build a navigation replacement to close the approach GAP.
+
+The next step needs the user's PC: load a minimal mod that writes `hello` and
+`snapshot` frames, and compare them with the live game (see EVIDENCE.md).
 
 Before claiming production usability, an actual FS25 runtime on the user's PC must
 prove mod load, current game/mod versions, ownership enforcement, equipment detection,

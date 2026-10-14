@@ -7,10 +7,17 @@ from threading import Lock
 from jsonschema import Draft202012Validator
 
 from adapters.world import World
-from protocol.model import Equipment, Position, Result
+from protocol.model import Destination, Equipment, Position, Result
 
 SCHEMA = json.loads((Path(__file__).resolve().parents[1] / "protocol/intent.schema.json").read_text())
 VALIDATOR = Draft202012Validator(SCHEMA)
+
+# Provisional contract values, to be validated against real equipment in FS25.
+# AutoDrive only routes to map markers (adapters/EVIDENCE.md), so "here" is the
+# nearest routable marker within this radius of the requester's captured position.
+DESTINATION_MAX_FROM_REQUESTER_M = 50.0
+TRACTOR_ARRIVAL_TOLERANCE_M = 3.0
+WAGON_ARRIVAL_TOLERANCE_M = 15.0
 
 
 class ObservationMismatch(Exception):
@@ -28,9 +35,18 @@ def usable(item: Equipment, farm_id: str, owner: str | None = None) -> bool:
             and valid_position(item.position))
 
 
+def select_destination(destinations, requester: Position) -> Destination | None:
+    """Nearest valid destination within range; ties break on the opaque ID."""
+    candidates = [d for d in destinations
+                  if isinstance(d, Destination) and isinstance(d.id, str) and d.id
+                  and valid_position(d.position)
+                  and math.dist(d.position, requester) <= DESTINATION_MAX_FROM_REQUESTER_M]
+    return min(candidates, key=lambda d: (math.dist(d.position, requester), d.id), default=None)
+
+
 def compatible(tractor: Equipment, wagon: Equipment) -> bool:
     return (tractor.category == "tractor" and wagon.category == "forage_wagon"
-            and bool(tractor.hitch) and tractor.hitch == wagon.hitch
+            and bool(tractor.hitches & wagon.hitches)
             and math.isfinite(tractor.power_kw) and math.isfinite(wagon.required_power_kw)
             and tractor.power_kw >= wagon.required_power_kw > 0
             and {"move", "attach", "stop"} <= tractor.capabilities
@@ -76,8 +92,8 @@ class Executor:
     def _arrival(self, ids, farm_id, owner, target):
         tractor, wagon = self._pair(ids, farm_id, owner, attached=True)
         if (not tractor.stopped or not wagon.stopped
-                or math.dist(tractor.position, target) > 3
-                or math.dist(wagon.position, target) > 15):
+                or math.dist(tractor.position, target) > TRACTOR_ARRIVAL_TOLERANCE_M
+                or math.dist(wagon.position, target) > WAGON_ARRIVAL_TOLERANCE_M):
             raise ObservationMismatch("DELIVERY_NOT_OBSERVED")
 
     def _run(self, command):
@@ -89,8 +105,12 @@ class Executor:
             target = self.world.player_position(farm_id)
             if not valid_position(target):
                 return Result("BLOCKED", "INVALID_REQUESTER_POSITION")
-            target = tuple(target)
+            requester = tuple(target)
             states.append("FIND")
+            destination = select_destination(self.world.destinations(), requester)
+            if destination is None:
+                return Result("BLOCKED", "NO_DESTINATION_NEAR_REQUESTER", states=tuple(states))
+            target = tuple(destination.position)
             items = sorted(self.world.snapshot(), key=lambda item: item.id)
             free = [item for item in items if usable(item, farm_id)
                     and item.attached_to is None and item.stopped]
@@ -106,14 +126,14 @@ class Executor:
             tractor, wagon = self._pair(ids, farm_id, owner, attached=False)
             states.append("MOVE")
             physical_attempted = True
-            self.world.move(tractor.id, wagon.position, owner)
+            self.world.approach(*ids, owner)
             self._pair(ids, farm_id, owner, attached=False)
             states.append("ATTACH")
             self.world.attach(*ids, owner)
             states.append("VERIFY")
             self._pair(ids, farm_id, owner, attached=True)
             states.append("DELIVER")
-            self.world.move(tractor.id, target, owner)
+            self.world.deliver(tractor.id, destination.id, owner)
             self._arrival(ids, farm_id, owner, target)
             status, reason = "COMPLETE", "DELIVERY_OBSERVED"
         except ObservationMismatch as error:

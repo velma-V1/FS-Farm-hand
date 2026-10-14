@@ -14,9 +14,11 @@ including an available compatible tractor/wagon pair and misleading decoys:
 2. RESERVE owns both units atomically; concurrent requests cannot steal either.
 3. MOVE delegates approach; ATTACH delegates coupling; VERIFY checks both ends
    of the attachment from fresh state before any delivery movement.
-4. DELIVER delegates travel to the requester's position captured at acceptance.
-5. COMPLETE requires mutual attachment, tractor within 3 m, wagon within 15 m,
-   both stopped, and successful reservation release. Inspect state, not just trace.
+4. DELIVER delegates travel to the nearest routable destination (AutoDrive map
+   marker) within 50 m of the requester's position captured at acceptance.
+5. COMPLETE requires mutual attachment, tractor within 3 m and wagon within 15 m of
+   that destination, both stopped, and successful reservation release. Inspect
+   state, not just trace.
 
 Executable mapping (`python scripts/check.py`):
 - `test_selection_is_behavioral`: many deterministic random seeds vary IDs and
@@ -37,10 +39,20 @@ Executable mapping (`python scripts/check.py`):
   wrong attachment, wagon left behind and lost attachment never complete.
 - `test_stop_failure_retains_reservation`: uncertain cleanup remains UNVERIFIED.
 - `test_here_is_snapshot`: player movement does not change accepted destination.
+- `test_destination_is_nearest_routable_marker`, `test_destination_tie_break_is_order_independent`,
+  `test_no_destination_near_requester`, `test_unknown_destination_fails_closed`:
+  "here" resolves deterministically to a valid marker in range, or blocks/fails.
+- `test_multi_joint_tractor_matches_any_shared_joint`: hitch compatibility is a
+  shared joint type across all of a tractor's attacher joints.
 - `test_replay`: same ID+intent does not execute twice; changed payload is blocked.
 - `test_schema_rejects_bad_intent`: malformed intent yields BLOCKED before action.
 - `test_lua_boundary`: pure Lua advertises no physical capabilities and rejects
   all physical requests. This is not an upstream integration test.
+- `tests/test_ipc.py`: untrusted frame decoding (chunking, oversized lines, NaN,
+  duplicate keys, schema) and fail-closed FS25 snapshot mapping; real-shaped data
+  cannot reach physical work while power/PTO/approach remain GAPs.
+- `tests/test_lua_contract.py` (Lua 5.1 and 5.4): `mod/FarmhandObserve.lua` against
+  stubs implementing only upstream-evidenced calls, decoded and mapped by Python.
 
 Synthetic movement sets coordinates and coupling sets relations. The simulator
 has no physics, terrain, route graph, collision, trigger, animation, network or

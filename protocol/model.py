@@ -10,7 +10,9 @@ class Equipment:
     category: str
     farm_id: str
     position: Position
-    hitch: str = ""
+    # Attacher joint type names: every joint a tractor offers, or every input
+    # joint a towed implement accepts (FS25 vehicles can expose several).
+    hitches: frozenset[str] = frozenset()
     power_kw: float = 0
     required_power_kw: float = 0
     requires_pto: bool = False
@@ -21,6 +23,13 @@ class Equipment:
     reserved_by: str | None = None
     attached_to: str | None = None
     stopped: bool = True
+
+
+@dataclass(frozen=True)
+class Destination:
+    """A routable delivery point, e.g. an AutoDrive map marker. Opaque ID."""
+    id: str
+    position: Position
 
 
 @dataclass(frozen=True)

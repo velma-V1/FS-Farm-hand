@@ -14,7 +14,10 @@ Current vertical slice: select an available compatible tractor and forage wagon,
 attach them, and bring them to the requester.
 
 **Status: executable mock acceptance harness, not an installable or game-verified
-mod.** Real GIANTS/AutoDrive adapters, local IPC, actual movement/attachment,
+mod.** Upstream capabilities are recorded with source evidence in
+[adapters/EVIDENCE.md](adapters/EVIDENCE.md). A read-only Lua observation module,
+the local IPC frame protocol, and fail-closed FS25 data mapping exist and are tested
+off-PC only. Physical adapters, the Windows pipe host, actual movement/attachment,
 LLM integration, speech, and Windows service behavior are not implemented yet.
 The project can remain off the user's PC until a real FS25 integration test is needed.
 
@@ -27,8 +30,9 @@ python -m pip install -r requirements-dev.txt
 python scripts/check.py
 ```
 
-This runs the unittest suite, validates the JSON Schema, executes the Lua boundary
-using Lupa, compiles Python sources, and checks whitespace. These checks do not
+This runs the unittest suite (including Lua 5.1 and 5.4 contract tests through
+Lupa), validates the JSON Schemas, compiles Python and Lua sources, and checks
+whitespace. These checks do not
 prove anything that requires the actual FS25 runtime.
 
 | Path | Purpose |
@@ -36,9 +40,9 @@ prove anything that requires the actual FS25 runtime.
 | AGENTS.md | Authoritative rules for all coding agents |
 | BUILD_SPEC.md | Local runtime architecture, scope, acceptance and runtime gates |
 | companion/ | Deterministic one-task executor |
-| protocol/ | Structured executor contract and shared data types |
-| adapters/ | World interface and upstream reuse boundaries |
-| mod/ | Fail-closed Lua boundary for future FS25 integration |
+| protocol/ | Executor contract, shared types, local IPC frame protocol |
+| adapters/ | World interface, FS25 snapshot mapping, upstream evidence |
+| mod/ | Fail-closed Lua boundary and read-only FS25 observation |
 | simulator/ | In-memory mock FS25 world |
 | tests/ | AC-001 specification and executable checks |
 | scripts/check.py | Single CI verification command |
