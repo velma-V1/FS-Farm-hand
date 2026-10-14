@@ -86,13 +86,11 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
                 and vehicle["ai_active"] is not None
                 and (not has_autodrive or vehicle["ad_active"] is not None)
                 and vehicle["attachment_observed"])
-    hitches = vehicle["attacher_joints"] if category == "tractor" else vehicle["input_joints"]
     return Equipment(
         id=str(vehicle["id"]),
         category=category or "unknown",
         farm_id=str(vehicle["farm_id"]),
         position=(vehicle["x"], vehicle["z"]),
-        hitches=frozenset(hitches),
         # GIANTS' torque values from the loaded vehicles (actual configuration);
         # None when unobserved, which is never sufficient.
         pto_torque_capacity=None if motor is None else

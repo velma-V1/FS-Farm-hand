@@ -50,9 +50,6 @@ class Equipment:
     category: str
     farm_id: str
     position: Position
-    # Attacher joint type names: every joint a tractor offers, or every input
-    # joint a towed implement accepts (FS25 vehicles can expose several).
-    hitches: frozenset[str] = frozenset()
     # GIANTS' own power rule (PowerConsumer:getCanBeTurnedOn), rearranged as
     # required_pto_torque <= pto_torque_capacity. Both are in GIANTS' torque unit,
     # so no hp/kW conversion is involved. None = unknown (never sufficient); a
@@ -67,6 +64,7 @@ class Equipment:
     attached_to: str | None = None
     stopped: bool = True
     # Hitch geometry; unknown values are None/empty and make a vehicle unhitchable.
+    # Joint types are compared per joint pair (companion/hitch.py), as GIANTS does.
     heading: float | None = None          # root forward yaw (world)
     ai_root: Pose | None = None           # AI root pose (vehicles with AIDrivable)
     output_joints: tuple[OutputJoint, ...] = ()

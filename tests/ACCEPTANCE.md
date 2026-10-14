@@ -55,10 +55,22 @@ Executable mapping (`python scripts/check.py`):
 - `tests/test_lua_hitch.py` (Lua 5.1 and 5.4): GIANTS GOTO start/cancel sequence;
   ALIGN_REVERSE refuses unsafe limits and joints, reverses only, stops the instant
   GIANTS reports the exact pair, and fails closed on timeout, distance limit, stall,
-  wagon moved/attached, lost reservation, farm change, occupied tractor, other
-  candidate (implement or joint), unreadable state and missing motor; a terminal
-  result never resumes; ATTACH refuses unless exact, stopped, reserved and allowed,
-  calls GIANTS once, and an acknowledged attach is not success.
+  wagon moved/attached, lost reservation, farm change, occupied tractor, any AI
+  job (never cancelled), other candidate (implement or joint), vertical mismatch,
+  unreadable state and missing motor; every terminal path brakes and then turns
+  cruise control off, and never resumes; speed is bounded 1–5 km/h (default 3);
+  the Farmhand assist radius is passed only to Farmhand's candidate call (GIANTS'
+  constant unchanged, never smaller than it) and still accepts only the exact
+  pair; the vertical guard applies at any radius; ATTACH refuses unless exact,
+  stopped, reserved, unoccupied, AI-free and allowed, calls GIANTS once; an
+  acknowledged attach, or one on other joints, is not success.
+- `tests/test_lua_probe.py` (Lua 5.1 and 5.4): the development console probe loads
+  as mod globals in modDesc order and registers its three commands only in
+  `loadMap`; nothing runs untyped; `fhHitchList` is read-only; one attempt at a
+  time; bad arguments or unsafe vehicles never move anything; staging failure never
+  reaches ALIGN; ALIGN failure never reaches ATTACH; only its own observed GOTO is
+  ever cancelled; PASS needs a fresh exact-pair, exact-joint observation; its plan
+  equals `companion/hitch.py` on random inputs, and mirrored constants match.
 - `test_false_observations`: false attach/arrival acknowledgements, moving vehicles,
   wrong attachment, wagon left behind and lost attachment never complete.
 - `test_stop_failure_retains_reservation`: uncertain cleanup remains UNVERIFIED.
@@ -66,8 +78,10 @@ Executable mapping (`python scripts/check.py`):
 - `test_destination_is_nearest_routable_marker`, `test_destination_tie_break_is_order_independent`,
   `test_no_destination_near_requester`, `test_unknown_destination_fails_closed`:
   "here" resolves deterministically to a valid marker in range, or blocks/fails.
-- `test_multi_joint_tractor_matches_any_shared_joint`: hitch compatibility is a
-  shared joint type across all of a tractor's attacher joints.
+- `test_multi_joint_tractor_matches_any_shared_joint`: joint types are compared
+  per joint pair across all of a tractor's rear joints; the matching one is used.
+- `test_attachment_through_another_joint_is_not_verified`: both ends naming each
+  other is not enough; the planned tractor joint must be the one in use.
 - `ExplicitDestinationTests`: explicit markers by ID/name, field → entrance via the
   map-specific table; not-found, ambiguous, invalid, unmapped and unknown-map targets
   block before reservation with no nearby substitution; arrival is verified at the
@@ -75,8 +89,6 @@ Executable mapping (`python scripts/check.py`):
   coordinates and mixed selectors are rejected by the schema.
 - `test_replay`: same ID+intent does not execute twice; changed payload is blocked.
 - `test_schema_rejects_bad_intent`: malformed intent yields BLOCKED before action.
-- `test_lua_boundary`: pure Lua advertises no physical capabilities and rejects
-  all physical requests. This is not an upstream integration test.
 - `tests/test_ipc.py`: untrusted frame decoding (chunking, oversized lines, NaN,
   duplicate keys, nesting that exhausts the decoder followed by valid frames,
   schema) and fail-closed FS25 snapshot mapping: unknown occupancy/AI/attachment is

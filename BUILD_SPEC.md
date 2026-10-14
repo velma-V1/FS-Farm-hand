@@ -64,7 +64,7 @@ a lexical tie-break provides repeatability but carries no equipment semantics.
 | companion/ | Validate intent, deterministic executor, observed completion | Implemented Python core; no daemon or transport |
 | protocol/ | Versioned intent schema, equipment/result types, local IPC frame schema and decoder | Internal contracts; not an FS25 API |
 | adapters/ | World port, FS25 snapshot mapping, upstream evidence (EVIDENCE.md) | Mapping implemented and fail-closed; no physical adapter |
-| mod/ | Game-side capability boundary and read-only observation | Physical ops unsupported; observation never run in FS25 |
+| mod/ | Read-only observation, HITCH primitives, development console probe | No production command path; never run in FS25 |
 | simulator/ | Synthetic inventory, atomic reservations, simplified movement/coupling | Mock only |
 | tests/ | Executable acceptance, negative, schema and Lua checks | CI runnable |
 
@@ -146,18 +146,14 @@ channel grants move/attach. The local IPC is a companion-hosted Windows named pi
 (game → companion, protocol v1, implemented as a decoder) plus a polled XML command
 file (companion → game, design only). Do not build navigation beyond ALIGN_REVERSE.
 
-The first FS25 test should prove only the HITCH composition, by hand-triggered
-console calls on one owned tractor and one forage wagon, with nothing else enabled:
-1. log the tractor's `output_joints` and AI root and the wagon's `input_joint_poses`
-   and heading from `FarmhandObserve`;
-2. compute the plan (companion/hitch.py) and compare the final/staging poses with
-   where the tractor visibly needs to be;
-3. `Hitch.startStaging` to the staging pose; record the observed AI-root pose;
-4. run `Hitch.alignStep` each frame until it stops; record the result code;
-5. confirm GIANTS named exactly the planned pair (`CANDIDATE`);
-6. `Hitch.attach`, then poll `Hitch.attachState` until `ATTACHED`;
-7. independently confirm both ends of the attachment in a fresh snapshot.
-Tune `STAGING_DISTANCE_M` and the reverse limits from what this shows.
+The first FS25 test proves only the HITCH composition, with the development
+console probe (`mod/FarmhandProbe.lua`; steps in mod/README.md): `fhHitchList`,
+then `fhHitchProbe <tractorId> <wagonId> [assistRadiusM] [maxVerticalM]
+[maxSpeedKmh]`, which validates, plans (a dev-only Lua copy of companion/hitch.py,
+checked equal in CI), stages with GIANTS GOTO, checks the staged AI-root pose,
+reverses, attaches the exact candidate and verifies exactly that pair and joint,
+ending with one `RESULT` line. Tune `STAGING_DISTANCE_M`, the assist radius,
+vertical guard and reverse speed from the logged values.
 
 Before claiming production usability, an actual FS25 runtime on the user's PC must
 prove mod load, current game/mod versions, ownership enforcement, equipment detection,

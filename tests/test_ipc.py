@@ -29,8 +29,6 @@ def vehicle(identifier, kind, x=0.0, z=0.0, **overrides):
             "speed_kmh": 0.0, "entered": False, "ai_active": False,
             "has_autodrive": kind == TRACTORS, "ad_active": False if kind == TRACTORS else None,
             "attachment_observed": True, "attacher_vehicle_id": None, "implement_ids": [],
-            "attacher_joints": ["TRAILER", "IMPLEMENT"] if kind == TRACTORS else [],
-            "input_joints": ["TRAILER"] if kind == WAGONS else [],
             "heading": 0.0, "ai_root": {"x": x, "z": z, "yaw": 0.0} if kind == TRACTORS else None,
             "output_joints": [{"index": 1, "type": "TRAILER", "x": 0.0, "z": -2.5, "free": True,
                                "pto_names": ["rearPto"]}] if kind == TRACTORS else [],
@@ -151,7 +149,6 @@ class MappingTests(unittest.TestCase):
         self.assertEqual((tractor.id, tractor.category, wagon.id, wagon.category),
                          ("11", "tractor", "12", "forage_wagon"))
         self.assertEqual(wagon.position, (40, 0.0))
-        self.assertTrue(tractor.hitches & wagon.hitches)
         self.assertTrue(usable(tractor, "1") and usable(wagon, "1"))
         self.assertTrue(tractor.stopped and wagon.stopped)
         self.assertEqual([(d.id, d.name, d.position) for d in observed.destinations],

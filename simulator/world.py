@@ -75,7 +75,6 @@ class MockWorld:
         # Independent mock-side check at mutation time, under the world lock.
         if (tractor.category != "tractor" or wagon.category != "forage_wagon"
                 or not {"move", "attach", "stop"} <= tractor.capabilities
-                or not tractor.hitches & wagon.hitches
                 or wagon.required_pto_torque is None
                 or not math.isfinite(wagon.required_pto_torque)
                 or wagon.required_pto_torque < 0

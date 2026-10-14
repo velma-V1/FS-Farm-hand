@@ -233,6 +233,10 @@ class LuaContractTests(unittest.TestCase):
         bare = self.stubs.world(self.lua.table(noAutoDrive=True))
         self.assertIsNone(parse_frame(self.observe.hello(bare.env).encode())["autodrive_version"])
 
+    def test_module_is_exposed_for_fs25(self):
+        # FS25 discards a sourceFile's return value; the mod reaches it by name.
+        self.assertTrue(self.lua.eval("function(t) return FarmhandObserve == t end")(self.observe))
+
     def test_snapshot_frame_maps_through_the_contract(self):
         frame = self.snapshot(self.stubs.standard(), seq=42)
         self.assertEqual((frame["seq"], frame["farm_id"], frame["player"]),
@@ -252,8 +256,8 @@ class LuaContractTests(unittest.TestCase):
         self.assertFalse(items["16"].available)
         self.assertEqual(observed.map_id, "MapUS")
         self.assertEqual((items["11"].category, items["12"].category), ("tractor", "forage_wagon"))
-        self.assertEqual(items["11"].hitches, frozenset({"TRAILER", "IMPLEMENT"}))
-        self.assertEqual(items["14"].hitches, frozenset({"TRAILER", "TRAILERLOW"}))
+        self.assertEqual(items["11"].output_joints, ())     # no AIDrivable offsets: no geometry
+        self.assertEqual([j.joint_type for j in items["14"].input_joints], ["TRAILERLOW", "TRAILER"])
         self.assertEqual(items["12"].position, (40, 20))
         self.assertTrue(items["11"].available and items["11"].stopped)
         self.assertEqual((items["13"].attached_to, items["14"].attached_to), ("14", "13"))
@@ -384,11 +388,13 @@ class LuaContractTests(unittest.TestCase):
             with self.subTest(spec=spec, field=field):
                 record, _ = self.vehicle_record(spec)
                 self.assertEqual(record[field], expected)
-        # Unreadable joint lists drop the whole vehicle from the frame (skipped).
-        for spec in (tractor % "getAttacherJoints = 'raises'", wagon % "getInputAttacherJoints = 'raises'"):
+        # Unreadable joint lists leave the vehicle observed but with no joints, so
+        # it can never be planned; nothing is guessed.
+        for spec, field in ((tractor % "getAttacherJoints = 'raises'", "output_joints"),
+                            (wagon % "getInputAttacherJoints = 'raises'", "input_joint_poses")):
             with self.subTest(spec=spec):
-                frame = self.snapshot(self.stubs.single(self.lua.eval(spec)))
-                self.assertEqual((frame["vehicles"], frame["skipped"]), ([], 1))
+                record, _ = self.vehicle_record(spec)
+                self.assertEqual(record[field], [])
         # A vehicle whose root direction cannot be read has no heading.
         world = self.stubs.single(self.lua.eval(wagon % ""))
         world.env.localDirectionToWorld = self.lua.eval("function() error('engine error') end")

@@ -31,17 +31,17 @@ def inventory(seed=0):
         return f"asset-{next(identifiers)}"
 
     # Torques are in GIANTS' own unit; only the comparison matters.
-    tractor = Equipment(identity(), "tractor", "farm-a", (0, 0),
-                        hitches=frozenset({"drawbar"}), pto_torque_capacity=1.8,
+    tractor = Equipment(identity(), "tractor", "farm-a", (0, 0), pto_torque_capacity=1.8,
                         capabilities=frozenset({"move", "attach", "stop"}),
                         heading=0.0, ai_root=Pose(0.0, 0.0, 0.0),
                         output_joints=(OutputJoint(3, "drawbar", 0.0, -2.5, True, frozenset({"rearPto"})),))
     # Wagon faces +z with its drawbar eye 4 m ahead of its root; it needs PTO power.
-    wagon = Equipment(identity(), "forage_wagon", "farm-a", (40, 20),
-                      hitches=frozenset({"drawbar"}), required_pto_torque=1.0,
+    wagon = Equipment(identity(), "forage_wagon", "farm-a", (40, 20), required_pto_torque=1.0,
                       heading=0.0, input_joints=(InputJoint(1, "drawbar", (40.0, 24.0), True,
                                                             frozenset({"rearPto"})),))
     no_pto = (OutputJoint(3, "drawbar", 0.0, -2.5, True, frozenset()),)
+    three_point = (OutputJoint(3, "three_point", 0.0, -2.5, True, frozenset({"rearPto"})),)
+    incompatible = (InputJoint(1, "incompatible", (40.0, 24.0), True, frozenset({"rearPto"})),)
     decoys = [replace(tractor, id=identity(), category="truck"),
               replace(tractor, id=identity(), farm_id="other-farm"),
               replace(tractor, id=identity(), busy=True),
@@ -50,7 +50,7 @@ def inventory(seed=0):
               replace(tractor, id=identity(), reserved_by="other-request"),
               replace(tractor, id=identity(), attached_to="some-trailer"),
               replace(tractor, id=identity(), pto_torque_capacity=0.3),
-              replace(tractor, id=identity(), hitches=frozenset({"three_point"})),
+              replace(tractor, id=identity(), output_joints=three_point),
               replace(tractor, id=identity(), output_joints=no_pto),
               replace(tractor, id=identity(), pto_torque_capacity=None),
               replace(tractor, id=identity(), capabilities=frozenset({"move", "attach"})),
@@ -61,7 +61,7 @@ def inventory(seed=0):
               replace(wagon, id=identity(), available=False),
               replace(wagon, id=identity(), reserved_by="other-request"),
               replace(wagon, id=identity(), attached_to="other-tractor"),
-              replace(wagon, id=identity(), hitches=frozenset({"incompatible"})),
+              replace(wagon, id=identity(), input_joints=incompatible),
               replace(wagon, id=identity(), required_pto_torque=5.0),
               replace(wagon, id=identity(), required_pto_torque=None)]
     items = [tractor, wagon, *decoys]
@@ -75,13 +75,13 @@ def simple_world():
     tractor = next(x for x in items if x.category == "tractor" and x.farm_id == "farm-a"
                    and not x.busy and not x.occupied and x.available
                    and x.reserved_by is None and x.attached_to is None
-                   and x.hitches == frozenset({"drawbar"}) and x.pto_torque_capacity == 1.8
+                   and x.pto_torque_capacity == 1.8
                    and x.capabilities == frozenset({"move", "attach", "stop"})
-                   and x.output_joints[0].pto_names)
+                   and x.output_joints[0].joint_type == "drawbar" and x.output_joints[0].pto_names)
     wagon = next(x for x in items if x.category == "forage_wagon" and x.farm_id == "farm-a"
                  and not x.busy and not x.occupied and x.available
                  and x.reserved_by is None and x.attached_to is None
-                 and x.hitches == frozenset({"drawbar"}) and x.required_pto_torque == 1.0)
+                 and x.input_joints[0].joint_type == "drawbar" and x.required_pto_torque == 1.0)
     return MockWorld([tractor, wagon], PLAYERS, DESTINATIONS)
 
 
@@ -187,7 +187,7 @@ class AcceptanceTests(unittest.TestCase):
                     self.assertIsNone(original.attached_to)
                     self.assertTrue(item.stopped)
                     self.assertIsNone(item.reserved_by)
-                self.assertTrue(tractor.hitches & wagon.hitches)
+                self.assertEqual(tractor.output_joints[0].joint_type, wagon.input_joints[0].joint_type)
                 self.assertGreaterEqual(tractor.pto_torque_capacity, wagon.required_pto_torque)
                 self.assertTrue({"move", "attach", "stop"} <= tractor.capabilities)
                 # The planned joints share a PTO, as the wagon needs PTO power.
@@ -213,7 +213,8 @@ class AcceptanceTests(unittest.TestCase):
                     joints = tuple(replace(j, pto_names=frozenset()) for j in tractor.output_joints)
                     world.items[tractor.id] = replace(tractor, output_joints=joints)
                 else:
-                    world.items[wagon.id] = replace(wagon, hitches=frozenset({"incompatible"}))
+                    joints = tuple(replace(j, joint_type="incompatible") for j in wagon.input_joints)
+                    world.items[wagon.id] = replace(wagon, input_joints=joints)
                 before = world.snapshot()
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, "BLOCKED")
@@ -374,7 +375,7 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(world.snapshot(), before)
 
     def test_action_time_compatibility_change_prevents_delivery(self):
-        for change in ({"pto_torque_capacity": 0.1}, {"hitches": frozenset({"wrong"})},
+        for change in ({"pto_torque_capacity": 0.1}, {"category": "truck"},
                        {"capabilities": frozenset({"move", "attach"})}, {"pto_torque_capacity": None}):
             with self.subTest(change=change):
                 class CompatibilityChangeWorld(FaultWorld):
@@ -449,18 +450,33 @@ class AcceptanceTests(unittest.TestCase):
         self.assertTrue(all(x.reserved_by is None and x.stopped for x in world.snapshot()))
 
     def test_multi_joint_tractor_matches_any_shared_joint(self):
+        # Joint types are compared per joint pair; any rear tractor joint may match.
         base = simple_world()
         tractor, wagon = base.snapshot()
-        for tractor_hitches, wagon_hitches, expected in (
-                ({"three_point", "trailer"}, {"trailer"}, "COMPLETE"),
-                ({"three_point", "trailer"}, {"trailerlow", "trailer"}, "COMPLETE"),
-                ({"three_point", "trailerlow"}, {"trailer"}, "BLOCKED"),
-                (set(), set(), "BLOCKED")):
-            with self.subTest(tractor=tractor_hitches, wagon=wagon_hitches):
-                world = MockWorld([replace(tractor, hitches=frozenset(tractor_hitches)),
-                                   replace(wagon, hitches=frozenset(wagon_hitches))],
+
+        def outputs(*types):
+            return tuple(OutputJoint(i + 1, t, 0.0, -2.5, True, frozenset({"rearPto"}))
+                         for i, t in enumerate(types))
+
+        def inputs(*types):
+            return tuple(InputJoint(i + 1, t, (40.0, 24.0 + i), True, frozenset({"rearPto"}))
+                         for i, t in enumerate(types))
+
+        for tractor_types, wagon_types, expected in (
+                (("three_point", "trailer"), ("trailer",), "COMPLETE"),
+                (("three_point", "trailer"), ("trailerlow", "trailer"), "COMPLETE"),
+                (("three_point", "trailerlow"), ("trailer",), "BLOCKED"),
+                ((), (), "BLOCKED")):
+            with self.subTest(tractor=tractor_types, wagon=wagon_types):
+                world = MockWorld([replace(tractor, output_joints=outputs(*tractor_types)),
+                                   replace(wagon, input_joints=inputs(*wagon_types))],
                                   PLAYERS, DESTINATIONS)
-                self.assertEqual(Executor(world).execute(intent()).status, expected)
+                result = Executor(world).execute(intent())
+                self.assertEqual(result.status, expected, result)
+                if expected == "COMPLETE":
+                    used = world.items[result.equipment_ids[0]]
+                    joint = next(j for j in used.output_joints if not j.free)
+                    self.assertEqual(joint.joint_type, "trailer")
 
 
 # ------------------------------------------------------------ explicit destinations
@@ -732,6 +748,24 @@ class HitchCompositionTests(unittest.TestCase):
         result = Executor(world).execute(intent())
         self.assertEqual((result.status, result.reason), ("UNVERIFIED", "WAGON_MOVED"))
         self.assertEqual(world.attach_calls, [])
+
+    def test_attachment_through_another_joint_is_not_verified(self):
+        base = simple_world()
+        tractor, wagon = base.snapshot()
+        joints = tractor.output_joints + (OutputJoint(4, "drawbar", 0.0, -2.6, True, frozenset({"rearPto"})),)
+
+        class OtherJoint(MockWorld):
+            def attach(self, tractor_id, wagon_id, planned, owner):
+                super().attach(tractor_id, wagon_id, planned, owner)
+                # Both ends name each other, but GIANTS used joint 4, not the plan's 3.
+                t = self.items[tractor_id]
+                self.items[tractor_id] = replace(t, output_joints=tuple(
+                    replace(j, free=j.index != 4) for j in t.output_joints))
+
+        world = OtherJoint([replace(tractor, output_joints=joints), wagon], PLAYERS, DESTINATIONS)
+        result = Executor(world).execute(intent())
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "ATTACHMENT_MISMATCH"))
+        self.assertNotIn("DELIVER", result.states)
 
     def test_joint_occupied_after_reservation_is_detected(self):
         class Occupy(FaultWorld):

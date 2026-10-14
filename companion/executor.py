@@ -29,7 +29,10 @@ STAGE_POSITION_TOLERANCE_M = 1.0
 STAGE_YAW_TOLERANCE_RAD = math.radians(10)
 WAGON_MOVED_TOLERANCE_M = 0.25
 WAGON_YAW_TOLERANCE_RAD = math.radians(5)
-ALIGN_PROGRESS_TOLERANCE_M = 1.0
+# ALIGN_REVERSE may stop as soon as GIANTS names the exact pair within the
+# Farmhand attach-assist envelope, so this must equal its cap
+# (mod/FarmhandHitch.lua Hitch.LIMITS.maxAssistRadiusM; checked by a test).
+ALIGN_PROGRESS_TOLERANCE_M = 1.5
 
 
 class ObservationMismatch(Exception):
@@ -127,9 +130,9 @@ def power_sufficient(tractor: Equipment, wagon: Equipment) -> bool:
 
 
 def compatible(tractor: Equipment, wagon: Equipment) -> bool:
-    """Pair-level checks. PTO is checked per planned joint pair in plan_hitch."""
+    """Pair-level checks. Joint type and PTO are checked per planned joint pair in
+    plan_hitch, which every HITCH step re-runs."""
     return (tractor.category == "tractor" and wagon.category == "forage_wagon"
-            and bool(tractor.hitches & wagon.hitches)
             and power_sufficient(tractor, wagon)
             and {"move", "attach", "stop"} <= tractor.capabilities)
 
@@ -287,6 +290,11 @@ class Executor:
             tractor, _ = self._pair(ids, farm_id, owner, attached=True)
             if not tractor.stopped:
                 raise ObservationMismatch("EQUIPMENT_MOVING")
+            # Both ends name each other (_pair), and the planned tractor joint is the
+            # one now in use: an attachment at any other joint is not the plan.
+            used = next((j for j in tractor.output_joints if j.index == plan.tractor_joint), None)
+            if used is None or used.free:
+                raise ObservationMismatch("ATTACHMENT_MISMATCH")
             states.append("DELIVER")
             self.world.deliver(tractor.id, destination.id, owner)
             self._arrival(ids, farm_id, owner, target)

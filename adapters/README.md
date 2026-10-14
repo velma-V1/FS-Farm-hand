@@ -3,7 +3,7 @@
 `World` (`world.py`) is our internal Python port, not an API claimed to exist in any
 mod. `fs25.py` maps validated FS25 snapshot frames into that contract and fails
 closed wherever upstream data is unproven. No real `World` adapter performs physical
-work yet; `mod/FarmhandBoundary.lua` refuses every physical operation.
+work yet: `fs25.py` grants no move/attach capability, so no real pair is selectable.
 
 **[EVIDENCE.md](EVIDENCE.md) is the authoritative record** of which upstream
 project provides each capability, with pinned commits, files, line numbers, and

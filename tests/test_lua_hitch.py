@@ -15,18 +15,19 @@ STUBS = r"""
 local Hitch = ...
 local W = {}
 
-local function node(x, z, yaw) return { x = x, y = 0, z = z, yaw = yaw or 0 } end
+local function node(x, z, yaw, y) return { x = x, y = y or 0, z = z, yaw = yaw or 0 } end
 
 -- A tractor facing +z whose rear joint is 2.5 m behind it, staged so that the joint
 -- is `gap` metres ahead of a wagon drawbar at (0, 0); the wagon also faces +z.
 function W.new(opts)
     opts = opts or {}
     local gap = opts.gap or 4
-    local w = { calls = {}, drives = {}, attachCalls = 0, candidateOverride = nil, speedOverride = nil }
+    local w = { calls = {}, drives = {}, attachCalls = 0, candidateOverride = nil, speedOverride = nil,
+                cruise = {}, ranges = {}, events = {} }
     local env = {}
     w.env = env
     local wagon = { ownerFarmId = 1, rootNode = node(0, -4, 0) }
-    local wagonJoint = { jointType = 3, node = node(opts.wagonX or 0, 0) }
+    local wagonJoint = { jointType = 3, node = node(opts.wagonX or 0, 0, 0, opts.wagonY or 0) }
     local otherWagon = { ownerFarmId = 1 }
     local tractor = { ownerFarmId = 1, spec_attacherJoints = {} }
     local tractorJoint = { jointType = opts.tractorJointType or 3, jointIndex = opts.occupied and 1 or 0,
@@ -36,6 +37,7 @@ function W.new(opts)
     w.tractor, w.wagon, w.otherWagon = tractor, wagon, otherWagon
     w.tractorJoint, w.wagonJoint = tractorJoint, wagonJoint
     w.reserved, w.entered, w.motor, w.canRun = true, false, opts.motor ~= false, true
+    w.ai = false
     w.speed = 0.0
     w.attachedImplement = nil
     w.jobValid, w.noJob = opts.jobValid, opts.noJob
@@ -43,6 +45,11 @@ function W.new(opts)
     function tractor:getAttacherJoints() return joints end
     function tractor:getAttacherJointByJointDescIndex(i) return joints[i] end
     function tractor:getIsEntered() return w.entered end
+    function tractor:getIsAIActive() return w.ai end
+    function tractor:setCruiseControlState(state)
+        table.insert(w.cruise, state)
+        table.insert(w.events, "cruise:" .. tostring(state))
+    end
     function tractor:getIsMotorStarted() return w.motor end
     function tractor:getCanMotorRun() return w.canRun end
     function tractor:startMotor() w.motor = true; table.insert(w.calls, "startMotor") end
@@ -55,7 +62,10 @@ function W.new(opts)
         w.attachCalls = w.attachCalls + 1
         if w.attachReturns == false then return false end
         if not w.attachVanishes then
-            w.attachedImplement = { object = info.attachable, attachingIsInProgress = true }
+            -- Field names from AttacherJoints:createAttachmentJoint 2279-2280, 2357.
+            w.attachedImplement = { object = info.attachable, attachingIsInProgress = true,
+                                    jointDescIndex = info.attacherVehicleJointDescIndex,
+                                    inputJointDescIndex = info.attachableJointDescIndex }
             w.wagonAttacher = tractor
         end
         return true
@@ -65,6 +75,7 @@ function W.new(opts)
         return nil
     end
     function tractor:stopCurrentAIJob(message) table.insert(w.calls, "stopCurrentAIJob:" .. message.kind) end
+    env.Drivable = { CRUISECONTROL_STATE_OFF = 0, CRUISECONTROL_STATE_ACTIVE = 1 }
 
     function wagon:getInputAttacherJoints() return { wagonJoint } end
     function wagon:getAttacherVehicle() return w.wagonAttacher end
@@ -80,12 +91,12 @@ function W.new(opts)
     end
     env.localDirectionToWorld = function(n, x, y, z) return math.sin(n.yaw), 0, math.cos(n.yaw) end
     env.worldToLocal = function(n, x, y, z) return x - n.x, y, z - n.z end
-    env.getTerrainHeightAtWorldPos = function() return 0 end
-    env.g_terrainNode = {}
-    -- Stub candidate rule (NOT GIANTS'): our joint within 0.3 m of the drawbar.
+    -- Stub candidate rule (NOT GIANTS'): horizontal distance within the caller's
+    -- maxDistanceSq. Vertical and angle rules are deliberately absent here.
     env.AttacherJoints = { MAX_ATTACH_DISTANCE_SQ = 0.49, MAX_ATTACH_ANGLE = 0.34 }
     function env.AttacherJoints.updateVehiclesInAttachRange(vehicle, maxDistanceSq, maxAngle, isAI)
-        assert(vehicle == tractor and maxDistanceSq == 0.49 and maxAngle == 0.34 and isAI == true)
+        assert(vehicle == tractor and maxAngle == 0.34 and isAI == true)
+        table.insert(w.ranges, maxDistanceSq)
         if w.candidateBroken then error("engine error") end
         local info = nil
         if w.candidateOverride then
@@ -93,7 +104,7 @@ function W.new(opts)
         else
             local dx = tractorJoint.jointTransform.x - wagonJoint.node.x
             local dz = tractorJoint.jointTransform.z - wagonJoint.node.z
-            if math.sqrt(dx * dx + dz * dz) < 0.3 then
+            if dx * dx + dz * dz < maxDistanceSq then
                 info = { attacherVehicle = tractor, attachable = wagon,
                          attacherVehicleJointDescIndex = 2, attachableJointDescIndex = 1 }
             end
@@ -105,6 +116,7 @@ function W.new(opts)
     function env.AIVehicleUtil.driveToPoint(v, dt, acc, allowed, forwards, lx, lz, maxSpeed)
         table.insert(w.drives, { dt = dt, acc = acc, allowed = allowed, forwards = forwards,
                                  lx = lx, lz = lz, maxSpeed = maxSpeed })
+        table.insert(w.events, allowed and "drive" or "brake")
         if allowed and acc > 0 and not w.stuck then
             local step = maxSpeed / 3.6 * dt / 1000
             tractorJoint.jointTransform.z = tractorJoint.jointTransform.z - step
@@ -182,6 +194,8 @@ class LuaHitchTests(unittest.TestCase):
         moving = [d for d in drives[index:] if d["allowed"] or d["acc"] != 0]
         self.assertEqual(moving, [])
         self.assertFalse(drives[-1]["allowed"])
+        # Every terminal brake is followed by GIANTS' cruise control OFF (AD/CP pattern).
+        self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
 
     # ----------------------------------------------------------------- staging
     def test_staging_uses_giants_goto_sequence(self):
@@ -214,7 +228,11 @@ class LuaHitchTests(unittest.TestCase):
     # ------------------------------------------------------------ preconditions
     def test_align_refuses_unsafe_requests(self):
         cases = [
-            ({}, {"maxSpeedKmh": 3.5}, "INVALID_LIMITS"),
+            ({}, {"maxSpeedKmh": 5.5}, "INVALID_LIMITS"),
+            ({}, {"maxSpeedKmh": 0.5}, "INVALID_LIMITS"),          # below 1 km/h GIANTS never accelerates
+            ({}, {"assistRadiusM": 1.6}, "INVALID_LIMITS"),
+            ({}, {"assistRadiusM": 0}, "INVALID_LIMITS"),
+            ({}, {"maxVerticalM": 1.1}, "INVALID_LIMITS"),
             ({}, {"maxDistanceM": 10.5}, "INVALID_LIMITS"),
             ({}, {"maxDistanceM": 0}, "INVALID_LIMITS"),
             ({}, {"timeoutMs": 61000}, "INVALID_LIMITS"),
@@ -251,9 +269,9 @@ class LuaHitchTests(unittest.TestCase):
         driving = [d for d in drives if d["allowed"]]
         self.assertTrue(driving)
         # Always reverse, never above the session speed, steering left to GIANTS.
-        self.assertTrue(all(not d["forwards"] and d["maxSpeed"] == 2 and d["acc"] == 1 for d in driving))
+        self.assertTrue(all(not d["forwards"] and d["maxSpeed"] == 3 and d["acc"] == 1 for d in driving))
         self.assertEqual(drives[-1], {"dt": 100, "acc": 0, "allowed": False, "forwards": False,
-                                      "lx": 0, "lz": 1, "maxSpeed": 0})
+                                      "lx": 0, "lz": 1, "maxSpeed": 3})
         # Terminal: further steps only brake, never drive.
         count = len(drives)
         self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CANDIDATE")
@@ -293,9 +311,13 @@ class LuaHitchTests(unittest.TestCase):
             "CANDIDATE_UNREADABLE": (dict(gap=4), {}, lambda w: setattr(w, "candidateBroken", True)),
             "NODE_UNREADABLE": (dict(gap=4), {}, lambda w: setattr(w, "brokenNode", w.tractorJoint.jointTransform)),
             "FARM_CHANGED": (dict(gap=4), {}, lambda w: setattr(w.wagon, "ownerFarmId", 2)),
+            "AI_ACTIVE": (dict(gap=4), {}, lambda w: setattr(w, "ai", True)),
+            "AI_UNKNOWN": (dict(gap=4), {}, lambda w: setattr(w, "ai", None)),
+            "VERTICAL_MISMATCH": (dict(gap=4), {}, lambda w: setattr(w.wagonJoint.node, "y", 0.6)),
         }
         expected = {"WRONG_JOINT": "OTHER_CANDIDATE", "CANDIDATE_UNREADABLE": "UNKNOWN_OBSERVATION",
-                    "NODE_UNREADABLE": "UNKNOWN_OBSERVATION", "FARM_CHANGED": "RESERVATION_LOST"}
+                    "NODE_UNREADABLE": "UNKNOWN_OBSERVATION", "FARM_CHANGED": "RESERVATION_LOST",
+                    "AI_UNKNOWN": "UNKNOWN_OBSERVATION"}
         for name, (opts, overrides, mutate) in cases.items():
             with self.subTest(guard=name):
                 w = self.world(**opts)
@@ -312,6 +334,8 @@ class LuaHitchTests(unittest.TestCase):
                 self.assert_braked_only_after(w, len(drives) - 1)
                 self.assertEqual(w.attachCalls, 0)
                 self.assertEqual(self.hitch.attach(w.env, session), "NOT_ALIGNED")
+                # Another controller's job is never cancelled or taken over.
+                self.assertNotIn("stopCurrentAIJob:stoppedByUser", list(w.calls.values()))
 
     def test_terminal_result_never_resumes_when_the_cause_clears(self):
         # Reservation lost, then restored: the session must stay stopped.
@@ -342,7 +366,7 @@ class LuaHitchTests(unittest.TestCase):
         result, _ = self.W.run(w, session, 100, 5000)
         self.assertEqual(result, "DISTANCE_LIMIT")
         travelled = 4 - w.tractorJoint.jointTransform.z
-        self.assertLessEqual(travelled, 3 + 2 / 3.6 * 0.1 + 1e-9)
+        self.assertLessEqual(travelled, 3 + 3 / 3.6 * 0.1 + 1e-9)
 
     # ------------------------------------------------------------------- attach
     def aligned(self):
@@ -376,6 +400,9 @@ class LuaHitchTests(unittest.TestCase):
             "NOT_STOPPED": lambda w: setattr(w, "speedOverride", 1.5),
             "RESERVATION_LOST": lambda w: setattr(w, "reserved", False),
             "UNKNOWN_OBSERVATION": lambda w: setattr(w, "candidateBroken", True),
+            "OCCUPIED": lambda w: setattr(w, "entered", True),
+            "AI_ACTIVE": lambda w: setattr(w, "ai", True),
+            "VERTICAL_MISMATCH": lambda w: setattr(w.wagonJoint.node, "y", 0.9),
         }
         for reason, mutate in cases.items():
             with self.subTest(reason=reason):
@@ -404,6 +431,98 @@ class LuaHitchTests(unittest.TestCase):
             if state != "ATTACH_IN_PROGRESS":
                 break
         self.assertEqual(state, "ATTACH_TIMEOUT")
+
+
+    # ------------------------------------------- limits, assist envelope, joints
+    def test_module_is_exposed_for_fs25(self):
+        # FS25 discards a sourceFile's return value; the mod reaches it by name.
+        self.assertTrue(self.lua.eval("function(t) return FarmhandHitch == t end")(self.hitch))
+
+    def test_speed_default_is_bounded_and_not_two(self):
+        limits = self.hitch.LIMITS
+        self.assertEqual((self.hitch.DEFAULTS.maxSpeedKmh, limits.minSpeedKmh, limits.maxSpeedKmh), (3, 1, 5))
+        for speed in (1, 4, 5):
+            w = self.world()
+            session, _ = self.align(w, maxSpeedKmh=speed)
+            self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CONTINUE")
+            self.assertEqual(self.drives(w)[-1]["maxSpeed"], speed)
+
+    def test_reverse_refuses_to_start_unless_stopped_and_free_of_ai(self):
+        for attr, value, reason in (("ai", True, "AI_ACTIVE"), ("ai", None, "UNKNOWN_OBSERVATION"),
+                                    ("entered", True, "OCCUPIED"), ("speed", 1.5, "NOT_STOPPED"),
+                                    ("reserved", False, "RESERVATION_LOST")):
+            with self.subTest(reason=reason):
+                w = self.world()
+                setattr(w, attr, value)
+                self.assertEqual(tuple(self.align(w)), (None, reason))
+                self.assertEqual(len(w.drives), 0)
+                self.assertNotIn("stopCurrentAIJob:stoppedByUser", list(w.calls.values()))
+
+    def test_default_uses_giants_distance_unchanged(self):
+        w = self.world(gap=4)
+        session, _ = self.align(w)
+        self.assertEqual(self.W.run(w, session, 100, 1000)[0], "CANDIDATE")
+        self.assertEqual(set(w.ranges.values()), {0.49})
+        self.assertLess(session.lastGap, 0.7 + 0.1)
+
+    def test_assist_radius_finds_the_exact_pair_earlier_without_touching_giants(self):
+        w = self.world(gap=4)
+        session, _ = self.align(w, assistRadiusM=1.2)
+        result, _ = self.W.run(w, session, 100, 1000)
+        self.assertEqual(result, "CANDIDATE")
+        self.assertEqual({round(r, 6) for r in w.ranges.values()}, {1.44})
+        self.assertEqual(w.env.AttacherJoints.MAX_ATTACH_DISTANCE_SQ, 0.49)   # global unchanged
+        gap = 4 - (4 - w.tractorJoint.jointTransform.z)
+        self.assertTrue(0.7 < gap < 1.2, gap)
+        self.assert_braked_only_after(w, len(w.drives) - 1)
+        w.speed = 0.0
+        self.assertEqual(self.hitch.attach(w.env, session), "ATTACH_REQUESTED")
+        # Smaller than GIANTS' own distance never shrinks it.
+        w = self.world(gap=4)
+        session, _ = self.align(w, assistRadiusM=0.3)
+        self.assertEqual(session.attachDistanceSq, 0.49)
+
+    def test_assist_radius_still_only_accepts_the_exact_pair(self):
+        def other_wagon(w):
+            return self.lua.table(attacherVehicle=w.tractor, attachable=w.otherWagon,
+                                  attacherVehicleJointDescIndex=2, attachableJointDescIndex=1)
+
+        def other_joint(w):
+            return self.lua.table(attacherVehicle=w.tractor, attachable=w.wagon,
+                                  attacherVehicleJointDescIndex=1, attachableJointDescIndex=1)
+
+        for make in (other_wagon, other_joint):
+            with self.subTest(candidate=make.__name__):
+                w = self.world(gap=4)
+                session, _ = self.align(w, assistRadiusM=1.5)
+                w.candidateOverride = make(w)
+                self.assertEqual(self.W.run(w, session, 100, 10)[0], "OTHER_CANDIDATE")
+                self.assertEqual(w.attachCalls, 0)
+
+    def test_vertical_guard_is_independent_of_the_radius(self):
+        for radius, dy, maxVertical, expected in ((None, 0.6, None, "VERTICAL_MISMATCH"),
+                                                  (1.5, 0.6, None, "VERTICAL_MISMATCH"),
+                                                  (1.5, 0.45, None, "CANDIDATE"),
+                                                  (1.5, 0.6, 0.8, "CANDIDATE"),
+                                                  (1.5, 0.3, 0.2, "VERTICAL_MISMATCH")):
+            with self.subTest(radius=radius, dy=dy, maxVertical=maxVertical):
+                w = self.world(gap=4, wagonY=dy)
+                overrides = {k: v for k, v in (("assistRadiusM", radius), ("maxVerticalM", maxVertical)) if v}
+                session, _ = self.align(w, **overrides)
+                self.assertEqual(self.W.run(w, session, 100, 1000)[0], expected)
+                self.assertAlmostEqual(session.lastDy, dy)
+                if expected != "CANDIDATE":
+                    self.assertEqual(self.hitch.attach(w.env, session), "NOT_ALIGNED")
+                    self.assertEqual(w.attachCalls, 0)
+
+    def test_attached_through_the_wrong_joint_is_not_attached(self):
+        for field in ("jointDescIndex", "inputJointDescIndex"):
+            with self.subTest(field=field):
+                w, session = self.aligned()
+                self.assertEqual(self.hitch.attach(w.env, session), "ATTACH_REQUESTED")
+                w.attachedImplement.attachingIsInProgress = False
+                w.attachedImplement[field] = 7
+                self.assertEqual(self.hitch.attachState(w.env, session, 100), "ATTACH_MISMATCH")
 
 
 class Lua51HitchTests(LuaHitchTests):

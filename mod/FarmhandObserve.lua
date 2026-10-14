@@ -130,7 +130,7 @@ Observe.encode = encode
 
 -- Reverse-map numeric joint types through AttacherJoints.JOINTTYPE_* keys
 -- (AutoDrive scripts/Utils/AutoDriveUtilFuncs.lua:952-955 uses the same keys).
--- Unnamed joint types are dropped, which can only remove hitch options.
+-- A joint whose type has no name is not reported, which can only remove options.
 local function jointTypeNames(attacherJoints)
     local byValue = {}
     for key, value in pairs(attacherJoints or {}) do
@@ -139,20 +139,6 @@ local function jointTypeNames(attacherJoints)
         end
     end
     return byValue
-end
-
-function Observe.jointNames(joints, attacherJoints)
-    local byValue, names, seen = jointTypeNames(attacherJoints), {}, {}
-    for _, joint in ipairs(joints or {}) do
-        local name = byValue[joint.jointType]
-        if name ~= nil and not seen[name] then
-            seen[name] = true
-            names[#names + 1] = name
-        end
-    end
-    table.sort(names)
-    if #names > Observe.MAX_JOINTS then return nil end
-    return names
 end
 
 -- Observation states: a method that exists and returns a real boolean is
@@ -312,8 +298,8 @@ function Observe.hitchGeometry(env, v, ptoNames)
     return heading, aiRoot, outputs, inputs
 end
 
--- Returns one vehicle record, or nil when identity, position or hitch joints
--- cannot be observed (the vehicle is then counted as skipped).
+-- Returns one vehicle record, or nil when identity or position cannot be
+-- observed (the vehicle is then counted as skipped).
 function Observe.vehicle(env, v, ptoNames)
     local id = try(function() return env.NetworkUtil.getObjectId(v) end)
     local farmId = try(function() return v.ownerFarmId end)
@@ -323,18 +309,6 @@ function Observe.vehicle(env, v, ptoNames)
     end
 
     local attacher, implements, attachmentObserved = Observe.attachment(env, v)
-
-    local okJoints, attacherJoints, inputJoints = pcall(function()
-        local outputs, inputs = {}, {}
-        if type(v.getAttacherJoints) == "function" then
-            outputs = assert(Observe.jointNames(v:getAttacherJoints(), env.AttacherJoints))
-        end
-        if type(v.getInputAttacherJoints) == "function" then
-            inputs = assert(Observe.jointNames(v:getInputAttacherJoints(), env.AttacherJoints))
-        end
-        return outputs, inputs
-    end)
-    if not okJoints then return nil end
 
     local category = try(function()
         local item = env.g_storeManager:getItemByXMLFilename(v.configFileName)
@@ -417,8 +391,6 @@ function Observe.vehicle(env, v, ptoNames)
         attachment_observed = attachmentObserved,
         attacher_vehicle_id = nullable(attacher),
         implement_ids = Observe.array(implements),
-        attacher_joints = Observe.array(attacherJoints),
-        input_joints = Observe.array(inputJoints),
         heading = nullable(heading),
         forage_wagon = forageWagon,
         motor = nullable(motor),
@@ -452,6 +424,25 @@ local function playerPosition(env)
     return Observe.NULL
 end
 
+-- The output PTO names of the farm's vehicles (sorted): the only names an
+-- implement input could be matched against. Unreadable ones are simply not
+-- candidates; their joints report unknown PTO names.
+function Observe.farmPtoNames(vehicles, farmId)
+    local seen, names = {}, {}
+    for _, v in pairs(vehicles) do
+        if try(function() return v.ownerFarmId == farmId end) then
+            local joints = try(function() return v:getAttacherJoints() end)
+            for i = 1, type(joints) == "table" and #joints or 0 do
+                for _, name in ipairs(try(function() return Observe.outputPtoNames(v, i) end) or {}) do
+                    if not seen[name] then seen[name] = true; names[#names + 1] = name end
+                end
+            end
+        end
+    end
+    table.sort(names)
+    return names
+end
+
 -- Returns (line, nil), or (nil, reason) when the farm, the vehicle list or the
 -- AutoDrive destination list cannot be observed (nothing is sent in that case).
 function Observe.snapshot(env, seq)
@@ -461,23 +452,7 @@ function Observe.snapshot(env, seq)
         or try(function() return env.g_currentMission.vehicles end)
     if type(vehicles) ~= "table" then return nil, "NO_VEHICLES" end
 
-    -- First pass: the output PTO names of the farm's vehicles. Unreadable ones
-    -- are simply not candidates; their joints report unknown PTO names.
-    local seenPto, ptoNames = {}, {}
-    for _, v in pairs(vehicles) do
-        local owned = try(function() return v.ownerFarmId == farmId end)
-        if owned then
-            local joints = try(function() return v:getAttacherJoints() end)
-            for i = 1, type(joints) == "table" and #joints or 0 do
-                local names = try(function() return Observe.outputPtoNames(v, i) end) or {}
-                for _, name in ipairs(names) do
-                    if not seenPto[name] then seenPto[name] = true; ptoNames[#ptoNames + 1] = name end
-                end
-            end
-        end
-    end
-    table.sort(ptoNames)
-
+    local ptoNames = Observe.farmPtoNames(vehicles, farmId)
     local records, skipped, truncated = Observe.array(), 0, false
     for _, v in pairs(vehicles) do
         local owned = try(function() return v.ownerFarmId == farmId end)
@@ -527,4 +502,7 @@ function Observe.snapshot(env, seq)
     }), nil
 end
 
+-- FS25 discards a sourceFile's return value, so the mod reaches this table
+-- through a mod-environment global; CI loads the returned table instead.
+FarmhandObserve = Observe
 return Observe
