@@ -157,9 +157,16 @@ class OllamaInterpreter:
         return managed.to_proposal(answer)
 
 
+def _speech_installed(folder: Path | None) -> bool:
+    from companion import voice
+    target = (folder / "whisper-base.en") if folder else voice.whisper_dir()
+    return all((target / name).is_file() for name in voice.WHISPER_FILES)
+
+
 def discover(ollama: Ollama | None = None, folder: Path | None = None) -> list[Choice]:
     """Every model the user could pick, then the two downloads not yet installed,
-    then no AI. Labels show only what is cheap and reliable to know."""
+    then no AI; and the speech model for push-to-talk while it is missing. Labels
+    show only what is cheap and reliable to know."""
     choices = []
     for m in (ollama or Ollama()).models():
         details = m.get("details") if isinstance(m.get("details"), dict) else {}
@@ -174,6 +181,8 @@ def discover(ollama: Ollama | None = None, folder: Path | None = None) -> list[C
             choices.append(Choice("install", key, f"Install {item['title']}: {_gb(item['size'])}, "
                                                   f"~{item['ram_gb']} GB RAM"[:60]))
     choices.append(Choice("none", "", "Continue without AI"))
+    if not _speech_installed(folder):
+        choices.append(Choice("voice", "", "Install speech recognition for push-to-talk: 0.15 GB"))
     return choices
 
 
@@ -208,8 +217,10 @@ class AI:
     its request loop). ``notify`` shows a token in game."""
 
     def __init__(self, settings: Settings, notify, show_menu=lambda: None, ollama: Ollama | None = None,
-                 folder: Path | None = None, server_factory=managed.ModelServer, installer=managed.install):
+                 folder: Path | None = None, server_factory=managed.ModelServer, installer=managed.install,
+                 speech_installer=None):
         self.settings, self.notify, self.show_menu = settings, notify, show_menu
+        self.speech_installer = speech_installer
         self.ollama, self.folder = ollama or Ollama(), folder
         self.server_factory, self.installer = server_factory, installer
         self._lock = threading.Lock()
@@ -286,6 +297,17 @@ class AI:
 
     def _try(self, choice: Choice) -> None:
         try:
+            if choice.provider == "voice":
+                self.notify("VOICE_INSTALLING")
+                try:
+                    from companion import voice
+                    (self.speech_installer or voice.install)((self.folder / "whisper-base.en") if self.folder else None)
+                except Exception:
+                    log.exception("speech model install failed")
+                    self.notify("VOICE_INSTALL_FAILED")
+                    return
+                self.notify("VOICE_READY")
+                return
             if choice.provider == "install":
                 self.notify("AI_INSTALLING")
                 try:

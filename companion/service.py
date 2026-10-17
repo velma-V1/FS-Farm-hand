@@ -1,10 +1,8 @@
 """The Farmhand companion as a background process (Windows, next to FS25).
 
-    python -m companion.service --install      start now and at every Windows logon
-    python -m companion.service --uninstall    remove the logon start
     python -m companion.service                run in this terminal (diagnostics)
 
-Installed, it runs without a window. It hosts the local link, waits for the game
+Installed by Setup (companion/setup.py), it starts at logon without a window. It hosts the local link, waits for the game
 and answers the player: the Farmhand key asks for AC-001 "here" directly; typed
 words are interpreted (companion/language.py) into a command proposal. Either is
 only a wish: the coordinator (companion/coordinator.py) supplies the request id
@@ -24,29 +22,27 @@ import argparse
 import json
 import logging
 import logging.handlers
-from pathlib import Path, PureWindowsPath
-import subprocess
+import os
+from pathlib import Path
 import sys
 import threading
 
 from adapters.world import StepUnverified
 from companion.bridge import (MOD_DIR, SNAPSHOT_TIMEOUT_S, FS25World, game_profile_dir,
                               start_local_link)
-from companion.ai import AI, Settings
+from companion.ai import AI, Settings, data_dir
 from companion.coordinator import FETCH_HERE, Coordinator
 from companion.executor import Executor
 from companion.language import RuleInterpreter, refuses
+from companion.setup import PID_FILE, QUIT_FILE
 from companion.voice import Replies, SapiSpeaker, SoundDeviceMicrophone, Unavailable, VoiceInput, WhisperTranscriber
 from protocol.ipc import encode_menu
 
 log = logging.getLogger("farmhand")
 
-ROOT = Path(__file__).resolve().parents[1]
 # The game never re-adopts a session it dropped (e.g. after 10 s without a beat
 # while the PC slept); a live game naming another session this long gets a new one.
 RENEW_AFTER_S = 15.0
-RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-RUN_VALUE = "FS25 Farmhand companion"
 LOG_FILE = "companion.log"
 
 
@@ -189,43 +185,9 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
                 foreign_since = None
         else:
             foreign_since = None
+    if coordinator.busy:                  # quitting during a job: stop it first
+        coordinator.stop()
     coordinator.wait(timeout=30)
-
-
-# ------------------------------------------------------------- Windows logon
-
-def autostart_command(config: Path | None = None) -> str:
-    """The logon command: windowless pythonw running this module from ROOT."""
-    pythonw = PureWindowsPath(sys.executable).with_name("pythonw.exe")
-    paths = [pythonw, ROOT] + ([config] if config else [])
-    if any(c in str(p) for p in paths for c in "\"'"):
-        raise ValueError("paths with quotes are not supported")
-    args = repr(["--config", str(config.resolve())] if config else [])
-    code = f"import sys; sys.path.insert(0, r'{ROOT}'); import companion.service as s; s.main({args})"
-    return f'"{pythonw}" -c "{code}"'
-
-
-def install(config: Path | None = None) -> int:
-    import winreg  # Windows only
-    command = autostart_command(config)
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
-        winreg.SetValueEx(key, RUN_VALUE, 0, winreg.REG_SZ, command)
-    detached = 0x00000008 | 0x00000200          # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen(command, creationflags=detached, close_fds=True)
-    print("Installed: the Farmhand companion starts at logon and was started now (if one was already\n"
-          f"running, that one keeps running; see companion.log).\n{command}")
-    return 0
-
-
-def uninstall() -> int:
-    import winreg  # Windows only
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
-            winreg.DeleteValue(key, RUN_VALUE)
-    except FileNotFoundError:
-        pass
-    print("Removed the logon start. A running companion stops with the next logoff or in Task Manager.")
-    return 0
 
 
 def configure_logging(folder: Path) -> None:
@@ -239,16 +201,9 @@ def configure_logging(folder: Path) -> None:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    action = parser.add_mutually_exclusive_group()
-    action.add_argument("--install", action="store_true")
-    action.add_argument("--uninstall", action="store_true")
     parser.add_argument("--config", type=Path, help="optional farmhand.json")
     parser.add_argument("--profile", type=Path, help="FarmingSimulator2025 folder (default: Documents)")
     args = parser.parse_args(argv)
-    if args.install:
-        return install(args.config)
-    if args.uninstall:
-        return uninstall()
     profile = args.profile or game_profile_dir()
     if not profile.is_dir():
         raise SystemExit(f"FS25 profile folder not found: {profile}")
@@ -263,13 +218,19 @@ def main(argv=None) -> int:
     # The optional AI the user chose: words the rules do not know; never STOP, never execution.
     ai = AI(Settings(), notify=link.notice)
     ai.start()
+    # Setup asks a running companion to quit (companion/setup.py stop_running).
+    data = data_dir()
+    data.mkdir(parents=True, exist_ok=True)
+    (data / QUIT_FILE).unlink(missing_ok=True)
+    (data / PID_FILE).write_text(str(os.getpid()), encoding="utf-8")
     try:
-        serve(FS25World(link, categories), entrances, ai=ai,
+        serve(FS25World(link, categories), entrances, ai=ai, should_stop=(data / QUIT_FILE).exists,
               microphone=SoundDeviceMicrophone, transcriber=WhisperTranscriber,
               speaker=SapiSpeaker() if sys.platform == "win32" else None)
     finally:
         ai.stop()
         link.close()
+        (data / PID_FILE).unlink(missing_ok=True)
     return 0
 
 

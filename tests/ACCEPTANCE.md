@@ -209,6 +209,16 @@ Executable mapping (`python scripts/check.py`):
   answered at once and the rules still fetch. Lua: the MENU notice opens GIANTS'
   option dialog with the companion's lines, a pick sends (menu, line), cancel and
   out-of-range send nothing, never over another dialog, the key asks for it.
+- `tests/test_setup.py`: Setup installs the mod and the companion and registers the
+  windowless logon start; an update replaces the program and keeps settings and
+  downloaded models (and leaves no stale files); a missing FS25 profile or an
+  incomplete package changes nothing; a running companion is asked to quit first,
+  and one that does not quit stops the install; uninstall removes everything it
+  installed; quoted paths are refused. `WindowsInstallTests` (CI job "package"):
+  the built package installs into a temporary profile, the companion starts (pid
+  file, log), the logon entry points at the installed runtime, a second install
+  updates over the running companion, and uninstall stops it and removes the mod
+  and the entry. The AI menu also offers the speech model while it is missing.
 - `tests/test_model.py` (fake llama-server, no model): requests are local,
   temperature 0 and schema-constrained with the schema described in the prompt;
   answers map to validated proposals; malformed, off-schema, extra-field, too-long,

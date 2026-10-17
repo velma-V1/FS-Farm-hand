@@ -23,10 +23,10 @@ if __name__ == "__main__":
         for path in sorted((ROOT / "mod").rglob("*.lua")):
             compile_lua(path.read_text(), str(path.relative_to(ROOT)))
     run(sys.executable, "scripts/package_probe.py", "--check-source")
-    with tempfile.TemporaryDirectory() as folder:   # the companion bundle runs on its own
-        bundle = Path(folder) / "FarmhandCompanion"
-        run(sys.executable, "scripts/package_probe.py", "--build-companion", str(bundle))
+    with tempfile.TemporaryDirectory() as folder:   # the packaged app imports on its own
+        app = Path(folder) / "app"
+        run(sys.executable, "scripts/package_probe.py", "--build-app", str(app))
         subprocess.run([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, '.'); "
-                        "import companion.service, companion.run"], cwd=bundle, check=True)
+                        "import companion.service, companion.setup, companion.run"], cwd=app, check=True)
     run("git", "diff", "--check", "HEAD")
     print("All CI checks passed (Python, schema, Lua, package layouts, whitespace).", flush=True)

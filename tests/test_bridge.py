@@ -775,7 +775,7 @@ class ServiceTests(unittest.TestCase):
         self.wait_for(lambda: "MENU" in notices)                       # first link, no choice yet
         menu_id, lines = self.menu(game)
         self.assertEqual(lines[0], "qwen3:4b (Ollama, 2.5 GB 4.0B Q4_K_M)")
-        self.assertEqual(lines[-1], "Continue without AI")
+        self.assertIn("Continue without AI", lines)
         game.pick(1, menu_id + 1, 1)                                    # a stale/unknown menu: ignored
         game.pick(2, menu_id, 0)                                        # dialog cancelled: nothing
         time.sleep(0.2)
@@ -936,15 +936,3 @@ class ServiceTests(unittest.TestCase):
         link.heartbeat()
         link.notice("COMPLETE")
         self.assertNotIn("session.xml", link.files.files)
-
-    def test_autostart_command_is_windowless_and_rooted(self):
-        from companion import service
-        with unittest.mock.patch.object(sys, "executable", r"C:\Py\python.exe"), \
-                unittest.mock.patch.object(service, "ROOT", PureWindowsPath(r"C:\Farmhand")):
-            command = service.autostart_command()
-            self.assertTrue(command.startswith('"C:\\Py\\pythonw.exe" -c "'))
-            self.assertIn("sys.path.insert(0, r'C:\\Farmhand')", command)
-            self.assertIn("s.main([])", command)
-            with unittest.mock.patch.object(service, "ROOT", PureWindowsPath(r"C:\it's")):
-                with self.assertRaises(ValueError):
-                    service.autostart_command()

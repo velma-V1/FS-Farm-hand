@@ -165,12 +165,13 @@ the source meets it:
 | No manual vehicle IDs | The executor selects the pair from observations | Equipment detection on the user's farm |
 | No manual JSON editing | Tractors recognised from GIANTS data; `farmhand.json` only for optional field targets | The tractor rule matches the user's tractors only |
 | No manual AutoDrive graph | GIANTS GOTO travel and delivery; AutoDrive optional and preferred when a marker fits | GOTO with the wagon attached, arrival accuracy |
-| No Python terminal | `scripts/install_windows.cmd` (double-click, once) installs and registers a windowless logon start (`pythonw`, HKCU Run) | Logon start on the user's PC |
+| No Python, terminal or setup work | One package: `Setup.cmd` runs the bundled official Windows embeddable Python (pinned, sha256 = python.org's signed digest) with the pinned packages inside; it finds the FS25 profile, installs the mod and the companion (`%LOCALAPPDATA%\FS25Farmhand`), registers a windowless logon start (`pythonw`, HKCU Run), starts it and confirms in a Windows dialog; updates keep settings and models; `Uninstall.cmd` removes it. Windows CI installs and uninstalls the built package for real | Logon start, the dialogs |
 | No routine intervention | One companion per PC (first pipe instance), session renewal after a drop, results as in-game notices, log in `modSettings/FS25_Farmhand/companion.log` | Recovery after game restart, sleep and companion restart |
 
-Python 3.12 must be installed once (the installer uses the `py` launcher). The
-definition is met only when the single consolidated live session in the runtime
-gate below passes on the user's PC.
+The finished product is distributed as one ZIP of that package, built only after
+the user approves the release; CI uploads the same folder as a qualification
+artifact, never labelled a release. The definition is met only when the single
+consolidated live session in the runtime gate below passes on the user's PC.
 
 ## Acceptance criteria
 - Executable scenarios in tests/ACCEPTANCE.md pass with varied opaque IDs and

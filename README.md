@@ -17,8 +17,8 @@ attach them, and bring them to the requester.
 run inside FS25.** Upstream capabilities are recorded with source evidence in
 [adapters/EVIDENCE.md](adapters/EVIDENCE.md).
 
-How it is used: install once from the CI artifact (copy the `FS25_Farmhand` mod
-folder; double-click `FarmhandCompanion/scripts/install_windows.cmd`), then in
+How it is used: install once by double-clicking `Setup.cmd` in the Farmhand package
+(it carries its own Python; nothing else to install), then in
 game, on foot, press **Left Alt + K** and type what you want ("bring me a tractor
 and forage wagon", "what are you doing?", "stop"), or use **Left Alt + J** (bring
 the pair here) and **Left Alt + L** (stop). The windowless local companion
@@ -56,7 +56,8 @@ prove anything that requires the actual FS25 runtime.
 | simulator/ | In-memory mock FS25 world |
 | tests/ | AC-001 specification and executable checks |
 | scripts/check.py | Single CI verification command |
-| scripts/install_windows.cmd | One-time companion install on the Windows PC |
+| companion/setup.py | Setup / Uninstall (the package's Setup.cmd, Uninstall.cmd) |
+| scripts/package_probe.py | Builds the mod, the app and the qualification package |
 
 See [AC-001](tests/ACCEPTANCE.md) for behavioral acceptance and
 [BUILD_SPEC.md](BUILD_SPEC.md) for what still requires actual FS25.

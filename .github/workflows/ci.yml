@@ -108,15 +108,40 @@ jobs:
           python-version: '3.12'
       - name: Build and validate exact install folder
         run: python scripts/package_probe.py --build dist/FS25_Farmhand
-      - name: Build the companion bundle and check it imports on its own
-        run: |
-          python scripts/package_probe.py --build-companion dist/FarmhandCompanion
-          python -m pip install -r dist/FarmhandCompanion/requirements.txt
-          cd dist/FarmhandCompanion && python -I -c "import sys; sys.path.insert(0, '.'); import companion.service, companion.run"
       - name: Upload qualified mod
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: FS25_Farmhand-${{ github.sha }}
           path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  package:
+    name: Windows package, install and uninstall (qualification only)
+    needs:
+      - acceptance
+      - voice
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: Build the package with its own embedded Python
+        run: python scripts/package_probe.py --build-package dist/FS25Farmhand-qualification
+      - name: The embedded runtime imports everything on its own
+        run: dist\FS25Farmhand-qualification\runtime\python.exe -c "import companion.service, companion.setup, companion.voice, companion.ai, faster_whisper, sounddevice, jsonschema; print('ok')"
+      - name: Install into a temporary profile, check, uninstall
+        run: python -m unittest -v tests.test_setup.WindowsInstallTests
+        env:
+          FARMHAND_PACKAGE: dist\FS25Farmhand-qualification
+      - name: Upload the qualification package (not a release)
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: FS25Farmhand-qualification-${{ github.sha }}
+          path: dist/FS25Farmhand-qualification/
           if-no-files-found: error
           retention-days: 14

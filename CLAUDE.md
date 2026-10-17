@@ -30,8 +30,11 @@ layouts (the bundle must import on its own), and runs
 CI (`.github/workflows/ci.yml`) runs it on Ubuntu and Windows; Windows named-pipe
 tests only execute on Windows. CodeQL must report zero findings.
 
-Normal operation is `companion/service.py` (windowless, logon-started by
-`scripts/install_windows.cmd`) answering the in-game key; the diagnostic runner
+Normal operation is `companion/service.py` (windowless, logon-started by the package's
+`Setup.cmd` → `companion/setup.py`) answering the in-game keys; `python
+scripts/package_probe.py --build-package <dir>` builds that package (needs network; CI
+job "package" installs it for real on Windows). Never build or label a release ZIP
+without the user's explicit release approval; the diagnostic runner
 (`python -m companion.run here|marker|marker-id|field`) runs one request. Both only work on
 the user's Windows PC beside FS25 — see `mod/README.md`. The optional, gitignored
 `farmhand.json` (`--config`; template `farmhand.example.json`) is needed only for

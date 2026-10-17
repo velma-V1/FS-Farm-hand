@@ -26,16 +26,17 @@ session and the probe for a typed command.
 ## The live validation session (one sitting, on the Windows PC)
 
 Everything below is the normal player path plus the checks that only FS25 can
-answer; one sitting covers them. Needs FS25 and Python 3.12 (`py` launcher). No
-microphone is needed: step 6 only confirms that voice says it is unavailable.
+answer; one sitting covers them. Needs only FS25 (start it once beforehand so its
+profile folder exists). No microphone is needed: step 6 only confirms that voice
+says it is unavailable.
 
-1. **Install once.** The CI artifact `FS25_Farmhand-<commit>` holds two folders.
-   Copy `FS25_Farmhand` to `Documents/My Games/FarmingSimulator2025/mods/FS25_Farmhand/`
-   (a folder, not a ZIP). Put `FarmhandCompanion` anywhere (for example
-   `Documents/FarmhandCompanion`) and double-click its
-   `scripts/install_windows.cmd`. Answer **Y** to the local language model (it
-   runs on the CPU only) and, optionally, to voice. It starts the companion,
-   windowless, now and at every logon.
+1. **Install once.** Download the CI artifact `FS25Farmhand-qualification-<commit>`
+   (a test package, not a release), extract it anywhere and double-click
+   `Setup.cmd`. It installs the mod and the companion, starts the companion now
+   and at every logon, and says so in a window. At the first FS25 connection
+   Farmhand offers its AI menu (Left Alt + N later): pick your Ollama model if you
+   have one, or a Farmhand download, or "Continue without AI"; try both "without AI"
+   and a model during the session.
 2. **Fetch, without AutoDrive.** Disable AutoDrive (if installed) and load a
    single-player save with the Farmhand mod. Own one tractor with nothing attached
    (no front weight either) and one forage wagon. Expect "Farmhand: companion

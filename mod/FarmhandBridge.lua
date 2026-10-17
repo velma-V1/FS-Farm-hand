@@ -559,7 +559,9 @@ Bridge.NOTICES = {
     STATUS_IDLE = "Farmhand: idle",
     LISTENING = "Farmhand: listening...",
     NOT_HEARD = "Farmhand: sorry, I did not hear that",
-    VOICE_UNAVAILABLE = "Farmhand: voice is unavailable (no microphone or speech model); press Left Alt + K to type",
+    VOICE_UNAVAILABLE = "Farmhand: voice is unavailable (no microphone, or Left Alt + N to install speech); type with Left Alt + K",
+    VOICE_INSTALLING = "Farmhand: downloading speech recognition...",
+    VOICE_READY = "Farmhand: speech recognition installed; hold Left Alt + V to speak",
     AI_INSTALLING = "Farmhand: downloading the AI model; plain commands work meanwhile",
     AI_VALIDATING = "Farmhand: checking the AI model...",
     AI_READY = "Farmhand: AI model ready",
@@ -571,6 +573,7 @@ Bridge.CRITICAL = {
     AI_INCOMPATIBLE = "Farmhand: that AI model is not compatible; choose another",
     AI_MODEL_MISSING = "Farmhand: the chosen AI model is not available; press Left Alt + N to choose",
     AI_INSTALL_FAILED = "Farmhand: the AI model download failed; plain commands still work",
+    VOICE_INSTALL_FAILED = "Farmhand: the speech recognition download failed; typing still works",
 }
 -- What each executor state means to the player (STATUS_WORKING_<state>).
 Bridge.STEPS = {

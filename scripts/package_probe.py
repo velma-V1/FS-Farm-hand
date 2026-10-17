@@ -1,10 +1,14 @@
 """Validate and build the exact install folders for the user's Windows PC.
 
     --check-source              validate mod/ as CI does
-    --build dist/FS25_Farmhand  the FS25 mod folder (copied into the game's mods/)
-    --build-companion dist/FarmhandCompanion
-                                the companion: runtime sources, pinned requirements
-                                and the one-time installer (scripts/install_windows.cmd)
+    --build dist/FS25_Farmhand  the FS25 mod folder alone
+    --build-app dist/app        the companion sources alone (no network)
+    --build-package dist/FS25Farmhand
+                                the qualification package: Setup.cmd, Uninstall.cmd,
+                                README.txt, mod/, app/ and runtime/ (the official
+                                Windows embeddable Python with the pinned packages);
+                                needs network. Never the release: that is built only
+                                after the user approves the product for release.
 """
 
 from __future__ import annotations
@@ -125,12 +129,9 @@ def build(destination: Path) -> None:
     print(manifest.read_text(encoding="utf-8"), end="")
 
 
-# The companion's runtime: never tests, the simulator or development tooling.
-COMPANION_FILES = (
-    "README.md",
-    "requirements.txt",
-    "farmhand.example.json",
-    "scripts/install_windows.cmd",
+# The companion's runtime (the package's app folder): never tests, the simulator
+# or development tooling.
+APP_FILES = (
     "adapters/fs25.py",
     "adapters/world.py",
     "companion/ai.py",
@@ -140,40 +141,102 @@ COMPANION_FILES = (
     "companion/hitch.py",
     "companion/language.py",
     "companion/model.py",
-    "companion/voice.py",
-    "requirements-voice.txt",
     "companion/run.py",
     "companion/service.py",
+    "companion/setup.py",
+    "companion/voice.py",
     "protocol/command.schema.json",
     "protocol/frame.schema.json",
     "protocol/intent.schema.json",
     "protocol/ipc.py",
     "protocol/model.py",
 )
-# The live validation steps travel with the companion.
-COMPANION_DOCS = {"mod/README.md": "LIVE_VALIDATION.md"}
+# The official Windows embeddable Python; sha256 equals the digest python.org signed
+# in python-3.12.10-embed-amd64.zip.sigstore (checked 2026-10-17).
+EMBEDDED_PYTHON = {
+    "url": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip",
+    "sha256": "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3",
+}
+# runtime\python312._pth: the app beside the runtime, the pinned packages inside it.
+PTH = "python312.zip\n.\nLib\\site-packages\n..\\app\nimport site\n"
+LAUNCHERS = {
+    "Setup.cmd": '@echo off\r\nstart "" "%~dp0runtime\\pythonw.exe" -m companion.setup install\r\n',
+    "Uninstall.cmd": '@echo off\r\nstart "" "%~dp0runtime\\pythonw.exe" -m companion.setup uninstall\r\n',
+}
+README = """FS25 Farmhand
+
+Install: double-click Setup.cmd. Nothing else is needed: this folder carries its
+own Python. Setup puts the mod into Farming Simulator 25, installs the companion
+for this Windows user and starts it now and at every logon.
+
+Use, in FS25 on foot: Left Alt + K to tell Farmhand what to do ("bring me a tractor
+and forage wagon", "come here", "take this back to the barn", "what are you
+doing?", "stop"); Left Alt + L to stop; Left Alt + J to bring the pair here;
+Left Alt + N to choose an optional AI model; hold Left Alt + V to speak (needs a
+microphone).
+
+Remove: double-click Uninstall.cmd.
+"""
 
 
-def build_companion(destination: Path) -> None:
+def build_app(destination: Path) -> list[str]:
+    """The companion sources; returns manifest rows."""
     if destination.exists():
         shutil.rmtree(destination)
     rows = []
-    for source, target in [(name, name) for name in COMPANION_FILES] + list(COMPANION_DOCS.items()):
-        path = ROOT / source
+    for name in APP_FILES:
+        path = ROOT / name
         if not path.is_file() or path.is_symlink():
-            fail(f"missing regular companion file: {source}")
-        out = destination / target
+            fail(f"missing regular companion file: {name}")
+        out = destination / name
         out.parent.mkdir(parents=True, exist_ok=True)
         data = path.read_bytes()
-        if source.endswith(".cmd"):          # cmd.exe needs CRLF whatever the checkout did
-            data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
         out.write_bytes(data)
-        rows.append(f"{hashlib.sha256(data).hexdigest()}  {destination.name}/{target}")
-    if any("simulator" in p.parts or "tests" in p.parts for p in destination.rglob("*")):
-        fail("the companion bundle must not contain tests or the simulator")
-    manifest = destination.parent / "COMPANION_SHA256SUMS.txt"
-    manifest.write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
-    print(f"Companion bundle built at {destination}")
+        rows.append(f"{hashlib.sha256(data).hexdigest()}  app/{name}")
+    return rows
+
+
+def build_runtime(destination: Path) -> None:
+    """Embedded Python with the pinned runtime and voice wheels for win_amd64."""
+    import io
+    import subprocess
+    import sys
+    import urllib.request
+    import zipfile
+    with urllib.request.urlopen(EMBEDDED_PYTHON["url"], timeout=120) as response:
+        data = response.read()
+    if hashlib.sha256(data).hexdigest() != EMBEDDED_PYTHON["sha256"]:
+        fail("embedded Python does not match its pinned sha256")
+    if destination.exists():
+        shutil.rmtree(destination)
+    zipfile.ZipFile(io.BytesIO(data)).extractall(destination)
+    (destination / "python312._pth").write_text(PTH, encoding="utf-8", newline="\r\n")
+    subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "--no-compile", "--disable-pip-version-check",
+                    "--target", str(destination / "Lib" / "site-packages"), "--platform", "win_amd64",
+                    "--python-version", "3.12", "--implementation", "cp", "--only-binary=:all:",
+                    "-r", str(ROOT / "requirements-voice.txt")], check=True)
+
+
+def build_package(destination: Path) -> None:
+    """The qualification package (a folder; CI zips it as a test artifact only)."""
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    build(destination / "mod" / "FS25_Farmhand")
+    rows = build_app(destination / "app")
+    build_runtime(destination / "runtime")
+    for name, text in LAUNCHERS.items():
+        (destination / name).write_bytes(text.encode("ascii"))
+    (destination / "README.txt").write_text(README.replace("\n", "\r\n"), encoding="utf-8", newline="")
+    site = destination / "runtime" / "Lib" / "site-packages"
+    for junk in [p for p in site.rglob("*") if p.is_dir() and p.name in ("tests", "__pycache__")]:
+        shutil.rmtree(junk, ignore_errors=True)            # third-party self-tests: never imported
+    unwanted = [p for p in destination.rglob("*") if p.name in (".git", "tests", "simulator", "__pycache__",
+                                                               ".venv", "farmhand.json") or p.suffix == ".pyc"]
+    if unwanted:
+        fail(f"the package contains development files: {unwanted[:5]}")
+    (destination / "APP_SHA256SUMS.txt").write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
+    print(f"Farmhand package built at {destination}")
 
 
 def main() -> None:
@@ -181,14 +244,18 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check-source", action="store_true")
     group.add_argument("--build", type=Path)
-    group.add_argument("--build-companion", type=Path)
+    group.add_argument("--build-app", type=Path)
+    group.add_argument("--build-package", type=Path)
     args = parser.parse_args()
 
     if args.check_source:
         validate_mod(SOURCE, exact_files=False)
         print("FS25 mod source layout valid.")
-    elif args.build_companion:
-        build_companion(args.build_companion.resolve())
+    elif args.build_app:
+        build_app(args.build_app.resolve())
+        print(f"Companion app built at {args.build_app}")
+    elif args.build_package:
+        build_package(args.build_package.resolve())
     else:
         build(args.build.resolve())
 

@@ -104,7 +104,7 @@ class DiscoveryTests(Fixture):
         choices = ai.discover(client, self.folder)
         self.assertEqual([(c.provider, c.model) for c in choices],
                          [("ollama", "qwen3:4b"), ("ollama", "llama3.2:latest"), ("farmhand", "lightweight"),
-                          ("install", "recommended"), ("none", "")])
+                          ("install", "recommended"), ("none", ""), ("voice", "")])
         self.assertTrue(all(len(c.label) <= 60 for c in choices))
         self.assertIn("Q4_K_M", choices[0].label)
         self.assertIn("2.5 GB", choices[3].label)
@@ -112,8 +112,23 @@ class DiscoveryTests(Fixture):
     def test_without_ollama_or_models_the_choice_is_download_or_no_ai(self):
         choices = ai.discover(ai.Ollama("http://127.0.0.1:9", timeout=0.3), self.folder)
         self.assertEqual([(c.provider, c.model) for c in choices],
-                         [("install", "lightweight"), ("install", "recommended"), ("none", "")])
-        self.assertEqual(choices[-1].label, "Continue without AI")
+                         [("install", "lightweight"), ("install", "recommended"), ("none", ""), ("voice", "")])
+        self.assertEqual(choices[2].label, "Continue without AI")
+
+    def test_speech_recognition_is_offered_only_while_missing_and_installs_from_the_menu(self):
+        from companion import voice
+        _, client = self.ollama(models=[])
+        installs = []
+        brain = self.make_ai(client, speech_installer=installs.append)
+        brain.open_menu()
+        brain.choose(len(brain.menu))                       # the speech line
+        self.wait(lambda: self.notices[-1:] == ["VOICE_READY"])
+        self.assertEqual(installs, [self.folder / "whisper-base.en"])
+        self.assertIsNone(self.settings.ai())               # the AI choice is untouched
+        for name in voice.WHISPER_FILES:
+            (self.folder / "whisper-base.en").mkdir(exist_ok=True)
+            (self.folder / "whisper-base.en" / name).write_bytes(b"")
+        self.assertNotIn("voice", [c.provider for c in ai.discover(client, self.folder)])
 
 
 class OllamaTests(Fixture):
@@ -164,7 +179,7 @@ class ChoiceTests(Fixture):
         _, client = self.ollama()
         brain = self.make_ai(client)
         brain.open_menu()
-        brain.choose(len(brain.menu))                              # the last line
+        brain.choose([c.provider for c in brain.menu].index("none") + 1)
         self.assertEqual(self.settings.ai(), {"provider": "none"})
         self.assertEqual(self.notices, ["AI_OFF"])
         self.assertFalse(brain.enabled)

@@ -216,6 +216,13 @@ GitHub release API and the Hugging Face tree API of the pinned revision.
 | In-game list | PROVEN use | Courseplay 8.1.0.3 `CourseEditor.lua:165-176`: `OptionDialog.show(callback(item), title, text, texts)`, item 0 when cancelled, guarded by `g_gui:getIsDialogVisible()` | The companion writes `menu.xml` (one element, `o1`..`o9`, text without characters XML would escape) and notices `MENU`; the mod shows it and sends `{menu, choice}`; a stale menu id or 0 is ignored |
 | Validation | Our rule | — | Six sentences (`ai.VALIDATION`), 60 s overall: at least 5 right, and the unsupported sentence must never become a movement; a failing model is not saved and the list returns |
 
+## Package and setup — `scripts/package_probe.py`, `companion/setup.py`
+
+| Part | State | Source | Farmhand use |
+| --- | --- | --- | --- |
+| Bundled Python | PROVEN artifact | python.org `python-3.12.10-embed-amd64.zip`, sha256 `4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3`, equal to the digest in python.org's `.sigstore` bundle for that file (checked 2026-10-17); includes `_ctypes`, `winreg`, `pythonw.exe`; no pip, no tkinter | `runtime/` with `python312._pth` (`python312.zip`, `.`, `Lib\site-packages`, `..\app`, `import site`); the pinned cp312 win_amd64 wheels installed into it at build time (`pip --target --platform win_amd64 --only-binary`), third-party self-tests pruned; about 260 MB unpacked, 93 MB zipped |
+| Setup | Implemented, UNVERIFIED on the user's PC | Win32 `MessageBoxW`; HKCU Run; `CSIDL_PERSONAL` for Documents (bridge) | `Setup.cmd` → `pythonw -m companion.setup install`; a running companion is asked to quit through `%LOCALAPPDATA%\FS25Farmhand\quit` and its pid file (it stops a running job first); CI installs and uninstalls the built package on Windows |
+
 ## Rejected claims
 
 - DeepWiki stated AutoDrive's `startPathPlanningToVehicle` is useful "for hitching a
