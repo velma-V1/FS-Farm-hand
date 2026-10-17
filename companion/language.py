@@ -94,6 +94,9 @@ class RuleInterpreter:
             return {"version": 1, "command": "stop"}
         if _SETTINGS.match(words):
             return {"version": 1, "command": "settings"}
+        if re.match(r"^(?:(?:save|make|send|write|create)\s+(?:a\s+)?)?(?:farmhand\s+)?"
+                    r"(?:report|diagnostics|bug report|logs)$", words):
+            return {"version": 1, "command": "report"}
         if _STATUS.search(words):
             return {"version": 1, "command": "status"}
         if _NEGATION.search(words) or _QUESTION.match(words):

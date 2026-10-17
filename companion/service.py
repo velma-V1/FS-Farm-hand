@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 import sys
 import threading
+import time
 
 from adapters.world import StepUnverified
 from companion.bridge import (MOD_DIR, SNAPSHOT_TIMEOUT_S, FS25World, game_profile_dir,
@@ -81,6 +82,40 @@ def proposal_for(request: dict, rules) -> dict | None:
 
 
 MENU_FILE = "menu.xml"
+REPORT_LOG_LINES = 4000          # the newest [Farmhand] lines of the game's log.txt
+
+
+def desktop_dir() -> Path:
+    if sys.platform == "win32":
+        import ctypes
+        buffer = ctypes.create_unicode_buffer(260)
+        if ctypes.windll.shell32.SHGetFolderPathW(None, 0x10, None, 0, buffer) == 0:   # CSIDL_DESKTOPDIRECTORY
+            return Path(buffer.value)
+    return Path.home()
+
+
+def save_report(profile: Path, link, target: Path | None = None, clock=time.strftime) -> Path:
+    """Everything a live test needs, in one zip on the Desktop; nothing is sent."""
+    import zipfile
+    target = (target or desktop_dir()) / f"Farmhand-report-{clock('%Y%m%d-%H%M%S')}.zip"
+    logs = profile.joinpath(*MOD_DIR)
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as report:
+        for log_file in sorted(logs.glob(LOG_FILE + "*")):
+            report.write(log_file, log_file.name)
+        game_log = profile / "log.txt"
+        if game_log.is_file():
+            lines = [l for l in game_log.read_text(encoding="utf-8", errors="replace").splitlines() if "[Farmhand]" in l
+                     or "Error" in l or "Warning" in l]
+            report.writestr("log-farmhand-lines.txt", "\n".join(lines[-REPORT_LOG_LINES:]))
+        settings = data_dir() / "settings.json"
+        if settings.is_file():
+            report.write(settings, "settings.json")
+        try:
+            report.writestr("snapshot.json", json.dumps(link.fresh_snapshot(), indent=1))
+        except StepUnverified:
+            report.writestr("snapshot.json", "null")
+        report.writestr("versions.txt", f"python {sys.version}\nplatform {sys.platform}\n")
+    return target
 
 
 def ask_model(link, model, request) -> None:
@@ -100,7 +135,7 @@ def linked_farm(link):
 
 
 def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, interpreter=None,
-          microphone=None, transcriber=None, speaker=None, ai=None) -> None:
+          microphone=None, transcriber=None, speaker=None, ai=None, report=None) -> None:
     """Answer the player's requests until the link closes: one job at a time,
     STOP and STATUS at once (companion/coordinator.py). ``ai`` (companion/ai.py,
     optional) answers only words the rules neither understand nor refuse, off
@@ -158,6 +193,14 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
                 proposal = proposal_for(request, rules)
                 if proposal is not None and proposal.get("command") == "settings":
                     show_menu()
+                    continue
+                if proposal is not None and proposal.get("command") == "report":
+                    try:
+                        log.info("report saved: %s", report() if report else None)
+                        replies("REPORT_SAVED" if report else "REPORT_FAILED")
+                    except OSError:
+                        log.exception("report failed")
+                        replies("REPORT_FAILED")
                     continue
                 if (proposal is None and "text" in request and ai is not None and getattr(ai, "enabled", True)
                         and not refuses(request["text"])):
@@ -225,6 +268,7 @@ def main(argv=None) -> int:
     (data / PID_FILE).write_text(str(os.getpid()), encoding="utf-8")
     try:
         serve(FS25World(link, categories), entrances, ai=ai, should_stop=(data / QUIT_FILE).exists,
+              report=lambda: save_report(profile, link),
               microphone=SoundDeviceMicrophone, transcriber=WhisperTranscriber,
               speaker=SapiSpeaker() if sys.platform == "win32" else None)
     finally:

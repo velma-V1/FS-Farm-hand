@@ -567,6 +567,7 @@ Bridge.NOTICES = {
     AI_READY = "Farmhand: AI model ready",
     AI_OFF = "Farmhand: AI off; plain commands only",
     AI_UNAVAILABLE = "Farmhand: AI settings are unavailable",
+    REPORT_SAVED = "Farmhand: report saved on your Desktop (Farmhand-report-....zip)",
 }
 -- Critical (red) notices that are not failures of a job.
 Bridge.CRITICAL = {
@@ -574,6 +575,7 @@ Bridge.CRITICAL = {
     AI_MODEL_MISSING = "Farmhand: the chosen AI model is not available; press Left Alt + N to choose",
     AI_INSTALL_FAILED = "Farmhand: the AI model download failed; plain commands still work",
     VOICE_INSTALL_FAILED = "Farmhand: the speech recognition download failed; typing still works",
+    REPORT_FAILED = "Farmhand: the report could not be saved; see companion.log",
 }
 -- What each executor state means to the player (STATUS_WORKING_<state>).
 Bridge.STEPS = {

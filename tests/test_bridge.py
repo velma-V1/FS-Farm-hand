@@ -802,6 +802,30 @@ class ServiceTests(unittest.TestCase):
         game.say(2, "bring me a tractor and forage wagon")             # the rules still work
         self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
 
+    def test_report_collects_the_evidence_into_one_zip(self):
+        import tempfile as tmp
+        import zipfile
+        from companion import service
+        root = Path(tmp.mkdtemp())
+        profile = root / "FarmingSimulator2025"
+        logs = profile / "modSettings" / "FS25_Farmhand"
+        logs.mkdir(parents=True)
+        (logs / "companion.log").write_text("companion started\n")
+        (profile / "log.txt").write_text("noise\n[Farmhand] bridge ready\nError: something\nmore noise\n")
+        game = FakeGame(autodrive=False)
+        self.addCleanup(game.stop)
+        path = service.save_report(profile, game.link, target=root, clock=lambda f: "now")
+        with zipfile.ZipFile(path) as report:
+            names = set(report.namelist())
+            self.assertTrue({"companion.log", "log-farmhand-lines.txt", "snapshot.json", "versions.txt"} <= names)
+            self.assertEqual(report.read("log-farmhand-lines.txt").decode(), "[Farmhand] bridge ready\nError: something")
+            self.assertEqual(json.loads(report.read("snapshot.json"))["event"], "snapshot")
+        made = []
+        game2, notices = self.start(autodrive=False, voice={"report": lambda: made.append(1) or root})
+        game2.say(1, "save a report")
+        self.wait_for(lambda: notices == ["REPORT_SAVED"])
+        self.assertEqual(made, [1])
+
     def test_replayed_or_foreign_requests_never_run(self):
         game, notices = self.start(autodrive=False)
         game.press(1)

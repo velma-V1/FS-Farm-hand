@@ -69,10 +69,11 @@ says it is unavailable.
    "start helper" off in the tractor's AutoDrive HUD (Farmhand refuses to drive
    while AutoDrive would hand the tractor to another AI). Fetch: delivery goes to
    that marker.
-8. **Send** `Documents/My Games/FarmingSimulator2025/modSettings/FS25_Farmhand/companion.log`,
-   the `[Farmhand]` lines of `log.txt`, and, if no pair was found, the output of
-   `fhHitchList` (console, `~`). Note what you saw at each step, and whether the
-   game stayed smooth while the model answered (step 5).
+8. **Report.** Type **report** (Left Alt + K): Farmhand saves
+   `Farmhand-report-<time>.zip` on your Desktop (its logs, the `[Farmhand]` lines of
+   the game's log, your settings and the last game snapshot; nothing is sent). Send
+   that zip, and note anything you saw that it cannot show, such as whether the game
+   stayed smooth while the model answered (step 5).
 
 `python -m companion.run here` (or `marker "<name>"`, `marker-id <id>`, or
 `--config farmhand.json field <n>` with `field_entrances` set) runs one request from

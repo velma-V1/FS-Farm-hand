@@ -70,6 +70,10 @@ class RuleInterpreterTests(unittest.TestCase):
             ("stop bringing the tractor and forage wagon", STOP),
         ])
 
+    def test_settings_and_report_words(self):
+        self.check([(t, {"version": 1, "command": "settings"}) for t in ("choose AI model", "settings", "change model")]
+                   + [(t, {"version": 1, "command": "report"}) for t in ("report", "save a report", "diagnostics")])
+
     def test_status_queries(self):
         self.check([
             ("what are you doing?", STATUS), ("Farmhand, what's happening", STATUS),

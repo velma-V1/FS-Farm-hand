@@ -219,6 +219,8 @@ Executable mapping (`python scripts/check.py`):
   file, log), the logon entry points at the installed runtime, a second install
   updates over the running companion, and uninstall stops it and removes the mod
   and the entry. The AI menu also offers the speech model while it is missing.
+  "report" (typed) saves one zip with the companion logs, the game log's
+  [Farmhand]/error lines, settings and a fresh snapshot.
 - `tests/test_model.py` (fake llama-server, no model): requests are local,
   temperature 0 and schema-constrained with the schema described in the prompt;
   answers map to validated proposals; malformed, off-schema, extra-field, too-long,
