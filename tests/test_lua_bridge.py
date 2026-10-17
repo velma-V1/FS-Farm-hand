@@ -26,7 +26,12 @@ function W.new()
     local env = { g_server = {} }
     w.env = env
     local function call(name) table.insert(w.calls, name) end
-    local tractor = { ownerFarmId = 1, ad = { isStoppingWithError = false } }
+    local tractor = { ownerFarmId = 1, rootNode = "tractorRoot", ad = { isStoppingWithError = false } }
+    w.x, w.z = 0, 0
+    env.getWorldTranslation = function(node)
+        assert(node == "tractorRoot")
+        return w.x, 0, w.z
+    end
     tractor.ad.stateModule = {
         setMode = function(_, mode) call("setMode:" .. mode) end,
         isActive = function() return w.adActive end,
@@ -72,7 +77,7 @@ function W.new()
         return { write = function(_, s) table.insert(w.lines, s) end, flush = function() end,
                  close = function() end }
     end }
-    Bridge.Observe = { PROTOCOL = 1, NULL = Observe.NULL, PIPE_PATH = Observe.PIPE_PATH, encode = Observe.encode,
+    Bridge.Observe = { PROTOCOL = 2, NULL = Observe.NULL, PIPE_PATH = Observe.PIPE_PATH, encode = Observe.encode,
                        hello = function() return '{"event":"hello"}' end,
                        snapshot = function(_, seq, session)
                            return Observe.encode({ event = "snapshot", seq = seq, session = session or Observe.NULL })
@@ -262,18 +267,81 @@ class LuaBridgeTests(unittest.TestCase):
         self.send(1, "stop", {"tractor": 11}, session="s2")              # ids restart per session
         self.assertEqual(self.results(1, session="s2"), [(1, "ACCEPTED", "ACCEPTED"), (1, "DONE", "STOPPED")])
 
-    def test_stop_cancels_only_a_goto_it_saw_running(self):
-        for starts, cancelled in ((True, True), (False, False)):
-            with self.subTest(goto_started=starts):
+    POSE = {"tractor": 11, "x": 1.0, "z": 2.0, "yaw": 0.0}
+
+    def test_navigate_reports_acceptance_then_the_observed_end(self):
+        self.adopt()
+        self.w.gotoStarts = True
+        self.send(1, "navigate", self.POSE)
+        self.assertEqual(self.calls(), ["startJob"])                       # GIANTS GOTO, not AutoDrive
+        self.beating(60000)
+        self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])   # longer than any stage
+        self.w.aiActive = False
+        self.w.speed = 2.0
+        self.W.run(self.w, 300)
+        self.assertEqual(len(self.results(1)), 1)                           # ended but rolling
+        self.w.speed = 0.0
+        self.W.run(self.w, 200)
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "GOTO_ENDED"))
+        self.assertNotIn("stopCurrentAIJob", self.calls())
+        for line in self.w.lines.values():
+            if '"result"' in line:
+                parse_frame((line + "\n").encode())
+
+    def test_navigate_without_progress_is_stopped(self):
+        self.adopt()
+        self.w.gotoStarts = True
+        self.send(1, "navigate", self.POSE)
+        for _ in range(8):                                                 # 3 m every 30 s: progress
+            self.beating(30000)
+            self.w.x += 3.0
+        self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])
+        self.w.x += 1.0                                                    # then less than 2 m in 90 s
+        self.beating(92000)
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "NAVIGATE_STALLED"))
+        self.assertIn("stopCurrentAIJob", self.calls())
+
+    def test_navigate_failures(self):
+        cases = [("never_started", "FAILED", "GOTO_NOT_STARTED", False),
+                 ("entered", "FAILED", "OCCUPIED", True),
+                 ("position_unreadable", "UNVERIFIED", "UNKNOWN_OBSERVATION", True)]
+        for fault, status, code, cancelled in cases:
+            with self.subTest(fault=fault):
                 self.w = self.W.new()
                 self.adopt()
-                self.w.gotoStarts = starts
-                self.send(1, "stage", {"tractor": 11, "x": 1.0, "z": 2.0, "yaw": 0.0})
-                self.assertIn("startJob", self.calls())
-                self.w.aiActive = True                 # ours, or someone else's job if ours never ran
-                self.write("command.xml", encode_command("s1", 2, "stop", {"tractor": 11}))
-                self.W.run(self.w, 100)
+                self.w.gotoStarts = fault != "never_started"
+                self.send(1, "navigate", self.POSE)
+                if fault == "entered":
+                    self.w.entered = True
+                if fault == "position_unreadable":
+                    self.w.x = float("nan")
+                self.W.run(self.w, 6000)
+                self.assertEqual(self.results(1)[-1], (1, status, code))
                 self.assertEqual("stopCurrentAIJob" in self.calls(), cancelled)
+
+    def test_navigate_refuses_a_busy_or_moving_tractor(self):
+        for attr, code in (("aiActive", "AI_ACTIVE"), ("speed", "NOT_STOPPED")):
+            with self.subTest(code=code):
+                self.w = self.W.new()
+                self.adopt()
+                setattr(self.w, attr, True if attr == "aiActive" else 4.0)
+                self.send(1, "navigate", self.POSE)
+                self.assertEqual(self.results(1)[-1], (1, "FAILED", code))
+                self.assertEqual(self.calls(), [])
+
+    def test_stop_cancels_only_a_goto_it_saw_running(self):
+        for op in ("stage", "navigate"):
+            for starts, cancelled in ((True, True), (False, False)):
+                with self.subTest(op=op, goto_started=starts):
+                    self.w = self.W.new()
+                    self.adopt()
+                    self.w.gotoStarts = starts
+                    self.send(1, op, self.POSE)
+                    self.assertIn("startJob", self.calls())
+                    self.w.aiActive = True             # ours, or someone else's job if ours never ran
+                    self.write("command.xml", encode_command("s1", 2, "stop", {"tractor": 11}))
+                    self.W.run(self.w, 100)
+                    self.assertEqual("stopCurrentAIJob" in self.calls(), cancelled)
 
     def test_attach_needs_the_align_that_found_this_candidate(self):
         self.adopt()

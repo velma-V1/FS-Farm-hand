@@ -10,23 +10,28 @@ from jsonschema import Draft202012Validator
 
 from adapters.world import StepUnverified, World
 from companion.hitch import plan_hitch
-from protocol.model import Destination, Equipment, HitchPlan, Position, Result
+from protocol.model import Destination, Equipment, HitchPlan, Pose, Position, Result
 
 log = logging.getLogger("farmhand")
 SCHEMA = json.loads((Path(__file__).resolve().parents[1] / "protocol/intent.schema.json").read_text())
 VALIDATOR = Draft202012Validator(SCHEMA)
 
 # Provisional contract values, to be validated against real equipment in FS25.
-# AutoDrive only routes to map markers (adapters/EVIDENCE.md), so "here" is the
-# nearest routable marker within this radius of the requester's captured position.
+# Travel is AutoDrive's when the tractor has it and a marker fits (AutoDrive only
+# routes to map markers), otherwise GIANTS' own GOTO navigation to a pose
+# (adapters/EVIDENCE.md). "here" prefers the nearest marker within this radius of
+# the requester's captured position; without one, GOTO stops the tractor
+# DELIVERY_STANDOFF_M short of that position, facing it, so it never drives at
+# the requester.
 DESTINATION_MAX_FROM_REQUESTER_M = 50.0
+DELIVERY_STANDOFF_M = 10.0
 TRACTOR_ARRIVAL_TOLERANCE_M = 3.0
 WAGON_ARRIVAL_TOLERANCE_M = 15.0
 
 # HITCH observation checks (provisional; tune at the first FS25 test). These are
 # coarse cross-checks of each step's outcome, not GIANTS' attach rules: GIANTS'
 # attachableInfo stays the authority on attachability (adapters/EVIDENCE.md).
-NEAR_RADIUS_M = 60.0                      # beyond this, AutoDrive travels first
+NEAR_RADIUS_M = 60.0                      # beyond this, TRAVEL_NEAR runs before STAGE
 STAGE_POSITION_TOLERANCE_M = 1.0
 STAGE_YAW_TOLERANCE_RAD = math.radians(10)
 WAGON_MOVED_TOLERANCE_M = 0.25
@@ -60,6 +65,19 @@ def select_destination(destinations, requester: Position,
                   and valid_position(d.position)
                   and math.dist(d.position, requester) <= radius]
     return min(candidates, key=lambda d: (math.dist(d.position, requester), d.id), default=None)
+
+
+def standoff_pose(requester: Position, origin: Position, fallback_yaw: float) -> Pose:
+    """The GOTO delivery pose: DELIVERY_STANDOFF_M short of the requester on the
+    line from ``origin`` (where the pair starts), facing the requester."""
+    dx, dz = requester[0] - origin[0], requester[1] - origin[1]
+    yaw = math.atan2(dx, dz) if math.hypot(dx, dz) > 1e-6 else fallback_yaw
+    return Pose(requester[0] - math.sin(yaw) * DELIVERY_STANDOFF_M,
+                requester[1] - math.cos(yaw) * DELIVERY_STANDOFF_M, yaw)
+
+
+def route_position(route: Destination | Pose) -> Position:
+    return route.position if isinstance(route, Destination) else (route.x, route.z)
 
 
 def _normalized_name(name: str) -> str:
@@ -195,9 +213,12 @@ class Executor:
             raise ObservationMismatch("WAGON_MOVED")
         return tractor, wagon
 
-    def _choose(self, free, destinations):
+    def _choose(self, free, destinations, target):
         """Deterministic first pair (by opaque ID) that is compatible, has a hitch
-        plan, and can reach its staging pose; all decided before reservation."""
+        plan and a route; all decided before reservation. ``target`` is a resolved
+        marker (explicit) or the requester position ("here"). Routes are AutoDrive
+        markers (Destination) when the tractor has AutoDrive and one fits, else
+        GIANTS GOTO poses (Pose)."""
         reason = "NO_ELIGIBLE_PAIR"
         for tractor in free:
             for wagon in free:
@@ -207,21 +228,48 @@ class Executor:
                 if plan is None:
                     reason = "NO_HITCH_GEOMETRY" if reason == "NO_ELIGIBLE_PAIR" else reason
                     continue
+                autodrive = "autodrive" in tractor.capabilities
+                if isinstance(target, Destination):
+                    if not autodrive:     # a marker is AutoDrive's; no substitute
+                        reason = "AUTODRIVE_UNAVAILABLE"
+                        continue
+                    delivery = target
+                else:
+                    delivery = (autodrive and select_destination(destinations, target)
+                                or standoff_pose(target, plan.target, plan.final.yaw))
                 staging = (plan.staging.x, plan.staging.z)
                 travel = None
                 if math.dist(tractor.position, staging) > NEAR_RADIUS_M:
-                    # Long-range travel is AutoDrive's job; no marker, no attempt.
-                    travel = select_destination(destinations, staging, NEAR_RADIUS_M)
-                    if travel is None:
-                        reason = "NO_DESTINATION_NEAR_WAGON"
-                        continue
-                return (tractor, wagon), plan, travel, None
-        return None, None, None, reason
+                    travel = (autodrive and select_destination(destinations, staging, NEAR_RADIUS_M)
+                              or plan.staging)
+                return (tractor, wagon), plan, travel, delivery, None
+        return None, None, None, None, reason
 
-    def _arrival(self, ids, farm_id, owner, target):
+    def _move(self, tractor_id, route, owner, deliver=False):
+        """One travel step by the route's provider: AutoDrive to a marker, or GIANTS
+        GOTO to a pose."""
+        if isinstance(route, Pose):
+            self.world.navigate(tractor_id, route, owner)
+        elif deliver:
+            self.world.deliver(tractor_id, route.id, owner)
+        else:
+            self.world.travel(tractor_id, route.id, owner)
+
+    @staticmethod
+    def _at(tractor, route) -> bool:
+        """AutoDrive markers are checked at the vehicle root; GOTO poses at the AI
+        root, the node GIANTS' agent steers (as STAGE is checked)."""
+        if isinstance(route, Pose):
+            point = tractor.ai_root and (tractor.ai_root.x, tractor.ai_root.z)
+        else:
+            point = tractor.position
+        return (point is not None and valid_position(point)
+                and math.dist(point, route_position(route)) <= TRACTOR_ARRIVAL_TOLERANCE_M)
+
+    def _arrival(self, ids, farm_id, owner, route):
         tractor, wagon = self._pair(ids, farm_id, owner, attached=True)
-        if (not tractor.stopped or not wagon.stopped
-                or math.dist(tractor.position, target) > TRACTOR_ARRIVAL_TOLERANCE_M
+        target = route_position(route)
+        if (not tractor.stopped or not wagon.stopped or not self._at(tractor, route)
                 or math.dist(wagon.position, target) > WAGON_ARRIVAL_TOLERANCE_M):
             log.info("arrival not observed: tractor %s wagon %s target %s stopped %s/%s",
                      tractor.position, wagon.position, target, tractor.stopped, wagon.stopped)
@@ -239,9 +287,8 @@ class Executor:
                 if not valid_position(requester):
                     return Result("BLOCKED", "INVALID_REQUESTER_POSITION")
                 states.append("FIND")
-                destination = select_destination(self.world.destinations(), tuple(requester))
-                if destination is None:
-                    return Result("BLOCKED", "NO_DESTINATION_NEAR_REQUESTER", states=tuple(states))
+                target = tuple(requester)
+                log.info("requester at %s", target)
             else:
                 states.append("FIND")
                 map_id = (self.world.map_id() if command["target"]["type"] == "field_entrance"
@@ -250,17 +297,17 @@ class Executor:
                     command["target"], self.world.destinations(), map_id, self.field_entrances)
                 if destination is None:
                     return Result("BLOCKED", failure, states=tuple(states))
-            target = tuple(destination.position)
-            log.info("destination %s %r at %s", destination.id, destination.name, target)
+                target = destination
+                log.info("destination %s %r at %s", destination.id, destination.name, destination.position)
             items = sorted(self.world.snapshot(), key=lambda item: item.id)
             free = [item for item in items if usable(item, farm_id)
                     and item.attached_to is None and item.stopped]
-            pair, plan, travel, failure = self._choose(free, self.world.destinations())
+            pair, plan, travel, delivery, failure = self._choose(free, self.world.destinations(), target)
             if pair is None:
                 return Result(status, failure, states=tuple(states))
             ids = tuple(item.id for item in pair)
-            log.info("selected tractor %s wagon %s joints %d/%d staging %s travel %s", *ids,
-                     plan.tractor_joint, plan.wagon_joint, plan.staging, travel and travel.id)
+            log.info("selected tractor %s wagon %s joints %d/%d staging %s travel %s delivery %s", *ids,
+                     plan.tractor_joint, plan.wagon_joint, plan.staging, travel, delivery)
             states.append("RESERVE")
             if not self.world.reserve(ids, owner):
                 return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
@@ -271,9 +318,9 @@ class Executor:
             physical_attempted = True
             if travel is not None:
                 states.append("TRAVEL_NEAR")
-                self.world.travel(tractor.id, travel.id, owner)
+                self._move(tractor.id, travel, owner)
                 tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
-                if math.dist(tractor.position, travel.position) > TRACTOR_ARRIVAL_TOLERANCE_M:
+                if not self._at(tractor, travel):
                     raise ObservationMismatch("TRAVEL_NOT_OBSERVED")
             states.append("STAGE")
             self.world.stage(tractor.id, wagon.id, plan.staging, owner)
@@ -303,8 +350,8 @@ class Executor:
             if used is None or used.free:
                 raise ObservationMismatch("ATTACHMENT_MISMATCH")
             states.append("DELIVER")
-            self.world.deliver(tractor.id, destination.id, owner)
-            self._arrival(ids, farm_id, owner, target)
+            self._move(tractor.id, delivery, owner, deliver=True)
+            self._arrival(ids, farm_id, owner, delivery)
             status, reason = "COMPLETE", "DELIVERY_OBSERVED"
         except ObservationMismatch as error:
             status, reason = "UNVERIFIED", str(error)
@@ -331,7 +378,7 @@ class Executor:
                                or stopped[identifier].reserved_by != owner for identifier in ids):
                             raise ObservationMismatch("STOP_NOT_OBSERVED")
                     if status == "COMPLETE":
-                        self._arrival(ids, farm_id, owner, target)
+                        self._arrival(ids, farm_id, owner, delivery)
                     states.append("RELEASE")
                     self.world.release(owner)
                     if any(item.reserved_by == owner for item in self.world.snapshot()):

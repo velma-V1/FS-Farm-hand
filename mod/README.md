@@ -22,15 +22,17 @@ session and the probe for a typed command.
 
 ## First full AC-001 run
 
-On the Windows PC with FS25, AutoDrive and Python 3.12:
+On the Windows PC with FS25 and Python 3.12 (AutoDrive optional):
 
 1. Copy the `FS25_Farmhand` folder from the CI artifact (or this `mod/` folder) to
    `Documents/My Games/FarmingSimulator2025/mods/FS25_Farmhand/` (a folder, not a
-   ZIP). In a single-player save, enable it with AutoDrive. Own one tractor with
-   nothing attached (no front weight either) and one forage wagon on an AutoDrive network, with a marker near the wagon and one near
-   you. In the tractor's AutoDrive HUD leave "start helper" off (Farmhand refuses
-   to drive while AutoDrive would hand the tractor to another AI). Don't pause the
-   game during the run. Get out of the tractor.
+   ZIP). Enable it in a single-player save. Own one tractor with nothing attached
+   (no front weight either) and one forage wagon. No AutoDrive marker or network
+   is needed: without one, GIANTS' own helper drives (GOTO). If AutoDrive is
+   installed and has a marker within 50 m of you, it is used instead; then leave
+   "start helper" off in the tractor's AutoDrive HUD (Farmhand refuses to drive
+   while AutoDrive would hand the tractor to another AI). Don't pause the game
+   during the run. Get out of the tractor.
 2. Open the console (`~`) and run `fhHitchList`; note the tractor's `store=` value.
 3. Copy `farmhand.example.json` to `farmhand.json` and put that value in
    `tractor_store_categories`.

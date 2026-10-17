@@ -18,7 +18,7 @@ import xml.etree.ElementTree as ET
 from adapters.world import StepFailed, StepUnverified
 from companion import bridge
 from companion.bridge import CommandLink, FS25World
-from companion.executor import Executor
+from companion.executor import DELIVERY_STANDOFF_M, Executor
 from companion.hitch import STAGING_DISTANCE_M
 from protocol.ipc import encode_command, encode_session, parse_frame
 
@@ -38,6 +38,7 @@ def record(identifier, kind, x, z):
             "input_joint_poses": [] if tractor else [{"index": 1, "type": "TRAILER", "x": x, "z": z + 4,
                                                        "active": True, "pto_names": ["rearPto"]}],
             "forage_wagon": not tractor,
+            "goto_supported": tractor,
             "motor": {"peak_torque": 1.0, "pto_rpm_ratio": 2.0} if tractor else None,
             "pto_torque": 0.0 if tractor else 1.2}
 
@@ -61,9 +62,13 @@ class FakeGame:
     Like the mod's single-threaded update() writing one FIFO pipe, frames are built
     and sent under one lock, so a snapshot sent after a result reflects that result."""
 
-    def __init__(self, tractor_at=(0.0, 20.0), markers=None, faults=None, session_override=None):
+    def __init__(self, tractor_at=(0.0, 20.0), markers=None, faults=None, session_override=None,
+                 autodrive=True):
         self.vehicles = {11: record(11, "tractor", *tractor_at), 12: record(12, "wagon", 0.0, -4.0)}
-        self.markers = markers or {3: ("Yard", 100.0, 200.0), 4: ("Near wagon", 5.0, 30.0)}
+        if not autodrive:      # AutoDrive not installed: no vehicle.ad, no markers
+            self.vehicles[11].update(has_autodrive=False, ad_active=None)
+        self.markers = ({} if not autodrive else
+                        markers or {3: ("Yard", 100.0, 200.0), 4: ("Near wagon", 5.0, 30.0)})
         self.player = {"x": 101.0, "z": 199.0}
         self.faults = faults or {}
         self.session_override = session_override
@@ -84,7 +89,7 @@ class FakeGame:
             with self.lock:
                 self.seq += 1
                 session = self.link.session if self.session_override is None else self.session_override
-                frame = {"event": "snapshot", "protocol": 1, "seq": self.seq, "session": session,
+                frame = {"event": "snapshot", "protocol": 2, "seq": self.seq, "session": session,
                          "farm_id": 1, "map_id": "MapUS", "player": self.player, "truncated": False,
                          "skipped": 0, "vehicles": copy.deepcopy(list(self.vehicles.values())),
                          "destinations": [{"id": i, "name": n, "x": x, "z": z}
@@ -107,7 +112,7 @@ class FakeGame:
             return
         if fault == "lost":                       # consumed, then nothing at all
             return
-        result = {"event": "result", "protocol": 1, "session": session, "id": cid, "op": op}
+        result = {"event": "result", "protocol": 2, "session": session, "id": cid, "op": op}
         if fault and fault.startswith("REJECTED"):
             return self._emit({**result, "status": "REJECTED", "code": fault.split(":")[1]})
         self._emit({**result, "status": "ACCEPTED", "code": "ACCEPTED"})
@@ -134,6 +139,15 @@ class FakeGame:
             if wagon["attacher_vehicle_id"] == 11:
                 place(wagon, x, z - 8)
             return "AD_ENDED"
+        if op == "navigate":       # GIANTS GOTO; an attached wagon follows behind
+            x, z, yaw = float(c["x"]), float(c["z"]), float(c["yaw"])
+            if self.faults.get("navigate_elsewhere"):
+                x += 50
+            place(tractor, x, z, yaw)
+            tractor["heading"] = yaw
+            if wagon["attacher_vehicle_id"] == 11:
+                place(wagon, x - 7 * math.sin(yaw), z - 7 * math.cos(yaw))
+            return "GOTO_ENDED"
         if op == "stage":
             place(tractor, float(c["x"]), float(c["z"]), float(c["yaw"]))
             tractor["heading"] = float(c["yaw"])
@@ -180,7 +194,7 @@ class CommandFramingTests(unittest.TestCase):
         game = FakeGame(faults={"stop": "no_terminal"})
         self.addCleanup(game.stop)
         link = game.link
-        link.on_frame({"event": "result", "protocol": 1, "session": "someone-else", "id": 1,
+        link.on_frame({"event": "result", "protocol": 2, "session": "someone-else", "id": 1,
                        "op": "stop", "status": "DONE", "code": "STOPPED"})
         with unittest.mock.patch.dict(bridge.DONE_TIMEOUT_S, {"stop": 0.2}):
             with self.assertRaises(StepUnverified) as caught:
@@ -225,7 +239,7 @@ class CommandFramingTests(unittest.TestCase):
 
 class CapabilityTests(unittest.TestCase):
     def test_capabilities_only_with_this_companions_live_session(self):
-        for override, expected in ((None, {"move", "attach", "stop"}), ("other-session", set())):
+        for override, expected in ((None, {"move", "attach", "stop", "autodrive"}), ("other-session", set())):
             with self.subTest(session=override):
                 game = FakeGame(session_override=override)
                 self.addCleanup(game.stop)
@@ -292,6 +306,36 @@ class ProductionSequenceTests(unittest.TestCase):
         self.assertEqual(self.ops(game), ["drive", "stage", "align", "attach", "drive", "stop"])
         self.assertEqual(game.commands[0]["marker"], "4")           # the marker near the wagon
         self.assertEqual(result.states[2], "TRAVEL_NEAR")
+
+    def test_without_autodrive_giants_goto_travels_and_delivers_here(self):
+        for tractor_at, ops in (((0.0, 20.0), ["stage", "align", "attach", "navigate", "stop"]),
+                                ((600.0, 600.0), ["navigate", "stage", "align", "attach", "navigate", "stop"])):
+            with self.subTest(tractor_at=tractor_at):
+                game, world, result = self.run_ac001(tractor_at=tractor_at, autodrive=False)
+                self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
+                self.assertEqual(self.ops(game), ops)
+                deliver = game.commands[-2]
+                player = (game.player["x"], game.player["z"])
+                goal = (float(deliver["x"]), float(deliver["z"]))
+                self.assertAlmostEqual(math.dist(goal, player), DELIVERY_STANDOFF_M, places=6)
+                self.assertNotIn("marker", deliver)
+                self.assertEqual(world._reservations, {})
+
+    def test_goto_failures_without_autodrive_stop_and_go_no_further(self):
+        cases = [({"navigate": "FAILED:NAVIGATE_STALLED"}, "FAILED", "NAVIGATE_STALLED"),
+                 ({"navigate": "UNVERIFIED:UNKNOWN_OBSERVATION"}, "UNVERIFIED", "UNKNOWN_OBSERVATION"),
+                 ({"navigate_elsewhere": True}, "UNVERIFIED", "DELIVERY_NOT_OBSERVED")]
+        for faults, status, reason in cases:
+            with self.subTest(faults=faults):
+                game, world, result = self.run_ac001(faults=faults, autodrive=False)
+                self.assertEqual((result.status, result.reason), (status, reason), result)
+                self.assertEqual(self.ops(game), ["stage", "align", "attach", "navigate", "stop"])
+                self.assertEqual(world._reservations, {})
+
+    def test_explicit_marker_without_autodrive_blocks_before_any_command(self):
+        game, _, result = self.run_ac001({"type": "autodrive_marker", "marker_name": "Yard"}, autodrive=False)
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "DESTINATION_NOT_FOUND"))
+        self.assertEqual(game.commands, [])
 
     def test_explicit_targets_resolve_before_any_command(self):
         game, _, result = self.run_ac001({"type": "autodrive_marker", "marker_name": "Yard"})
@@ -401,7 +445,7 @@ class LocalIoTests(unittest.TestCase):
         link = CommandLink(FakeFiles(None))
         path = r"\\.\pipe\fs_farmhand_test_" + link.session
         bridge.PipeServer(link, path).start()
-        frame = {"event": "result", "protocol": 1, "session": link.session, "id": 1, "op": "stop",
+        frame = {"event": "result", "protocol": 2, "session": link.session, "id": 1, "op": "stop",
                  "status": "DONE", "code": "STOPPED"}
         deadline = time.monotonic() + 10
         while True:

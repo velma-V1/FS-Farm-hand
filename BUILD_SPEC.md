@@ -31,19 +31,27 @@ One task: **“Go grab an available tractor and forage wagon, hook them together
 and bring them here.”** One farm, one requester, one running executor process.
 “Here” means the requester's position sampled once when the validated intent is
 accepted, not a moving follow target. Coordinates are horizontal metres (x, z).
-AutoDrive routes only to map markers (adapters/EVIDENCE.md), so delivery goes to the
-nearest valid routable destination within 50 metres of that captured position.
+AutoDrive is optional. Travel is AutoDrive's when the selected tractor has it and a
+marker fits (AutoDrive routes only to map markers), otherwise GIANTS' own GOTO job,
+whose navigation agent plans for the tractor with its attached wagon
+(adapters/EVIDENCE.md). "Here" is the nearest valid AutoDrive marker within 50
+metres of that captured position when the tractor has AutoDrive; otherwise, or when
+no marker is that close, a GOTO pose 10 metres short of the position on the line
+from the wagon, facing the requester, so the tractor never drives at them. No
+marker or graph has to be created for "here".
 The intent may instead name an explicit destination: an existing AutoDrive marker
 (by live ID, or by name matched exactly after whitespace/case normalization), or a
 field number, which resolves only through a trusted local
 `field_entrances[map_id][field] → marker name` table because no verified
 field-to-marker association exists. A field target means travel to that entrance;
-it never starts fieldwork. Arbitrary coordinates are unsupported. Missing, ambiguous,
+it never starts fieldwork. Explicit markers need AutoDrive on the tractor
+(`AUTODRIVE_UNAVAILABLE` otherwise). Arbitrary coordinates are unsupported. Missing, ambiguous,
 invalid, or unmapped destinations are BLOCKED before reservation, with no fallback
 to a nearby marker. Delivery tolerance at the resolved destination is 3 metres for
-the tractor and 15 metres for the wagon (allows trailer length); both
-must be stopped and mutually attached. These are provisional contract values to
-validate against real equipment and AutoDrive marker accuracy in FS25.
+the tractor (its root at a marker, its AI root at a GOTO pose) and 15 metres for the
+wagon (allows trailer length); both must be stopped and mutually attached. These are
+provisional contract values to validate against real equipment, AutoDrive marker
+accuracy and GIANTS GOTO accuracy in FS25.
 
 Input to the deterministic executor is versioned structured intent. A future local
 language layer interprets the user's speech/text into a task proposal; trusted
@@ -70,15 +78,17 @@ a lexical tie-break provides repeatability but carries no equipment semantics.
 | tests/ | Executable acceptance, negative, schema and Lua checks | CI runnable |
 
 FIND resolves the destination and selects an eligible pair with a hitch plan
-(companion/hitch.py) and, if the tractor is far, an AutoDrive marker near the
-staging pose. RESERVE atomically owns both or neither. MOVE is HITCH: VALIDATE (fresh
+(companion/hitch.py), its delivery route and, if the tractor is far, its pickup
+route (an AutoDrive marker near the staging pose, else GIANTS GOTO to the staging
+pose). RESERVE atomically owns both or neither. MOVE is HITCH: VALIDATE (fresh
 reserved, unattached, stopped pair; wagon unmoved; same planned joints) before and
-after every step → TRAVEL_NEAR (AutoDrive, only when far) → STAGE (GIANTS AIJobGoTo
+after every step → TRAVEL_NEAR (AutoDrive or GIANTS GOTO, only when far) → STAGE (GIANTS AIJobGoTo
 to a pose a few metres ahead of the final hitch pose, facing the wagon's heading) →
 ALIGN_REVERSE (bounded reverse; stops when GIANTS reports the exact planned joints
 as the attach candidate). ATTACH uses GIANTS' normal attachment after re-checking
 that candidate and isAttachAllowed. VERIFY reads fresh attachment state and a
-stopped tractor before DELIVER requests transport to the chosen destination. One
+stopped tractor before DELIVER requests transport to the chosen destination
+(AutoDrive `drive` to a marker or GIANTS `navigate` to a pose). One
 deterministic attempt: no retries, re-angling or alternate hitch search. Final observation verifies attachment, both positions, and stopped state.
 Each physical step rechecks reservation and equipment eligibility. Failures do not
 advance the task. No automatic retry or fallback to custom driving.
@@ -91,7 +101,7 @@ Reservations bind an unused owner ID to the exact equipment pair and its farm.
 The mock rechecks this binding and compatibility atomically before movement;
 stop/release cannot sweep unrelated equipment sharing a request ID.
 The real adapter is `companion/bridge.py` `FS25World`: every physical step is
-one bounded bridge operation (`drive`, `stage`, `align`, `attach`, `stop`;
+one bounded bridge operation (`drive`, `navigate`, `stage`, `align`, `attach`, `stop`;
 adapters/EVIDENCE.md) whose terminal result is awaited with a bound, and a step
 that ends without a known outcome is UNVERIFIED. The game re-checks ownership,
 occupancy and AI state on every frame and stops what a lost or replaced
@@ -142,7 +152,8 @@ No FS25 binaries/assets are downloaded or packaged. CI builds the exact
 never a ZIP, only for the first FS25 test.
 
 The upstream feasibility probe is recorded in adapters/EVIDENCE.md. Result: read-only
-observation, AutoDrive marker delivery and stop, and every HITCH primitive (joint
+observation, AutoDrive marker delivery, GIANTS GOTO travel with an attached wagon,
+stop, and every HITCH primitive (joint
 geometry, GIANTS GOTO navigation, driveToPoint reversing, attach-range detection,
 normal attachment, attachment observation) are backed by GIANTS/upstream source.
 Their composition on a real tractor and forage wagon is UNVERIFIED until an FS25

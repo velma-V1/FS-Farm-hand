@@ -5,7 +5,7 @@ import math
 import random
 import unittest
 
-from companion.executor import Executor
+from companion.executor import DELIVERY_STANDOFF_M, Executor
 from companion.hitch import plan_hitch
 from protocol.model import Destination, Equipment, InputJoint, OutputJoint, Pose
 from simulator.world import MockWorld
@@ -18,6 +18,8 @@ def intent(request_id="request-001"):
 
 
 PLAYERS = {"farm-a": (100, 200)}
+GOTO_TRACTOR = frozenset({"move", "attach", "stop"})
+AUTODRIVE_TRACTOR = GOTO_TRACTOR | {"autodrive"}
 # A routable AutoDrive-style marker at the requester; IDs are opaque.
 DESTINATIONS = (Destination("marker-at-requester", (100, 200)),
                 Destination("marker-far-away", (900, 900)))
@@ -32,7 +34,7 @@ def inventory(seed=0):
 
     # Torques are in GIANTS' own unit; only the comparison matters.
     tractor = Equipment(identity(), "tractor", "farm-a", (0, 0), pto_torque_capacity=1.8,
-                        capabilities=frozenset({"move", "attach", "stop"}),
+                        capabilities=AUTODRIVE_TRACTOR,
                         heading=0.0, ai_root=Pose(0.0, 0.0, 0.0),
                         output_joints=(OutputJoint(3, "drawbar", 0.0, -2.5, True, frozenset({"rearPto"})),))
     # Wagon faces +z with its drawbar eye 4 m ahead of its root; it needs PTO power.
@@ -76,7 +78,7 @@ def simple_world():
                    and not x.busy and not x.occupied and x.available
                    and x.reserved_by is None and x.attached_to is None
                    and x.pto_torque_capacity == 1.8
-                   and x.capabilities == frozenset({"move", "attach", "stop"})
+                   and x.capabilities == AUTODRIVE_TRACTOR
                    and x.output_joints[0].joint_type == "drawbar" and x.output_joints[0].pto_names)
     wagon = next(x for x in items if x.category == "forage_wagon" and x.farm_id == "farm-a"
                  and not x.busy and not x.occupied and x.available
@@ -111,6 +113,15 @@ class FaultWorld(MockWorld):
     def travel(self, tractor_id, destination_id, owner):
         self._fault("travel")
         super().travel(tractor_id, destination_id, owner)
+
+    def navigate(self, tractor_id, pose, owner):
+        delivering = self.items[tractor_id].attached_to is not None
+        self._fault("delivery" if delivering else "travel")
+        if self.fault == "false_arrival" and delivering:
+            return
+        super().navigate(tractor_id, pose, owner)
+        if self.fault == "moving" and delivering:
+            self.items[tractor_id] = replace(self.items[tractor_id], stopped=False)
 
     def stage(self, tractor_id, wagon_id, pose, owner):
         self._fault("stage")
@@ -425,18 +436,18 @@ class AcceptanceTests(unittest.TestCase):
             self.assertEqual(result.status, "COMPLETE")
             self.assertEqual(world.items[result.equipment_ids[0]].position, (97, 200))
 
-    def test_no_destination_near_requester(self):
+    def test_no_marker_near_requester_delivers_by_giants_goto(self):
+        # No usable AutoDrive marker near "here": GIANTS GOTO delivers instead.
         for markers in ((), (Destination("far", (100, 400)),),
                         (Destination("bad", (float("inf"), 200)),),
                         (Destination("", (100, 200)),)):
             with self.subTest(markers=markers):
                 base = simple_world()
                 world = MockWorld(base.snapshot(), PLAYERS, markers)
-                before = world.snapshot()
                 result = Executor(world).execute(intent())
-                self.assertEqual((result.status, result.reason),
-                                 ("BLOCKED", "NO_DESTINATION_NEAR_REQUESTER"))
-                self.assertEqual(world.snapshot(), before)
+                self.assertEqual(result.status, "COMPLETE", result)
+                tractor, wagon = (world.items[x] for x in result.equipment_ids)
+                assert_goto_delivery(self, tractor, wagon, PLAYERS["farm-a"])
 
     def test_unknown_destination_fails_closed(self):
         class VanishingMarkerWorld(FaultWorld):
@@ -496,6 +507,170 @@ def explicit_world(markers=MARKERS, map_id="MapUS"):
 
 def target_intent(target, request_id="request-001"):
     return {**intent(request_id), "target": target}
+
+
+def assert_goto_delivery(test, tractor, wagon, requester):
+    """Delivered by GIANTS GOTO: the tractor's AI root stopped DELIVERY_STANDOFF_M
+    short of the requester, facing them; the wagon attached behind it."""
+    root = tractor.ai_root
+    test.assertAlmostEqual(math.dist((root.x, root.z), requester), DELIVERY_STANDOFF_M, places=6)
+    facing = (math.sin(root.yaw), math.cos(root.yaw))
+    toward = ((requester[0] - root.x) / DELIVERY_STANDOFF_M, (requester[1] - root.z) / DELIVERY_STANDOFF_M)
+    test.assertAlmostEqual(facing[0] * toward[0] + facing[1] * toward[1], 1.0, places=6)
+    test.assertEqual((tractor.attached_to, wagon.attached_to), (wagon.id, tractor.id))
+    test.assertLessEqual(math.dist(wagon.position, (root.x, root.z)), 15)
+    test.assertTrue(tractor.stopped and wagon.stopped)
+    test.assertIsNone(tractor.reserved_by)
+
+
+class GiantsNavigationTests(unittest.TestCase):
+    """AutoDrive is optional: without it, or without a fitting marker, GIANTS' own
+    GOTO navigation travels and delivers (adapters/EVIDENCE.md)."""
+
+    def world(self, capabilities=GOTO_TRACTOR, markers=DESTINATIONS, far=False, cls=MockWorld):
+        tractor, wagon = simple_world().snapshot()
+        tractor = replace(tractor, capabilities=capabilities)
+        if far:
+            tractor = replace(tractor, position=(600.0, 600.0), ai_root=Pose(600.0, 600.0, 0.0))
+        return cls([tractor, wagon], PLAYERS, markers)
+
+    def test_without_autodrive_here_is_delivered_by_goto(self):
+        # A marker sits exactly at the requester, but this tractor has no AutoDrive.
+        calls = []
+
+        class Recording(MockWorld):
+            def navigate(self, tractor_id, pose, owner):
+                calls.append(("navigate", pose))
+                return super().navigate(tractor_id, pose, owner)
+
+            def deliver(self, *args):
+                raise AssertionError("AutoDrive used without AutoDrive")
+
+            travel = deliver
+
+        for seed in range(10):
+            with self.subTest(seed=seed):
+                calls.clear()
+                rng = random.Random(seed)
+                requester = (rng.uniform(-500, 500), rng.uniform(-500, 500))
+                world = self.world(cls=Recording)
+                world.players = {"farm-a": requester}
+                result = Executor(world).execute(intent())
+                self.assertEqual(result.status, "COMPLETE", result)
+                self.assertEqual(result.states, ("FIND", "RESERVE", "STAGE", "ALIGN_REVERSE",
+                                                 "ATTACH", "VERIFY", "DELIVER", "STOP", "RELEASE"))
+                self.assertEqual(len(calls), 1)
+                tractor, wagon = (world.items[x] for x in result.equipment_ids)
+                assert_goto_delivery(self, tractor, wagon, requester)
+                self.assertEqual(calls[0][1], tractor.ai_root)
+
+    def test_goto_delivery_pose_is_decided_before_reservation(self):
+        # The requester walking away after acceptance does not move the target.
+        class Walk(MockWorld):
+            def stage(self, *args):
+                super().stage(*args)
+                self.players["farm-a"] = (-700.0, 900.0)
+
+        world = self.world(cls=Walk)
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "COMPLETE", result)
+        tractor, wagon = (world.items[x] for x in result.equipment_ids)
+        assert_goto_delivery(self, tractor, wagon, PLAYERS["farm-a"])
+
+    def test_requester_at_the_wagon_still_gets_a_defined_pose(self):
+        tractor, wagon = simple_world().snapshot()
+        plan = plan_hitch(tractor, wagon)
+        world = self.world()
+        world.players = {"farm-a": plan.target}
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "COMPLETE", result)
+        tractor, wagon = (world.items[x] for x in result.equipment_ids)
+        assert_goto_delivery(self, tractor, wagon, plan.target)
+
+    def test_far_tractor_without_marker_travels_by_goto_to_staging(self):
+        for capabilities in (GOTO_TRACTOR, AUTODRIVE_TRACTOR):     # AD, but no marker near the wagon
+            with self.subTest(capabilities=sorted(capabilities)):
+                calls = []
+
+                class Recording(MockWorld):
+                    def navigate(self, tractor_id, pose, owner):
+                        calls.append(pose)
+                        return super().navigate(tractor_id, pose, owner)
+
+                    def travel(self, *args):
+                        raise AssertionError("AutoDrive travel without a marker near the wagon")
+
+                world = self.world(capabilities, far=True, cls=Recording)
+                tractor, wagon = world.snapshot()
+                plan = plan_hitch(tractor, wagon)
+                result = Executor(world).execute(intent())
+                self.assertEqual(result.status, "COMPLETE", result)
+                self.assertEqual(result.states[:4], ("FIND", "RESERVE", "TRAVEL_NEAR", "STAGE"))
+                self.assertEqual(calls[0], plan.staging)
+
+    def test_goto_travel_or_delivery_not_observed_stops_and_fails_closed(self):
+        class Short(MockWorld):
+            def __init__(self, *args, step):
+                super().__init__(*args)
+                self.step, self.after = step, []
+
+            def navigate(self, tractor_id, pose, owner):
+                attached = self.items[tractor_id].attached_to is not None
+                if (self.step == "deliver") == attached:
+                    pose = Pose(pose.x + 4.0, pose.z, pose.yaw)     # GIANTS ended elsewhere
+                super().navigate(tractor_id, pose, owner)
+
+            def stage(self, *args):
+                self.after.append("stage")
+                return super().stage(*args)
+
+        for step, reason, far in (("travel", "TRAVEL_NOT_OBSERVED", True),
+                                  ("deliver", "DELIVERY_NOT_OBSERVED", False)):
+            with self.subTest(step=step):
+                tractor, wagon = self.world(far=far).snapshot()
+                world = Short([tractor, wagon], PLAYERS, (), step=step)
+                result = Executor(world).execute(intent())
+                self.assertEqual((result.status, result.reason), ("UNVERIFIED", reason))
+                self.assertEqual(result.states[-2:], ("STOP", "RELEASE"))
+                if step == "travel":
+                    self.assertEqual(world.after, [])
+                self.assertTrue(all(x.reserved_by is None and x.stopped for x in world.snapshot()))
+
+    def test_goto_step_failures_stop_without_further_action(self):
+        for fault, status in (("delivery", "FAILED"), ("delivery_timeout", "FAILED"),
+                              ("false_arrival", "UNVERIFIED"), ("moving", "UNVERIFIED")):
+            with self.subTest(fault=fault):
+                world = FaultWorld(fault)
+                tractor_id = next(x.id for x in world.snapshot() if x.category == "tractor")
+                world.items[tractor_id] = replace(world.items[tractor_id], capabilities=GOTO_TRACTOR)
+                result = Executor(world).execute(intent())
+                self.assertEqual(result.status, status, result)
+                self.assertEqual(result.states[-3:], ("DELIVER", "STOP", "RELEASE"))
+
+    def test_explicit_marker_needs_autodrive_and_blocks_before_reservation(self):
+        world = self.world()
+        before = world.snapshot()
+        command = dict(intent(), target={"type": "autodrive_marker", "marker_id": "marker-at-requester"})
+        result = Executor(world).execute(command)
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "AUTODRIVE_UNAVAILABLE"))
+        self.assertNotIn("RESERVE", result.states)
+        self.assertEqual(world.snapshot(), before)
+
+    def test_autodrive_is_preferred_when_a_marker_fits(self):
+        world = self.world(AUTODRIVE_TRACTOR)
+        world.navigate = None          # any GOTO call would raise TypeError
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual(world.items[result.equipment_ids[0]].position, (100, 200))
+
+    def test_mock_navigate_refuses_unreserved_or_invalid(self):
+        world = self.world()
+        tractor, wagon = world.snapshot()
+        with self.assertRaises(ValueError):
+            world.navigate(tractor.id, Pose(0.0, 0.0, 0.0), "nobody")
+        self.assertTrue(world.reserve((tractor.id, wagon.id), "owner"))
+        with self.assertRaises(ValueError):
+            world.navigate(tractor.id, Pose(float("nan"), 0.0, 0.0), "owner")
 
 
 class ExplicitDestinationTests(unittest.TestCase):
@@ -696,7 +871,6 @@ class HitchCompositionTests(unittest.TestCase):
         tractor, wagon = base.snapshot()
         far = replace(tractor, position=(600.0, 600.0), ai_root=Pose(600.0, 600.0, 0.0))
         cases = [
-            ([far, wagon], "NO_DESTINATION_NEAR_WAGON"),        # far, and no marker near the wagon
             ([replace(tractor, ai_root=None), wagon], "NO_HITCH_GEOMETRY"),
             ([tractor, replace(wagon, heading=None)], "NO_HITCH_GEOMETRY"),
             ([replace(tractor, output_joints=(OutputJoint(1, "drawbar", 0.0, 3.0, True),)), wagon],

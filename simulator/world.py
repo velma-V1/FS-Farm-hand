@@ -10,6 +10,7 @@ from protocol.model import Destination, Equipment, Pose
 # tests distinguish "where the plan said" from "somewhere else".
 MOCK_ATTACH_RANGE_M = 0.3
 MOCK_POSE_TOLERANCE_M = 0.5
+MOCK_TRAILER_OFFSET_M = 7.0
 
 
 class MockWorld:
@@ -115,6 +116,20 @@ class MockWorld:
                 raise ValueError("Unknown destination")
             yaw = tractor.ai_root.yaw if tractor.ai_root else 0.0
             self._place(tractor, Pose(*destination.position, yaw))
+
+    def navigate(self, tractor_id, pose, owner):
+        # Mock-only teleport standing in for GIANTS GOTO; an attached wagon lands
+        # MOCK_TRAILER_OFFSET_M behind the tractor's AI root.
+        with self._lock:
+            ids = self._reservations.get(owner, (None, (None, None)))[1]
+            tractor, wagon = self._reserved_pair(tractor_id, ids[1], owner)
+            coupled = (tractor.attached_to, wagon.attached_to) == (wagon.id, tractor.id)
+            if not coupled and (tractor.attached_to is not None or wagon.attached_to is not None):
+                raise ValueError("Invalid attachment")
+            self._place(tractor, pose)
+            if coupled:
+                behind = pose.to_world(0.0, -MOCK_TRAILER_OFFSET_M)
+                self.items[wagon.id] = replace(wagon, position=behind, stopped=True)
 
     def stage(self, tractor_id, wagon_id, pose, owner):
         with self._lock:

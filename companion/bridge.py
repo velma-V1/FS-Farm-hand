@@ -38,7 +38,7 @@ ACCEPT_TIMEOUT_S = 5.0        # the game reads the command file every frame
 HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
-DONE_TIMEOUT_S = {"drive": 1230.0, "stage": 135.0, "align": 70.0, "attach": 25.0, "stop": 25.0}
+DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "align": 70.0, "attach": 25.0, "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
 
@@ -214,6 +214,10 @@ class FS25World:
     def travel(self, tractor_id: str, destination_id: str, owner: str) -> None:
         self._reserved(tractor_id, owner)
         self._run("drive", tractor=int(tractor_id), marker=int(destination_id))
+
+    def navigate(self, tractor_id: str, pose: Pose, owner: str) -> None:
+        self._reserved(tractor_id, owner)
+        self._run("navigate", tractor=int(tractor_id), x=pose.x, z=pose.z, yaw=pose.yaw)
 
     def stage(self, tractor_id: str, wagon_id: str, pose: Pose, owner: str) -> None:
         self._reserved(tractor_id, owner, wagon_id)

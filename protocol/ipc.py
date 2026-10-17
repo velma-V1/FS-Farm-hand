@@ -1,4 +1,4 @@
-"""Local IPC protocol v1 (Farmhand Companion pattern: PROTOCOL.md, Transport.lua).
+"""Local IPC protocol v2 (Farmhand Companion pattern: PROTOCOL.md, Transport.lua).
 
 Game -> companion: the FS25 Lua sandbox has no sockets, so the mod opens the
 Windows named pipe the companion hosts with ``io.open(PIPE_PATH, "w")`` and
@@ -18,7 +18,7 @@ from jsonschema import Draft202012Validator
 # Distinct from Farmhand Companion's \\.\pipe\flowkits_fs25: Windows allows one
 # server per pipe name, so sharing it would collide with that plugin.
 PIPE_PATH = r"\\.\pipe\fs_farmhand_ac001"
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MAX_LINE_BYTES = 1 << 20
 
 SCHEMA = json.loads((Path(__file__).resolve().parent / "frame.schema.json").read_text())
@@ -110,6 +110,7 @@ class FrameReader:
 COMMAND_ARGS = {
     "drive": ("tractor", "marker"),
     "stage": ("tractor", "x", "z", "yaw"),
+    "navigate": ("tractor", "x", "z", "yaw"),
     "align": ("tractor", "wagon", "tractorJoint", "wagonJoint", "maxDistanceM"),
     "attach": ("tractor", "wagon", "tractorJoint", "wagonJoint"),
     "stop": ("tractor",),

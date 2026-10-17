@@ -76,4 +76,5 @@ rather than asserting fixture IDs.
 Nothing has run inside FS25. Passing CI does not prove mod loading, physics, attach
 alignment, routing, IPC on Windows, or game integration — say so when reporting.
 The only self-driven motion allowed is ALIGN_REVERSE's capped final reverse; all
-other travel is delegated to AutoDrive (marker destinations only) or GIANTS GOTO.
+other travel is delegated to AutoDrive (optional; marker destinations only) or GIANTS
+GOTO (`navigate`, `stage`), whose navigation agent plans for the attached wagon.

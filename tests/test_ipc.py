@@ -35,6 +35,7 @@ def vehicle(identifier, kind, x=0.0, z=0.0, **overrides):
             "input_joint_poses": [{"index": 1, "type": "TRAILER", "x": x, "z": z + 4, "active": True,
                                    "pto_names": ["rearPto"]}] if kind == WAGONS else [],
             "forage_wagon": kind == WAGONS,
+            "goto_supported": kind == TRACTORS,
             # GIANTS torque values: capacity 0.9 * 1.0 * 2.0 = 1.8 >= 1.2 required.
             "motor": {"peak_torque": 1.0, "pto_rpm_ratio": 2.0} if kind == TRACTORS else None,
             "pto_torque": 1.2 if kind == WAGONS else 0.0}
@@ -43,7 +44,7 @@ def vehicle(identifier, kind, x=0.0, z=0.0, **overrides):
 
 
 def snapshot(vehicles, destinations=(), **overrides):
-    frame = {"event": "snapshot", "protocol": 1, "seq": 7, "session": None, "farm_id": 1, "map_id": "MapUS",
+    frame = {"event": "snapshot", "protocol": 2, "seq": 7, "session": None, "farm_id": 1, "map_id": "MapUS",
              "player": {"x": 100.0, "z": 200.0}, "truncated": False, "skipped": 0,
              "vehicles": list(vehicles),
              "destinations": list(destinations) or [{"id": 3, "name": "Yard", "x": 101.0, "z": 199.0}]}
@@ -57,7 +58,7 @@ def line(frame):
 
 class FrameTests(unittest.TestCase):
     def test_valid_frames_parse(self):
-        hello = {"event": "hello", "protocol": 1, "mod_version": "0.1.0.0", "autodrive_version": "3.0.1.4"}
+        hello = {"event": "hello", "protocol": 2, "mod_version": "0.1.0.0", "autodrive_version": "3.0.1.4"}
         self.assertEqual(parse_frame(line(hello)), hello)
         frame = snapshot([vehicle(11, TRACTORS), vehicle(12, WAGONS)])
         self.assertEqual(parse_frame(line(frame)), frame)
@@ -71,7 +72,7 @@ class FrameTests(unittest.TestCase):
         cases = [b"", b"not json\n", b"[]\n", b"\xff\xfe\n",
                  # Only the duplicate key is wrong: last-value-wins would accept it.
                  b'{"event":"hello","protocol":2,"protocol":1,"mod_version":"1","autodrive_version":null}\n',
-                 line({**good, "protocol": 2}), line({**good, "farm_id": 0}),
+                 line({**good, "protocol": 1}), line({**good, "protocol": 3}), line({**good, "farm_id": 0}),
                  line({**good, "event": "command"}), line(bad_vehicle), line(extra),
                  line({**good, "seq": -1}), line({**good, "seq": True}),
                  line({**good, "vehicles": [vehicle(11, 'BAD"CATEGORY')]})]
@@ -100,7 +101,7 @@ class FrameTests(unittest.TestCase):
 
     def test_reader_isolates_bad_and_oversized_lines(self):
         reader = FrameReader(max_line_bytes=200)
-        good = {"event": "hello", "protocol": 1, "mod_version": "1", "autodrive_version": None}
+        good = {"event": "hello", "protocol": 2, "mod_version": "1", "autodrive_version": None}
         results = reader.feed(b"x" * 500 + b"\n" + b"garbage\n" + line(good))
         self.assertIsInstance(results[0], FrameError)
         self.assertEqual(results[0].code, "LINE_TOO_LONG")
@@ -114,7 +115,7 @@ class FrameTests(unittest.TestCase):
     def test_deeply_nested_input_is_a_controlled_error(self):
         # Below the 1 MiB line limit, but deep enough to exhaust the decoder's
         # recursion budget on any CPython version.
-        good = {"event": "hello", "protocol": 1, "mod_version": "1", "autodrive_version": None}
+        good = {"event": "hello", "protocol": 2, "mod_version": "1", "autodrive_version": None}
         frame = snapshot([vehicle(11, TRACTORS)])
         deep_cases = [b"[" * 10_000 + b"]" * 10_000,
                       b"[" * 200_000 + b"]" * 200_000,
@@ -166,6 +167,28 @@ class MappingTests(unittest.TestCase):
         self.assertFalse(compatible(tractor, wagon))
         self.assertTrue(compatible(replace(tractor, capabilities=frozenset({"move", "attach", "stop"})),
                                    wagon))
+
+    def test_capability_needs_giants_goto_and_the_live_bridge_not_autodrive(self):
+        move = {"move", "attach", "stop"}
+        cases = [({}, True, move | {"autodrive"}),
+                 ({"has_autodrive": False, "ad_active": None}, True, move),
+                 ({"goto_supported": False}, True, set()),
+                 ({"goto_supported": None}, True, set()),
+                 ({"goto_supported": False, "has_autodrive": True}, True, set()),
+                 ({}, False, set())]
+        for change, ready, expected in cases:
+            with self.subTest(change=change, bridge_ready=ready):
+                frame = parse_frame(line(snapshot([vehicle(11, TRACTORS, **change)])))
+                item, = observation_from_snapshot(frame, CATEGORIES, bridge_ready=ready).equipment
+                self.assertEqual(set(item.capabilities), expected)
+
+    def test_goto_supported_is_required_in_the_frame(self):
+        record = vehicle(11, TRACTORS)
+        del record["goto_supported"]
+        with self.assertRaises(FrameError):
+            parse_frame(line(snapshot([record])))
+        with self.assertRaises(FrameError):
+            parse_frame(line(snapshot([vehicle(11, TRACTORS, goto_supported="yes")])))
 
     def test_state_mapping(self):
         cases = [({"entered": True}, "occupied", True),
@@ -256,7 +279,7 @@ class MappingTests(unittest.TestCase):
         self.assertNotIn(MULTIPLE_ATTACHMENTS, items)
 
     def test_untrustworthy_snapshots_are_rejected(self):
-        hello = parse_frame(line({"event": "hello", "protocol": 1, "mod_version": "1",
+        hello = parse_frame(line({"event": "hello", "protocol": 2, "mod_version": "1",
                                   "autodrive_version": None}))
         duplicate = snapshot([vehicle(11, TRACTORS), vehicle(11, WAGONS)])
         duplicate_marker = snapshot([vehicle(11, TRACTORS)], destinations=[

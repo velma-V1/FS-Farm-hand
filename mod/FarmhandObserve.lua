@@ -1,4 +1,4 @@
--- Read-only FS25 observation for AC-001: builds protocol v1 frames
+-- Read-only FS25 observation for AC-001: builds protocol v2 frames
 -- (protocol/frame.schema.json). It never moves, attaches or changes anything.
 --
 -- Every game call is taken from upstream FS25 mod source, recorded with file and
@@ -10,7 +10,7 @@
 
 local Observe = {}
 
-Observe.PROTOCOL = 1
+Observe.PROTOCOL = 2
 -- Must equal protocol/ipc.py PIPE_PATH. The companion hosts this pipe; the mod
 -- is a write-only client (pattern from Farmhand Companion scripts/Transport.lua).
 Observe.PIPE_PATH = "\\\\.\\pipe\\fs_farmhand_ac001"
@@ -355,6 +355,16 @@ function Observe.vehicle(env, v, ptoNames)
 
     local heading, aiRoot, outputJoints, inputJointPoses = Observe.hitchGeometry(env, v, ptoNames)
 
+    -- GIANTS' own availability rule for its GOTO job (AIJobGoTo:getIsAvailableForVehicle
+    -- 92-102): a vehicle with a navigation agent that may start AI now and supports
+    -- the job type. Every movement step uses this job, so it gates capability.
+    local gotoSupported = try(function()
+        if v.createAgent == nil or v.setAITarget == nil then return false end
+        local canStart, supported = v:getCanStartAIVehicle(), v:getIsAIJobSupported("AIJobGoTo")
+        if type(canStart) ~= "boolean" or type(supported) ~= "boolean" then return nil end
+        return canStart and supported
+    end)
+
     -- GIANTS' ForageWagon specialization (ForageWagon:onLoad line 93, as Courseplay
     -- reads it) on a towed implement identifies a forage wagon.
     local forageWagon = try(function() return v.spec_forageWagon ~= nil and v.spec_attachable ~= nil end) == true
@@ -393,6 +403,7 @@ function Observe.vehicle(env, v, ptoNames)
         implement_ids = Observe.array(implements),
         heading = nullable(heading),
         forage_wagon = forageWagon,
+        goto_supported = nullable(gotoSupported),
         motor = nullable(motor),
         pto_torque = nullable(ptoTorque),
         ai_root = nullable(aiRoot),

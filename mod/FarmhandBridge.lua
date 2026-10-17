@@ -1,8 +1,10 @@
 -- AC-001 game-side command bridge (server only). Two parts:
 --
 -- 1. Operations, shared by the companion and the console probe:
---      drive  AutoDrive DRIVETO to a map marker  (TRAVEL_NEAR and DELIVER)
---      stage  GIANTS GOTO to a pose              (Hitch.startStaging)
+--      drive    AutoDrive DRIVETO to a map marker  (TRAVEL_NEAR and DELIVER)
+--      navigate GIANTS GOTO to a pose, any distance  (TRAVEL_NEAR and DELIVER
+--               without AutoDrive or a fitting marker)
+--      stage    GIANTS GOTO to the staging pose     (Hitch.startStaging)
 --      align  bounded ALIGN_REVERSE               (Hitch.newAlign / alignStep)
 --      attach GIANTS attach of the exact candidate (Hitch.attach / attachState)
 --      stop   stop the Farmhand-owned motion on a tractor
@@ -33,6 +35,10 @@ Bridge.START_TIMEOUT_MS = 5000        -- a job not running by then was refused
 Bridge.SETTLE_TIMEOUT_MS = 5000       -- an ended job must come to rest within this
 Bridge.STAGE_TIMEOUT_MS = 120000
 Bridge.DRIVE_TIMEOUT_MS = 1200000
+-- A navigate whose tractor gains no NAVIGATE_PROGRESS_M for NAVIGATE_STALL_MS is
+-- stopped: GIANTS keeps a BLOCKED agent waiting (AIDrivable:onUpdate 314-316).
+Bridge.NAVIGATE_STALL_MS = 90000
+Bridge.NAVIGATE_PROGRESS_M = 2
 Bridge.STOP_TIMEOUT_MS = 15000
 
 local function log(fmt, ...)
@@ -131,19 +137,27 @@ function aborts.drive(_env, task)
     if task.seen and v.ad.stateModule:isActive() == true then v:stopAutoDrive() end
 end
 
--- ------------------------------------------------------------------ stage
-function starters.stage(env, spec)
+-- ------------------------------------------------------- stage, navigate
+-- Both run GIANTS' GOTO job (Hitch.startStaging). Its start creates the vehicle's
+-- navigation agent, which first collects the attached implements, so a coupled
+-- wagon is part of the planned path (AIDrivable:createAgent 360-372). The agent
+-- ends the job itself when the target is NOT_REACHABLE (AIDrivable:onUpdate
+-- 320-322). An ended job is not arrival: the companion verifies the pose.
+local function startGoto(env, spec, prefix)
     local denied = idle(spec.tractor, spec.farmId)
     if denied ~= nil then return nil, denied end
     local ok, reason = Bridge.Hitch.startStaging(env, spec.tractor, spec.farmId, spec.x, spec.z, spec.yaw)
-    if not ok then return nil, "STAGE_" .. tostring(reason) end
+    if not ok then return nil, prefix .. tostring(reason) end
     return { seen = false }
 end
 
-function steppers.stage(_env, task)
+-- progress: whether a lack of movement ends the job (navigate only; a stage is
+-- short and bounded by its own timeout).
+local function stepGoto(env, task, timeoutMs, timeoutCode, endCode, progress)
     local status, code = stillOurs(task.spec)
     if status ~= nil then return status, code end
-    local active = task.spec.tractor:getIsAIActive()
+    local v = task.spec.tractor
+    local active = v:getIsAIActive()
     if active == true then task.seen = true end
     if not task.seen then
         if task.elapsed > Bridge.START_TIMEOUT_MS then return "FAILED", "GOTO_NOT_STARTED" end
@@ -151,18 +165,40 @@ function steppers.stage(_env, task)
     end
     if active ~= false then
         if active ~= true then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
-        if task.elapsed > Bridge.STAGE_TIMEOUT_MS then return "FAILED", "STAGE_TIMEOUT" end
+        if task.elapsed > timeoutMs then return "FAILED", timeoutCode end
+        if progress then
+            local x, _, z = env.getWorldTranslation(v.rootNode)
+            if not (finite(x) and finite(z)) then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
+            if task.fromX == nil or math.sqrt((x - task.fromX) ^ 2 + (z - task.fromZ) ^ 2)
+                    >= Bridge.NAVIGATE_PROGRESS_M then
+                task.fromX, task.fromZ, task.fromAt = x, z, task.elapsed
+            elseif task.elapsed - task.fromAt > Bridge.NAVIGATE_STALL_MS then
+                return "FAILED", "NAVIGATE_STALLED"
+            end
+        end
         return nil
     end
-    return settle(task, "STAGE_ENDED")
+    return settle(task, endCode)
 end
 
 -- Only the GOTO this task started and saw running (GIANTS AIJobVehicle 431).
-function aborts.stage(env, task)
+local function abortGoto(env, task)
     if task.seen and task.spec.tractor:getIsAIActive() == true then
         Bridge.Hitch.cancelStaging(env, task.spec.tractor)
     end
 end
+
+function starters.stage(env, spec) return startGoto(env, spec, "STAGE_") end
+function steppers.stage(env, task)
+    return stepGoto(env, task, Bridge.STAGE_TIMEOUT_MS, "STAGE_TIMEOUT", "STAGE_ENDED", false)
+end
+aborts.stage = abortGoto
+
+function starters.navigate(env, spec) return startGoto(env, spec, "NAVIGATE_") end
+function steppers.navigate(env, task)
+    return stepGoto(env, task, Bridge.DRIVE_TIMEOUT_MS, "TIMEOUT", "GOTO_ENDED", true)
+end
+aborts.navigate = abortGoto
 
 -- ------------------------------------------------------------------ align
 function starters.align(env, spec)
@@ -228,7 +264,7 @@ function steppers.stop(env, task)
         Bridge.Hitch.alignStep(env, Bridge.lastAlign, 0)       -- latched: brake + cruise off
     end
     local ownMotion = target ~= nil and ((target.op == "drive" and v.ad.stateModule:isActive() ~= false)
-        or (target.op == "stage" and target.seen and v:getIsAIActive() ~= false))
+        or ((target.op == "stage" or target.op == "navigate") and target.seen and v:getIsAIActive() ~= false))
     if not ownMotion and stopped(v) then return "DONE", "STOPPED" end
     if task.elapsed > Bridge.STOP_TIMEOUT_MS then return "FAILED", "NOT_STOPPED" end
     return nil

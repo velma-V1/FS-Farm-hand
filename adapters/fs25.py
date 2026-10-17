@@ -68,6 +68,15 @@ def _category(vehicle, categories) -> str | None:
     return mapped
 
 
+def _capabilities(vehicle, bridge_ready: bool) -> frozenset[str]:
+    """Physical capability exists only through the live command bridge
+    (mod/FarmhandBridge.lua). Moving needs GIANTS' GOTO job on the tractor (STAGE
+    always uses it); AutoDrive is an optional extra travel provider."""
+    if not bridge_ready or vehicle["goto_supported"] is not True:
+        return frozenset()
+    return frozenset({"move", "attach", "stop"} | ({"autodrive"} if vehicle["has_autodrive"] else set()))
+
+
 def _pto_names(names) -> frozenset[str] | None:
     return None if names is None else frozenset(names)
 
@@ -99,9 +108,7 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
         pto_torque_capacity=None if motor is None else
         GIANTS_PTO_TORQUE_SHARE * motor["peak_torque"] * motor["pto_rpm_ratio"],
         required_pto_torque=vehicle["pto_torque"],
-        # Physical capability exists only through the live command bridge
-        # (mod/FarmhandBridge.lua); travel and delivery need AutoDrive on the tractor.
-        capabilities=frozenset({"move", "attach", "stop"}) if bridge_ready and has_autodrive else frozenset(),
+        capabilities=_capabilities(vehicle, bridge_ready),
         available=observed,
         busy=(vehicle["ai_active"] is not False
               or (has_autodrive and vehicle["ad_active"] is not False)),

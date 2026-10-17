@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "FS25 farmhand game-to-companion frame v1",
+  "title": "FS25 farmhand game-to-companion frame v2",
   "description": "One JSON object per line, written by mod/FarmhandObserve.lua. Field sources are recorded in adapters/EVIDENCE.md.",
   "oneOf": [
     {"$ref": "#/$defs/hello"},
@@ -26,7 +26,7 @@
       "required": ["event", "protocol", "mod_version", "autodrive_version"],
       "properties": {
         "event": {"const": "hello"},
-        "protocol": {"const": 1},
+        "protocol": {"const": 2},
         "mod_version": {"$ref": "#/$defs/token"},
         "autodrive_version": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]}
       }
@@ -37,7 +37,7 @@
       "required": ["id", "farm_id", "category", "x", "z", "speed_kmh", "entered",
                    "ai_active", "has_autodrive", "ad_active", "attachment_observed",
                    "attacher_vehicle_id", "implement_ids", "heading", "ai_root", "output_joints",
-                   "input_joint_poses", "forage_wagon", "motor", "pto_torque"],
+                   "input_joint_poses", "forage_wagon", "motor", "pto_torque", "goto_supported"],
       "if": {"properties": {"attachment_observed": {"const": false}}},
       "then": {"properties": {"attacher_vehicle_id": {"type": "null"},
                               "implement_ids": {"maxItems": 0}}},
@@ -58,6 +58,7 @@
                           "items": {"$ref": "#/$defs/objectId"}},
         "heading": {"oneOf": [{"$ref": "#/$defs/yaw"}, {"type": "null"}]},
         "forage_wagon": {"type": "boolean"},
+        "goto_supported": {"$ref": "#/$defs/nullableBool"},
         "motor": {"oneOf": [{"type": "null"},
                             {"type": "object", "additionalProperties": false,
                              "required": ["peak_torque", "pto_rpm_ratio"],
@@ -102,7 +103,7 @@
                    "skipped", "vehicles", "destinations"],
       "properties": {
         "event": {"const": "snapshot"},
-        "protocol": {"const": 1},
+        "protocol": {"const": 2},
         "seq": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
         "session": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},
         "farm_id": {"type": "integer", "minimum": 1, "maximum": 255},
@@ -127,7 +128,7 @@
       "required": ["event", "protocol", "session", "id", "op", "status", "code"],
       "properties": {
         "event": {"const": "result"},
-        "protocol": {"const": 1},
+        "protocol": {"const": 2},
         "session": {"$ref": "#/$defs/token"},
         "id": {"type": "integer", "minimum": 1, "maximum": 2147483647},
         "op": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},

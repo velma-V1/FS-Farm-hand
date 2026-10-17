@@ -18,9 +18,11 @@ including an available compatible tractor/wagon pair and misleading decoys:
    moved and the step's outcome is observed. ATTACH re-checks GIANTS' exact
    candidate; VERIFY checks both ends of the attachment from fresh state before any
    delivery movement.
-4. DELIVER delegates travel to the resolved destination: by default the nearest
-   routable AutoDrive marker within 50 m of the requester's position captured at
-   acceptance; or an explicit marker (live ID or exact normalized name); or a field
+4. DELIVER delegates travel to the resolved destination: by default "here", the
+   nearest AutoDrive marker within 50 m of the requester's position captured at
+   acceptance when the tractor has AutoDrive, else a GIANTS GOTO pose 10 m short of
+   that position facing the requester (no marker needed; AutoDrive is optional); or
+   an explicit marker (live ID or exact normalized name; needs AutoDrive); or a field
    entrance from the local map-specific table. Resolution happens before RESERVE.
 5. COMPLETE requires mutual attachment, tractor within 3 m and wagon within 15 m of
    that destination, both stopped, and successful reservation release. Inspect
@@ -48,7 +50,7 @@ Executable mapping (`python scripts/check.py`):
   insufficient or unknown power, never rejects a wagon needing no PTO power, and
   matches PTO on the planned joint pair (not any joint).
 - `HitchCompositionTests`: steps use the plan exactly; AutoDrive TRAVEL_NEAR only
-  when far (and unobserved arrival stops); unreachable or unplannable pairs block
+  when far (and unobserved arrival stops); unplannable pairs block
   before reservation; staging not observed, wagon moved or rotated, joint occupied,
   reservation lost, no reverse progress, acknowledged-but-absent attach and a moving
   tractor after attach all stop with no further action.
@@ -71,7 +73,9 @@ Executable mapping (`python scripts/check.py`):
   with this companion's live session (an unlinked game blocks before reservation);
   stale snapshots never read as current; the full AC-001 executor over
   `FS25World` against a fake game: near tractor skips AutoDrive pickup, far tractor
-  drives first, explicit targets resolve before any command, every step failure
+  drives first, without AutoDrive the same run uses `navigate` for pickup and
+  delivery (stalled, unknown or misplaced GOTO ends stop and fail), explicit
+  targets resolve before any command, every step failure
   stops with its own reason and sends nothing further, AutoDrive "ended" away from
   the destination is not arrival, an unconfirmed stop keeps the reservation, moving
   equipment is never released, observation trouble before RESERVE only blocks, a
@@ -81,13 +85,18 @@ Executable mapping (`python scripts/check.py`):
 - `tests/test_lua_bridge.py` (Lua 5.1 and 5.4): the game bridge is inert without a
   session; adoption opens the pipe and stamps snapshots; AutoDrive drive reports
   ACCEPTED, then DONE only once ended and at rest, or AD_NOT_STARTED,
-  AD_STOPPED_WITH_ERROR, OCCUPIED (AD stopped); unknown marker/vehicle never move;
+  AD_STOPPED_WITH_ERROR, OCCUPIED (AD stopped); GIANTS GOTO `navigate` reports
+  ACCEPTED, then DONE only once the job ended and the tractor is at rest, outlives
+  any stage bound while progressing, is stopped and cancelled after 90 s without
+  2 m of progress, and fails on GOTO_NOT_STARTED, OCCUPIED, unreadable position,
+  AI already active or a moving tractor; unknown marker/vehicle never move;
   stale sessions are rejected and replayed or lower ids never run; one command at a
   time, a stop pre-empts and is DONE only at rest (else NOT_STOPPED); a lost
   heartbeat or a new session stops the old session's motion and is never
   re-adopted; stop cancels only a GOTO it saw running; attach needs the align that
   found the candidate; the probe cannot start during a companion session; drive
-  refuses while AutoDrive's start helper would hand the tractor to another AI.
+  refuses while AutoDrive's start helper would hand the tractor to another AI;
+  stop cancels only a stage or navigate GOTO it saw running.
 - `tests/test_lua_probe.py` (Lua 5.1 and 5.4): the diagnostic console probe loads
   as mod globals in modDesc order and registers its three commands only in
   `loadMap`; nothing runs untyped; `fhHitchList` is read-only; one attempt at a
@@ -100,8 +109,16 @@ Executable mapping (`python scripts/check.py`):
 - `test_stop_failure_retains_reservation`: uncertain cleanup remains UNVERIFIED.
 - `test_here_is_snapshot`: player movement does not change accepted destination.
 - `test_destination_is_nearest_routable_marker`, `test_destination_tie_break_is_order_independent`,
-  `test_no_destination_near_requester`, `test_unknown_destination_fails_closed`:
-  "here" resolves deterministically to a valid marker in range, or blocks/fails.
+  `test_no_marker_near_requester_delivers_by_giants_goto`, `test_unknown_destination_fails_closed`:
+  "here" resolves deterministically to a valid marker in range, else to the GOTO
+  stand-off pose; a marker that vanishes fails closed.
+- `GiantsNavigationTests`: without AutoDrive (random requester positions) "here" is
+  delivered by one GOTO to the stand-off pose, facing the requester, decided before
+  RESERVE; a far tractor without a marker near the wagon travels by GOTO to the
+  staging pose; a GOTO travel or delivery that ends elsewhere, fails, times out,
+  falsely reports arrival or leaves the tractor moving stops and fails closed;
+  explicit markers without AutoDrive block before reservation; AutoDrive is used
+  whenever its marker fits; the mock refuses unreserved or invalid GOTO.
 - `test_multi_joint_tractor_matches_any_shared_joint`: joint types are compared
   per joint pair across all of a tractor's rear joints; the matching one is used.
 - `test_attachment_through_another_joint_is_not_verified`: both ends naming each
@@ -116,11 +133,15 @@ Executable mapping (`python scripts/check.py`):
 - `tests/test_ipc.py`: untrusted frame decoding (chunking, oversized lines, NaN,
   duplicate keys, nesting that exhausts the decoder followed by valid frames,
   schema) and fail-closed FS25 snapshot mapping: unknown occupancy/AI/attachment is
-  unavailable and never free, observed false and observed-empty stay valid, and
-  attachment claims by either vehicle are honoured.
+  unavailable and never free, observed false and observed-empty stay valid,
+  attachment claims by either vehicle are honoured, and movement capability needs
+  GIANTS GOTO support plus the live bridge, never AutoDrive (which only adds the
+  `autodrive` capability).
 - `tests/test_lua_contract.py` (Lua 5.1 and 5.4): `mod/FarmhandObserve.lua` against
   stubs implementing only upstream-evidenced calls, decoded and mapped by Python,
-  including every method missing / returning nil / non-boolean / raising.
+  including every method missing / returning nil / non-boolean / raising, and
+  GIANTS GOTO availability by its own rule (agent functions, start allowed, job
+  supported under the name `AIJobGoTo`).
 
 Synthetic movement sets coordinates and coupling sets relations. The simulator
 has no physics, terrain, route graph, collision, trigger, animation, network or

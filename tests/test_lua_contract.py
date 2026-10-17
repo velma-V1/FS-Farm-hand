@@ -116,6 +116,17 @@ function stubs.vehicle(world, t)
         end
         function v:getAttacherVehicle() return world.byId[t.attacher] end
     end
+    -- GIANTS GOTO availability (AIJobGoTo:getIsAvailableForVehicle 92-102): agent
+    -- functions from AIDrivable, start/support checks from AIJobVehicle.
+    if t.gotoJob then
+        function v:createAgent() end
+        function v:setAITarget() end
+        function v:getCanStartAIVehicle() return t.gotoJob.canStart end
+        function v:getIsAIJobSupported(name)
+            world.jobNames[#world.jobNames + 1] = name
+            return t.gotoJob.supported
+        end
+    end
     -- vehicle.ad only exists when the AutoDrive specialization is installed.
     if t.autodrive and world.env.AutoDrive ~= nil then
         v.ad = { stateModule = { isActive = function(self) return t.adActive == true end } }
@@ -146,7 +157,7 @@ end
 
 function stubs.world(options)
     options = options or {}
-    local world = { ids = {}, byId = {} }
+    local world = { ids = {}, byId = {}, jobNames = {} }
     local env = {
         AttacherJoints = { JOINTTYPE_IMPLEMENT = 1, JOINTTYPE_TRAILER = 3,
                            JOINTTYPE_TRAILERLOW = 4, JOINTTYPE_SEMITRAILER = 5 },
@@ -228,7 +239,7 @@ class LuaContractTests(unittest.TestCase):
     def test_hello_frame(self):
         world = self.stubs.standard()
         hello = parse_frame(self.observe.hello(world.env).encode())
-        self.assertEqual(hello, {"event": "hello", "protocol": 1, "mod_version": "0.1.0.0",
+        self.assertEqual(hello, {"event": "hello", "protocol": 2, "mod_version": "0.1.0.0",
                                  "autodrive_version": "3.0.1.4"})
         bare = self.stubs.world(self.lua.table(noAutoDrive=True))
         self.assertIsNone(parse_frame(self.observe.hello(bare.env).encode())["autodrive_version"])
@@ -307,6 +318,27 @@ class LuaContractTests(unittest.TestCase):
                 free = not any(record[f] for f in ("entered", "ai_active", "ad_active"))
                 self.assertEqual(item.available, not unknown)
                 self.assertEqual(not item.occupied and not item.busy, free and not unknown)
+
+    def test_giants_goto_availability_is_observed(self):
+        tractor = '{ id = 21, file = "STUB_TRACTORS", joints = { "TRAILER" } %s }'
+        cases = [("", False),                                     # no navigation agent: no GOTO
+                 (", gotoJob = { canStart = true, supported = true }", True),
+                 (", gotoJob = { canStart = false, supported = true }", False),
+                 (", gotoJob = { canStart = true, supported = false }", False),
+                 (", gotoJob = { canStart = true, supported = 'yes' }", None),
+                 (", gotoJob = { supported = true }", None),     # getCanStartAIVehicle -> nil
+                 (", gotoJob = { canStart = true, supported = true }, modes = { getCanStartAIVehicle = 'raises' }",
+                  None)]
+        for extra, expected in cases:
+            with self.subTest(extra=extra):
+                record, item = self.vehicle_record(tractor % extra)
+                self.assertIs(record["goto_supported"], expected)
+                ready = observation_from_snapshot(self.snapshot(self.stubs.single(self.lua.eval(
+                    tractor % extra))), CATEGORIES, bridge_ready=True).equipment[0]
+                self.assertEqual(ready.capabilities >= {"move", "attach", "stop"}, expected is True)
+        world = self.stubs.single(self.lua.eval(tractor % ", gotoJob = { canStart = true, supported = true }"))
+        self.snapshot(world)
+        self.assertEqual(list(world.jobNames.values()), ["AIJobGoTo"])
 
     def test_attachment_unknown_versus_empty(self):
         tractor = '{ id = 21, file = "STUB_TRACTORS", joints = { "TRAILER" }, modes = { %s } }'

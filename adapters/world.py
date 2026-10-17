@@ -33,7 +33,7 @@ class World(Protocol):
         ...
 
     def destinations(self) -> tuple[Destination, ...]:
-        """Return fresh routable delivery destinations (AutoDrive map markers)."""
+        """Return fresh AutoDrive map markers (empty without AutoDrive)."""
         ...
 
     def map_id(self) -> str | None:
@@ -52,6 +52,12 @@ class World(Protocol):
         """TRAVEL_NEAR: AutoDrive marker travel of the reserved, unattached tractor."""
         ...
 
+    def navigate(self, tractor_id: str, pose: Pose, owner: str) -> None:
+        """TRAVEL_NEAR or DELIVER without AutoDrive: GIANTS AIJobGoTo of the reserved
+        tractor's AI root to ``pose``, with the wagon if attached (GIANTS plans the
+        path for the whole combination)."""
+        ...
+
     def stage(self, tractor_id: str, wagon_id: str, pose: Pose, owner: str) -> None:
         """STAGE: GIANTS AIJobGoTo of the tractor's AI root to ``pose``."""
         ...
@@ -67,7 +73,7 @@ class World(Protocol):
         ...
 
     def deliver(self, tractor_id: str, destination_id: str, owner: str) -> None:
-        """Recheck authority/compatibility; delegate bounded travel to a destination."""
+        """Recheck authority/compatibility; delegate bounded AutoDrive travel to a marker."""
         ...
 
     def stop(self, tractor_id: str, owner: str) -> bool:
