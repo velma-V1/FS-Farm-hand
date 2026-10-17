@@ -145,8 +145,14 @@ def encode_command(session: str, command_id: int, op: str, args: dict) -> str:
     return '<?xml version="1.0" encoding="utf-8" standalone="no" ?>\n<command ' + " ".join(parts) + " />\n"
 
 
-def encode_session(session: str, beat: int) -> str:
-    """The session file: names the companion; ``beat`` changes while it lives."""
+def encode_session(session: str, beat: int, notice: str | None = None, notice_id: int = 0) -> str:
+    """The session file: names the companion; ``beat`` changes while it lives.
+    ``notice`` (a token) is shown in game once per increase of ``notice_id``."""
     if not isinstance(session, str) or not _TOKEN.fullmatch(session) or type(beat) is not int or beat < 0:
         raise ValueError("INVALID_SESSION")
-    return f'<?xml version="1.0" encoding="utf-8" standalone="no" ?>\n<session id="{session}" beat="{beat}" />\n'
+    if type(notice_id) is not int or not 0 <= notice_id <= MAX_COMMAND_ID or (
+            notice is not None and (not isinstance(notice, str) or not _TOKEN.fullmatch(notice))):
+        raise ValueError("INVALID_NOTICE")
+    extra = "" if notice is None else f' notice="{notice}" noticeId="{notice_id}"'
+    return (f'<?xml version="1.0" encoding="utf-8" standalone="no" ?>\n'
+            f'<session id="{session}" beat="{beat}"{extra} />\n')

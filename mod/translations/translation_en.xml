@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8" standalone="no" ?>
+<!-- Same layout as AutoDrive 3.0.1.4 translations/translation_en.xml. -->
+<l10n>
+    <texts>
+        <text name="input_FARMHAND_FETCH_HERE" text="Farmhand: bring a tractor and forage wagon here" />
+    </texts>
+</l10n>

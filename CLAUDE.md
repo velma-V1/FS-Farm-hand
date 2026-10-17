@@ -25,7 +25,9 @@ luacheck mod                                     # Lua lint (CI job; config in .
 CI (`.github/workflows/ci.yml`) runs it on Ubuntu and Windows; Windows named-pipe
 tests only execute on Windows. CodeQL must report zero findings.
 
-The live runner (`python -m companion.run here|marker|marker-id|field`) only works on
+Normal operation is `companion/service.py` (windowless, logon-started by
+`scripts/install_windows.cmd`) answering the in-game key; the diagnostic runner
+(`python -m companion.run here|marker|marker-id|field`) runs one request. Both only work on
 the user's Windows PC beside FS25 — see `mod/README.md`. The optional, gitignored
 `farmhand.json` (`--config`; template `farmhand.example.json`) is needed only for
 field targets or a tractor category override.
@@ -51,13 +53,16 @@ ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snap
 - `companion/bridge.py` — the real adapter `FS25World` plus the local IPC:
   game → companion JSON lines over a Windows named pipe hosted by the companion;
   companion → game one command at a time in `modSettings/FS25_Farmhand/command.xml`
-  (atomic rename) plus a `session.xml` heartbeat. Only five ops exist: `drive`,
-  `stage`, `align`, `attach`, `stop`. ACCEPTED/DONE is never success; the game
-  stops a session's motion if the heartbeat is lost for 10 s.
+  (atomic rename) plus a `session.xml` heartbeat that also carries player notices.
+  Only six ops exist: `drive` (AutoDrive), `navigate` (GIANTS GOTO), `stage`,
+  `align`, `attach`, `stop`. ACCEPTED/DONE is never success; the game stops a
+  session's motion if the heartbeat is lost for 10 s. Player key presses arrive as
+  `request` frames; `companion/service.py` turns each into an AC-001 intent.
 - `mod/` — FS25 Lua mod `FS25_Farmhand` (load order in `modDesc.xml`):
   `FarmhandObserve` (read-only snapshots), `FarmhandHitch` (GIANTS GOTO staging,
   bounded ALIGN_REVERSE, GIANTS attach), `FarmhandBridge` (executes companion
-  commands, server only), `FarmhandProbe` (`fhHitch*` console diagnostics). Each
+  commands, the player key and notifications; server only), `FarmhandProbe`
+  (`fhHitch*` console diagnostics). Each
   file sets one global; game globals come in as `env`, so tests load them with stubs
   that implement only evidenced calls.
 - `simulator/world.py` — in-memory `MockWorld` for tests. Never import it from

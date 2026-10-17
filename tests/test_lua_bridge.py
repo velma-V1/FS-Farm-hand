@@ -52,7 +52,26 @@ function W.new()
     env.AIMessageSuccessStoppedByUser = { new = function() return {} end }
     w.tractor = tractor
     env.NetworkUtil = { getObject = function(id) if id == 11 then return tractor end return nil end }
-    env.g_currentMission = { getFarmId = function() return 1 end,
+    -- GIANTS notification call shape (PlayerInputComponent 1150).
+    w.notices = {}
+    env.FSBaseMission = { INGAME_NOTIFICATION_CRITICAL = 1, INGAME_NOTIFICATION_OK = 4 }
+    -- Player input hook as Courseplay.lua:142-151 uses it; overwrittenFunction
+    -- passes the original as the second argument (GIANTS Utils).
+    w.registered = {}
+    env.InputAction = { FARMHAND_FETCH_HERE = 77 }
+    env.Utils = { overwrittenFunction = function(old, new)
+        return function(self, ...) return new(self, old, ...) end
+    end }
+    env.PlayerInputComponent = { registerGlobalPlayerActionEvents = function() call("vanillaGlobalActions") end }
+    env.g_inputBinding = { registerActionEvent = function(_, action, target, callback, up, down, always, active)
+        table.insert(w.registered, { action = action, target = target, callback = callback,
+                                     flags = tostring(up) .. tostring(down) .. tostring(always) .. tostring(active) })
+        return true, #w.registered
+    end }
+    env.g_currentMission = { addIngameNotification = function(_, kind, text)
+                                 table.insert(w.notices, kind .. ":" .. text)
+                             end,
+        getFarmId = function() return 1 end,
         aiJobTypeManager = { createJob = function() return job end },
         aiSystem = { startJob = function() call("startJob"); if w.gotoStarts then w.aiActive = true end end } }
     env.AutoDrive = { MODE_DRIVETO = 1 }
@@ -342,6 +361,76 @@ class LuaBridgeTests(unittest.TestCase):
                     self.write("command.xml", encode_command("s1", 2, "stop", {"tractor": 11}))
                     self.W.run(self.w, 100)
                     self.assertEqual("stopCurrentAIJob" in self.calls(), cancelled)
+
+    def notices(self):
+        return list(self.w.notices.values())
+
+    def requests(self):
+        return [f for f in self.frames() if f.get("event") == "request"]
+
+    def test_request_key_needs_a_linked_companion(self):
+        self.bridge.requestHere(self.bridge)
+        self.assertEqual(self.notices(), ["1:Farmhand: the companion is not running"])
+        self.assertEqual(self.requests(), [])
+
+    def test_request_key_sends_one_valid_request_per_press(self):
+        self.adopt()
+        self.assertEqual(self.notices(), ["4:Farmhand: companion connected"])
+        self.bridge.requestHere(self.bridge)
+        self.bridge.requestHere(self.bridge)                 # held key: within the cooldown
+        self.W.run(self.w, 2100)
+        self.bridge.requestHere(self.bridge)
+        requests = self.requests()
+        self.assertEqual([(r["id"], r["session"], r["target"]) for r in requests], [(1, "s1", "here"), (2, "s1", "here")])
+        for line in self.w.lines.values():
+            if '"request"' in line:
+                self.assertEqual(parse_frame((line + "\n").encode())["event"], "request")
+        self.assertEqual(self.calls(), [])                   # a request never moves anything itself
+
+    def test_companion_notices_are_shown_once_each(self):
+        self.write("session.xml", encode_session("s1", 0, "ACCEPTED", 5))
+        self.W.run(self.w, 1000)                              # adopted: the earlier notice is not replayed
+        self.write("session.xml", encode_session("s1", 1, "COMPLETE", 6))
+        self.W.run(self.w, 1000)
+        self.write("session.xml", encode_session("s1", 2, "COMPLETE", 6))
+        self.W.run(self.w, 1000)
+        self.write("session.xml", encode_session("s1", 3, "BLOCKED_NO_ELIGIBLE_PAIR", 7))
+        self.W.run(self.w, 1000)
+        self.write("session.xml", encode_session("s1", 4, "FAILED_SOMETHING_NEW", 8))
+        self.W.run(self.w, 1000)
+        self.assertEqual(self.notices(), [
+            "4:Farmhand: companion connected",
+            "4:Farmhand: tractor and forage wagon delivered",
+            "1:Farmhand: not delivered - no available tractor and forage wagon",
+            "1:Farmhand: not delivered - SOMETHING_NEW"])
+
+    def test_non_critical_notices_fall_back_to_the_evidenced_kind(self):
+        self.w.env.FSBaseMission.INGAME_NOTIFICATION_OK = None
+        self.adopt()
+        self.assertEqual(self.notices(), ["1:Farmhand: companion connected"])
+
+    def test_request_key_is_added_to_the_players_global_actions_and_removed(self):
+        env = self.w.env
+        self.bridge.installInput(self.bridge, env)
+        component = env.PlayerInputComponent
+        component.registerGlobalPlayerActionEvents(component)
+        self.assertEqual(self.calls(), ["vanillaGlobalActions"])       # GIANTS' own actions kept
+        entry, = self.w.registered.values()
+        self.assertEqual((entry.action, entry.flags), (77, "falsetruefalsetrue"))
+        self.adopt()
+        entry.callback()
+        self.assertEqual(len(self.requests()), 1)
+        self.bridge.deleteMap(self.bridge)
+        component.registerGlobalPlayerActionEvents(component)
+        self.assertEqual(len(self.w.registered), 1)                   # hook gone after unload
+
+    def test_without_the_input_action_no_hook_is_installed(self):
+        env = self.w.env
+        original = env.PlayerInputComponent.registerGlobalPlayerActionEvents
+        env.InputAction = self.lua.table()
+        self.bridge.installInput(self.bridge, env)
+        same = self.lua.eval("function(a, b) return rawequal(a, b) end")
+        self.assertTrue(same(env.PlayerInputComponent.registerGlobalPlayerActionEvents, original))
 
     def test_attach_needs_the_align_that_found_this_candidate(self):
         self.adopt()

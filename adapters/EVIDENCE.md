@@ -176,7 +176,18 @@ engine XML API (`XMLFile.loadIfExists`, `getString`), and live under
 | Session | Implemented | `session.xml` (`id`, `beat`) is rewritten every second. The mod adopts a new id (stopping and failing anything an older session started), stamps it into every snapshot, accepts only that session's commands with strictly increasing ids (lower or repeated ids are ignored, so a re-read or replayed file never runs twice), and if the beat stops for 10 s stops this session's motion (`COMPANION_LOST`) and never re-adopts that id |
 | Results | Implemented | `ACCEPTED` after validation, then exactly one of `DONE` (the game's observed end of the operation), `FAILED`, `UNVERIFIED`; `REJECTED` (stale session, unknown op/vehicle, busy). The companion: no result in 5 s → removes the file (`NOT_ACCEPTED` if it was still there, else `NO_ACCEPTANCE`, unverified); no terminal result within the operation's bound, or no frame for 9 s → `RESULT_TIMEOUT` / `LINK_LOST`, unverified. `DONE` is never completion: the executor verifies every step from a snapshot received after it |
 | Capability | Implemented | `move`/`attach`/`stop` only when the snapshot's `session` equals this companion's; stale snapshots (none within 3 s) end the step as `STALE_SNAPSHOT` (unverified) and are never read as current |
-| Exclusivity | Implemented | One owner of the bridge at a time: the adopted companion session or one diagnostic probe attempt; the probe refuses while a session exists |
+| Exclusivity | Implemented | One owner of the bridge at a time: the adopted companion session or one diagnostic probe attempt; the probe refuses while a session exists. One companion per PC: every pipe instance is created with `FILE_FLAG_FIRST_PIPE_INSTANCE` (Win32), so a second companion fails at start instead of taking the session over |
+| Player requests | Implemented, UNVERIFIED in FS25 | The in-game key sends a `request` frame (`session`, strictly increasing `id`, `target` "here") on the same pipe; the companion runs only this session's requests with a higher id, one at a time, answering `BUSY` while one runs. The press supplies no authority: the companion sets the request id and farm and the executor selects the equipment |
+| Notices | Implemented, UNVERIFIED in FS25 | `session.xml` also carries `notice` (token) and `noticeId`; the mod shows each new id once as an in-game notification (`ACCEPTED`, `BUSY`, `COMPLETE`, `<STATUS>_<reason>`), never one issued before it adopted the session |
+| Session renewal | Implemented | A live game naming another session for 15 s (it dropped ours, e.g. after the PC slept) gets a fresh session id; the game never re-adopts a dropped one |
+
+## Player input and notifications — `mod/FarmhandBridge.lua`, `mod/modDesc.xml`
+
+| Capability | State | Source | Farmhand use |
+| --- | --- | --- | --- |
+| Mod input action | PROVEN | AD `modDesc.xml:51-119`: `<l10n filenamePrefix="translations/translation"/>`, `<actions><action name=…/>`, `<inputBinding><actionBinding action=…><binding device="KB_MOUSE_DEFAULT" input="KEY_lalt …"/>`; text `input_<action>` in `translations/translation_en.xml` (`<l10n><texts><text name text/>`) | `FARMHAND_FETCH_HERE`, default Left Alt + J (rebindable in the game's controls); conflicts with the user's other bindings UNVERIFIED |
+| On-foot action registration | PROVEN call site and use | GDN `PlayerInputComponent:registerActionEvents` 142-151 calls `self:registerGlobalPlayerActionEvents()` for the owning player; Courseplay overwrites it with `Utils.overwrittenFunction` and registers `g_inputBinding:registerActionEvent(InputAction.X, self, callback, false, true, false, true)` there (`Courseplay.lua:142-151`, installed from `loadMap`, `:101-111`) | `Bridge:installInput` in `loadMap`, the original restored in `deleteMap`; missing `PlayerInputComponent`, `InputAction.FARMHAND_FETCH_HERE` or `Utils` → no hook and a log line. Whether the hook applies before the player first registers its actions on the user's install is UNVERIFIED (the same timing as Courseplay) |
+| In-game notification | PROVEN (critical) / UNVERIFIED (ok) | GDN `PlayerInputComponent` 1150 `mission:addIngameNotification(FSBaseMission.INGAME_NOTIFICATION_CRITICAL, text)`; `INGAME_NOTIFICATION_OK` is not evidenced for FS25 | Failures use the critical kind; other notices use `INGAME_NOTIFICATION_OK` when it exists, else the critical kind |
 
 ## Rejected claims
 
@@ -227,3 +238,6 @@ engine XML API (`XMLFile.loadIfExists`, `getString`), and live under
    15 m tolerances, how it behaves around the on-foot requester (the 10 m stand-off
    is provisional), whether `getIsAIJobSupported("AIJobGoTo")` names the job
    correctly, and whether 90 s without 2 m of progress is a fair stall bound.
+13. The player path on the user's PC: the Left Alt + J binding appearing and
+   firing on foot, the notifications showing, the companion starting windowless
+   at logon from the registry Run key, and its single-instance pipe check.

@@ -1,7 +1,9 @@
 # AC-001 — bring a tractor and forage wagon here
 
 User command: “Go grab an available tractor and forage wagon, hook them together,
-and bring them here.” Language interpretation is a fixture in this build:
+and bring them here.” The player says it with the in-game key (Left Alt + J on
+foot); the companion turns that into this structured intent itself (no language
+interpretation in this build):
 
 ```json
 {"version":1,"request_id":"request-001","task":"deliver_tractor_and_forage_wagon","farm_id":"farm-a","target":"player_at_acceptance"}
@@ -80,8 +82,16 @@ Executable mapping (`python scripts/check.py`):
   the destination is not arrival, an unconfirmed stop keeps the reservation, moving
   equipment is never released, observation trouble before RESERVE only blocks, a
   replayed request sends no command, and wrong
-  reservations never reach the game; atomic command file; Windows pipe server (on
-  Windows CI).
+  reservations never reach the game; atomic command file; Windows pipe server and
+  a second companion refused (on Windows CI).
+- `ServiceTests` (`tests/test_bridge.py`): a key press runs AC-001 "here" through
+  the fake game and the player is told ACCEPTED then COMPLETE; presses while busy
+  are answered BUSY and never run, replayed or other sessions' presses never run,
+  taking a request marks the link busy atomically; BLOCKED and FAILED results are
+  reported with their reason; a session the game dropped is renewed and a
+  request on an unlinked game blocks; notices are strict tokens; a closed link
+  never rewrites its session file; the logon command is windowless pythonw rooted
+  at the repository and refuses quoted paths.
 - `tests/test_lua_bridge.py` (Lua 5.1 and 5.4): the game bridge is inert without a
   session; adoption opens the pipe and stamps snapshots; AutoDrive drive reports
   ACCEPTED, then DONE only once ended and at rest, or AD_NOT_STARTED,
@@ -96,7 +106,12 @@ Executable mapping (`python scripts/check.py`):
   re-adopted; stop cancels only a GOTO it saw running; attach needs the align that
   found the candidate; the probe cannot start during a companion session; drive
   refuses while AutoDrive's start helper would hand the tractor to another AI;
-  stop cancels only a stage or navigate GOTO it saw running.
+  stop cancels only a stage or navigate GOTO it saw running. The request key needs
+  a linked companion (else a critical "not running" notice), sends one schema-valid
+  request per press (2 s cooldown) and never moves anything; companion notices are
+  shown once each, never one from before adoption, failures as critical; the key
+  is hooked into GIANTS' global player actions (originals kept, flags as
+  Courseplay), removed on unload, and not hooked without the input action.
 - `tests/test_lua_probe.py` (Lua 5.1 and 5.4): the diagnostic console probe loads
   as mod globals in modDesc order and registers its three commands only in
   `loadMap`; nothing runs untyped; `fhHitchList` is read-only; one attempt at a

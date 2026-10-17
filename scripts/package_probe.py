@@ -16,8 +16,10 @@ RUNTIME_FILES = (
     "FarmhandHitch.lua",
     "FarmhandBridge.lua",
     "FarmhandProbe.lua",
+    "translations/translation_en.xml",
 )
-SOURCE_FILES = RUNTIME_FILES[1:]
+SOURCE_FILES = RUNTIME_FILES[1:5]
+REQUEST_ACTION = "FARMHAND_FETCH_HERE"
 
 
 def fail(message: str) -> None:
@@ -62,12 +64,28 @@ def validate_mod(path: Path, *, exact_files: bool) -> None:
         if not candidate.is_file() or candidate.is_symlink():
             fail(f"missing regular runtime source: {candidate}")
 
-    lua_files = tuple(sorted(p.name for p in path.glob("*.lua")))
+    lua_files = tuple(sorted(p.relative_to(path).as_posix() for p in path.rglob("*.lua")))
     if lua_files != tuple(sorted(SOURCE_FILES)):
         fail(f"unexpected/unreferenced Lua files: {lua_files!r}")
 
+    # The in-game request key: declared, bound and named (AutoDrive's layout).
+    actions = [a.attrib.get("name") for a in root.findall("actions/action")]
+    bindings = [b.attrib.get("action") for b in root.findall("inputBinding/actionBinding")]
+    l10n = root.find("l10n")
+    if actions != [REQUEST_ACTION] or bindings != [REQUEST_ACTION]:
+        fail(f"request action not declared and bound exactly once: {actions!r} {bindings!r}")
+    if l10n is None or l10n.attrib.get("filenamePrefix") != "translations/translation":
+        fail("modDesc l10n must point at translations/translation")
+    try:
+        texts = ElementTree.parse(path / "translations" / "translation_en.xml").getroot()
+    except (ElementTree.ParseError, OSError) as exc:
+        fail(f"invalid translation_en.xml: {exc}")
+    if f"input_{REQUEST_ACTION}" not in [t.attrib.get("name") for t in texts.findall("texts/text")]:
+        fail("translation_en.xml does not name the request action")
+
     if exact_files:
-        actual = tuple(sorted(p.name for p in path.iterdir() if p.is_file()))
+        actual = tuple(sorted(p.relative_to(path).as_posix() for p in path.rglob("*")
+                              if p.is_file() or p.is_symlink()))
         expected = tuple(sorted(RUNTIME_FILES))
         if actual != expected:
             fail(f"artifact contains unexpected files: {actual!r}")
@@ -81,6 +99,7 @@ def build(destination: Path) -> None:
     destination.mkdir(parents=True)
 
     for name in RUNTIME_FILES:
+        (destination / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(SOURCE / name, destination / name)
 
     validate_mod(destination, exact_files=True)

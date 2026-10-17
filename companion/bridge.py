@@ -6,7 +6,9 @@ Local only, following Farmhand Companion's proven pattern (PROTOCOL.md):
   renamed into place atomically; the game deletes it on receipt;
 - session.xml names this companion and beats once a second; the game accepts only
   this session's commands with strictly increasing ids, stops what this session
-  started if the beat stops, and reports it in every snapshot.
+  started if the beat stops, and reports it in every snapshot. It also carries the
+  latest notice for the player (shown in game once per notice id);
+- the player's in-game key arrives as a `request` frame of this session.
 
 A command's ACCEPTED and DONE results are never treated as success: FS25World
 returns only the game's observed end of an operation, and the executor verifies
@@ -14,6 +16,7 @@ every step from a fresh snapshot (companion/executor.py).
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import replace
 import logging
 import os
@@ -57,26 +60,87 @@ class CommandLink:
         self._results: dict[int, list[tuple[str, str]]] = {}
         self._next_id = 1
         self._beat = 0
+        self._last_session: str | None = None
+        self._requests: deque[int] = deque()
+        self._last_request = 0
+        self._notice: str | None = None
+        self._notice_id = 0
+        # The heartbeat and pipe threads both write the session file.
+        self._write_lock = threading.Lock()
+        self.busy = False
         self.closed = threading.Event()
 
+    def _write_session(self) -> None:
+        with self._write_lock:
+            if not self.closed.is_set():
+                self.files.write(SESSION_FILE, encode_session(self.session, self._beat,
+                                                              self._notice, self._notice_id))
+
     def heartbeat(self) -> None:
-        if not self.closed.is_set():
-            self.files.write(SESSION_FILE, encode_session(self.session, self._beat))
-            self._beat += 1
+        self._write_session()
+        self._beat += 1
+
+    def notice(self, code: str) -> None:
+        """Tell the player (an in-game notification) via the session file."""
+        with self._cond:
+            self._notice, self._notice_id = code, self._notice_id + 1
+        log.info("notice %d %s", self._notice_id, code)
+        self._write_session()
+
+    def renew(self) -> None:
+        """Start a new session id (the game never re-adopts one it dropped)."""
+        with self._cond:
+            self.session = uuid.uuid4().hex[:16]
+            self._results.clear()
+            self._requests.clear()
+            self._next_id, self._last_request = 1, 0
+        log.info("new session %s", self.session)
+        self._write_session()
+
+    def next_request(self, timeout: float) -> int | None:
+        """The id of the player's next request of this session, or None. Taking one
+        marks the link busy (further presses are answered BUSY) until done()."""
+        def pop():
+            if not self._requests:
+                return None
+            self.busy = True
+            return self._requests.popleft()
+        return self._wait(pop, timeout)
+
+    def done(self) -> None:
+        with self._cond:
+            self.busy = False
+
+    def linked_session(self) -> tuple[str | None, float | None]:
+        """The session the latest snapshot names, and when any frame last arrived."""
+        with self._cond:
+            return self._last_session, self._last_frame_at
 
     def close(self) -> None:
         """End the session: no more beats, and the game drops it (never re-adopted)."""
-        self.closed.set()
-        self.files.remove(SESSION_FILE)
+        with self._write_lock:
+            self.closed.set()
+            self.files.remove(SESSION_FILE)
 
     def on_frame(self, frame: dict) -> None:
+        busy = False
         with self._cond:
             self._last_frame_at = self.clock()
-            if frame["event"] == "snapshot":
+            event = frame["event"]
+            if event == "snapshot":
                 self._snapshot, self._snapshots = frame, self._snapshots + 1
-            elif frame["event"] == "result" and frame["session"] == self.session:
+                self._last_session = frame["session"]
+            elif event == "result" and frame["session"] == self.session:
                 self._results.setdefault(frame["id"], []).append((frame["status"], frame["code"]))
+            elif event == "request" and frame["session"] == self.session and frame["id"] > self._last_request:
+                # Strictly increasing per session: a replayed or older press never runs.
+                self._last_request = frame["id"]
+                busy = self.busy
+                if not busy:
+                    self._requests.append(frame["id"])
             self._cond.notify_all()
+        if busy:
+            self.notice("BUSY")
 
     def _wait(self, predicate, timeout: float):
         deadline = self.clock() + timeout
@@ -286,41 +350,65 @@ def game_profile_dir() -> Path:
 
 class PipeServer(threading.Thread):
     """Hosts PIPE_PATH (Windows) and feeds every decoded frame to a CommandLink.
-    The game is the write-only client and reconnects by itself (FH Transport.lua)."""
+    The game is the write-only client and reconnects by itself (FH Transport.lua).
+
+    Every instance is created with FILE_FLAG_FIRST_PIPE_INSTANCE, so a second
+    companion cannot host the same pipe: start() raises OSError instead of letting
+    two companions fight over the game's session."""
+
+    INBOUND, FIRST_INSTANCE, ERROR_PIPE_CONNECTED = 0x1, 0x00080000, 535
 
     def __init__(self, link: CommandLink, path: str = PIPE_PATH):
         super().__init__(daemon=True, name="fs25-pipe")
         self.link, self.path = link, path
-
-    def run(self) -> None:
         import ctypes
         from ctypes import wintypes
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._ctypes = ctypes
+        k = self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         handle_t, dword = wintypes.HANDLE, wintypes.DWORD
-        kernel32.CreateNamedPipeW.restype = handle_t
-        kernel32.CreateNamedPipeW.argtypes = [wintypes.LPCWSTR] + [dword] * 6 + [wintypes.LPVOID]
-        kernel32.ConnectNamedPipe.argtypes = [handle_t, wintypes.LPVOID]
-        kernel32.ReadFile.argtypes = [handle_t, wintypes.LPVOID, dword, ctypes.POINTER(dword), wintypes.LPVOID]
-        kernel32.DisconnectNamedPipe.argtypes = kernel32.CloseHandle.argtypes = [handle_t]
-        invalid = wintypes.HANDLE(-1).value
-        while True:
-            handle = kernel32.CreateNamedPipeW(self.path, 0x1, 0, 1, 0, 1 << 16, 0, None)  # inbound, byte mode
-            if handle == invalid:
-                raise OSError(ctypes.get_last_error(), "CreateNamedPipeW failed")
-            try:
-                if not kernel32.ConnectNamedPipe(handle, None) and ctypes.get_last_error() != 535:
-                    time.sleep(1)                              # 535: client connected first
-                    continue
-                reader, buffer, read = FrameReader(), ctypes.create_string_buffer(1 << 16), wintypes.DWORD()
-                while kernel32.ReadFile(handle, buffer, len(buffer), ctypes.byref(read), None) and read.value:
-                    for item in reader.feed(buffer.raw[:read.value]):
-                        if isinstance(item, FrameError):
-                            log.warning("dropped frame: %s", item.code)
-                        else:
-                            self.link.on_frame(item)
-            finally:
-                kernel32.DisconnectNamedPipe(handle)
-                kernel32.CloseHandle(handle)
+        k.CreateNamedPipeW.restype = handle_t
+        k.CreateNamedPipeW.argtypes = [wintypes.LPCWSTR] + [dword] * 6 + [wintypes.LPVOID]
+        k.ConnectNamedPipe.argtypes = [handle_t, wintypes.LPVOID]
+        k.ReadFile.argtypes = [handle_t, wintypes.LPVOID, dword, ctypes.POINTER(dword), wintypes.LPVOID]
+        k.DisconnectNamedPipe.argtypes = k.CloseHandle.argtypes = [handle_t]
+        self._invalid, self._dword = wintypes.HANDLE(-1).value, dword
+        self._handle = None
+
+    def _create(self):
+        handle = self._kernel32.CreateNamedPipeW(self.path, self.INBOUND | self.FIRST_INSTANCE, 0, 1, 0,
+                                                 1 << 16, 0, None)   # byte mode, one instance
+        if handle == self._invalid:
+            raise OSError(self._ctypes.get_last_error(),
+                          f"cannot host {self.path}; is another Farmhand companion running?")
+        return handle
+
+    def start(self) -> None:
+        self._handle = self._create()
+        super().start()
+
+    def run(self) -> None:
+        k, ctypes = self._kernel32, self._ctypes
+        handle = self._handle
+        try:
+            while True:
+                try:
+                    if k.ConnectNamedPipe(handle, None) or ctypes.get_last_error() == self.ERROR_PIPE_CONNECTED:
+                        reader, buffer, read = FrameReader(), ctypes.create_string_buffer(1 << 16), self._dword()
+                        while k.ReadFile(handle, buffer, len(buffer), ctypes.byref(read), None) and read.value:
+                            for item in reader.feed(buffer.raw[:read.value]):
+                                if isinstance(item, FrameError):
+                                    log.warning("dropped frame: %s", item.code)
+                                else:
+                                    self.link.on_frame(item)
+                    else:
+                        time.sleep(1)
+                finally:
+                    k.DisconnectNamedPipe(handle)
+                    k.CloseHandle(handle)
+                handle = self._create()
+        except OSError:
+            log.exception("pipe lost; the companion stops")
+            self.link.close()
 
 
 def start_local_link(profile_dir: Path | None = None) -> CommandLink:

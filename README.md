@@ -15,12 +15,16 @@ attach them, and bring them to the requester.
 
 **Status: AC-001 is implemented end to end and tested off-PC only; it has never
 run inside FS25.** Upstream capabilities are recorded with source evidence in
-[adapters/EVIDENCE.md](adapters/EVIDENCE.md). The FS25 mod (`FS25_Farmhand`:
-observation, HITCH primitives, command bridge, diagnostic probe), the local
-companion bridge (Windows named pipe in, atomic XML command file and session
-heartbeat out), the real World adapter and a one-shot runner
-(`python -m companion.run`) exist. LLM integration, speech and a Windows service
-are not part of AC-001. First-run steps: [mod/README.md](mod/README.md).
+[adapters/EVIDENCE.md](adapters/EVIDENCE.md).
+
+How it is used: install once (copy the `FS25_Farmhand` mod folder, double-click
+`scripts/install_windows.cmd`), then in game press **Left Alt + J** on foot. The
+windowless local companion selects an available tractor and forage wagon, hitches
+them and brings them to you; the game shows its progress as notifications. No
+console, vehicle IDs, configuration file, AutoDrive graph or terminal is needed:
+GIANTS' own helper (GOTO) drives, and AutoDrive is used when it is installed and
+has a marker near you. LLM integration and speech are not part of AC-001. The
+live validation session: [mod/README.md](mod/README.md).
 
 ## Pre-game CI checks
 
@@ -40,13 +44,14 @@ prove anything that requires the actual FS25 runtime.
 | --- | --- |
 | AGENTS.md | Authoritative rules for all coding agents |
 | BUILD_SPEC.md | Local runtime architecture, scope, acceptance and runtime gates |
-| companion/ | Deterministic executor, FS25 command bridge and World adapter, runner |
+| companion/ | Deterministic executor, FS25 command bridge and World adapter, windowless request service, diagnostic runner |
 | protocol/ | Executor contract, shared types, local IPC frame protocol |
 | adapters/ | World interface, FS25 snapshot mapping, upstream evidence |
-| mod/ | FS25_Farmhand: observation, HITCH, command bridge, diagnostic probe |
+| mod/ | FS25_Farmhand: observation, HITCH, command bridge, player key and notices, diagnostic probe |
 | simulator/ | In-memory mock FS25 world |
 | tests/ | AC-001 specification and executable checks |
 | scripts/check.py | Single CI verification command |
+| scripts/install_windows.cmd | One-time companion install on the Windows PC |
 
 See [AC-001](tests/ACCEPTANCE.md) for behavioral acceptance and
 [BUILD_SPEC.md](BUILD_SPEC.md) for what still requires actual FS25.

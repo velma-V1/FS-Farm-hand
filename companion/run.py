@@ -27,22 +27,10 @@ import uuid
 from adapters.world import StepUnverified
 from companion.bridge import FS25World, start_local_link
 from companion.executor import Executor
+from companion.service import load_config
 
 READY_TIMEOUT_S = 120.0
 log = logging.getLogger("farmhand")
-
-
-def load_config(path: Path) -> tuple[dict[str, str], dict]:
-    config = json.loads(path.read_text(encoding="utf-8"))
-    names = config.get("tractor_store_categories", [])
-    if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
-        raise ValueError("tractor_store_categories must be a list of names")
-    entrances = {}
-    for map_id, fields in (config.get("field_entrances") or {}).items():
-        if not isinstance(fields, dict):
-            raise ValueError("field_entrances must map map_id -> {field: marker name}")
-        entrances[map_id] = {int(field): name for field, name in fields.items()}
-    return {name: "tractor" for name in names}, entrances
 
 
 def target(args) -> object:

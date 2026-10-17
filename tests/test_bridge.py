@@ -8,6 +8,7 @@ it proves the companion's sequencing, gating and verification, not FS25.
 import copy
 import json
 import math
+from pathlib import PureWindowsPath
 import sys
 import threading
 import time
@@ -80,6 +81,12 @@ class FakeGame:
 
     def stop(self):
         self.running = False
+
+    def press(self, request_id, session=None):
+        """The player's Farmhand key (mod/FarmhandBridge.lua requestHere)."""
+        with self.lock:
+            self._emit({"event": "request", "protocol": 2, "session": session or self.link.session,
+                        "id": request_id, "target": "here"})
 
     def _emit(self, frame):
         parse_frame((json.dumps(frame) + "\n").encode())        # the real decoder's schema
@@ -449,6 +456,13 @@ class LocalIoTests(unittest.TestCase):
             bridge.start_local_link()
 
     @unittest.skipUnless(sys.platform == "win32", "Windows named pipe")
+    def test_a_second_companion_cannot_host_the_pipe(self):
+        path = r"\\.\pipe\fs_farmhand_test_single_" + CommandLink(FakeFiles(None)).session
+        bridge.PipeServer(CommandLink(FakeFiles(None)), path).start()
+        with self.assertRaises(OSError):
+            bridge.PipeServer(CommandLink(FakeFiles(None)), path).start()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows named pipe")
     def test_pipe_server_receives_frames_written_like_the_mod(self):
         link = CommandLink(FakeFiles(None))
         path = r"\\.\pipe\fs_farmhand_test_" + link.session
@@ -494,3 +508,131 @@ class RunnerTests(unittest.TestCase):
                        "farm_id": "1", "target": expected}
             from companion.executor import VALIDATOR
             self.assertTrue(VALIDATOR.is_valid(intent_))
+
+
+class ServiceTests(unittest.TestCase):
+    """The windowless companion: in-game key -> AC-001 "here" -> in-game notice."""
+
+    def start(self, **game_args):
+        from companion import service
+        game = FakeGame(**game_args)
+        self.addCleanup(game.stop)
+        world = FS25World(game.link)
+        notices = []
+        original = game.link.notice
+        game.link.notice = lambda code: (notices.append(code), original(code))
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+        patches = [unittest.mock.patch.object(bridge, "ACCEPT_TIMEOUT_S", 0.3),
+                   unittest.mock.patch.dict(bridge.DONE_TIMEOUT_S, {op: 0.3 for op in bridge.DONE_TIMEOUT_S}),
+                   unittest.mock.patch.object(service, "RENEW_AFTER_S", 0.2)]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        thread = threading.Thread(target=service.serve, args=(world,), kwargs={"should_stop": stop.is_set},
+                                  daemon=True)
+        thread.start()
+        return game, notices
+
+    def wait_for(self, predicate, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            if time.monotonic() > deadline:
+                self.fail("condition not reached")
+            time.sleep(0.01)
+
+    def session_notice(self, game):
+        attrs = ET.fromstring(game.link.files.files["session.xml"].split("\n", 1)[1]).attrib
+        return attrs.get("notice"), int(attrs.get("noticeId", 0))
+
+    def test_key_press_fetches_the_pair_and_tells_the_player(self):
+        game, notices = self.start(autodrive=False)
+        game.press(1)
+        self.wait_for(lambda: len(notices) >= 2)
+        self.assertEqual(notices, ["ACCEPTED", "COMPLETE"])
+        self.assertEqual(self.ops(game), ["stage", "align", "attach", "navigate", "stop"])
+        self.assertEqual(self.session_notice(game), ("COMPLETE", 2))
+        self.assertFalse(game.link.busy)
+
+    def ops(self, game):
+        return [c["op"] for c in game.commands]
+
+    def test_presses_while_busy_replayed_or_foreign_never_run(self):
+        game, notices = self.start(autodrive=False)
+        game.link.busy = True                      # a request is running
+        game.press(1)
+        self.wait_for(lambda: notices == ["BUSY"])
+        game.link.done()
+        game.press(1)                              # replayed id
+        game.press(2, session="someone-else")      # not this companion's session
+        time.sleep(0.2)
+        self.assertEqual(notices, ["BUSY"])
+        self.assertEqual(game.commands, [])
+        game.press(3)
+        self.wait_for(lambda: notices[-1] == "COMPLETE")
+        self.assertEqual(notices, ["BUSY", "ACCEPTED", "COMPLETE"])
+
+    def test_taking_a_request_marks_the_link_busy(self):
+        link = CommandLink(FakeFiles(None))
+        link.on_frame({"event": "request", "protocol": 2, "session": link.session, "id": 1, "target": "here"})
+        self.assertEqual(link.next_request(0.1), 1)
+        self.assertTrue(link.busy)
+        link.on_frame({"event": "request", "protocol": 2, "session": link.session, "id": 2, "target": "here"})
+        self.assertIsNone(link.next_request(0.05))
+        link.done()
+        self.assertFalse(link.busy)
+
+    def test_failures_are_reported_with_their_reason(self):
+        game, notices = self.start(autodrive=False)
+        game.vehicles.pop(12)                      # no forage wagon
+        game.press(1)
+        self.wait_for(lambda: len(notices) >= 2)
+        self.assertEqual(notices, ["ACCEPTED", "BLOCKED_NO_ELIGIBLE_PAIR"])
+        self.assertEqual(game.commands, [])
+        game.vehicles[12] = record(12, "wagon", 0.0, -4.0)
+        game.faults["navigate"] = "FAILED:NAVIGATE_STALLED"
+        game.press(2)
+        self.wait_for(lambda: len(notices) >= 4)
+        self.assertEqual(notices[2:], ["ACCEPTED", "FAILED_NAVIGATE_STALLED"])
+
+    def test_dropped_session_is_renewed_and_not_linked_requests_block(self):
+        game, notices = self.start(autodrive=False, session_override="dropped-earlier")
+        first = game.link.session
+        self.wait_for(lambda: game.link.session != first)
+        game.session_override = None               # the game adopts the new session
+        game.press(1)
+        self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
+        game.session_override = "someone-else"
+        game.press(2)
+        self.wait_for(lambda: notices[-1:] == ["BLOCKED_NOT_LINKED"])
+
+    def test_notices_are_strict_tokens(self):
+        from companion.service import notice_code
+        self.assertEqual(notice_code("COMPLETE", "DELIVERY_OBSERVED"), "COMPLETE")
+        self.assertEqual(notice_code("FAILED", "bad reason!"), "FAILED_bad_reason_")
+        self.assertEqual(len(notice_code("FAILED", "X" * 200)), 64)
+        self.assertIn('notice="BUSY" noticeId="3"', encode_session("s1", 0, "BUSY", 3))
+        self.assertNotIn("notice", encode_session("s1", 0))
+        for bad in (("s1", 0, "two words", 1), ("s1", 0, "OK", -1), ("s1", 0, "OK", True)):
+            with self.assertRaises(ValueError):
+                encode_session(*bad)
+
+    def test_closed_link_never_writes_its_session_again(self):
+        link = CommandLink(FakeFiles(None))
+        link.heartbeat()
+        link.close()
+        link.heartbeat()
+        link.notice("COMPLETE")
+        self.assertNotIn("session.xml", link.files.files)
+
+    def test_autostart_command_is_windowless_and_rooted(self):
+        from companion import service
+        with unittest.mock.patch.object(sys, "executable", r"C:\Py\python.exe"), \
+                unittest.mock.patch.object(service, "ROOT", PureWindowsPath(r"C:\Farmhand")):
+            command = service.autostart_command()
+            self.assertTrue(command.startswith('"C:\\Py\\pythonw.exe" -c "'))
+            self.assertIn("sys.path.insert(0, r'C:\\Farmhand')", command)
+            self.assertIn("s.main([])", command)
+            with unittest.mock.patch.object(service, "ROOT", PureWindowsPath(r"C:\it's")):
+                with self.assertRaises(ValueError):
+                    service.autostart_command()

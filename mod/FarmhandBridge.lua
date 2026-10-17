@@ -20,6 +20,10 @@
 --    companion and beats while it is alive. Commands must carry that session
 --    and a strictly increasing id; anything else is ignored or REJECTED.
 --
+-- 3. Player requests: one on-foot key (modDesc action FARMHAND_FETCH_HERE) asks the
+--    companion for AC-001 "here" with a `request` frame; the companion answers
+--    through the session file's notice, shown as an in-game notification.
+--
 -- Every game and mod call is cited in adapters/EVIDENCE.md. Lua 5.1 compatible.
 
 local Bridge = {}
@@ -40,6 +44,7 @@ Bridge.DRIVE_TIMEOUT_MS = 1200000
 Bridge.NAVIGATE_STALL_MS = 90000
 Bridge.NAVIGATE_PROGRESS_M = 2
 Bridge.STOP_TIMEOUT_MS = 15000
+Bridge.REQUEST_COOLDOWN_MS = 2000      -- a held or repeated key sends one request
 
 local function log(fmt, ...)
     local ok, msg = pcall(string.format, fmt, ...)
@@ -370,24 +375,32 @@ end
 
 function Bridge:checkSession()
     local env = self.env
-    local id, beat = nil, nil
+    local id, beat, notice, noticeId = nil, nil, nil, nil
     pcall(function()
         local xml = env.XMLFile.loadIfExists("fhAc001Session", self.dir .. Bridge.SESSION_FILE)
         if xml == nil then return end
         id, beat = token(xml:getString("session#id")), xml:getString("session#beat")
+        notice, noticeId = token(xml:getString("session#notice")), tonumber(xml:getString("session#noticeId"))
         xml:delete()
     end)
+    if not finite(noticeId) then noticeId = 0 end
     if id ~= nil and id ~= self.session and not self.dropped[id] then
         if self.session ~= nil then self:dropSession("SESSION_CHANGED") end
         if Bridge.owner == nil then
             self.session, self.lastId, self.beat, self.beatAt = id, 0, beat, self.clock
+            self.noticeId = noticeId          -- only notices issued from now on are shown
             Bridge.owner = "companion:" .. id
             log("bridge session %s adopted", id)
             self:closePipe()
             self:openPipe()
+            self:notify(Bridge.NOTICES.CONNECTED, false)
         end
-    elseif id ~= nil and beat ~= self.beat then
-        self.beat, self.beatAt = beat, self.clock
+    elseif id ~= nil and id == self.session then
+        if beat ~= self.beat then self.beat, self.beatAt = beat, self.clock end
+        if notice ~= nil and noticeId > self.noticeId then
+            self.noticeId = noticeId
+            self:notify(Bridge.noticeText(notice))
+        end
     end
     if self.session ~= nil and self.clock - self.beatAt > Bridge.COMPANION_TIMEOUT_MS then
         self:dropSession("COMPANION_LOST")
@@ -480,9 +493,92 @@ function Bridge:update(dt)
     end
 end
 
+-- ------------------------------------------------------- player requests
+
+Bridge.NOTICES = {
+    CONNECTED = "Farmhand: companion connected",
+    ACCEPTED = "Farmhand: fetching a tractor and forage wagon",
+    BUSY = "Farmhand: already working on a request",
+    COMPLETE = "Farmhand: tractor and forage wagon delivered",
+    NOT_LINKED = "Farmhand: the companion is not running",
+}
+-- Readable texts for the most common reasons; any other code is shown as is.
+Bridge.REASONS = {
+    NO_ELIGIBLE_PAIR = "no available tractor and forage wagon",
+    NO_HITCH_GEOMETRY = "no tractor that can hitch the forage wagon",
+    RESERVATION_CONFLICT = "the equipment is in use",
+    INVALID_REQUESTER_POSITION = "your position is unknown",
+    DELIVERY_NOT_OBSERVED = "it did not arrive; check the tractor",
+    NAVIGATE_STALLED = "the tractor got stuck",
+    CLEANUP_NOT_CONFIRMED = "the tractor may still be moving; check it",
+}
+
+-- Text and whether it is critical, for a companion notice token.
+function Bridge.noticeText(notice)
+    local fixed = Bridge.NOTICES[notice]
+    if fixed ~= nil then return fixed, false end
+    local status, reason = notice:match("^(%u+)_([%w_]+)$")
+    if status == "BLOCKED" or status == "FAILED" or status == "UNVERIFIED" then
+        return "Farmhand: not delivered - " .. (Bridge.REASONS[reason] or reason), true
+    end
+    return "Farmhand: " .. notice, false
+end
+
+-- GIANTS' own call shape (PlayerInputComponent 1150). INGAME_NOTIFICATION_OK is not
+-- evidenced for FS25, so a non-critical notice falls back to the proven kind.
+function Bridge:notify(text, critical)
+    log("%s", text)
+    pcall(function()
+        local kinds = self.env.FSBaseMission
+        local kind = (not critical and kinds.INGAME_NOTIFICATION_OK) or kinds.INGAME_NOTIFICATION_CRITICAL
+        self.env.g_currentMission:addIngameNotification(kind, text)
+    end)
+end
+
+-- The on-foot key. A request is only a wish: the companion validates it, picks
+-- the equipment and answers with a notice. Nothing moves here.
+function Bridge:requestHere()
+    if self.env == nil then return end
+    if self.lastRequestAt ~= nil and self.clock - self.lastRequestAt < Bridge.REQUEST_COOLDOWN_MS then return end
+    self.lastRequestAt = self.clock
+    if self.session == nil or self.pipe == nil then return self:notify(Bridge.NOTICES.NOT_LINKED, true) end
+    self.requestId = self.requestId + 1
+    log("request %d sent to companion %s", self.requestId, self.session)
+    self:send({ event = "request", protocol = self.Observe.PROTOCOL, session = self.session,
+                id = self.requestId, target = "here" })
+end
+
+-- Add the key to the player's global actions, as Courseplay does
+-- (Courseplay.lua:142-151); GIANTS calls the hook for the owning player whenever
+-- it registers the on-foot actions (PlayerInputComponent 142-151). The original
+-- is restored on unload, so a reloaded savegame never stacks two hooks.
+function Bridge:installInput(env)
+    local component, action = env.PlayerInputComponent, env.InputAction and env.InputAction.FARMHAND_FETCH_HERE
+    if component == nil or action == nil or env.Utils == nil then
+        log("no player input; the in-game request key is unavailable")
+        return
+    end
+    local bridge = self
+    self.inputOriginal = component.registerGlobalPlayerActionEvents
+    component.registerGlobalPlayerActionEvents = env.Utils.overwrittenFunction(self.inputOriginal,
+        function(inputComponent, superFunc, ...)
+            superFunc(inputComponent, ...)
+            env.g_inputBinding:registerActionEvent(action, inputComponent,
+                function() bridge:requestHere() end, false, true, false, true)
+        end)
+end
+
+function Bridge:removeInput(env)
+    if self.inputOriginal ~= nil then
+        env.PlayerInputComponent.registerGlobalPlayerActionEvents = self.inputOriginal
+        self.inputOriginal = nil
+    end
+end
+
 -- Server only; folders and stale-command cleanup as Farmhand Companion init().
 function Bridge:open(env)
     self.env, self.clock, self.seq, self.lastId = env, 0, 0, 0
+    self.requestId, self.noticeId, self.lastRequestAt = 0, 0, nil
     self.pipeTimer, self.sessionTimer, self.snapshotTimer = 0, 0, 0
     self.session, self.active, self.pipe, self.dropped = nil, nil, nil, {}
     local base = env.getUserProfileAppPath()
@@ -497,10 +593,12 @@ function Bridge:loadMap()
     local env = getfenv(0)   -- the game's global table, as AutoDrive register.lua:329
     if env.g_server == nil then return end
     self:open(env)
+    self:installInput(env)
 end
 
 function Bridge:deleteMap()
     if self.env ~= nil and self.session ~= nil then self:dropSession("UNLOADED") end
+    if self.env ~= nil then self:removeInput(self.env) end
     self:closePipe()
     self.env = nil
 end

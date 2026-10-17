@@ -5,7 +5,8 @@
   "oneOf": [
     {"$ref": "#/$defs/hello"},
     {"$ref": "#/$defs/snapshot"},
-    {"$ref": "#/$defs/result"}
+    {"$ref": "#/$defs/result"},
+    {"$ref": "#/$defs/request"}
   ],
   "$defs": {
     "coordinate": {"type": "number", "minimum": -100000, "maximum": 100000},
@@ -136,6 +137,19 @@
         "op": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},
         "status": {"enum": ["ACCEPTED", "DONE", "FAILED", "UNVERIFIED", "REJECTED"]},
         "code": {"$ref": "#/$defs/token"}
+      }
+    },
+    "request": {
+      "description": "The player pressed the Farmhand key (mod/FarmhandBridge.lua requestHere). A wish only: the companion validates it and supplies all authority itself.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "protocol", "session", "id", "target"],
+      "properties": {
+        "event": {"const": "request"},
+        "protocol": {"const": 2},
+        "session": {"$ref": "#/$defs/token"},
+        "id": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "target": {"const": "here"}
       }
     }
   }

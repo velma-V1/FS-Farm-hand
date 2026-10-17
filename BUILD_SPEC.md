@@ -8,7 +8,8 @@ tools only, not runtime infrastructure.
 
 This build is the complete AC-001 vertical slice on paper: a CI-tested
 companion, command bridge and FS25 mod (`FS25_Farmhand`, built by CI) that has
-not yet run inside FS25.
+not yet run inside FS25. Normal operation is an in-game key and a windowless
+companion that starts at logon (see "Finished-product definition").
 
 ## Runtime architecture
 The intended finished runtime is local:
@@ -53,11 +54,12 @@ wagon (allows trailer length); both must be stopped and mutually attached. These
 provisional contract values to validate against real equipment, AutoDrive marker
 accuracy and GIANTS GOTO accuracy in FS25.
 
-Input to the deterministic executor is versioned structured intent. A future local
-language layer interprets the user's speech/text into a task proposal; trusted
-local service code supplies request/session authority such as request_id and farm_id
-before executor validation. This build uses an explicit fixture and makes no claim
-of natural-language understanding.
+Input to the deterministic executor is versioned structured intent. The player
+asks with an on-foot key in game (default Left Alt + J); the mod sends a request
+frame and the companion (companion/service.py), as trusted local service code,
+supplies request/session authority such as request_id and farm_id before executor
+validation. A future local language layer may interpret speech/text into the same
+task proposal; this build makes no claim of natural-language understanding.
 
 No vehicle IDs come from the LLM. Selection checks categories (forage wagons by
 GIANTS' ForageWagon specialization; tractors as self-propelled vehicles with a
@@ -72,7 +74,7 @@ a lexical tie-break provides repeatability but carries no equipment semantics.
 ## Architecture and boundaries
 | Area | Responsibility | This build |
 | --- | --- | --- |
-| companion/ | Validate intent, deterministic executor, observed completion; command bridge and real World adapter (bridge.py); one-shot runner (run.py) | Implemented; Windows pipe/file I/O tested on Windows CI only |
+| companion/ | Validate intent, deterministic executor, observed completion; command bridge and real World adapter (bridge.py); windowless request service and logon install (service.py); one-shot diagnostic runner (run.py) | Implemented; Windows pipe/file I/O tested on Windows CI only |
 | protocol/ | Versioned intent schema, equipment/result types, local IPC frame schema and decoder | Internal contracts; not an FS25 API |
 | adapters/ | World port, FS25 snapshot mapping, upstream evidence (EVIDENCE.md) | Mapping implemented and fail-closed; capability only through the live bridge session |
 | mod/ | Observation, HITCH primitives, AC-001 command bridge, diagnostic console probe | Never run in FS25 |
@@ -127,8 +129,27 @@ pathfinding replacement, LLM steering, computer vision, multiplayer, or speculat
 infrastructure. Do not replace AutoDrive, Courseplay, Follow Me, or Universal
 Autoload. Do not vendor upstream code without a demonstrated need and license review.
 
-Voice, local model integration, purchasing, loading, fieldwork, harvesting, policy,
-and background-service installation are future vertical slices, not part of AC-001.
+Voice, local model integration, purchasing, loading, fieldwork, harvesting and policy
+are future vertical slices, not part of AC-001.
+
+## Finished-product definition (user, 2026-10-17)
+Normal operation of the AC-001 farmhand needs none of: the developer console,
+manual vehicle IDs, manual JSON editing, a manually constructed AutoDrive graph,
+a Python terminal, or routine developer intervention. Each requirement and how
+the source meets it:
+
+| Requirement | Source mechanism | Proven only in FS25 |
+| --- | --- | --- |
+| No developer console | On-foot key `FARMHAND_FETCH_HERE` (modDesc action, Left Alt + J); console commands are diagnostics only | Key registers and fires; notifications show |
+| No manual vehicle IDs | The executor selects the pair from observations | Equipment detection on the user's farm |
+| No manual JSON editing | Tractors recognised from GIANTS data; `farmhand.json` only for optional field targets | The tractor rule matches the user's tractors only |
+| No manual AutoDrive graph | GIANTS GOTO travel and delivery; AutoDrive optional and preferred when a marker fits | GOTO with the wagon attached, arrival accuracy |
+| No Python terminal | `scripts/install_windows.cmd` (double-click, once) installs and registers a windowless logon start (`pythonw`, HKCU Run) | Logon start on the user's PC |
+| No routine intervention | One companion per PC (first pipe instance), session renewal after a drop, results as in-game notices, log in `modSettings/FS25_Farmhand/companion.log` | Recovery after game restart, sleep and companion restart |
+
+Python 3.12 must be installed once (the installer uses the `py` launcher). The
+definition is met only when the single consolidated live session in the runtime
+gate below passes on the user's PC.
 
 ## Acceptance criteria
 - Executable scenarios in tests/ACCEPTANCE.md pass with varied opaque IDs and
@@ -167,9 +188,9 @@ pattern: a companion-hosted Windows named pipe (game → companion) plus an atom
 renamed XML command file and a beating session file (companion → game). Do not
 build navigation beyond ALIGN_REVERSE.
 
-The first FS25 test runs the whole of AC-001 from a structured request
-(`python -m companion.run here`; steps in mod/README.md),
-with nothing else enabled. If HITCH fails there, the diagnostic console probe
+The first FS25 test runs the whole of AC-001 the way the player will (install
+once, then the in-game key; steps in mod/README.md), with nothing else enabled,
+and then the same with AutoDrive. If HITCH fails there, the diagnostic console probe
 (`fhHitchList`, `fhHitchProbe`) repeats just that part with the same bridge
 operations and logs the geometry, so the assist radius, vertical guard and
 reverse speed can be tuned from logged values.
