@@ -96,6 +96,12 @@ class FakeGame:
             self._emit({"event": "request", "protocol": 2, "session": self.link.session,
                         "id": request_id, "action": action})
 
+    def pick(self, request_id, menu, choice):
+        """A line picked in the in-game AI menu (GIANTS OptionDialog)."""
+        with self.lock:
+            self._emit({"event": "request", "protocol": 2, "session": self.link.session,
+                        "id": request_id, "menu": menu, "choice": choice})
+
     def say(self, request_id, text):
         """Typed words from the in-game text field."""
         with self.lock:
@@ -726,7 +732,7 @@ class ServiceTests(unittest.TestCase):
                 release.wait(5)
                 return {"version": 1, "command": "status"}
 
-        game, notices = self.start(autodrive=False, voice={"model": SlowModel()})
+        game, notices = self.start(autodrive=False, voice={"ai": SlowModel()})
         game.say(1, "how far along are we, mate")             # the rules do not know it
         self.wait_for(lambda: asked == ["how far along are we, mate"])
         started = time.monotonic()
@@ -740,13 +746,61 @@ class ServiceTests(unittest.TestCase):
         asked = []
         model = type("Model", (), {"interpret": lambda self, text: asked.append(text) or
                                    {"version": 1, "command": "fetch_pair"}})()
-        game, notices = self.start(autodrive=False, voice={"model": model})
+        game, notices = self.start(autodrive=False, voice={"ai": model})
         for n, text in enumerate(["don't bring the tractor and wagon", "where is the tractor and wagon",
                                   "never bring it back"], start=1):
             game.say(n, text)
         self.wait_for(lambda: notices == ["NOT_UNDERSTOOD"] * 3)
         self.assertEqual(asked, [])
         self.assertEqual(game.commands, [])
+
+    def menu(self, game):
+        attrs = ET.fromstring(game.link.files.files["menu.xml"].split("\n", 1)[1]).attrib
+        return int(attrs["id"]), [attrs[f"o{n}"] for n in range(1, int(attrs["count"]) + 1)]
+
+    def test_the_ai_menu_is_offered_once_then_on_request_and_a_pick_is_validated(self):
+        import tempfile as tmp
+        from companion import ai
+        try:
+            from tests.test_ai import GOOD, FakeOllama
+        except ImportError:                      # unittest discover -s tests
+            from test_ai import GOOD, FakeOllama
+        fake = FakeOllama(answers=GOOD)
+        self.addCleanup(fake.close)
+        folder = Path(tmp.mkdtemp())
+        game = None
+        brain = ai.AI(ai.Settings(folder / "settings.json"), lambda code: game.link.notice(code),
+                      ollama=ai.Ollama(fake.url, timeout=2), folder=folder)
+        game, notices = self.start(autodrive=False, voice={"ai": brain})
+        self.wait_for(lambda: "MENU" in notices)                       # first link, no choice yet
+        menu_id, lines = self.menu(game)
+        self.assertEqual(lines[0], "qwen3:4b (Ollama, 2.5 GB 4.0B Q4_K_M)")
+        self.assertEqual(lines[-1], "Continue without AI")
+        game.pick(1, menu_id + 1, 1)                                    # a stale/unknown menu: ignored
+        game.pick(2, menu_id, 0)                                        # dialog cancelled: nothing
+        time.sleep(0.2)
+        self.assertEqual(notices, ["MENU"])
+        game.pick(3, menu_id, 1)
+        self.wait_for(lambda: notices[-1:] == ["AI_READY"])
+        self.assertEqual(brain.settings.ai(), {"provider": "ollama", "model": "qwen3:4b"})
+        game.say(4, "choose AI model")
+        self.wait_for(lambda: notices.count("MENU") == 2)
+        game.key(5, "settings")
+        self.wait_for(lambda: notices.count("MENU") == 3)
+        self.assertGreater(self.menu(game)[0], menu_id)
+
+    def test_without_ai_unknown_words_are_answered_at_once(self):
+        import tempfile as tmp
+        from companion import ai
+        folder = Path(tmp.mkdtemp())
+        settings = ai.Settings(folder / "settings.json")
+        settings.set_ai({"provider": "none"})
+        brain = ai.AI(settings, lambda code: None, ollama=ai.Ollama("http://127.0.0.1:9", timeout=0.3), folder=folder)
+        game, notices = self.start(autodrive=False, voice={"ai": brain})
+        game.say(1, "rig up something to haul the silage")
+        self.wait_for(lambda: notices == ["NOT_UNDERSTOOD"])            # no menu: a choice exists
+        game.say(2, "bring me a tractor and forage wagon")             # the rules still work
+        self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
 
     def test_replayed_or_foreign_requests_never_run(self):
         game, notices = self.start(autodrive=False)

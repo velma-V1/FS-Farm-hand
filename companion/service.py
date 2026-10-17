@@ -32,11 +32,12 @@ import threading
 from adapters.world import StepUnverified
 from companion.bridge import (MOD_DIR, SNAPSHOT_TIMEOUT_S, FS25World, game_profile_dir,
                               start_local_link)
+from companion.ai import AI, Settings
 from companion.coordinator import FETCH_HERE, Coordinator
 from companion.executor import Executor
 from companion.language import RuleInterpreter, refuses
-from companion.model import ModelInterpreter, ModelServer
 from companion.voice import Replies, SapiSpeaker, SoundDeviceMicrophone, Unavailable, VoiceInput, WhisperTranscriber
+from protocol.ipc import encode_menu
 
 log = logging.getLogger("farmhand")
 
@@ -83,6 +84,9 @@ def proposal_for(request: dict, rules) -> dict | None:
     return dict(ACTIONS[request["action"]])
 
 
+MENU_FILE = "menu.xml"
+
+
 def ask_model(link, model, request) -> None:
     """On its own thread, so the serve loop keeps answering (STOP above all) while
     the model thinks; its answer returns through the request queue."""
@@ -100,10 +104,11 @@ def linked_farm(link):
 
 
 def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, interpreter=None,
-          microphone=None, transcriber=None, speaker=None, model=None) -> None:
+          microphone=None, transcriber=None, speaker=None, ai=None) -> None:
     """Answer the player's requests until the link closes: one job at a time,
-    STOP and STATUS at once (companion/coordinator.py). ``model`` (optional)
-    answers only words the rules neither understand nor refuse, off this thread.
+    STOP and STATUS at once (companion/coordinator.py). ``ai`` (companion/ai.py,
+    optional) answers only words the rules neither understand nor refuse, off
+    this thread, and owns the in-game AI menu.
     ``microphone`` and
     ``transcriber`` are factories for push-to-talk (companion/voice.py); without
     them, or when they raise Unavailable, voice is unavailable and text works."""
@@ -116,12 +121,37 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
                        on_text=lambda text: link.inject({"text": text, "spoken": True}),
                        notify=lambda code: replies(code, code != "LISTENING"),
                        places=lambda: [p.name for p in world.places()])
+    menu = {"id": 0, "prompted": False}
+
+    def show_menu():
+        """The AI choices as a list in game (mod: GIANTS OptionDialog)."""
+        if ai is None or not hasattr(ai, "open_menu"):
+            replies("AI_UNAVAILABLE")
+            return
+        labels = [c.label for c in ai.open_menu()]
+        menu["id"] += 1
+        try:
+            link.files.write(MENU_FILE, encode_menu(menu["id"], "Farmhand AI model", labels))
+        except OSError:
+            log.exception("menu not written")
+            return
+        replies("MENU")
+
+    if ai is not None and hasattr(ai, "show_menu"):
+        ai.show_menu = show_menu
     foreign_since = None
     while not link.closed.is_set() and not should_stop():
         request = link.next_request(timeout=1.0)
         if request is not None:
             try:
+                if "menu" in request:
+                    if request["menu"] == menu["id"] and request["choice"] > 0 and hasattr(ai, "choose"):
+                        ai.choose(request["choice"])
+                    continue
                 action = request.get("action")
+                if action == "settings":
+                    show_menu()
+                    continue
                 if action == "talk_start":
                     voice.talk_start()
                     continue
@@ -130,8 +160,12 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
                     continue
                 spoken = bool(request.get("spoken"))
                 proposal = proposal_for(request, rules)
-                if proposal is None and "text" in request and model is not None and not refuses(request["text"]):
-                    threading.Thread(target=ask_model, args=(link, model, request), daemon=True,
+                if proposal is not None and proposal.get("command") == "settings":
+                    show_menu()
+                    continue
+                if (proposal is None and "text" in request and ai is not None and getattr(ai, "enabled", True)
+                        and not refuses(request["text"])):
+                    threading.Thread(target=ask_model, args=(link, ai, request), daemon=True,
                                      name="farmhand-model-ask").start()
                     continue
                 coordinator.submit(proposal, spoken=spoken)
@@ -141,6 +175,12 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
             continue
         session, last_frame = link.linked_session()
         now = link.clock()
+        # The first time this companion is linked and no AI choice was ever made,
+        # offer it once (the user may also open it any time).
+        if (session == link.session and not menu["prompted"] and ai is not None
+                and hasattr(ai, "settings") and ai.settings.ai() is None):
+            menu["prompted"] = True
+            show_menu()
         if (last_frame is not None and now - last_frame < 3 * SNAPSHOT_TIMEOUT_S and session != link.session
                 and not coordinator.busy):
             foreign_since = now if foreign_since is None else foreign_since
@@ -220,15 +260,15 @@ def main(argv=None) -> int:
         log.exception("companion not started")
         return 1
     log.info("companion started; session %s; waiting for FS25", link.session)
-    # The optional local model: words the rules do not know; never STOP, never execution.
-    model = ModelServer()
-    model.start()
+    # The optional AI the user chose: words the rules do not know; never STOP, never execution.
+    ai = AI(Settings(), notify=link.notice)
+    ai.start()
     try:
-        serve(FS25World(link, categories), entrances, model=ModelInterpreter(ready=model.ready),
+        serve(FS25World(link, categories), entrances, ai=ai,
               microphone=SoundDeviceMicrophone, transcriber=WhisperTranscriber,
               speaker=SapiSpeaker() if sys.platform == "win32" else None)
     finally:
-        model.stop()
+        ai.stop()
         link.close()
     return 0
 

@@ -1,12 +1,13 @@
 """Optional local language model behind the deterministic rules (companion/language.py).
 
-    python -m companion.model --install     download and verify the runtime and model once
+    python -m companion.model --install recommended   download and verify the runtime and a model once
     python -m companion.model "come here"   interpret one sentence (diagnostics)
 
 Runtime: llama.cpp `llama-server`, CPU-only build, on 127.0.0.1, started by the
 companion with no window at below-normal priority, so it never takes VRAM or the
-game's CPU time first. Model: Qwen3-4B-Instruct-2507 Q4_K_M (Apache-2.0). Both are
-pinned by URL and sha256 (adapters/EVIDENCE.md, "Local language model").
+game's CPU time first. Models: the user picks one of two (MANAGED; Apache-2.0),
+each pinned by URL and sha256 (adapters/EVIDENCE.md, "Local language model"). A
+model the user already has in Ollama is used through companion/ai.py instead.
 
 The model only classifies a sentence into MODEL_SCHEMA (a flat schema llama.cpp
 can enforce while decoding); the result is mapped to a command proposal and
@@ -44,13 +45,30 @@ RUNTIME = {
     "size": 19662606,
     "file": "llama-b11714-bin-win-cpu-x64.zip",
 }
-MODEL = {
-    "url": ("https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/"
-            "a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
-    "sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
-    "size": 2497281120,
-    "file": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+# The two Farmhand-installable models, qualified 2026-10-17 on a labelled set of
+# wording the rules miss (adapters/EVIDENCE.md): about equal accuracy, the
+# lightweight one about twice as fast and half the memory.
+MANAGED = {
+    "lightweight": {
+        "title": "Lightweight (Qwen3 1.7B)",
+        "url": ("https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/"
+                "d7f544eead698dbd1f15126ef60b45a1e1933222/Qwen3-1.7B-Q4_K_M.gguf"),
+        "sha256": "b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897",
+        "size": 1107409472,
+        "file": "Qwen3-1.7B-Q4_K_M.gguf",
+        "ram_gb": 2,
+    },
+    "recommended": {
+        "title": "Recommended (Qwen3 4B)",
+        "url": ("https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/"
+                "a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
+        "sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
+        "size": 2497281120,
+        "file": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "ram_gb": 4,
+    },
 }
+MODEL = MANAGED["recommended"]
 PORT = 39231
 THREADS = 4                       # of the 7800X3D's 8 cores; FS25 keeps the rest
 CONTEXT = 2048
@@ -121,6 +139,8 @@ class ModelInterpreter:
         body = json.dumps({
             "messages": [{"role": "system", "content": PROMPT}, {"role": "user", "content": text[:200]}],
             "temperature": 0, "max_tokens": 64,
+            # Hybrid "thinking" models answer directly; others ignore the flag.
+            "chat_template_kwargs": {"enable_thinking": False},
             "response_format": {"type": "json_schema", "schema": MODEL_SCHEMA},
         }).encode()
         request = urllib.request.Request(self.url + "/v1/chat/completions", data=body,
@@ -145,9 +165,11 @@ def install_dir() -> Path:
     return Path(base) / "FS25Farmhand" / "model"
 
 
-def server_command(folder: Path, port: int = PORT) -> list[str]:
-    """CPU only (-ngl 0 and no device: -ngl defaults to auto), one slot, local only."""
-    return [str(folder / "llama" / "llama-server.exe"), "-m", str(folder / MODEL["file"]),
+def server_command(folder: Path, port: int = PORT, model_file: str = MODEL["file"]) -> list[str]:
+    """CPU only (-ngl 0 and no device: -ngl defaults to auto), one slot, local only.
+    The managed runtime is the CPU build on purpose: it never takes VRAM from FS25;
+    a GPU is used through the user's own Ollama, by Ollama's own rules."""
+    return [str(folder / "llama" / "llama-server.exe"), "-m", str(folder / model_file),
             "-ngl", "0", "--device", "none", "-t", str(THREADS), "-c", str(CONTEXT), "-np", "1",
             "--host", "127.0.0.1", "--port", str(port), "--no-webui"]
 
@@ -203,13 +225,14 @@ class ModelServer:
     the process it started (never from something else on the port)."""
 
     def __init__(self, folder: Path | None = None, port: int = PORT, opener=LOCAL,
-                 popen=subprocess.Popen):
+                 popen=subprocess.Popen, choice: str = "recommended"):
         self.folder, self.port, self.opener, self.popen = folder or install_dir(), port, opener, popen
+        self.model_file = MANAGED[choice]["file"]
         self._ready = threading.Event()
         self.process = self.job = None
 
     def installed(self) -> bool:
-        return (self.folder / "llama" / "llama-server.exe").is_file() and (self.folder / MODEL["file"]).is_file()
+        return (self.folder / "llama" / "llama-server.exe").is_file() and (self.folder / self.model_file).is_file()
 
     def _answers(self) -> bool:
         try:
@@ -226,7 +249,7 @@ class ModelServer:
             log.warning("port %d already answers; the local model stays off", self.port)
             return False
         flags = BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        self.process = self.popen(server_command(self.folder, self.port), stdout=subprocess.DEVNULL,
+        self.process = self.popen(server_command(self.folder, self.port, self.model_file), stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL, creationflags=flags)
         if sys.platform == "win32":
             try:
@@ -301,27 +324,34 @@ def extract(archive: Path, folder: Path) -> None:
         zf.extractall(folder)
 
 
-def install(folder: Path | None = None, opener=urllib.request.urlopen) -> Path:
+def installed_choices(folder: Path | None = None) -> list[str]:
+    folder = folder or install_dir()
+    if not (folder / "llama" / "llama-server.exe").is_file():
+        return []
+    return [key for key, m in MANAGED.items() if (folder / m["file"]).is_file()]
+
+
+def install(folder: Path | None = None, opener=urllib.request.urlopen, choice: str = "recommended") -> Path:
     folder = folder or install_dir()
     folder.mkdir(parents=True, exist_ok=True)
     archive = folder / RUNTIME["file"]
     download(RUNTIME, archive, opener)
     extract(archive, folder / "llama")
-    download(MODEL, folder / MODEL["file"], opener)
+    download(MANAGED[choice], folder / MANAGED[choice]["file"], opener)
     return folder
 
 
 def main(argv=None) -> int:
     import argparse
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--install", action="store_true")
+    parser.add_argument("--install", choices=sorted(MANAGED))
     parser.add_argument("text", nargs="?")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     if args.install:
-        print(f"Local language model installed in {install(None)}")
+        print(f"Local language model installed in {install(None, choice=args.install)}")
         return 0
-    server = ModelServer()
+    server = ModelServer(choice=(installed_choices() or ["recommended"])[0])
     if not server.start():
         return 1
     deadline = time.monotonic() + START_TIMEOUT_S

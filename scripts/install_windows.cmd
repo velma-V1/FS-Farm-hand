@@ -10,14 +10,6 @@ if not exist ".venv\Scripts\python.exe" (
 )
 ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -r requirements.txt || goto :failed
 echo.
-echo Optional: a local language model (about 2.5 GB download, runs on the CPU, never
-echo the graphics card) understands wording the built-in rules do not. Farmhand works
-echo without it.
-choice /c YN /m "Install the local language model now"
-if not errorlevel 2 (
-    ".venv\Scripts\python.exe" -m companion.model --install || echo The model was not installed; Farmhand works without it.
-)
-echo.
 echo Optional: push-to-talk voice (about 250 MB; hold Left Alt + V in game). It needs a
 echo microphone only when you speak; without one, typing keeps working.
 choice /c YN /m "Install voice support now"
@@ -26,7 +18,8 @@ if not errorlevel 2 (
 )
 ".venv\Scripts\python.exe" -m companion.service --install || goto :failed
 echo.
-echo Done. In FS25, on foot: Left Alt + K to tell Farmhand what to do, Left Alt + L to stop.
+echo Done. In FS25, on foot: Left Alt + K to tell Farmhand what to do, Left Alt + L to stop,
+echo Left Alt + N to choose an AI model (optional; offered once when FS25 first connects).
 pause
 exit /b 0
 :failed

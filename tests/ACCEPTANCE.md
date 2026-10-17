@@ -191,6 +191,24 @@ Executable mapping (`python scripts/check.py`):
   nothing in silence. `ServiceTests`: push-to-talk fetches the pair with spoken
   replies; without voice set up it is VOICE_UNAVAILABLE and typing works. Lua:
   the hold key is registered as GIANTS' CROUCH and sends only the edges.
+- `tests/test_ai.py` (fake Ollama): no choice until the user makes one, remembered,
+  a broken settings file asks again; the list shows Ollama models, installed
+  Farmhand models, the downloads not yet installed and "Continue without AI"
+  (labels at most 60 characters), and only downloads or no AI without Ollama;
+  requests carry the schema, temperature 0, `think: false` and nothing about GPU
+  layers, an older Ollama rejecting `think` still works, a vanished model is
+  reported and malformed output is not understood; validation passes 6/6, fails at
+  4/6, on an unsupported sentence turned into movement, when too slow and when the
+  model is missing; picking no AI saves it and switches AI off; a validated pick is
+  saved and used; a failing pick is never saved, the list returns and the earlier
+  working model stays; a download is installed then validated; a failed download
+  changes nothing; a saved model that disappears is reported and never replaced by
+  another; stale or out-of-range picks do nothing. `ServiceTests`: the menu is
+  offered once at first link, stale and cancelled picks are ignored, a pick is
+  validated and saved, words and the key reopen it; with AI off unknown words are
+  answered at once and the rules still fetch. Lua: the MENU notice opens GIANTS'
+  option dialog with the companion's lines, a pick sends (menu, line), cancel and
+  out-of-range send nothing, never over another dialog, the key asks for it.
 - `tests/test_model.py` (fake llama-server, no model): requests are local,
   temperature 0 and schema-constrained with the schema described in the prompt;
   answers map to validated proposals; malformed, off-schema, extra-field, too-long,

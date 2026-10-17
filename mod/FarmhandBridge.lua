@@ -32,6 +32,7 @@ local Bridge = {}
 Bridge.MOD_DIR = "modSettings/FS25_Farmhand/"
 Bridge.COMMAND_FILE = "command.xml"
 Bridge.SESSION_FILE = "session.xml"
+Bridge.MENU_FILE = "menu.xml"           -- companion's list for the player (protocol.ipc encode_menu)
 Bridge.SNAPSHOT_MS = 500
 Bridge.SESSION_CHECK_MS = 1000
 Bridge.COMPANION_TIMEOUT_MS = 10000   -- no heartbeat for this long: stop, drop session
@@ -433,7 +434,7 @@ function Bridge:checkSession()
         for _, n in ipairs(notices) do
             if n.id > self.noticeId then
                 self.noticeId = n.id
-                self:notify(Bridge.noticeText(n.code))
+                if n.code == "MENU" then self:openMenu() else self:notify(Bridge.noticeText(n.code)) end
             end
         end
     end
@@ -559,6 +560,17 @@ Bridge.NOTICES = {
     LISTENING = "Farmhand: listening...",
     NOT_HEARD = "Farmhand: sorry, I did not hear that",
     VOICE_UNAVAILABLE = "Farmhand: voice is unavailable (no microphone or speech model); press Left Alt + K to type",
+    AI_INSTALLING = "Farmhand: downloading the AI model; plain commands work meanwhile",
+    AI_VALIDATING = "Farmhand: checking the AI model...",
+    AI_READY = "Farmhand: AI model ready",
+    AI_OFF = "Farmhand: AI off; plain commands only",
+    AI_UNAVAILABLE = "Farmhand: AI settings are unavailable",
+}
+-- Critical (red) notices that are not failures of a job.
+Bridge.CRITICAL = {
+    AI_INCOMPATIBLE = "Farmhand: that AI model is not compatible; choose another",
+    AI_MODEL_MISSING = "Farmhand: the chosen AI model is not available; press Left Alt + N to choose",
+    AI_INSTALL_FAILED = "Farmhand: the AI model download failed; plain commands still work",
 }
 -- What each executor state means to the player (STATUS_WORKING_<state>).
 Bridge.STEPS = {
@@ -595,6 +607,7 @@ Bridge.REASONS = {
 function Bridge.noticeText(notice)
     local fixed = Bridge.NOTICES[notice]
     if fixed ~= nil then return fixed, false end
+    if Bridge.CRITICAL[notice] ~= nil then return Bridge.CRITICAL[notice], true end
     local working = notice:match("^WORKING_([%u_]+)$")
     if working ~= nil then return "Farmhand: " .. (Bridge.STEPS[working] or working), false end
     local step = notice:match("^STATUS_WORKING_([%u_]+)$")
@@ -621,12 +634,53 @@ end
 
 -- A request is only a wish: the companion interprets and validates it, picks the
 -- equipment and answers with a notice. Nothing moves here.
-function Bridge:sendRequest(field, value)
+function Bridge:sendRequest(field, value, extra)
     if self.session == nil or self.pipe == nil then return self:notify(Bridge.NOTICES.NOT_LINKED, true) end
     self.requestId = self.requestId + 1
     log("request %d (%s) sent to companion %s", self.requestId, field, self.session)
-    self:send({ event = "request", protocol = self.Observe.PROTOCOL, session = self.session,
-                id = self.requestId, [field] = value })
+    local frame = { event = "request", protocol = self.Observe.PROTOCOL, session = self.session,
+                    id = self.requestId, [field] = value }
+    for key, v in pairs(extra or {}) do frame[key] = v end
+    self:send(frame)
+end
+
+function Bridge:openSettings()
+    if self.env == nil then return end
+    self:sendRequest("action", "settings")
+end
+
+-- The companion's list (menu.xml, numbered attributes) in GIANTS' option dialog,
+-- called as Courseplay does (CourseEditor.lua:165-176: callback(item), title,
+-- text, texts; item 0 = cancelled). Not over another dialog; the settings key
+-- opens it again. The pick goes back with the menu id, so a stale list is ignored.
+function Bridge:openMenu()
+    local env = self.env
+    local menu = nil
+    pcall(function()
+        local xml = env.XMLFile.loadIfExists("fhMenu", self.dir .. Bridge.MENU_FILE)
+        if xml == nil then return end
+        local id, count = tonumber(xml:getString("menu#id")), tonumber(xml:getString("menu#count"))
+        if finite(id) and finite(count) and count >= 1 and count <= 9 then
+            local texts = {}
+            for i = 1, count do texts[i] = xml:getString("menu#o" .. i) or "?" end
+            menu = { id = id, title = xml:getString("menu#title") or "Farmhand", texts = texts }
+        end
+        xml:delete()
+    end)
+    if menu == nil then return end
+    local bridge = self
+    local ok = pcall(function()
+        if env.g_gui ~= nil and env.g_gui:getIsDialogVisible() then
+            bridge:notify("Farmhand: press Left Alt + N to choose the AI model", false)
+            return
+        end
+        env.OptionDialog.show(function(item)
+            if type(item) == "number" and item >= 1 and item <= #menu.texts and item % 1 == 0 then
+                bridge:sendRequest("menu", menu.id, { choice = item })
+            end
+        end, menu.title, "", menu.texts)
+    end)
+    if not ok then self:notify(Bridge.NOTICES.AI_UNAVAILABLE, true) end
 end
 
 function Bridge:requestHere()
@@ -697,7 +751,8 @@ end
 -- it registers the on-foot actions (PlayerInputComponent 142-151). The original
 -- is restored on unload, so a reloaded savegame never stacks two hooks.
 Bridge.KEYS = { FARMHAND_FETCH_HERE = "requestHere", FARMHAND_TALK = "openTextInput",
-                FARMHAND_STOP = "requestStop", FARMHAND_PUSH_TO_TALK = "pushToTalk" }
+                FARMHAND_STOP = "requestStop", FARMHAND_PUSH_TO_TALK = "pushToTalk",
+                FARMHAND_SETTINGS = "openSettings" }
 -- Held keys: GIANTS calls them every frame with the input value, as it registers
 -- its own CROUCH (PlayerInputComponent: false, false, true, true; onInputCrouch
 -- 1101-1110 reads inputValue 0..1); the press and release edges are sent.

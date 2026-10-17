@@ -58,7 +58,14 @@ function W.new()
     -- Player input hook as Courseplay.lua:142-151 uses it; overwrittenFunction
     -- passes the original as the second argument (GIANTS Utils).
     w.registered = {}
-    env.InputAction = { FARMHAND_FETCH_HERE = 77, FARMHAND_TALK = 78, FARMHAND_STOP = 79, FARMHAND_PUSH_TO_TALK = 80 }
+    env.InputAction = { FARMHAND_FETCH_HERE = 77, FARMHAND_TALK = 78, FARMHAND_STOP = 79, FARMHAND_PUSH_TO_TALK = 80,
+                        FARMHAND_SETTINGS = 81 }
+    -- GIANTS option dialog as Courseplay calls it (CourseEditor.lua:165-176).
+    env.OptionDialog = { show = function(callback, title, text, texts)
+        w.option = { callback = callback, title = title, texts = texts }
+    end }
+    w.dialogVisible = false
+    env.g_gui = { getIsDialogVisible = function() return w.dialogVisible end }
     -- GIANTS text dialog as Courseplay calls it (CustomFieldManager.lua:126-130).
     env.TextInputDialog = { show = function(callback, target, default, prompt, title, maxChars, okText)
         w.dialog = { callback = callback, target = target, default = default, maxChars = maxChars, okText = okText }
@@ -453,6 +460,38 @@ class LuaBridgeTests(unittest.TestCase):
             "1:Farmhand: not delivered - no available tractor and forage wagon",
             "1:Farmhand: not delivered - SOMETHING_NEW"])
 
+    def test_the_ai_menu_is_shown_and_the_pick_is_sent(self):
+        from protocol.ipc import encode_menu
+        self.adopt()
+        self.write("menu.xml", encode_menu(4, "Farmhand AI model",
+                                           ["qwen3:4b (Ollama, 2.5 GB)", "Odd 'name' + (tag)", "Continue without AI"]))
+        self.write("session.xml", encode_session("s1", 1, [(1, "MENU")]))
+        self.W.run(self.w, 1000)
+        option = self.w.option
+        self.assertEqual(option.title, "Farmhand AI model")
+        self.assertEqual(list(option.texts.values()),
+                         ["qwen3:4b (Ollama, 2.5 GB)", "Odd 'name' + (tag)", "Continue without AI"])
+        option.callback(0)                                     # cancelled
+        option.callback(9)                                     # out of range
+        option.callback(3)
+        picks = [(r["menu"], r["choice"]) for r in self.requests() if "menu" in r]
+        self.assertEqual(picks, [(4, 3)])
+        for line in self.w.lines.values():
+            if '"request"' in line:
+                parse_frame((line + "\n").encode())
+
+    def test_the_menu_never_opens_over_another_dialog_and_the_key_asks_for_it(self):
+        from protocol.ipc import encode_menu
+        self.adopt()
+        self.w.dialogVisible = True
+        self.write("menu.xml", encode_menu(1, "Farmhand AI model", ["Continue without AI"]))
+        self.write("session.xml", encode_session("s1", 1, [(1, "MENU")]))
+        self.W.run(self.w, 1000)
+        self.assertFalse(hasattr(self.w, "option") and self.w.option is not None)
+        self.assertIn("4:Farmhand: press Left Alt + N to choose the AI model", self.notices())
+        self.bridge.openSettings(self.bridge)
+        self.assertEqual([r.get("action") for r in self.requests()], ["settings"])
+
     def test_notice_texts_for_progress_status_and_outcomes(self):
         cases = {"WORKING_DELIVER": ("Farmhand: driving to the destination", False),
                  "STATUS_WORKING_ALIGN_REVERSE": ("Farmhand: working - reversing to the wagon", False),
@@ -475,7 +514,7 @@ class LuaBridgeTests(unittest.TestCase):
         component.registerGlobalPlayerActionEvents(component)
         self.assertEqual(self.calls(), ["vanillaGlobalActions"])       # GIANTS' own actions kept
         entries = {e.action: e for e in self.w.registered.values()}
-        self.assertEqual(sorted(entries), [77, 78, 79, 80])
+        self.assertEqual(sorted(entries), [77, 78, 79, 80, 81])
         self.assertTrue(all(entries[a].flags == "falsetruefalsetrue" for a in (77, 78, 79)))
         self.assertEqual(entries[80].flags, "falsefalsetruetrue")             # held: every frame, as CROUCH
         self.adopt()
@@ -486,7 +525,7 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertIsNotNone(self.w.dialog)                          # the text field opened
         self.bridge.deleteMap(self.bridge)
         component.registerGlobalPlayerActionEvents(component)
-        self.assertEqual(len(self.w.registered), 4)                   # hook gone after unload
+        self.assertEqual(len(self.w.registered), 5)                   # hook gone after unload
 
     def test_keys_match_the_moddesc_actions(self):
         from xml.etree import ElementTree
@@ -499,7 +538,7 @@ class LuaBridgeTests(unittest.TestCase):
         env.InputAction.FARMHAND_TALK = None
         self.bridge.installInput(self.bridge, env)
         env.PlayerInputComponent.registerGlobalPlayerActionEvents(env.PlayerInputComponent)
-        self.assertEqual(sorted(e.action for e in self.w.registered.values()), [77, 79, 80])
+        self.assertEqual(sorted(e.action for e in self.w.registered.values()), [77, 79, 80, 81])
 
     def test_push_to_talk_sends_only_the_press_and_release_edges(self):
         self.adopt()

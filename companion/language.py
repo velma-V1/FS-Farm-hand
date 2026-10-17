@@ -28,6 +28,8 @@ _GENERIC = frozenset({"field", "the field", "farm", "the farm", "there", "over t
 # Trailing words about time or manner, not the place ("to the barn in a minute").
 _TRAILING = re.compile(r"\s+(?:please|now|right now|right away|asap|quickly|soon|again|thanks|thank you|"
                        r"in a (?:minute|moment|bit|sec|second)|when you can)$", re.IGNORECASE)
+_SETTINGS = re.compile(r"^(?:(?:open|show|change|choose|select|pick|set up|setup)\s+)?(?:the\s+)?(?:farmhand\s+)?"
+                       r"(?:ai|a i|model|ai model|language model|settings|options|menu)(?:\s+(?:settings|model|menu))?$")
 _STATUS = re.compile(r"\b(?:what are you doing|what s happening|whats happening|what are you up to|status|where are you|"
                      r"how s it going|hows it going|how is it going|progress|report|are you done|are you finished)\b")
 _NEW_PAIR = re.compile(r"\b(?:a|an|any|another|available|free|spare)\s+(?:\w+\s+)?(?:tractor|forage|loader|silage|wagon)")
@@ -90,6 +92,8 @@ class RuleInterpreter:
         words = normalize(text)
         if is_stop(words):
             return {"version": 1, "command": "stop"}
+        if _SETTINGS.match(words):
+            return {"version": 1, "command": "settings"}
         if _STATUS.search(words):
             return {"version": 1, "command": "status"}
         if _NEGATION.search(words) or _QUESTION.match(words):
@@ -102,7 +106,10 @@ class RuleInterpreter:
         # when it is "a"/"an"/"any"/"available" one or a fetch-only verb is used; "the
         # tractor and wagon ... back" or "this" is the pair already out there.
         new_pair = _NEW_PAIR.search(words) or _FETCH_ONLY.search(words)
-        if _TRACTOR.search(words) and _WAGON.search(words) and not back and (new_pair or not referent) and (
+        # "grab something that'll pull that forage wagon": a fetch-only verb and a
+        # wagon ask for a pair even when no tractor is named.
+        pair_named = _TRACTOR.search(words) or _FETCH_ONLY.search(words)
+        if pair_named and _WAGON.search(words) and not back and (new_pair or not referent) and (
                 _FETCH_VERB.search(words) or len(words.split()) <= 6):
             target = self._target(text, words)
             return None if target is None else {"version": 1, "command": "fetch_pair", **target}

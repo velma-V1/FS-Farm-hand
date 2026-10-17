@@ -6,5 +6,6 @@
         <text name="input_FARMHAND_TALK" text="Farmhand: tell Farmhand what to do" />
         <text name="input_FARMHAND_STOP" text="Farmhand: stop" />
         <text name="input_FARMHAND_PUSH_TO_TALK" text="Farmhand: hold to speak" />
+        <text name="input_FARMHAND_SETTINGS" text="Farmhand: AI model" />
     </texts>
 </l10n>

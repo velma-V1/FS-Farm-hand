@@ -146,6 +146,25 @@ def encode_command(session: str, command_id: int, op: str, args: dict) -> str:
 
 
 MAX_NOTICES = 8
+MAX_MENU = 9
+
+
+def _attribute(text: str, limit: int) -> str:
+    """Printable text with nothing XML would need to escape, so the game reads it
+    back exactly whether or not its parser decodes entities."""
+    text = "".join(c for c in str(text) if c.isprintable())
+    return text.translate(str.maketrans({'"': "'", "&": "+", "<": "(", ">": ")"}))[:limit]
+
+
+def encode_menu(menu_id: int, title: str, options) -> str:
+    """menu.xml: a list for the player to pick from in game (GIANTS OptionDialog).
+    One element, numbered attributes (o1..o9), each line at most 60 characters."""
+    options = list(options)
+    if type(menu_id) is not int or not 1 <= menu_id <= MAX_COMMAND_ID or not 1 <= len(options) <= MAX_MENU:
+        raise ValueError("INVALID_MENU")
+    lines = " ".join(f'o{n}="{_attribute(o, 60)}"' for n, o in enumerate(options, start=1))
+    return (f'<?xml version="1.0" encoding="utf-8" standalone="no" ?>\n'
+            f'<menu id="{menu_id}" title="{_attribute(title, 60)}" count="{len(options)}" {lines} />\n')
 
 
 def encode_session(session: str, beat: int, notices=()) -> str:

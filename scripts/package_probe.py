@@ -27,7 +27,8 @@ RUNTIME_FILES = (
 )
 SOURCE_FILES = RUNTIME_FILES[1:5]
 # The on-foot keys (mod/FarmhandBridge.lua Bridge.KEYS).
-REQUEST_ACTIONS = ["FARMHAND_FETCH_HERE", "FARMHAND_TALK", "FARMHAND_STOP", "FARMHAND_PUSH_TO_TALK"]
+REQUEST_ACTIONS = ["FARMHAND_FETCH_HERE", "FARMHAND_TALK", "FARMHAND_STOP", "FARMHAND_PUSH_TO_TALK",
+                   "FARMHAND_SETTINGS"]
 
 
 def fail(message: str) -> None:
@@ -132,6 +133,7 @@ COMPANION_FILES = (
     "scripts/install_windows.cmd",
     "adapters/fs25.py",
     "adapters/world.py",
+    "companion/ai.py",
     "companion/bridge.py",
     "companion/coordinator.py",
     "companion/executor.py",

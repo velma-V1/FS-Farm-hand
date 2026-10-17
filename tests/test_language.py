@@ -30,6 +30,8 @@ class RuleInterpreterTests(unittest.TestCase):
             ("I need a tractor and a forage wagon over here please", FETCH),
             ("tractor and wagon", FETCH),
             ("bring the forage wagon and a tractor to me", FETCH),
+            ("grab something that'll pull that forage wagon and bring the setup over here", FETCH),
+            ("fetch the forage wagon", FETCH),
         ])
 
     def test_destinations_are_extracted_never_invented(self):
