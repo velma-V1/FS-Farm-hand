@@ -88,6 +88,17 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(setup.install(self.package, self.profile, self.data, self.ui, start=False), 1)
         self.assertFalse((self.profile / "mods").exists())
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows process handles")
+    def test_a_pid_file_left_by_a_crash_does_not_block_setup(self):
+        self.data.mkdir(parents=True)
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        (self.data / setup.PID_FILE).write_text(str(dead.pid))
+        started = time.monotonic()
+        self.assertTrue(setup.stop_running(self.data, wait=30))
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertFalse((self.data / setup.PID_FILE).exists())
+
     def test_uninstall_removes_everything_it_installed(self):
         self.install()
         (self.data / "settings.json").write_text("{}")

@@ -564,6 +564,7 @@ Bridge.NOTICES = {
     VOICE_READY = "Farmhand: speech recognition installed; hold Left Alt + V to speak",
     AI_INSTALLING = "Farmhand: downloading the AI model; plain commands work meanwhile",
     AI_VALIDATING = "Farmhand: checking the AI model...",
+    AI_BUSY = "Farmhand: still setting up the last AI choice; wait for it, or pick Continue without AI",
     AI_READY = "Farmhand: AI model ready",
     AI_OFF = "Farmhand: AI off; plain commands only",
     AI_UNAVAILABLE = "Farmhand: AI settings are unavailable",

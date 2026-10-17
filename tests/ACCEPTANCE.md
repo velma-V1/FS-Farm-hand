@@ -203,7 +203,14 @@ Executable mapping (`python scripts/check.py`):
   saved and used; a failing pick is never saved, the list returns and the earlier
   working model stays; a download is installed then validated; a failed download
   changes nothing; a saved model that disappears is reported and never replaced by
-  another; stale or out-of-range picks do nothing. `ServiceTests`: the menu is
+  another; stale or out-of-range picks do nothing; a candidate model is never used
+  before it passed (the working one answers meanwhile); "Continue without AI"
+  during a download wins and another pick while busy is reported; the menu never
+  exceeds nine lines; a saved model missing at start is kept and shown at the
+  first link. Service: a model answer that arrives after a STOP (or a new
+  session) is void. Setup: a pid file left by a crash does not block it (Windows),
+  it waits for the old companion process to exit, retries locked removals, and
+  starts the companion in its install folder. `ServiceTests`: the menu is
   offered once at first link, stale and cancelled picks are ignored, a pick is
   validated and saved, words and the key reopen it; with AI off unknown words are
   answered at once and the rules still fetch. Lua: the MENU notice opens GIANTS'

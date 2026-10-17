@@ -42,7 +42,8 @@ VALIDATION = [
     ("could you rig up a tractor with the forage wagon for me", "fetch_pair"),
 ]
 NEEDED_CORRECT = 5                   # of 6; "plow field 3" must never become a movement
-UNREACHABLE_REPEAT_S = 300.0         # remind at most every five minutes
+UNREACHABLE_REPEAT_S = 300.0
+MAX_MENU = 9                         # protocol.ipc MAX_MENU: one in-game list         # remind at most every five minutes
 
 
 def data_dir() -> Path:
@@ -175,7 +176,8 @@ def discover(ollama: Ollama | None = None, folder: Path | None = None) -> list[C
     then no AI; and the speech model for push-to-talk while it is missing. Labels
     show only what is cheap and reliable to know."""
     choices = []
-    for m in (ollama or Ollama()).models():
+    room = MAX_MENU - len(managed.MANAGED) - 2           # the managed lines, no AI, speech
+    for m in (ollama or Ollama()).models()[:room]:
         details = m.get("details") if isinstance(m.get("details"), dict) else {}
         extra = " ".join(str(details[k]) for k in ("parameter_size", "quantization_level") if details.get(k))
         choices.append(Choice("ollama", m["name"], f"{m['name']} (Ollama, {_gb(m.get('size'))} {extra})"[:60]))
@@ -235,29 +237,42 @@ class AI:
         self.interpreter = None
         self.busy = False                          # validating or installing
         self.menu: list[Choice] = []
+        self.startup_problem = None                # shown once the game is linked
+        self._abandon = False                      # "Continue without AI" during a pick
         self._unreachable_told = None              # when AI_UNREACHABLE was last shown
 
     # -- current interpreter
     def start(self) -> None:
-        """Bring up the saved choice, if any (at companion start)."""
+        """Bring up the saved choice, if any (at companion start). A problem is kept
+        as ``startup_problem`` for the service to show once the game is linked."""
+        self.startup_problem = None
         choice = self.settings.ai()
         if choice and choice["provider"] != "none":
-            self._activate(choice)
+            interpreter, server = self._build(choice)
+            if interpreter is None:
+                self.startup_problem = "AI_MODEL_MISSING"
+                return
+            self._publish(interpreter, server)
 
-    def _activate(self, choice: dict):
-        self.stop()
+    def _build(self, choice: dict):
+        """An interpreter (and its managed server) for ``choice``, not yet in use.
+        A managed candidate gets the next port while another managed model runs."""
         if choice["provider"] == "ollama":
-            interpreter = self.ollama.interpreter(choice["model"])
-        else:
-            server = self.server_factory(self.folder, choice=choice["model"])
-            if not server.start():
-                self.notify("AI_MODEL_MISSING")
-                return None
-            self.server = server
-            interpreter = managed.ModelInterpreter(ready=server.ready)
+            return self.ollama.interpreter(choice["model"]), None
         with self._lock:
-            self.interpreter = interpreter
-        return interpreter
+            busy_port = self.server.port if self.server is not None else None
+        port = managed.PORT + 1 if busy_port == managed.PORT else managed.PORT
+        server = self.server_factory(self.folder, choice=choice["model"], port=port)
+        if not server.start():
+            return None, None
+        return managed.ModelInterpreter(url=f"http://127.0.0.1:{port}", ready=server.ready), server
+
+    def _publish(self, interpreter, server) -> None:
+        """Make ``interpreter`` the one in use; the previous one is stopped."""
+        with self._lock:
+            old, self.server, self.interpreter = self.server, server, interpreter
+        if old is not None and old is not server:
+            old.stop()
 
     def stop(self) -> None:
         with self._lock:
@@ -296,19 +311,26 @@ class AI:
         return self.menu
 
     def choose(self, index: int) -> None:
-        """The player picked menu line ``index`` (1-based); runs in the background."""
-        if self.busy or not 1 <= index <= len(self.menu):
+        """The player picked menu line ``index`` (1-based); runs in the background.
+        "Continue without AI" always applies at once, also over a running download
+        or validation, whose result is then discarded."""
+        if not 1 <= index <= len(self.menu):
             return
         choice = self.menu[index - 1]
         if choice.provider == "none":
+            self._abandon = True
             self.stop()
             self.settings.set_ai({"provider": "none"})
             self.notify("AI_OFF")
             return
-        self.busy = True
+        if self.busy:
+            self.notify("AI_BUSY")
+            return
+        self.busy, self._abandon = True, False
         threading.Thread(target=self._try, args=(choice,), daemon=True, name="farmhand-ai-choice").start()
 
     def _try(self, choice: Choice) -> None:
+        candidate_server = None
         try:
             if choice.provider == "voice":
                 self.notify("VOICE_INSTALLING")
@@ -330,28 +352,32 @@ class AI:
                     self.notify("AI_INSTALL_FAILED")
                     return
                 choice = Choice("farmhand", choice.model, choice.label)
+            if self._abandon:
+                return
             self.notify("AI_VALIDATING")
             wanted = {"provider": choice.provider, "model": choice.model}
-            previous = self.settings.ai()
-            interpreter = self._activate(wanted)
-            ok, detail = self._validate(interpreter)
+            # Validated before it is used: the model in use (if any) answers meanwhile.
+            interpreter, candidate_server = self._build(wanted)
+            ok, detail = self._validate(interpreter, candidate_server)
             log.info("AI validation %s: %s %s", wanted, ok, detail)
+            if self._abandon:
+                return
             if not ok:
-                self.stop()
-                if previous and previous.get("provider") != "none" and previous != wanted:
-                    self._activate(previous)       # the earlier working choice stays
                 self.notify("AI_INCOMPATIBLE")
                 self.show_menu()                   # back to the selection
                 return
+            self._publish(interpreter, candidate_server)
+            candidate_server = None
             self.settings.set_ai(wanted)
             self.notify("AI_READY")
         finally:
+            if candidate_server is not None:
+                candidate_server.stop()            # never published
             self.busy = False
 
-    def _validate(self, interpreter) -> tuple[bool, str]:
+    def _validate(self, interpreter, server=None) -> tuple[bool, str]:
         if interpreter is None:
             return False, "NOT_RUNNING"
-        server = self.server
         if server is not None:                     # managed: wait for the model to load
             deadline = time.monotonic() + managed.START_TIMEOUT_S
             while not server.ready() and time.monotonic() < deadline and server.process.poll() is None:

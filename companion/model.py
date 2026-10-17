@@ -334,9 +334,10 @@ def installed_choices(folder: Path | None = None) -> list[str]:
 def install(folder: Path | None = None, opener=urllib.request.urlopen, choice: str = "recommended") -> Path:
     folder = folder or install_dir()
     folder.mkdir(parents=True, exist_ok=True)
-    archive = folder / RUNTIME["file"]
-    download(RUNTIME, archive, opener)
-    extract(archive, folder / "llama")
+    if not (folder / "llama" / "llama-server.exe").is_file():   # never over a running server
+        archive = folder / RUNTIME["file"]
+        download(RUNTIME, archive, opener)
+        extract(archive, folder / "llama")
     download(MANAGED[choice], folder / MANAGED[choice]["file"], opener)
     return folder
 

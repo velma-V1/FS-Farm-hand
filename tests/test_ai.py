@@ -214,8 +214,8 @@ class ChoiceTests(Fixture):
         installs = []
 
         class Server:
-            def __init__(self, folder, choice):
-                self.choice, self.process = choice, type("P", (), {"poll": lambda s: None})()
+            def __init__(self, folder, choice, port):
+                self.choice, self.port, self.process = choice, port, type("P", (), {"poll": lambda s: None})()
 
             def start(self):
                 return True
@@ -269,6 +269,65 @@ class ChoiceTests(Fixture):
             self.assertIsNone(brain.interpret("haul that thing over"))
         self.assertEqual(self.notices, ["AI_UNREACHABLE"])
         self.assertEqual(self.settings.ai(), {"provider": "ollama", "model": "qwen3:4b"})
+
+    def test_a_model_is_never_used_before_it_passed_validation(self):
+        _, client = self.ollama(models=["good:1b", "new:1b"], answers=GOOD)
+        self.settings.set_ai({"provider": "ollama", "model": "good:1b"})
+        brain = self.make_ai(client)
+        brain.start()
+        release, used = threading.Event(), []
+        real = client.interpreter
+
+        class Slow:
+            missing = unreachable = False
+
+            def interpret(self, text):
+                used.append(text)
+                release.wait(5)
+                return {"version": 1, "command": "fetch_pair"}
+
+        client.interpreter = lambda name: Slow() if name == "new:1b" else real(name)
+        brain.open_menu()
+        brain.choose(2)                                           # new:1b, validating (slow)
+        self.wait(lambda: used)
+        self.assertEqual(brain.interpret(ai.VALIDATION[2][0])["command"], "status")   # good:1b still answers
+        self.assertEqual(len(used), 1)                            # never the candidate
+        release.set()
+        self.wait(lambda: not brain.busy)
+        self.assertEqual(self.notices[-1], "AI_INCOMPATIBLE")      # it said fetch for "plow field 3"
+        self.assertEqual(self.settings.ai(), {"provider": "ollama", "model": "good:1b"})
+
+    def test_continue_without_ai_during_a_download_wins_and_busy_picks_are_reported(self):
+        _, client = self.ollama(models=[])
+        release = threading.Event()
+        brain = self.make_ai(client, installer=lambda folder, choice: release.wait(5))
+        brain.open_menu()
+        brain.choose(1)                                           # Install Lightweight (slow)
+        self.wait(lambda: "AI_INSTALLING" in self.notices)
+        brain.choose(2)                                           # another pick while busy
+        self.assertIn("AI_BUSY", self.notices)
+        brain.choose([c.provider for c in brain.menu].index("none") + 1)
+        release.set()
+        self.wait(lambda: not brain.busy)
+        self.assertEqual(self.settings.ai(), {"provider": "none"})
+        self.assertNotIn("AI_READY", self.notices)
+        self.assertFalse(brain.enabled)
+
+    def test_the_menu_never_has_more_than_nine_lines(self):
+        _, client = self.ollama(models=[f"m{n}:1b" for n in range(15)])
+        choices = ai.discover(client, self.folder)
+        self.assertLessEqual(len(choices), 9)
+        self.assertIn("none", [c.provider for c in choices])
+        from protocol.ipc import encode_menu
+        encode_menu(1, "Farmhand AI model", [c.label for c in choices])       # never raises
+
+    def test_a_saved_model_missing_at_start_is_kept_for_reporting(self):
+        self.settings.set_ai({"provider": "farmhand", "model": "recommended"})
+        brain = self.make_ai(ai.Ollama("http://127.0.0.1:9", timeout=0.3))
+        brain.start()
+        self.assertEqual(brain.startup_problem, "AI_MODEL_MISSING")
+        self.assertEqual(self.notices, [])                        # the game is not linked yet
+        self.assertEqual(self.settings.ai(), {"provider": "farmhand", "model": "recommended"})
 
     def test_stale_or_out_of_range_picks_do_nothing(self):
         _, client = self.ollama()

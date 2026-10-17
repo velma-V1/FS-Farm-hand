@@ -80,23 +80,66 @@ def set_autostart(command: str | None) -> None:
             winreg.SetValueEx(key, RUN_VALUE, 0, winreg.REG_SZ, command)
 
 
+def _process(pid: int):
+    """A Windows handle to wait on process ``pid``, or None if it is not running."""
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    handle = kernel32.OpenProcess(0x00100000 | 0x1000, False, pid)   # SYNCHRONIZE | QUERY_LIMITED_INFORMATION
+    return handle or None
+
+
+def _wait_exit(handle, seconds: float) -> bool:
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    try:
+        return kernel32.WaitForSingleObject(handle, max(0, int(seconds * 1000))) == 0      # WAIT_OBJECT_0
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def stop_running(data: Path, wait: float | None = None) -> bool:
     """Ask a running companion to quit (it polls the flag every second, stops a
-    running job first) and wait until its pid file is gone. True if none runs."""
-    pid = data / PID_FILE
-    if not pid.exists():
+    running job first) and wait until it has exited, not just removed its pid file,
+    so its files are free. A pid file whose process is gone (a crash, Task
+    Manager) is stale and removed. True if no companion runs any more."""
+    pid_file = data / PID_FILE
+    if not pid_file.exists():
+        return True
+    try:
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        pid = None
+    handle = _process(pid) if pid else None
+    if sys.platform == "win32" and handle is None:
+        pid_file.unlink(missing_ok=True)                 # stale: nothing to stop
         return True
     data.mkdir(parents=True, exist_ok=True)
     (data / QUIT_FILE).write_text("quit", encoding="utf-8")
     deadline = time.monotonic() + (QUIT_WAIT_S if wait is None else wait)
-    while pid.exists() and time.monotonic() < deadline:
+    while pid_file.exists() and time.monotonic() < deadline:
         time.sleep(0.25)
-    return not pid.exists()
+    if handle is not None:
+        return _wait_exit(handle, deadline - time.monotonic())
+    return not pid_file.exists()
 
 
-def _replace_tree(source: Path, target: Path) -> None:
-    if target.exists():
-        shutil.rmtree(target)
+def _replace_tree(source: Path, target: Path, attempts: int = 10) -> None:
+    """Replace ``target`` with a copy of ``source``; Windows may hold a file of an
+    exited process for a moment, so a locked removal is retried briefly."""
+    for attempt in range(attempts):
+        try:
+            if target.exists():
+                shutil.rmtree(target)
+            break
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.5)
     shutil.copytree(source, target)
 
 
@@ -122,7 +165,8 @@ def install(package: Path, profile: Path | None, data: Path, ui: Dialogs, start=
     command = autostart_command(data, profile if pass_profile else None)
     set_autostart(command)
     if start:
-        subprocess.Popen(command, creationflags=0x00000008 | 0x00000200, close_fds=True)  # detached
+        # Detached, and in its own folder: the downloaded package stays free to delete.
+        subprocess.Popen(command, cwd=str(data), creationflags=0x00000008 | 0x00000200, close_fds=True)
         deadline = time.monotonic() + START_WAIT_S
         while not (data / PID_FILE).exists() and time.monotonic() < deadline:
             time.sleep(0.25)

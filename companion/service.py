@@ -118,12 +118,13 @@ def save_report(profile: Path, link, target: Path | None = None, clock=time.strf
     return target
 
 
-def ask_model(link, model, request) -> None:
+def ask_model(link, model, request, generation: int) -> None:
     """On its own thread, so the serve loop keeps answering (STOP above all) while
-    the model thinks; its answer returns through the request queue."""
+    the model thinks; its answer returns through the request queue, tagged with
+    the generation it was asked in (a STOP or a new session since voids it)."""
     proposal = model.interpret(request["text"])
     log.info("model %r -> %s", request["text"], json.dumps(proposal))
-    link.inject({"proposal": proposal, "spoken": request.get("spoken", False)})
+    link.inject({"proposal": proposal, "spoken": request.get("spoken", False), "generation": generation})
 
 
 def linked_farm(link):
@@ -153,20 +154,28 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
                        notify=lambda code: replies(code, code != "LISTENING"),
                        places=lambda: [p.name for p in world.places()])
     menu = {"id": 0, "prompted": False}
+    menu_lock = threading.Lock()
+    generation = [0]                    # bumped by STOP and a new session
+
+    def build_menu():
+        try:
+            with menu_lock:
+                labels = [c.label for c in ai.open_menu()]
+                menu["id"] += 1
+                link.files.write(MENU_FILE, encode_menu(menu["id"], "Farmhand AI model", labels))
+        except (OSError, ValueError):
+            log.exception("menu not written")
+            replies("AI_UNAVAILABLE")
+            return
+        replies("MENU")
 
     def show_menu():
-        """The AI choices as a list in game (mod: GIANTS OptionDialog)."""
+        """The AI choices as a list in game (mod: GIANTS OptionDialog), built on a
+        worker thread: asking Ollama for its models never delays STOP."""
         if ai is None or not hasattr(ai, "open_menu"):
             replies("AI_UNAVAILABLE")
             return
-        labels = [c.label for c in ai.open_menu()]
-        menu["id"] += 1
-        try:
-            link.files.write(MENU_FILE, encode_menu(menu["id"], "Farmhand AI model", labels))
-        except OSError:
-            log.exception("menu not written")
-            return
-        replies("MENU")
+        threading.Thread(target=build_menu, daemon=True, name="farmhand-menu").start()
 
     if ai is not None and hasattr(ai, "show_menu"):
         ai.show_menu = show_menu
@@ -176,8 +185,13 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
         if request is not None:
             try:
                 if "menu" in request:
-                    if request["menu"] == menu["id"] and request["choice"] > 0 and hasattr(ai, "choose"):
+                    with menu_lock:
+                        current = request["menu"] == menu["id"]
+                    if current and request["choice"] > 0 and hasattr(ai, "choose"):
                         ai.choose(request["choice"])
+                    continue
+                if "proposal" in request and request.get("generation") != generation[0]:
+                    log.info("model answer dropped: a stop or new session came first")
                     continue
                 action = request.get("action")
                 if action == "settings":
@@ -191,6 +205,8 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
                     continue
                 spoken = bool(request.get("spoken"))
                 proposal = proposal_for(request, rules)
+                if proposal is not None and proposal.get("command") == "stop":
+                    generation[0] += 1          # answers still being thought about are void
                 if proposal is not None and proposal.get("command") == "settings":
                     show_menu()
                     continue
@@ -204,7 +220,7 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
                     continue
                 if (proposal is None and "text" in request and ai is not None and getattr(ai, "enabled", True)
                         and not refuses(request["text"])):
-                    threading.Thread(target=ask_model, args=(link, ai, request), daemon=True,
+                    threading.Thread(target=ask_model, args=(link, ai, request, generation[0]), daemon=True,
                                      name="farmhand-model-ask").start()
                     continue
                 coordinator.submit(proposal, spoken=spoken)
@@ -216,15 +232,18 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
         now = link.clock()
         # The first time this companion is linked and no AI choice was ever made,
         # offer it once (the user may also open it any time).
-        if (session == link.session and not menu["prompted"] and ai is not None
-                and hasattr(ai, "settings") and ai.settings.ai() is None):
+        if session == link.session and not menu["prompted"] and ai is not None:
             menu["prompted"] = True
-            show_menu()
+            if getattr(ai, "startup_problem", None):
+                replies(ai.startup_problem)     # e.g. the saved model is gone: reported, not replaced
+            if hasattr(ai, "settings") and ai.settings.ai() is None:
+                show_menu()
         if (last_frame is not None and now - last_frame < 3 * SNAPSHOT_TIMEOUT_S and session != link.session
                 and not coordinator.busy):
             foreign_since = now if foreign_since is None else foreign_since
             if now - foreign_since > RENEW_AFTER_S:
                 link.renew()
+                generation[0] += 1
                 foreign_since = None
         else:
             foreign_since = None

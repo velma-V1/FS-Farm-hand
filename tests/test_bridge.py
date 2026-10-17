@@ -740,6 +740,9 @@ class ServiceTests(unittest.TestCase):
         self.wait_for(lambda: notices[-1:] == ["NOTHING_TO_STOP"])
         self.assertLess(time.monotonic() - started, 1.0)       # not behind the model
         release.set()
+        time.sleep(0.3)
+        self.assertEqual(notices, ["NOTHING_TO_STOP"])           # the answer came after a STOP: void
+        game.say(3, "how far along are we, then")               # no stop in between: used
         self.wait_for(lambda: notices[-1:] == ["STATUS_IDLE"])
 
     def test_refused_words_never_reach_the_model(self):
@@ -788,6 +791,19 @@ class ServiceTests(unittest.TestCase):
         game.key(5, "settings")
         self.wait_for(lambda: notices.count("MENU") == 3)
         self.assertGreater(self.menu(game)[0], menu_id)
+
+    def test_a_saved_model_missing_at_start_is_shown_when_the_game_links(self):
+        import tempfile as tmp
+        from companion import ai
+        folder = Path(tmp.mkdtemp())
+        settings = ai.Settings(folder / "settings.json")
+        settings.set_ai({"provider": "farmhand", "model": "recommended"})
+        brain = ai.AI(settings, lambda code: None, ollama=ai.Ollama("http://127.0.0.1:9", timeout=0.3), folder=folder)
+        brain.start()
+        game, notices = self.start(autodrive=False, voice={"ai": brain})
+        self.wait_for(lambda: "AI_MODEL_MISSING" in notices)
+        self.assertNotIn("MENU", notices)                          # a choice exists: reported, not re-asked
+        self.assertEqual(settings.ai(), {"provider": "farmhand", "model": "recommended"})
 
     def test_without_ai_unknown_words_are_answered_at_once(self):
         import tempfile as tmp
