@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import sys
 import tempfile
 import threading
 import time
@@ -130,6 +131,29 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(pairs["-np"], "1")
         self.assertLessEqual(int(pairs["-t"]), 4)
         self.assertIn("--no-webui", command)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows Job Object")
+    def test_the_server_dies_with_the_companion(self):
+        import subprocess
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        self.addCleanup(lambda: child.poll() is None and child.kill())
+        job = model.bind_to_this_process(child)
+        self.assertIsNone(child.poll())
+        model.close_job(job)            # what Windows does when the companion ends, however it ends
+        child.wait(timeout=10)
+        self.assertIsNotNone(child.returncode)
+
+    def test_an_occupied_port_keeps_the_model_off(self):
+        started = []
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "llama").mkdir()
+            (Path(folder) / "llama" / "llama-server.exe").write_bytes(b"")
+            (Path(folder) / model.MODEL["file"]).write_bytes(b"")
+            ok = type("R", (), {"status": 200, "__enter__": lambda s: s, "__exit__": lambda s, *a: None})()
+            server = model.ModelServer(Path(folder), opener=lambda *a, **k: ok,
+                                       popen=lambda *a, **k: started.append(a))
+            self.assertFalse(server.start())
+            self.assertEqual(started, [])
 
     def test_not_installed_means_rules_only(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -1100,6 +1100,27 @@ class CancellationTests(unittest.TestCase):
         plain = Executor(world).execute(intent())                  # the same failure without a cancel
         self.assertEqual(plain.status, "FAILED")
 
+    def test_an_attach_interrupted_by_the_stop_is_cancelled_once_the_stop_is_confirmed(self):
+        import threading
+        from adapters.world import StepUnverified
+        for stop_fault, expected in ((None, ("CANCELLED", "CANCELLED_BY_REQUESTER")),
+                                     ("stop", ("UNVERIFIED", "CLEANUP_NOT_CONFIRMED"))):
+            with self.subTest(stop_fault=stop_fault):
+                cancel = threading.Event()
+
+                class Interrupted(FaultWorld):
+                    def attach(self, *args):
+                        cancel.set()                       # the stop pre-empted GIANTS' attach:
+                        raise StepUnverified("ATTACH_ABSENT")   # its end is unknown
+
+                world = Interrupted(stop_fault)
+                result = Executor(world).execute(intent(), cancel=cancel)
+                self.assertEqual((result.status, result.reason), expected)
+                self.assertNotIn("DELIVER", result.states)
+        plain = Executor(type("Plain", (FaultWorld,), {"attach": lambda self, *a: (_ for _ in ()).throw(
+            StepUnverified("ATTACH_ABSENT"))})(None)).execute(intent())
+        self.assertEqual(plain.status, "UNVERIFIED")              # without a cancel: still unclear
+
     def test_cancelled_pair_that_cannot_be_stopped_stays_reserved(self):
         import threading
         cancel = threading.Event()

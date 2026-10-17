@@ -227,24 +227,44 @@ def phrase(code: str) -> str | None:
 
 
 class SapiSpeaker:
-    """Windows' built-in voice; nothing to install. Text via stdin, so no quoting."""
+    """Windows' built-in voice; nothing to install. Text via stdin, so no quoting.
+    One reply at a time, in order, on its own thread: say() never blocks and
+    replies never overlap; a stuck one is ended after SPEAK_TIMEOUT_S."""
 
     COMMAND = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
                "Add-Type -AssemblyName System.Speech; "
                "(New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak([Console]::In.ReadToEnd())"]
+    SPEAK_TIMEOUT_S = 30.0
+    MAX_QUEUED = 4                      # older replies are dropped rather than lag behind
 
     def __init__(self, popen=subprocess.Popen):
+        import queue
         self.popen = popen
+        self._queue = queue.Queue(self.MAX_QUEUED)
+        threading.Thread(target=self._speak_in_turn, daemon=True, name="farmhand-tts").start()
 
     def say(self, text: str) -> None:
-        flags = 0x08000000 if sys.platform == "win32" else 0      # CREATE_NO_WINDOW
+        import queue
         try:
-            process = self.popen(self.COMMAND, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, creationflags=flags)
-            process.stdin.write(text.encode("utf-8"))
-            process.stdin.close()
-        except OSError as error:
-            log.info("speech output unavailable: %s", error)
+            self._queue.put_nowait(text)
+        except queue.Full:
+            log.info("speech output busy; dropped %r", text)
+
+    def _speak_in_turn(self) -> None:
+        flags = 0x08000000 if sys.platform == "win32" else 0      # CREATE_NO_WINDOW
+        while True:
+            text = self._queue.get()
+            try:
+                process = self.popen(self.COMMAND, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, creationflags=flags)
+                process.stdin.write(text.encode("utf-8"))
+                process.stdin.close()
+                try:
+                    process.wait(timeout=self.SPEAK_TIMEOUT_S)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            except OSError as error:
+                log.info("speech output unavailable: %s", error)
 
 
 class Replies:

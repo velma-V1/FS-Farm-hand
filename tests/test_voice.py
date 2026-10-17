@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 
 from companion import voice
@@ -188,23 +189,66 @@ class ReplyTests(unittest.TestCase):
         voice.Replies(shown.append, None)("COMPLETE", True)          # no speaker: shown only
 
     def test_text_to_speech_text_travels_on_stdin_only(self):
-        calls = []
+        calls, spoken = [], threading.Event()
 
         class Process:
             def __init__(self):
                 self.stdin = io.BytesIO()
                 self.stdin.close = lambda: calls.append(("stdin", self.stdin.getvalue()))
 
+            def wait(self, timeout):
+                spoken.set()
+
         def popen(command, **kwargs):
             calls.append(("argv", command))
             return Process()
 
         voice.SapiSpeaker(popen).say('Stopped."; Remove-Item C:\\ -Recurse; "')
+        self.assertTrue(spoken.wait(5))
         argv = calls[0][1]
         self.assertEqual(argv[0], "powershell.exe")
         self.assertNotIn("Remove-Item", " ".join(argv))
         self.assertEqual(calls[1], ("stdin", 'Stopped."; Remove-Item C:\\ -Recurse; "'.encode()))
         voice.SapiSpeaker(lambda *a, **k: (_ for _ in ()).throw(OSError("no powershell"))).say("x")   # never raises
+
+    def test_replies_are_spoken_one_at_a_time_in_order(self):
+        events, finish = [], {}
+
+        class Process:
+            def __init__(self):
+                self.stdin = io.BytesIO()
+                self.stdin.close = lambda: None
+                self.done = threading.Event()
+
+            def wait(self, timeout):
+                text = self.stdin.getvalue().decode()
+                events.append(("start", text))
+                finish[text] = self.done
+                self.done.wait(5)
+                events.append(("end", text))
+
+            def kill(self):
+                pass
+
+        speaker = voice.SapiSpeaker(lambda *a, **k: Process())
+        speaker.say("one")
+        speaker.say("two")
+        deadline = time.monotonic() + 5
+        while "one" not in finish:
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.01)
+        self.assertEqual(events, [("start", "one")])            # "two" waits: no overlap
+        finish["one"].set()
+        while "two" not in finish:
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.01)
+        finish["two"].set()
+        while len(events) < 4:
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.01)
+        self.assertEqual(events, [("start", "one"), ("end", "one"), ("start", "two"), ("end", "two")])
+        for n in range(20):                                       # a flood is dropped, never blocks
+            speaker.say(f"x{n}")
 
 
 class InstallTests(unittest.TestCase):

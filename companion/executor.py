@@ -481,6 +481,11 @@ class Executor:
             status, reason = "UNVERIFIED", str(error)
         except StepUnverified as error:
             status, reason = "UNVERIFIED", error.code
+            if cancel is not None and cancel.is_set():
+                # A step the requester's stop interrupted (e.g. an attach whose end is
+                # unknown): CANCELLED, but only if the cleanup below confirms the
+                # pair stopped; otherwise it becomes CLEANUP_NOT_CONFIRMED.
+                status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
         except (RuntimeError, TimeoutError, ValueError, KeyError) as error:
             # Adapter codes (StepFailed, ObservationError) are kept as the reason.
             status, reason = "FAILED", getattr(error, "code", None) or type(error).__name__
