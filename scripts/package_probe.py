@@ -27,7 +27,7 @@ RUNTIME_FILES = (
 )
 SOURCE_FILES = RUNTIME_FILES[1:5]
 # The on-foot keys (mod/FarmhandBridge.lua Bridge.KEYS).
-REQUEST_ACTIONS = ["FARMHAND_FETCH_HERE", "FARMHAND_TALK", "FARMHAND_STOP"]
+REQUEST_ACTIONS = ["FARMHAND_FETCH_HERE", "FARMHAND_TALK", "FARMHAND_STOP", "FARMHAND_PUSH_TO_TALK"]
 
 
 def fail(message: str) -> None:
@@ -138,6 +138,8 @@ COMPANION_FILES = (
     "companion/hitch.py",
     "companion/language.py",
     "companion/model.py",
+    "companion/voice.py",
+    "requirements-voice.txt",
     "companion/run.py",
     "companion/service.py",
     "protocol/command.schema.json",

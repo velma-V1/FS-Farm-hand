@@ -53,11 +53,15 @@ answer; one sitting covers them. Needs FS25 and Python 3.12 (`py` launcher).
    "not delivered - no available tractor and forage wagon"; nothing moves), then
    remove it. Quit to the main menu, load the save again, expect "companion
    connected" and press once more.
-5. **With AutoDrive.** Enable AutoDrive with a marker within 50 m of you and leave
+5. **Optional, when there is a microphone.** Hold **Left Alt + V**, say "bring me a
+   tractor and forage wagon", release; expect "listening..." and the same run, with
+   spoken replies. Without a microphone the key says voice is unavailable; that is
+   expected and not a failure.
+6. **With AutoDrive.** Enable AutoDrive with a marker within 50 m of you and leave
    "start helper" off in the tractor's AutoDrive HUD (Farmhand refuses to drive
    while AutoDrive would hand the tractor to another AI). Press the key: delivery
    goes to that marker.
-6. **Send** `Documents/My Games/FarmingSimulator2025/modSettings/FS25_Farmhand/companion.log`,
+7. **Send** `Documents/My Games/FarmingSimulator2025/modSettings/FS25_Farmhand/companion.log`,
    the `[Farmhand]` lines of `log.txt`, and, if no pair was found, the output of
    `fhHitchList` (console, `~`). Note what you saw at each step.
 

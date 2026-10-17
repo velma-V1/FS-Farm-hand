@@ -160,7 +160,7 @@ the source meets it:
 | Natural-language text | Typed words → rules (+ local model) → command proposal → coordinator → executor; replies ACCEPTED / BUSY / STATUS_* / STOPPING / CANCELLED / COMPLETE / BLOCKED / FAILED with reason | Text dialog round trip |
 | Fast deterministic STOP and STATUS | Stop key and rule path, never a model; cancel before the next step plus a pre-empting bridge `stop` | Pre-emption of a running GIANTS/AutoDrive job |
 | Local model (optional layer) | `companion/model.py`: CPU-only llama.cpp `llama-server` (pinned, sha256-verified, installed on request) with Qwen3-4B-Instruct-2507 Q4_K_M, schema-constrained, behind the rules; answers are re-validated; down, slow or unsure means "not understood"; the executor never depends on it | Latency beside FS25; no VRAM use |
-| Voice (optional front end) | Planned: push-to-talk key, local speech-to-text into the text path; no microphone disables only voice | Real microphone (not a blocker) |
+| Voice (optional front end) | `companion/voice.py`: hold-to-talk key (Left Alt + V), local faster-whisper `base.en` on the CPU into the text path; spoken replies via Windows' built-in voice; no microphone, packages or model disables only voice (VOICE_UNAVAILABLE). Proven on generated fixtures in CI | A real microphone (not a blocker) |
 | No manual vehicle IDs | The executor selects the pair from observations | Equipment detection on the user's farm |
 | No manual JSON editing | Tractors recognised from GIANTS data; `farmhand.json` only for optional field targets | The tractor rule matches the user's tractors only |
 | No manual AutoDrive graph | GIANTS GOTO travel and delivery; AutoDrive optional and preferred when a marker fits | GOTO with the wagon attached, arrival accuracy |

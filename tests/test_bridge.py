@@ -8,7 +8,7 @@ it proves the companion's sequencing, gating and verification, not FS25.
 import copy
 import json
 import math
-from pathlib import PureWindowsPath
+from pathlib import Path, PureWindowsPath
 import sys
 import threading
 import time
@@ -89,6 +89,12 @@ class FakeGame:
         with self.lock:
             self._emit({"event": "request", "protocol": 2, "session": session or self.link.session,
                         "id": request_id, "action": "fetch_here"})
+
+    def key(self, request_id, action):
+        """A fixed key: fetch_here, stop, talk_start, talk_end."""
+        with self.lock:
+            self._emit({"event": "request", "protocol": 2, "session": self.link.session,
+                        "id": request_id, "action": action})
 
     def say(self, request_id, text):
         """Typed words from the in-game text field."""
@@ -540,7 +546,7 @@ class RunnerTests(unittest.TestCase):
 class ServiceTests(unittest.TestCase):
     """The windowless companion: in-game key -> AC-001 "here" -> in-game notice."""
 
-    def start(self, **game_args):
+    def start(self, voice=None, **game_args):
         from companion import service
         game = FakeGame(**game_args)
         self.addCleanup(game.stop)
@@ -556,8 +562,8 @@ class ServiceTests(unittest.TestCase):
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
-        thread = threading.Thread(target=service.serve, args=(world,), kwargs={"should_stop": stop.is_set},
-                                  daemon=True)
+        thread = threading.Thread(target=service.serve, args=(world,),
+                                  kwargs={"should_stop": stop.is_set, **(voice or {})}, daemon=True)
         thread.start()
         return game, notices
 
@@ -624,6 +630,43 @@ class ServiceTests(unittest.TestCase):
         game.say(4, "take this to the silo")                    # no such place: nothing moves
         self.wait_for(lambda: notices[-1:] == ["BLOCKED_DESTINATION_NOT_FOUND"])
         self.assertEqual(game.link_world._reservations, {})
+
+    def test_push_to_talk_fetches_the_pair_and_answers_aloud(self):
+        from companion.voice import read_wav
+        fixtures = Path(__file__).resolve().parent / "fixtures" / "voice"
+
+        class Microphone:
+            def start(self):
+                pass
+
+            def stop(self):
+                return read_wav(fixtures / "fetch.wav")
+
+        class Transcriber:
+            def transcribe(self, pcm, places=()):
+                return "Bring me a tractor and forage wagon." if pcm == read_wav(fixtures / "fetch.wav") else ""
+
+        said = []
+        speaker = type("Speaker", (), {"say": lambda self, text: said.append(text)})()
+        game, notices = self.start(autodrive=False, voice={"microphone": Microphone, "transcriber": Transcriber,
+                                                           "speaker": speaker})
+        game.key(1, "talk_start")
+        self.wait_for(lambda: notices == ["LISTENING"])
+        game.key(2, "talk_end")
+        self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
+        self.assertEqual(notices, ["LISTENING", "ACCEPTED", "COMPLETE"])
+        self.assertEqual(said, ["Fetching a tractor and forage wagon.", "Tractor and forage wagon delivered."])
+        game.say(3, "what are you doing")                    # typed: answered on screen only
+        self.wait_for(lambda: notices[-1:] == ["STATUS_LAST_COMPLETE"])
+        self.assertEqual(len(said), 2)
+
+    def test_without_voice_set_up_push_to_talk_is_unavailable_and_text_works(self):
+        game, notices = self.start(autodrive=False)
+        game.key(1, "talk_start")
+        game.key(2, "talk_end")
+        self.wait_for(lambda: notices == ["VOICE_UNAVAILABLE"])
+        game.say(3, "stop")
+        self.wait_for(lambda: notices[-1:] == ["NOTHING_TO_STOP"])
 
     def test_replayed_or_foreign_requests_never_run(self):
         game, notices = self.start(autodrive=False)

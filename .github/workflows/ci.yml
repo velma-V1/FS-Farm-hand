@@ -55,6 +55,24 @@ jobs:
       - name: Check game-side Lua
         run: luacheck mod
 
+  voice:
+    name: Speech-to-text on the voice fixtures
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+      - name: Install the pinned voice packages
+        run: python -m pip install -r requirements-voice.txt
+      - name: Download and verify the pinned speech model
+        run: python -m companion.voice --install
+      - name: Transcribe the fixtures with faster-whisper on the CPU
+        run: FARMHAND_WHISPER_DIR="$HOME/FS25Farmhand/whisper-base.en" python -m unittest -v tests.test_voice
+
   dependency-audit:
     name: Python dependency audit
     runs-on: ubuntu-24.04
@@ -70,12 +88,14 @@ jobs:
         run: |
           python -m pip install pip-audit==2.10.1
           python -m pip_audit -r requirements-dev.txt --strict
+          python -m pip_audit -r requirements-voice.txt --strict
 
   package-probe:
     name: Build exact FS25 mod artifact
     needs:
       - acceptance
       - lua-static
+      - voice
       - dependency-audit
     runs-on: ubuntu-24.04
     timeout-minutes: 10

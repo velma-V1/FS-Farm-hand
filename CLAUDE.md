@@ -19,8 +19,13 @@ python scripts/package_probe.py --build dist/FS25_Farmhand   # build the mod fol
 luacheck mod                                     # Lua lint (CI job; config in .luacheckrc)
 ```
 
+Optional voice: `pip install -r requirements-voice.txt`, `python -m companion.voice --install`,
+then `FARMHAND_WHISPER_DIR=~/FS25Farmhand/whisper-base.en python -m unittest tests.test_voice`
+runs real speech-to-text on the fixtures (skipped otherwise; CI job "voice").
+
 `check.py` runs all unittests (Lua tests run the real `mod/*.lua` under Lua 5.1 and
-5.4 via Lupa), compiles Python and Lua, validates the mod package layout, and runs
+5.4 via Lupa), compiles Python and Lua, validates the mod and companion package
+layouts (the bundle must import on its own), and runs
 `git diff --check HEAD`. Also inspect `git diff --check` and the final tree yourself.
 CI (`.github/workflows/ci.yml`) runs it on Ubuntu and Windows; Windows named-pipe
 tests only execute on Windows. CodeQL must report zero findings.
@@ -63,7 +68,9 @@ ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snap
   authority); `companion/coordinator.py` validates it, runs one job at a time on a
   worker thread, answers STOP/STATUS immediately (STOP cancels before the next step
   and pre-empts the running bridge op); `companion/service.py` is the windowless
-  process wiring it together.
+  process wiring it together. Optional layers, both off unless installed:
+  `companion/model.py` (CPU-only llama-server, schema-constrained, behind the rules)
+  and `companion/voice.py` (push-to-talk → faster-whisper → the text path).
 - `mod/` — FS25 Lua mod `FS25_Farmhand` (load order in `modDesc.xml`):
   `FarmhandObserve` (read-only snapshots), `FarmhandHitch` (GIANTS GOTO staging,
   bounded ALIGN_REVERSE, GIANTS attach), `FarmhandBridge` (executes companion

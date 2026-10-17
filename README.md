@@ -26,8 +26,9 @@ interprets the words, selects an available tractor and forage wagon, hitches the
 and brings them to you; the game shows its progress as notifications. No
 console, vehicle IDs, configuration file, AutoDrive graph or terminal is needed:
 GIANTS' own helper (GOTO) drives, and AutoDrive is used when it is installed and
-has a marker near you. A local model and push-to-talk speech are being added behind the same text path;
-everything works without them. The
+has a marker near you. Optional, chosen at install: a local language model (CPU only) for wording the
+built-in rules do not know, and push-to-talk speech (hold **Left Alt + V**; local
+speech-to-text, spoken replies). Everything works without them. The
 live validation session: [mod/README.md](mod/README.md).
 
 ## Pre-game CI checks

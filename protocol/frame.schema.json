@@ -152,7 +152,7 @@
       }
     },
     "request": {
-      "description": "The player asked (mod/FarmhandBridge.lua): a fixed key (action: fetch_here = AC-001 'here', stop) or typed words (text). A wish only: the companion interprets and validates it and supplies all authority itself.",
+      "description": "The player asked (mod/FarmhandBridge.lua): a fixed key (action: fetch_here = AC-001 'here', stop; talk_start/talk_end while the push-to-talk key is held) or typed words (text). A wish only: the companion interprets and validates it and supplies all authority itself.",
       "type": "object",
       "additionalProperties": false,
       "required": ["event", "protocol", "session", "id"],
@@ -162,7 +162,7 @@
         "protocol": {"const": 2},
         "session": {"$ref": "#/$defs/token"},
         "id": {"type": "integer", "minimum": 1, "maximum": 2147483647},
-        "action": {"enum": ["fetch_here", "stop"]},
+        "action": {"enum": ["fetch_here", "stop", "talk_start", "talk_end"]},
         "text": {"type": "string", "minLength": 1, "maxLength": 200, "not": {"pattern": "[\\u0000-\\u001f\\u007f]"}}
       }
     }

@@ -1,0 +1,29 @@
+# Optional push-to-talk voice (companion/voice.py), installed only when chosen in
+# scripts/install_windows.cmd. Exact Windows (cp312 win_amd64) wheel set resolved
+# 2026-10-17; every entry is a binary wheel, so no compiler is needed.
+-r requirements.txt
+faster-whisper==1.2.1
+sounddevice==0.5.6
+anyio==4.15.1
+av==19.0.1
+cffi==2.1.1
+click==8.5.0
+ctranslate2==4.8.3
+filelock==4.2.1
+flatbuffers==25.12.19
+fsspec==2026.9.0
+h11==0.16.0
+hf-xet==1.7.0
+httpcore2==2.13.1
+httpx2==2.13.1
+huggingface-hub==2.2.0
+idna==3.20
+numpy==2.5.4
+onnxruntime==1.31.0
+packaging==26.3
+protobuf==7.36.2
+pycparser==3.11
+pyyaml==6.0.3
+tokenizers==0.23.3
+tqdm==4.70.1
+truststore==0.10.5

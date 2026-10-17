@@ -58,7 +58,7 @@ function W.new()
     -- Player input hook as Courseplay.lua:142-151 uses it; overwrittenFunction
     -- passes the original as the second argument (GIANTS Utils).
     w.registered = {}
-    env.InputAction = { FARMHAND_FETCH_HERE = 77, FARMHAND_TALK = 78, FARMHAND_STOP = 79 }
+    env.InputAction = { FARMHAND_FETCH_HERE = 77, FARMHAND_TALK = 78, FARMHAND_STOP = 79, FARMHAND_PUSH_TO_TALK = 80 }
     -- GIANTS text dialog as Courseplay calls it (CustomFieldManager.lua:126-130).
     env.TextInputDialog = { show = function(callback, target, default, prompt, title, maxChars, okText)
         w.dialog = { callback = callback, target = target, default = default, maxChars = maxChars, okText = okText }
@@ -449,8 +449,9 @@ class LuaBridgeTests(unittest.TestCase):
         component.registerGlobalPlayerActionEvents(component)
         self.assertEqual(self.calls(), ["vanillaGlobalActions"])       # GIANTS' own actions kept
         entries = {e.action: e for e in self.w.registered.values()}
-        self.assertEqual(sorted(entries), [77, 78, 79])
-        self.assertTrue(all(e.flags == "falsetruefalsetrue" for e in entries.values()))
+        self.assertEqual(sorted(entries), [77, 78, 79, 80])
+        self.assertTrue(all(entries[a].flags == "falsetruefalsetrue" for a in (77, 78, 79)))
+        self.assertEqual(entries[80].flags, "falsefalsetruetrue")             # held: every frame, as CROUCH
         self.adopt()
         entries[77].callback()
         entries[79].callback()
@@ -459,7 +460,7 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertIsNotNone(self.w.dialog)                          # the text field opened
         self.bridge.deleteMap(self.bridge)
         component.registerGlobalPlayerActionEvents(component)
-        self.assertEqual(len(self.w.registered), 3)                   # hook gone after unload
+        self.assertEqual(len(self.w.registered), 4)                   # hook gone after unload
 
     def test_keys_match_the_moddesc_actions(self):
         from xml.etree import ElementTree
@@ -472,7 +473,27 @@ class LuaBridgeTests(unittest.TestCase):
         env.InputAction.FARMHAND_TALK = None
         self.bridge.installInput(self.bridge, env)
         env.PlayerInputComponent.registerGlobalPlayerActionEvents(env.PlayerInputComponent)
-        self.assertEqual(sorted(e.action for e in self.w.registered.values()), [77, 79])
+        self.assertEqual(sorted(e.action for e in self.w.registered.values()), [77, 79, 80])
+
+    def test_push_to_talk_sends_only_the_press_and_release_edges(self):
+        self.adopt()
+        self.bridge.installInput(self.bridge, self.w.env)
+        component = self.w.env.PlayerInputComponent
+        component.registerGlobalPlayerActionEvents(component)
+        hold = next(e for e in self.w.registered.values() if e.action == 80)
+        for value in (0, 0, 1, 1, 1, 0.6, 0, 0, 1, 0):         # GIANTS calls it every frame
+            hold.callback(component, "FARMHAND_PUSH_TO_TALK", value)
+        self.assertEqual([r["action"] for r in self.requests()],
+                         ["talk_start", "talk_end", "talk_start", "talk_end"])
+        for line in self.w.lines.values():
+            if '"request"' in line:
+                parse_frame((line + "\n").encode())
+
+    def test_push_to_talk_without_a_companion_notifies_once_per_press(self):
+        for value in (1, 1, 1, 0, 1, 0):
+            self.bridge.pushToTalk(self.bridge, value)
+        self.assertEqual(self.notices(), ["1:Farmhand: the companion is not running"] * 2)
+        self.assertEqual(self.requests(), [])
 
     def test_stop_key_is_never_held_back(self):
         self.adopt()

@@ -178,6 +178,18 @@ Executable mapping (`python scripts/check.py`):
   return nothing for anything else; STOP is decided by the rules before any model,
   and a failing model never breaks text input; the command schema admits no IDs,
   farm, coordinates or unknown commands.
+- `tests/test_voice.py`: each generated fixture (`tests/fixtures/voice`) goes through
+  the microphone abstraction and becomes the expected command, with the farm's
+  place names offered to the recogniser; a missing microphone or speech model
+  disables only voice, and a microphone plugged in later is found on the next
+  press; too-short, failing, empty or crashing audio is NOT_HEARD; holding never
+  starts a second recording and a lost release still ends at 15 s; only spoken
+  requests get spoken replies; speech text travels on stdin only; the speech model
+  files are pinned and verified; `RealSpeechToTextTests` (CI job "voice", or set
+  FARMHAND_WHISPER_DIR) transcribes the fixtures with faster-whisper and hears
+  nothing in silence. `ServiceTests`: push-to-talk fetches the pair with spoken
+  replies; without voice set up it is VOICE_UNAVAILABLE and typing works. Lua:
+  the hold key is registered as GIANTS' CROUCH and sends only the edges.
 - `tests/test_model.py` (fake llama-server, no model): requests are local,
   temperature 0 and schema-constrained with the schema described in the prompt;
   answers map to validated proposals; malformed, off-schema, extra-field, too-long,

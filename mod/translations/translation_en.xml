@@ -5,5 +5,6 @@
         <text name="input_FARMHAND_FETCH_HERE" text="Farmhand: bring a tractor and forage wagon here" />
         <text name="input_FARMHAND_TALK" text="Farmhand: tell Farmhand what to do" />
         <text name="input_FARMHAND_STOP" text="Farmhand: stop" />
+        <text name="input_FARMHAND_PUSH_TO_TALK" text="Farmhand: hold to speak" />
     </texts>
 </l10n>

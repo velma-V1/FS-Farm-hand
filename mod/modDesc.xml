@@ -10,7 +10,7 @@
         <en>Farmhand AC-001 (development)</en>
     </title>
     <description>
-        <en>On foot: Left Alt + K to tell Farmhand what to do in your own words, Left Alt + J to bring a tractor and forage wagon to you, Left Alt + L to stop. The local Farmhand companion does the work and reports in game. The fhHitch* console commands are diagnostics. Nothing moves on load.</en>
+        <en>On foot: Left Alt + K to tell Farmhand what to do in your own words, Left Alt + J to bring a tractor and forage wagon to you, Left Alt + L to stop; hold Left Alt + V to speak (needs a microphone). The local Farmhand companion does the work and reports in game. The fhHitch* console commands are diagnostics. Nothing moves on load.</en>
     </description>
     <!-- Actions, bindings and texts as AutoDrive 3.0.1.4 modDesc.xml 51-119. -->
     <l10n filenamePrefix="translations/translation" />
@@ -18,6 +18,7 @@
         <action name="FARMHAND_FETCH_HERE"/>
         <action name="FARMHAND_TALK"/>
         <action name="FARMHAND_STOP"/>
+        <action name="FARMHAND_PUSH_TO_TALK"/>
     </actions>
     <inputBinding>
         <actionBinding action="FARMHAND_FETCH_HERE">
@@ -28,6 +29,9 @@
         </actionBinding>
         <actionBinding action="FARMHAND_STOP">
             <binding device="KB_MOUSE_DEFAULT" input="KEY_lalt KEY_l" />
+        </actionBinding>
+        <actionBinding action="FARMHAND_PUSH_TO_TALK">
+            <binding device="KB_MOUSE_DEFAULT" input="KEY_lalt KEY_v" />
         </actionBinding>
     </inputBinding>
     <multiplayer supported="false"/>

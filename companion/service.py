@@ -35,6 +35,7 @@ from companion.coordinator import FETCH_HERE, Coordinator
 from companion.executor import Executor
 from companion.language import ChainInterpreter, RuleInterpreter
 from companion.model import ModelInterpreter, ModelServer
+from companion.voice import Replies, SapiSpeaker, SoundDeviceMicrophone, Unavailable, VoiceInput, WhisperTranscriber
 
 log = logging.getLogger("farmhand")
 
@@ -60,16 +61,20 @@ def load_config(path: Path) -> tuple[dict[str, str], dict]:
     return {name: "tractor" for name in names}, entrances
 
 
+def _no_voice():
+    raise Unavailable("voice not set up")
+
+
 # The fixed keys need no interpretation: STOP never waits for words or a model.
 ACTIONS = {"fetch_here": FETCH_HERE, "stop": {"version": 1, "command": "stop"}}
 
 
 def proposal_for(request: dict, interpreter) -> dict | None:
-    """The command proposal for one request frame: a fixed key as is; typed words
-    go through the interpreter (None when not understood)."""
+    """The command proposal for one request: a fixed key as is; typed or spoken
+    words go through the interpreter (None when not understood)."""
     if "text" in request:
         proposal = interpreter.interpret(request["text"])
-        log.info("text %r -> %s", request["text"], json.dumps(proposal))
+        log.info("%s %r -> %s", "heard" if request.get("spoken") else "text", request["text"], json.dumps(proposal))
         return proposal
     return dict(ACTIONS[request["action"]])
 
@@ -82,18 +87,33 @@ def linked_farm(link):
     return str(frame["farm_id"])
 
 
-def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, interpreter=None) -> None:
+def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, interpreter=None,
+          microphone=None, transcriber=None, speaker=None) -> None:
     """Answer the player's requests until the link closes: one job at a time,
-    STOP and STATUS at once (companion/coordinator.py)."""
+    STOP and STATUS at once (companion/coordinator.py). ``microphone`` and
+    ``transcriber`` are factories for push-to-talk (companion/voice.py); without
+    them, or when they raise Unavailable, voice is unavailable and text works."""
     link = world.link
     interpreter = interpreter or RuleInterpreter()
-    coordinator = Coordinator(world, Executor(world, field_entrances=field_entrances), link.notice,
+    replies = Replies(link.notice, speaker)
+    coordinator = Coordinator(world, Executor(world, field_entrances=field_entrances), replies,
                               farm=lambda: linked_farm(link), session=lambda: link.session)
+    voice = VoiceInput(microphone or _no_voice, transcriber or _no_voice,
+                       on_text=lambda text: link.inject({"text": text, "spoken": True}), notify=replies,
+                       places=lambda: [p.name for p in world.places()])
     foreign_since = None
     while not link.closed.is_set() and not should_stop():
         request = link.next_request(timeout=1.0)
         if request is not None:
             try:
+                action = request.get("action")
+                if action == "talk_start":
+                    voice.talk_start()
+                    continue
+                if action == "talk_end":
+                    voice.talk_end()
+                    continue
+                replies.spoken = bool(request.get("spoken"))
                 coordinator.submit(proposal_for(request, interpreter))
             except Exception:   # keep serving; a job's own failures end inside the coordinator
                 log.exception("request %s failed", request.get("id"))
@@ -185,7 +205,9 @@ def main(argv=None) -> int:
     model.start()
     interpreter = ChainInterpreter(RuleInterpreter(), ModelInterpreter(ready=model.ready))
     try:
-        serve(FS25World(link, categories), entrances, interpreter=interpreter)
+        serve(FS25World(link, categories), entrances, interpreter=interpreter,
+              microphone=SoundDeviceMicrophone, transcriber=WhisperTranscriber,
+              speaker=SapiSpeaker() if sys.platform == "win32" else None)
     finally:
         model.stop()
         link.close()

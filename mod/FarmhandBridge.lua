@@ -536,6 +536,9 @@ Bridge.NOTICES = {
     NOT_LINKED = "Farmhand: the companion is not running",
     NO_TEXT_INPUT = "Farmhand: the text field is unavailable",
     STATUS_IDLE = "Farmhand: idle",
+    LISTENING = "Farmhand: listening...",
+    NOT_HEARD = "Farmhand: sorry, I did not hear that",
+    VOICE_UNAVAILABLE = "Farmhand: voice is unavailable (no microphone or speech model); press Left Alt + K to type",
 }
 -- What each executor state means to the player (STATUS_WORKING_<state>).
 Bridge.STEPS = {
@@ -617,6 +620,20 @@ function Bridge:requestStop()
     self:sendRequest("action", "stop")
 end
 
+-- Push-to-talk: the companion records while the key is held. An unlinked press
+-- notifies once per press, never every frame.
+function Bridge:pushToTalk(inputValue)
+    if self.env == nil then return end
+    local down = type(inputValue) == "number" and inputValue > 0
+    if down and not self.talking then
+        self.talking = true
+        self:sendRequest("action", "talk_start")
+    elseif not down and self.talking then
+        self.talking = false
+        if self.session ~= nil and self.pipe ~= nil then self:sendRequest("action", "talk_end") end
+    end
+end
+
 -- Words for the companion: control characters become spaces, surrounding space
 -- is trimmed, and the text is cut to MAX_TEXT bytes on a UTF-8 boundary. nil if
 -- nothing (valid) is left.
@@ -658,7 +675,11 @@ end
 -- it registers the on-foot actions (PlayerInputComponent 142-151). The original
 -- is restored on unload, so a reloaded savegame never stacks two hooks.
 Bridge.KEYS = { FARMHAND_FETCH_HERE = "requestHere", FARMHAND_TALK = "openTextInput",
-                FARMHAND_STOP = "requestStop" }
+                FARMHAND_STOP = "requestStop", FARMHAND_PUSH_TO_TALK = "pushToTalk" }
+-- Held keys: GIANTS calls them every frame with the input value, as it registers
+-- its own CROUCH (PlayerInputComponent: false, false, true, true; onInputCrouch
+-- 1101-1110 reads inputValue 0..1); the press and release edges are sent.
+Bridge.HOLD = { pushToTalk = true }
 
 function Bridge:installInput(env)
     local component, actions = env.PlayerInputComponent, env.InputAction
@@ -678,8 +699,13 @@ function Bridge:installInput(env)
         function(inputComponent, superFunc, ...)
             superFunc(inputComponent, ...)
             for _, key in ipairs(keys) do
-                env.g_inputBinding:registerActionEvent(key.action, inputComponent,
-                    function() bridge[key.method](bridge) end, false, true, false, true)
+                if Bridge.HOLD[key.method] then
+                    env.g_inputBinding:registerActionEvent(key.action, inputComponent,
+                        function(_, _, inputValue) bridge[key.method](bridge, inputValue) end, false, false, true, true)
+                else
+                    env.g_inputBinding:registerActionEvent(key.action, inputComponent,
+                        function() bridge[key.method](bridge) end, false, true, false, true)
+                end
             end
         end)
 end

@@ -106,6 +106,12 @@ class CommandLink:
         log.info("new session %s", self.session)
         self._write_session()
 
+    def inject(self, request: dict) -> None:
+        """Queue a request produced here (e.g. transcribed speech) behind the game's."""
+        with self._cond:
+            self._requests.append(request)
+            self._cond.notify_all()
+
     def next_request(self, timeout: float) -> dict | None:
         """The player's next request frame of this session, or None."""
         def pop():
