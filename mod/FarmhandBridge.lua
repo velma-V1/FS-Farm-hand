@@ -91,6 +91,7 @@ local function settle(task, code)
 end
 
 local starters, steppers, aborts = {}, {}, {}
+Bridge.pendingGoto = {}       -- tractor -> ms left to watch an aborted, unseen GOTO
 
 -- ------------------------------------------------------------------ drive
 -- AutoDrive's external interface: StartDriving(vehicle, destinationID,
@@ -153,7 +154,7 @@ local function startGoto(env, spec, prefix)
     if denied ~= nil then return nil, denied end
     local ok, reason = Bridge.Hitch.startStaging(env, spec.tractor, spec.farmId, spec.x, spec.z, spec.yaw)
     if not ok then return nil, prefix .. tostring(reason) end
-    return { seen = false }
+    return { seen = false, started = true }
 end
 
 -- progress: whether a lack of movement ends the job (navigate only; a stage is
@@ -186,10 +187,32 @@ local function stepGoto(env, task, timeoutMs, timeoutCode, endCode, progress)
     return settle(task, endCode)
 end
 
--- Only the GOTO this task started and saw running (GIANTS AIJobVehicle 431).
+-- Cancel the GOTO this task started (GIANTS AIJobVehicle 431). idle() saw no AI
+-- before the start, so AI that is active now is ours. A job not yet seen running
+-- may still start within START_TIMEOUT_MS: it is watched and cancelled then
+-- (Bridge.watchGoto), so an aborted GOTO can never drive unowned later.
 local function abortGoto(env, task)
-    if task.seen and task.spec.tractor:getIsAIActive() == true then
-        Bridge.Hitch.cancelStaging(env, task.spec.tractor)
+    local v = task.spec.tractor
+    if v:getIsAIActive() == true then
+        Bridge.Hitch.cancelStaging(env, v)
+    elseif not task.seen and task.elapsed < Bridge.START_TIMEOUT_MS then
+        Bridge.pendingGoto[v] = Bridge.START_TIMEOUT_MS - task.elapsed
+    end
+end
+
+-- One frame of the watch over aborted, not yet running GOTO jobs.
+function Bridge.watchGoto(env, dt)
+    for v, left in pairs(Bridge.pendingGoto) do
+        local ok, active = pcall(function() return v:getIsAIActive() end)
+        if ok and active == true then
+            log("an aborted GOTO started late; cancelled")
+            Bridge.Hitch.cancelStaging(env, v)
+            Bridge.pendingGoto[v] = nil
+        elseif left - dt <= 0 then
+            Bridge.pendingGoto[v] = nil
+        else
+            Bridge.pendingGoto[v] = left - dt
+        end
     end
 end
 
@@ -268,8 +291,9 @@ function steppers.stop(env, task)
     if Bridge.lastAlign ~= nil and Bridge.lastAlign.tractor == v then
         Bridge.Hitch.alignStep(env, Bridge.lastAlign, 0)       -- latched: brake + cruise off
     end
-    local ownMotion = target ~= nil and ((target.op == "drive" and v.ad.stateModule:isActive() ~= false)
-        or ((target.op == "stage" or target.op == "navigate") and target.seen and v:getIsAIActive() ~= false))
+    local ownMotion = Bridge.pendingGoto[v] ~= nil or (target ~= nil
+        and ((target.op == "drive" and v.ad.stateModule:isActive() ~= false)
+        or ((target.op == "stage" or target.op == "navigate") and target.seen and v:getIsAIActive() ~= false)))
     if not ownMotion and stopped(v) then return "DONE", "STOPPED" end
     if task.elapsed > Bridge.STOP_TIMEOUT_MS then return "FAILED", "NOT_STOPPED" end
     return nil
@@ -469,6 +493,7 @@ end
 function Bridge:update(dt)
     if self.env == nil then return end
     self.clock = self.clock + dt
+    Bridge.watchGoto(self.env, dt)
     if self.pipe == nil and self.session ~= nil then
         self.pipeTimer = self.pipeTimer + dt
         if self.pipeTimer >= Bridge.PIPE_RETRY_MS then self.pipeTimer = 0; self:openPipe() end
@@ -579,6 +604,7 @@ end
 function Bridge:open(env)
     self.env, self.clock, self.seq, self.lastId = env, 0, 0, 0
     self.requestId, self.noticeId, self.lastRequestAt = 0, 0, nil
+    Bridge.pendingGoto = {}
     self.pipeTimer, self.sessionTimer, self.snapshotTimer = 0, 0, 0
     self.session, self.active, self.pipe, self.dropped = nil, nil, nil, {}
     local base = env.getUserProfileAppPath()

@@ -71,10 +71,16 @@ class CommandLink:
         self.closed = threading.Event()
 
     def _write_session(self) -> None:
+        """Never raises: a file the game or antivirus holds too long costs one beat
+        or one notice, never the companion or its heartbeat thread."""
         with self._write_lock:
-            if not self.closed.is_set():
+            if self.closed.is_set():
+                return
+            try:
                 self.files.write(SESSION_FILE, encode_session(self.session, self._beat,
                                                               self._notice, self._notice_id))
+            except OSError as error:
+                log.warning("session file not written: %s", error)
 
     def heartbeat(self) -> None:
         self._write_session()
@@ -127,7 +133,11 @@ class CommandLink:
         with self._cond:
             self._last_frame_at = self.clock()
             event = frame["event"]
-            if event == "snapshot":
+            if event == "hello":
+                # The game (re)opened the pipe, e.g. on re-adopting this session
+                # after a savegame reload: its request ids restart there.
+                self._last_request = 0
+            elif event == "snapshot":
                 self._snapshot, self._snapshots = frame, self._snapshots + 1
                 self._last_session = frame["session"]
             elif event == "result" and frame["session"] == self.session:
@@ -415,26 +425,27 @@ class PipeServer(threading.Thread):
     def run(self) -> None:
         k, ctypes = self._kernel32, self._ctypes
         handle = self._handle
-        try:
-            while True:
-                try:
-                    if k.ConnectNamedPipe(handle, None) or ctypes.get_last_error() == self.ERROR_PIPE_CONNECTED:
-                        reader, buffer, read = FrameReader(), ctypes.create_string_buffer(1 << 16), self._dword()
-                        while k.ReadFile(handle, buffer, len(buffer), ctypes.byref(read), None) and read.value:
-                            for item in reader.feed(buffer.raw[:read.value]):
-                                if isinstance(item, FrameError):
-                                    log.warning("dropped frame: %s", item.code)
-                                else:
-                                    self.link.on_frame(item)
-                    else:
-                        time.sleep(1)
-                finally:
-                    k.DisconnectNamedPipe(handle)
-                    k.CloseHandle(handle)
+        while True:
+            try:
+                if k.ConnectNamedPipe(handle, None) or ctypes.get_last_error() == self.ERROR_PIPE_CONNECTED:
+                    reader, buffer, read = FrameReader(), ctypes.create_string_buffer(1 << 16), self._dword()
+                    while k.ReadFile(handle, buffer, len(buffer), ctypes.byref(read), None) and read.value:
+                        for item in reader.feed(buffer.raw[:read.value]):
+                            if isinstance(item, FrameError):
+                                log.warning("dropped frame: %s", item.code)
+                            else:
+                                self.link.on_frame(item)
+                else:
+                    time.sleep(1)
+            finally:
+                k.DisconnectNamedPipe(handle)
+                k.CloseHandle(handle)
+            try:
                 handle = self._create()
-        except OSError:
-            log.exception("pipe lost; the companion stops")
-            self.link.close()
+            except OSError:
+                log.exception("cannot re-create the pipe; the companion stops")
+                self.link.close()
+                return
 
 
 def start_local_link(profile_dir: Path | None = None) -> CommandLink:

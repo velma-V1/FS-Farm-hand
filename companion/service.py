@@ -63,8 +63,11 @@ def notice_code(status: str, reason: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", f"{status}_{reason}")[:64]
 
 
-def handle(world: FS25World, executor: Executor, request_id: int) -> None:
-    """Run one player request as AC-001 "here", telling the player what happened."""
+def handle(world: FS25World, executor: Executor, run: int) -> None:
+    """Run one player request as AC-001 "here", telling the player what happened.
+    ``run`` is this process's own counter: the game's request ids restart when it
+    re-adopts the session after a reload, and an executor request id must never
+    repeat (a repeat would return the cached earlier result without any work)."""
     link = world.link
     try:
         frame = link.fresh_snapshot()
@@ -76,7 +79,7 @@ def handle(world: FS25World, executor: Executor, request_id: int) -> None:
         return
     for owner in world.retained():             # an earlier run's unconfirmed stop
         world.recover(owner)
-    intent = {"version": 1, "request_id": f"{link.session}-{request_id}",
+    intent = {"version": 1, "request_id": f"{link.session}-{run}",
               "task": "deliver_tractor_and_forage_wagon", "farm_id": str(frame["farm_id"]),
               "target": "player_at_acceptance"}
     log.info("request %s", json.dumps(intent))
@@ -91,12 +94,14 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False) -> 
     """Answer the player's requests, one at a time, until the link closes."""
     link = world.link
     executor = Executor(world, field_entrances=field_entrances)
-    foreign_since = None
+    foreign_since, runs = None, 0
     while not link.closed.is_set() and not should_stop():
         request_id = link.next_request(timeout=1.0)
         if request_id is not None:
+            runs += 1
+            log.info("player request %d (run %d)", request_id, runs)
             try:
-                handle(world, executor, request_id)
+                handle(world, executor, runs)
             except Exception:   # keep serving; the executor has already stopped its work
                 log.exception("request %d failed", request_id)
                 link.notice("FAILED_INTERNAL_ERROR")
@@ -134,7 +139,8 @@ def install(config: Path | None = None) -> int:
         winreg.SetValueEx(key, RUN_VALUE, 0, winreg.REG_SZ, command)
     detached = 0x00000008 | 0x00000200          # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     subprocess.Popen(command, creationflags=detached, close_fds=True)
-    print(f"Installed: the Farmhand companion starts at logon and is running now.\n{command}")
+    print("Installed: the Farmhand companion starts at logon and was started now (if one was already\n"
+          f"running, that one keeps running; see companion.log).\n{command}")
     return 0
 
 
@@ -175,7 +181,11 @@ def main(argv=None) -> int:
         raise SystemExit(f"FS25 profile folder not found: {profile}")
     configure_logging(profile.joinpath(*MOD_DIR))
     categories, entrances = load_config(args.config) if args.config else ({}, {})
-    link = start_local_link(profile)
+    try:
+        link = start_local_link(profile)
+    except OSError:
+        log.exception("companion not started")
+        return 1
     log.info("companion started; session %s; waiting for FS25", link.session)
     try:
         serve(FS25World(link, categories), entrances)

@@ -348,19 +348,46 @@ class LuaBridgeTests(unittest.TestCase):
                 self.assertEqual(self.results(1)[-1], (1, "FAILED", code))
                 self.assertEqual(self.calls(), [])
 
-    def test_stop_cancels_only_a_goto_it_saw_running(self):
+    def test_stop_cancels_only_a_goto_it_started(self):
         for op in ("stage", "navigate"):
-            for starts, cancelled in ((True, True), (False, False)):
+            # (job runs at once, AI seen when stopping after ms, cancelled)
+            for starts, after, cancelled in ((True, 100, True),      # seen running: ours
+                                             (False, 6000, False)):  # start window over: someone else's
                 with self.subTest(op=op, goto_started=starts):
                     self.w = self.W.new()
                     self.adopt()
                     self.w.gotoStarts = starts
                     self.send(1, op, self.POSE)
                     self.assertIn("startJob", self.calls())
-                    self.w.aiActive = True             # ours, or someone else's job if ours never ran
+                    self.W.run(self.w, after)
+                    self.w.aiActive = True
                     self.write("command.xml", encode_command("s1", 2, "stop", {"tractor": 11}))
                     self.W.run(self.w, 100)
                     self.assertEqual("stopCurrentAIJob" in self.calls(), cancelled)
+
+    def test_an_aborted_goto_that_starts_late_is_cancelled(self):
+        for op in ("stage", "navigate"):
+            with self.subTest(op=op):
+                self.w = self.W.new()
+                self.adopt()
+                self.send(1, op, self.POSE)                # GIANTS has not started it yet
+                self.send(2, "stop", {"tractor": 11})
+                self.W.run(self.w, 1000)
+                self.assertEqual(self.results(2), [(2, "ACCEPTED", "ACCEPTED")])  # not DONE inside the window
+                self.w.aiActive = True                     # the job starts late
+                self.W.run(self.w, 100)
+                self.assertIn("stopCurrentAIJob", self.calls())
+                self.W.run(self.w, 5000)
+                self.assertEqual(self.results(2)[-1], (2, "DONE", "STOPPED"))
+
+    def test_a_dropped_session_also_cancels_a_late_goto(self):
+        self.adopt("s1")
+        self.send(1, "navigate", self.POSE)                # not started yet
+        self.adopt("s2")                                   # s1 dropped inside the start window
+        self.assertIn((1, "FAILED", "SESSION_CHANGED"), self.results())
+        self.w.aiActive = True                             # the s1 job starts late
+        self.W.run(self.w, 100)
+        self.assertIn("stopCurrentAIJob", self.calls())
 
     def notices(self):
         return list(self.w.notices.values())

@@ -326,11 +326,11 @@ class LuaContractTests(unittest.TestCase):
         tractor = '{ id = 21, file = "STUB_TRACTORS", joints = { "TRAILER" } %s }'
         cases = [("", False),                                     # no navigation agent: no GOTO
                  (", gotoJob = { canStart = true, supported = true }", True),
-                 (", gotoJob = { canStart = false, supported = true }", False),
+                 # "Can start now" (helper limit, AI running) is not a vehicle property.
+                 (", gotoJob = { canStart = false, supported = true }", True),
                  (", gotoJob = { canStart = true, supported = false }", False),
                  (", gotoJob = { canStart = true, supported = 'yes' }", None),
-                 (", gotoJob = { supported = true }", None),     # getCanStartAIVehicle -> nil
-                 (", gotoJob = { canStart = true, supported = true }, modes = { getCanStartAIVehicle = 'raises' }",
+                 (", gotoJob = { canStart = true, supported = true }, modes = { getIsAIJobSupported = 'raises' }",
                   None)]
         for extra, expected in cases:
             with self.subTest(extra=extra):

@@ -355,14 +355,17 @@ function Observe.vehicle(env, v, ptoNames)
 
     local heading, aiRoot, outputJoints, inputJointPoses = Observe.hitchGeometry(env, v, ptoNames)
 
-    -- GIANTS' own availability rule for its GOTO job (AIJobGoTo:getIsAvailableForVehicle
-    -- 92-102): a vehicle with a navigation agent that may start AI now and supports
-    -- the job type. Every movement step uses this job, so it gates capability.
+    -- The vehicle parts of GIANTS' availability rule for its GOTO job
+    -- (AIJobGoTo:getIsAvailableForVehicle 92-102): a navigation agent and support
+    -- for the job type. Every movement step uses this job, so it gates capability.
+    -- getCanStartAIVehicle is left out on purpose: it is also false at the global
+    -- helper limit and while any AI runs, which says nothing about the vehicle; a
+    -- start refused for such a reason ends the step as GOTO_NOT_STARTED.
     local gotoSupported = try(function()
         if v.createAgent == nil or v.setAITarget == nil then return false end
-        local canStart, supported = v:getCanStartAIVehicle(), v:getIsAIJobSupported("AIJobGoTo")
-        if type(canStart) ~= "boolean" or type(supported) ~= "boolean" then return nil end
-        return canStart and supported
+        local supported = v:getIsAIJobSupported("AIJobGoTo")
+        if type(supported) ~= "boolean" then return nil end
+        return supported
     end)
 
     -- Self-propelled: GIANTS' Motorized specialization table (Motorized:onLoad 367;

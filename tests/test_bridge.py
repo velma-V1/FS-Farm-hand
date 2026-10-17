@@ -639,6 +639,35 @@ class ServiceTests(unittest.TestCase):
                          ["stop", "stage", "align", "attach", "navigate", "stop"])
         self.assertEqual(world_reservations(), {})
 
+    def test_reloaded_game_restarting_request_ids_is_served_with_fresh_work(self):
+        game, notices = self.start(autodrive=False)
+        game.press(1)
+        self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
+        first = len(game.commands)
+        # Quit and load the save: the game re-adopts the same session, re-opens the
+        # pipe (hello) and numbers its requests from 1 again.
+        game.link.on_frame({"event": "hello", "protocol": 2, "mod_version": "0.1.0.0", "autodrive_version": None})
+        for vehicle, xz in ((11, (0.0, 20.0)), (12, (0.0, -4.0))):
+            game.vehicles[vehicle] = record(vehicle, "tractor" if vehicle == 11 else "wagon", *xz)
+        game.press(1)
+        self.wait_for(lambda: len(notices) >= 4)
+        self.assertEqual(notices[2:], ["ACCEPTED", "COMPLETE"])
+        self.assertGreater(len(game.commands), first)          # real work, not a cached result
+
+    def test_failed_session_writes_never_stop_the_companion(self):
+        class Flaky(FakeFiles):
+            def write(self, name, text):
+                if name == "session.xml":
+                    raise PermissionError("held by the game")
+                super().write(name, text)
+
+        link = CommandLink(Flaky(None))
+        link.heartbeat()
+        link.notice("BUSY")
+        link.on_frame({"event": "request", "protocol": 2, "session": link.session, "id": 1, "target": "here"})
+        self.assertEqual(link.next_request(0.1), 1)
+        self.assertFalse(link.closed.is_set())
+
     def test_notices_are_strict_tokens(self):
         from companion.service import notice_code
         self.assertEqual(notice_code("COMPLETE", "DELIVERY_OBSERVED"), "COMPLETE")
