@@ -92,6 +92,9 @@ Executable mapping (`python scripts/check.py`):
   sessions' requests never run; unknown words are NOT_UNDERSTOOD and move nothing,
   stop with nothing running is NOTHING_TO_STOP; typed words fetch the pair; a
   reloaded game restarting its request ids gets fresh work, never a cached result;
+  after a fetch, "come here" and "take this back to the barn" move the same pair
+  (to the walked-off player, to 15 m short of the barn) and an unknown place
+  blocks;
   failing session-file writes never stop the companion; BLOCKED and FAILED results are
   reported with their reason; a reservation kept after an unconfirmed stop is
   released only by a later confirmed stop (DONE and observed at rest; a DONE with
@@ -159,8 +162,18 @@ Executable mapping (`python scripts/check.py`):
   between steps stops before the next one and releases (CANCELLED); a step the
   requester's stop pre-empted is CANCELLED, not FAILED; a cancelled pair that cannot
   be stopped stays reserved (UNVERIFIED); states are reported as entered.
+- `MovePairTests` (AC-002): "come here" moves the hitched pair nearest the requester
+  (random IDs and order) and leaves a far pair and an unhitched pair untouched;
+  nothing hitched, occupied, busy, moving, one-sided, incapable or foreign blocks
+  before reservation; a named building is reached by GOTO 15 m short, facing it;
+  an exact marker wins with AutoDrive, the building without; ambiguous, unknown,
+  partial-word or AutoDrive-only places block; fetch can deliver to a building;
+  an unobserved arrival is UNVERIFIED and a cancel before travel moves nothing;
+  reservations accept only unattached units or a pair hitched to each other.
 - `tests/test_language.py`: the deterministic rules map many phrasings (address
-  words, punctuation, case) to fetch_pair, stop and status, extract a marker or
+  words, punctuation, case) to fetch_pair, move_pair ("come here", "take this back
+  to the barn"; the canonical AC-001 sentence with "hook them together" stays a
+  fetch), stop and status, extract a marker or
   field destination only when named (a marker called "bus stop" is not a stop), and
   return nothing for anything else; STOP is decided by the rules before any model,
   and a failing model never breaks text input; the command schema admits no IDs,

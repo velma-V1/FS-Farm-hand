@@ -527,6 +527,8 @@ Bridge.NOTICES = {
     ACCEPTED = "Farmhand: fetching a tractor and forage wagon",
     BUSY = "Farmhand: already working on a request",
     COMPLETE = "Farmhand: tractor and forage wagon delivered",
+    ACCEPTED_MOVE = "Farmhand: on my way",
+    COMPLETE_MOVE = "Farmhand: arrived",
     CANCELLED = "Farmhand: stopped",
     STOPPING = "Farmhand: stopping",
     NOTHING_TO_STOP = "Farmhand: nothing to stop",
@@ -544,7 +546,7 @@ Bridge.STEPS = {
     ALIGN_REVERSE = "reversing to the wagon",
     ATTACH = "hitching the wagon",
     VERIFY = "checking the hitch",
-    DELIVER = "driving to you",
+    DELIVER = "driving to the destination",
     STOP = "stopping",
     RELEASE = "finishing",
 }
@@ -559,6 +561,11 @@ Bridge.REASONS = {
     DELIVERY_NOT_OBSERVED = "it did not arrive; check the tractor",
     NAVIGATE_STALLED = "the tractor got stuck",
     CLEANUP_NOT_CONFIRMED = "the tractor may still be moving; check it",
+    NO_HITCHED_PAIR = "no hitched tractor and forage wagon to move",
+    DESTINATION_NOT_FOUND = "I do not know that place",
+    DESTINATION_AMBIGUOUS = "more than one place has that name",
+    AUTODRIVE_UNAVAILABLE = "that destination needs AutoDrive",
+    NOT_LINKED = "the game is not linked to the companion",
 }
 
 -- Text and whether it is critical, for a companion notice token.

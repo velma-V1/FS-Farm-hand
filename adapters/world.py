@@ -36,6 +36,10 @@ class World(Protocol):
         """Return fresh AutoDrive map markers (empty without AutoDrive)."""
         ...
 
+    def places(self) -> tuple[Destination, ...]:
+        """Return the farm's own named placeables (buildings), fresh."""
+        ...
+
     def map_id(self) -> str | None:
         """Return the loaded map's identity (missionInfo.mapId), or None if unknown."""
         ...

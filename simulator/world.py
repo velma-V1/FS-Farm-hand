@@ -14,7 +14,7 @@ MOCK_TRAILER_OFFSET_M = 7.0
 
 
 class MockWorld:
-    def __init__(self, equipment, players, destinations=(), map_id=None):
+    def __init__(self, equipment, players, destinations=(), map_id=None, places=()):
         equipment, destinations = tuple(equipment), tuple(destinations)
         self.items: dict[str, Equipment] = {item.id: item for item in equipment}
         if len(self.items) != len(equipment):
@@ -24,6 +24,7 @@ class MockWorld:
             raise ValueError("Duplicate destination IDs")
         self.players = dict(players)
         self.current_map_id = map_id
+        self.place_list = tuple(places)
         self._lock = RLock()
         self._reservations: dict[str, tuple[str, tuple[str, str]]] = {}
 
@@ -39,6 +40,10 @@ class MockWorld:
         with self._lock:
             return tuple(self.destination_map.values())
 
+    def places(self):
+        with self._lock:
+            return self.place_list
+
     def map_id(self):
         with self._lock:
             return self.current_map_id
@@ -50,9 +55,13 @@ class MockWorld:
             if owner in self._reservations or any(x.reserved_by == owner for x in self.items.values()):
                 return False
             pair = [self.items[i] for i in ids]
+            # Unattached, or hitched to each other (move_pair); never to anything else.
+            partners = {pair[0].id: pair[1].id, pair[1].id: pair[0].id}
             if any(item.reserved_by is not None or item.busy or item.occupied
-                   or not item.available or item.attached_to is not None
+                   or not item.available or item.attached_to not in (None, partners[item.id])
                    or not item.stopped for item in pair):
+                return False
+            if (pair[0].attached_to is None) != (pair[1].attached_to is None):
                 return False
             if pair[0].farm_id != pair[1].farm_id:
                 return False

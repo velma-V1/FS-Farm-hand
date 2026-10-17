@@ -1,5 +1,6 @@
 """One deterministic task. No LLM calls, game physics, transport, or simulator import."""
 import copy
+from dataclasses import dataclass
 import json
 import logging
 import math
@@ -25,6 +26,9 @@ VALIDATOR = Draft202012Validator(SCHEMA)
 # the requester.
 DESTINATION_MAX_FROM_REQUESTER_M = 50.0
 DELIVERY_STANDOFF_M = 10.0
+# A named building is a destination without AutoDrive: GOTO stops this far short of
+# its root node (its centre, which is inside it), facing it. Provisional.
+PLACE_STANDOFF_M = 15.0
 TRACTOR_ARRIVAL_TOLERANCE_M = 3.0
 WAGON_ARRIVAL_TOLERANCE_M = 15.0
 
@@ -48,6 +52,7 @@ class ObservationMismatch(Exception):
 
 class Cancelled(Exception):
     """The requester cancelled; raised before the next physical step starts."""
+
 
 
 # Cancellation is honoured before reserving and before each step that starts
@@ -76,13 +81,40 @@ def select_destination(destinations, requester: Position,
     return min(candidates, key=lambda d: (math.dist(d.position, requester), d.id), default=None)
 
 
-def standoff_pose(requester: Position, origin: Position, fallback_yaw: float) -> Pose:
-    """The GOTO delivery pose: DELIVERY_STANDOFF_M short of the requester on the
-    line from ``origin`` (where the pair starts), facing the requester."""
-    dx, dz = requester[0] - origin[0], requester[1] - origin[1]
+def standoff_pose(goal: Position, origin: Position, fallback_yaw: float,
+                  standoff: float = DELIVERY_STANDOFF_M) -> Pose:
+    """The GOTO pose ``standoff`` short of ``goal`` (the requester, or a building)
+    on the line from ``origin`` (where the pair starts), facing the goal."""
+    dx, dz = goal[0] - origin[0], goal[1] - origin[1]
     yaw = math.atan2(dx, dz) if math.hypot(dx, dz) > 1e-6 else fallback_yaw
-    return Pose(requester[0] - math.sin(yaw) * DELIVERY_STANDOFF_M,
-                requester[1] - math.cos(yaw) * DELIVERY_STANDOFF_M, yaw)
+    return Pose(goal[0] - math.sin(yaw) * standoff, goal[1] - math.cos(yaw) * standoff, yaw)
+
+
+@dataclass(frozen=True)
+class PlaceTarget:
+    """A place named in the player's words: an AutoDrive marker of exactly that
+    name (used when the tractor has AutoDrive) and/or the one owned building whose
+    name contains all its words (GIANTS GOTO to PLACE_STANDOFF_M short of it)."""
+    name: str
+    marker: Destination | None
+    building: Destination | None
+
+
+def resolve_place(name: str, markers, buildings) -> tuple[PlaceTarget | None, str | None]:
+    """Both candidates by exact rules; ambiguity anywhere blocks, nothing is guessed."""
+    wanted = _normalized_name(name)
+    words = wanted.split()
+    exact = [d for d in markers if isinstance(d, Destination) and isinstance(d.name, str)
+             and d.name and _normalized_name(d.name) == wanted]
+    containing = [b for b in buildings if isinstance(b, Destination) and isinstance(b.name, str)
+                  and words and all(w in _normalized_name(b.name).split() for w in words)]
+    if len(exact) > 1 or len(containing) > 1:
+        return None, "DESTINATION_AMBIGUOUS"
+    marker = exact[0] if exact and valid_position(exact[0].position) else None
+    building = containing[0] if containing and valid_position(containing[0].position) else None
+    if marker is None and building is None:
+        return None, "DESTINATION_INVALID" if exact or containing else "DESTINATION_NOT_FOUND"
+    return PlaceTarget(name, marker, building), None
 
 
 def route_position(route: Destination | Pose) -> Position:
@@ -166,6 +198,12 @@ def compatible(tractor: Equipment, wagon: Equipment) -> bool:
             and {"move", "attach", "stop"} <= tractor.capabilities)
 
 
+def movable(tractor: Equipment, wagon: Equipment) -> bool:
+    """move_pair: a tractor with its forage wagon; towing needs no PTO power."""
+    return (tractor.category == "tractor" and wagon.category == "forage_wagon"
+            and {"move", "stop"} <= tractor.capabilities)
+
+
 def _angle(a: float, b: float) -> float:
     """Absolute difference of two yaws, wrapped to [0, pi]."""
     return abs((a - b + math.pi) % (2 * math.pi) - math.pi)
@@ -199,14 +237,14 @@ class Executor:
             self._results[request_id] = (command, result)
             return result
 
-    def _pair(self, ids, farm_id, owner, attached):
+    def _pair(self, ids, farm_id, owner, attached, check=compatible):
         observed = {item.id: item for item in self.world.snapshot()}
         if any(identifier not in observed for identifier in ids):
             raise ObservationMismatch("EQUIPMENT_MISSING")
         tractor, wagon = (observed[identifier] for identifier in ids)
         if not all(usable(item, farm_id, owner) for item in (tractor, wagon)):
             raise ObservationMismatch("EQUIPMENT_CHANGED")
-        if not compatible(tractor, wagon):
+        if not check(tractor, wagon):
             raise ObservationMismatch("COMPATIBILITY_CHANGED")
         expected = (wagon.id, tractor.id) if attached else (None, None)
         if (tractor.attached_to, wagon.attached_to) != expected:
@@ -243,14 +281,10 @@ class Executor:
                     reason = "NO_HITCH_GEOMETRY" if reason == "NO_ELIGIBLE_PAIR" else reason
                     continue
                 autodrive = "autodrive" in tractor.capabilities
-                if isinstance(target, Destination):
-                    if not autodrive:     # a marker is AutoDrive's; no substitute
-                        reason = "AUTODRIVE_UNAVAILABLE"
-                        continue
-                    delivery = target
-                else:
-                    delivery = (autodrive and select_destination(destinations, target)
-                                or standoff_pose(target, plan.target, plan.final.yaw))
+                delivery, failure = self._route(target, tractor, plan.target, plan.final.yaw, destinations)
+                if delivery is None:
+                    reason = failure
+                    continue
                 staging = (plan.staging.x, plan.staging.z)
                 travel = None
                 if math.dist(tractor.position, staging) > NEAR_RADIUS_M:
@@ -258,6 +292,41 @@ class Executor:
                               or plan.staging)
                 return (tractor, wagon), plan, travel, delivery, None
         return None, None, None, None, reason
+
+    @staticmethod
+    def _route(target, tractor, origin, fallback_yaw, markers):
+        """The delivery route for ``target`` (a resolved marker, a PlaceTarget, or the
+        requester's position) by this tractor, from ``origin``: an AutoDrive marker
+        when the tractor has AutoDrive and one fits, else a GIANTS GOTO pose."""
+        autodrive = "autodrive" in tractor.capabilities
+        if isinstance(target, Destination):            # a marker is AutoDrive's; no substitute
+            return (target, None) if autodrive else (None, "AUTODRIVE_UNAVAILABLE")
+        if isinstance(target, PlaceTarget):
+            if autodrive and target.marker is not None:
+                return target.marker, None
+            if target.building is not None:
+                return standoff_pose(target.building.position, origin, fallback_yaw, PLACE_STANDOFF_M), None
+            return None, "AUTODRIVE_UNAVAILABLE"
+        marker = select_destination(markers, target) if autodrive else None
+        return (marker or standoff_pose(target, origin, fallback_yaw)), None
+
+    def _choose_hitched(self, items, farm_id, requester, target, markers):
+        """move_pair: the hitched tractor and forage wagon nearest the requester ("this"),
+        ties by opaque ID, and its route; decided before reservation."""
+        observed = {item.id: item for item in items}
+        pairs = []
+        for tractor in items:
+            wagon = observed.get(tractor.attached_to)
+            if (wagon is not None and wagon.attached_to == tractor.id and movable(tractor, wagon)
+                    and all(usable(x, farm_id) and x.stopped for x in (tractor, wagon))):
+                pairs.append((math.dist(tractor.position, requester), tractor.id, tractor, wagon))
+        if not pairs:
+            return None, None, "NO_HITCHED_PAIR"
+        _, _, tractor, wagon = min(pairs, key=lambda p: (p[0], p[1]))
+        route, failure = self._route(target, tractor, tractor.position, tractor.heading or 0.0, markers)
+        if route is None:
+            return None, None, failure
+        return (tractor, wagon), route, None
 
     def _move(self, tractor_id, route, owner, deliver=False):
         """One travel step by the route's provider: AutoDrive to a marker, or GIANTS
@@ -280,8 +349,8 @@ class Executor:
         return (point is not None and valid_position(point)
                 and math.dist(point, route_position(route)) <= TRACTOR_ARRIVAL_TOLERANCE_M)
 
-    def _arrival(self, ids, farm_id, owner, route):
-        tractor, wagon = self._pair(ids, farm_id, owner, attached=True)
+    def _arrival(self, ids, farm_id, owner, route, check=compatible):
+        tractor, wagon = self._pair(ids, farm_id, owner, attached=True, check=check)
         target = route_position(route)
         if (not tractor.stopped or not wagon.stopped or not self._at(tractor, route)
                 or math.dist(wagon.position, target) > WAGON_ARRIVAL_TOLERANCE_M):
@@ -302,15 +371,29 @@ class Executor:
 
         reserved = physical_attempted = False
         status, reason = "BLOCKED", "NO_ELIGIBLE_PAIR"
+        moving = command["task"] == "move_pair"
+        check = movable if moving else compatible
+        delivery = None
         try:
             # Every destination is resolved and validated before any reservation.
-            if command["target"] == "player_at_acceptance":
+            requester = None
+            if command["target"] == "player_at_acceptance" or moving:
+                # move_pair always needs the requester: "this" is the pair nearest them.
                 requester = self.world.player_position(farm_id)
                 if not valid_position(requester):
                     return Result("BLOCKED", "INVALID_REQUESTER_POSITION")
+                requester = tuple(requester)
+                log.info("requester at %s", requester)
+            if command["target"] == "player_at_acceptance":
                 enter("FIND")
-                target = tuple(requester)
-                log.info("requester at %s", target)
+                target = requester
+            elif command["target"]["type"] == "place":
+                enter("FIND")
+                target, failure = resolve_place(command["target"]["name"], self.world.destinations(),
+                                                self.world.places())
+                if target is None:
+                    return Result("BLOCKED", failure, states=tuple(states))
+                log.info("place %r: marker %s building %s", target.name, target.marker, target.building)
             else:
                 enter("FIND")
                 map_id = (self.world.map_id() if command["target"]["type"] == "field_entrance"
@@ -322,58 +405,75 @@ class Executor:
                 target = destination
                 log.info("destination %s %r at %s", destination.id, destination.name, destination.position)
             items = sorted(self.world.snapshot(), key=lambda item: item.id)
-            free = [item for item in items if usable(item, farm_id)
-                    and item.attached_to is None and item.stopped]
-            pair, plan, travel, delivery, failure = self._choose(free, self.world.destinations(), target)
+            if moving:
+                pair, delivery, failure = self._choose_hitched(items, farm_id, requester, target,
+                                                               self.world.destinations())
+                plan = travel = None
+            else:
+                free = [item for item in items if usable(item, farm_id)
+                        and item.attached_to is None and item.stopped]
+                pair, plan, travel, delivery, failure = self._choose(free, self.world.destinations(), target)
             if pair is None:
                 return Result(status, failure, states=tuple(states))
             ids = tuple(item.id for item in pair)
-            log.info("selected tractor %s wagon %s joints %d/%d staging %s travel %s delivery %s", *ids,
-                     plan.tractor_joint, plan.wagon_joint, plan.staging, travel, delivery)
+            if moving:
+                log.info("moving hitched tractor %s wagon %s to %s", *ids, delivery)
+            else:
+                log.info("selected tractor %s wagon %s joints %d/%d staging %s travel %s delivery %s", *ids,
+                         plan.tractor_joint, plan.wagon_joint, plan.staging, travel, delivery)
             enter("RESERVE")
             if not self.world.reserve(ids, owner):
                 return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
             reserved = True
-            # HITCH: VALIDATE -> [TRAVEL_NEAR] -> STAGE -> ALIGN_REVERSE -> ATTACH -> VERIFY.
-            # Every step is followed by a fresh-snapshot check; returns are not evidence.
-            tractor, wagon = self._hitch_state(ids, farm_id, owner, plan)
-            physical_attempted = True
-            if travel is not None:
-                enter("TRAVEL_NEAR")
-                self._move(tractor.id, travel, owner)
+            if moving:
+                tractor, _ = self._pair(ids, farm_id, owner, attached=True, check=movable)
+                if not tractor.stopped:
+                    raise ObservationMismatch("EQUIPMENT_MOVING")
+                physical_attempted = True
+                enter("DELIVER")
+                self._move(tractor.id, delivery, owner, deliver=True)
+                self._arrival(ids, farm_id, owner, delivery, check=movable)
+            else:
+                # HITCH: VALIDATE -> [TRAVEL_NEAR] -> STAGE -> ALIGN_REVERSE -> ATTACH -> VERIFY.
+                # Every step is followed by a fresh-snapshot check; returns are not evidence.
+                tractor, wagon = self._hitch_state(ids, farm_id, owner, plan)
+                physical_attempted = True
+                if travel is not None:
+                    enter("TRAVEL_NEAR")
+                    self._move(tractor.id, travel, owner)
+                    tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
+                    if not self._at(tractor, travel):
+                        raise ObservationMismatch("TRAVEL_NOT_OBSERVED")
+                enter("STAGE")
+                self.world.stage(tractor.id, wagon.id, plan.staging, owner)
                 tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
-                if not self._at(tractor, travel):
-                    raise ObservationMismatch("TRAVEL_NOT_OBSERVED")
-            enter("STAGE")
-            self.world.stage(tractor.id, wagon.id, plan.staging, owner)
-            tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
-            root = tractor.ai_root
-            if (root is None
-                    or math.dist((root.x, root.z), (plan.staging.x, plan.staging.z)) > STAGE_POSITION_TOLERANCE_M
-                    or _angle(root.yaw, plan.staging.yaw) > STAGE_YAW_TOLERANCE_RAD):
-                raise ObservationMismatch("STAGE_NOT_OBSERVED")
-            enter("ALIGN_REVERSE")
-            self.world.align(tractor.id, wagon.id, plan, owner)
-            tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
-            joint = next(j for j in tractor.output_joints if j.index == plan.tractor_joint)
-            if (tractor.ai_root is None
-                    or math.dist(tractor.ai_root.to_world(joint.x, joint.z), plan.target)
-                    > ALIGN_PROGRESS_TOLERANCE_M):
-                raise ObservationMismatch("ALIGN_NOT_OBSERVED")
-            enter("ATTACH")
-            self.world.attach(tractor.id, wagon.id, (plan.tractor_joint, plan.wagon_joint), owner)
-            enter("VERIFY")
-            tractor, _ = self._pair(ids, farm_id, owner, attached=True)
-            if not tractor.stopped:
-                raise ObservationMismatch("EQUIPMENT_MOVING")
-            # Both ends name each other (_pair), and the planned tractor joint is the
-            # one now in use: an attachment at any other joint is not the plan.
-            used = next((j for j in tractor.output_joints if j.index == plan.tractor_joint), None)
-            if used is None or used.free:
-                raise ObservationMismatch("ATTACHMENT_MISMATCH")
-            enter("DELIVER")
-            self._move(tractor.id, delivery, owner, deliver=True)
-            self._arrival(ids, farm_id, owner, delivery)
+                root = tractor.ai_root
+                if (root is None
+                        or math.dist((root.x, root.z), (plan.staging.x, plan.staging.z)) > STAGE_POSITION_TOLERANCE_M
+                        or _angle(root.yaw, plan.staging.yaw) > STAGE_YAW_TOLERANCE_RAD):
+                    raise ObservationMismatch("STAGE_NOT_OBSERVED")
+                enter("ALIGN_REVERSE")
+                self.world.align(tractor.id, wagon.id, plan, owner)
+                tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
+                joint = next(j for j in tractor.output_joints if j.index == plan.tractor_joint)
+                if (tractor.ai_root is None
+                        or math.dist(tractor.ai_root.to_world(joint.x, joint.z), plan.target)
+                        > ALIGN_PROGRESS_TOLERANCE_M):
+                    raise ObservationMismatch("ALIGN_NOT_OBSERVED")
+                enter("ATTACH")
+                self.world.attach(tractor.id, wagon.id, (plan.tractor_joint, plan.wagon_joint), owner)
+                enter("VERIFY")
+                tractor, _ = self._pair(ids, farm_id, owner, attached=True)
+                if not tractor.stopped:
+                    raise ObservationMismatch("EQUIPMENT_MOVING")
+                # Both ends name each other (_pair), and the planned tractor joint is the
+                # one now in use: an attachment at any other joint is not the plan.
+                used = next((j for j in tractor.output_joints if j.index == plan.tractor_joint), None)
+                if used is None or used.free:
+                    raise ObservationMismatch("ATTACHMENT_MISMATCH")
+                enter("DELIVER")
+                self._move(tractor.id, delivery, owner, deliver=True)
+                self._arrival(ids, farm_id, owner, delivery)
             status, reason = "COMPLETE", "DELIVERY_OBSERVED"
         except Cancelled:
             status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
@@ -405,7 +505,7 @@ class Executor:
                                or stopped[identifier].reserved_by != owner for identifier in ids):
                             raise ObservationMismatch("STOP_NOT_OBSERVED")
                     if status == "COMPLETE":
-                        self._arrival(ids, farm_id, owner, delivery)
+                        self._arrival(ids, farm_id, owner, delivery, check=check)
                     enter("RELEASE")
                     self.world.release(owner)
                     if any(item.reserved_by == owner for item in self.world.snapshot()):

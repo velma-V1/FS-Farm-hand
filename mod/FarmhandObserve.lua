@@ -16,6 +16,7 @@ Observe.PROTOCOL = 2
 Observe.PIPE_PATH = "\\\\.\\pipe\\fs_farmhand_ac001"
 Observe.MAX_VEHICLES = 200
 Observe.MAX_DESTINATIONS = 2000
+Observe.MAX_PLACES = 500
 Observe.MAX_JOINTS = 32
 Observe.NULL = setmetatable({}, { __tostring = function() return "null" end })
 
@@ -508,6 +509,27 @@ function Observe.snapshot(env, seq, session)
         end
     end
 
+    -- The farm's own named placeables (FH Collectors.lua:628-637) at their root node
+    -- (AutoDrive AutoDrivePlaceableData.lua:331): named destinations without
+    -- AutoDrive. An unreadable one is left out, so it can never be a target.
+    local places = Observe.array()
+    local placeables = try(function() return env.g_currentMission.placeableSystem.placeables end)
+    if type(placeables) == "table" then
+        for _, pl in pairs(placeables) do
+            if try(function() return pl.ownerFarmId == farmId end) then
+                local name = text(try(function() return pl:getName() end))
+                local px, _, pz = try(function() return env.getWorldTranslation(pl.rootNode) end)
+                if name ~= nil and finite(px) and finite(pz) then
+                    if #places >= Observe.MAX_PLACES then
+                        truncated = true
+                    else
+                        places[#places + 1] = { name = name, x = px, z = pz }
+                    end
+                end
+            end
+        end
+    end
+
     return encode({
         event = "snapshot",
         protocol = Observe.PROTOCOL,
@@ -522,6 +544,7 @@ function Observe.snapshot(env, seq, session)
         skipped = skipped,
         vehicles = records,
         destinations = destinations,
+        places = places,
     }), nil
 end
 

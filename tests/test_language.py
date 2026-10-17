@@ -35,15 +35,29 @@ class RuleInterpreterTests(unittest.TestCase):
     def test_destinations_are_extracted_never_invented(self):
         self.check([
             ("bring a tractor and forage wagon to the Home Yard",
-             {**FETCH, "target": {"type": "autodrive_marker", "marker_name": "Home Yard"}}),
+             {**FETCH, "target": {"type": "place", "name": "Home Yard"}}),
             ("bring a tractor and forage wagon to the bus stop please",
-             {**FETCH, "target": {"type": "autodrive_marker", "marker_name": "bus stop"}}),
+             {**FETCH, "target": {"type": "place", "name": "bus stop"}}),
             ("bring a tractor and forage wagon to field 12",
              {**FETCH, "target": {"type": "field_entrance", "field": 12}}),
             ("bring a tractor and forage wagon to field number 7",
              {**FETCH, "target": {"type": "field_entrance", "field": 7}}),
             ("bring a tractor and forage wagon to me", FETCH),
             ("bring a tractor and forage wagon over here", FETCH),
+        ])
+
+    def test_moving_the_pair_already_out_there(self):
+        MOVE = {"version": 1, "command": "move_pair"}
+        barn = {**MOVE, "target": {"type": "place", "name": "barn"}}
+        self.check([
+            ("come here", MOVE), ("Farmhand, come here!", MOVE), ("come to me", MOVE), ("come back", MOVE),
+            ("bring it here", MOVE), ("bring that over here", MOVE), ("bring them back here", MOVE),
+            ("take this back to the barn", barn), ("take it to the barn", barn), ("park it at the barn", barn),
+            ("drive this to the Machine Shed please", {**MOVE, "target": {"type": "place", "name": "Machine Shed"}}),
+            ("take the tractor and wagon back to the barn", barn),
+            ("take it to field 4", {**MOVE, "target": {"type": "field_entrance", "field": 4}}),
+            ("take it", None),                          # where to? not guessed
+            ("this is nice", None),
         ])
 
     def test_stop_is_deterministic_and_wins(self):

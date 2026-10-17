@@ -42,6 +42,7 @@ class Observation:
     player: Position | None
     equipment: tuple[Equipment, ...]
     destinations: tuple[Destination, ...]
+    places: tuple[Destination, ...] = ()
 
 
 def _claimed_links(vehicles) -> dict[int, set[int]]:
@@ -168,6 +169,9 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = N
                          for d in frame["destinations"])
     if len({d.id for d in destinations}) != len(destinations):
         raise ObservationError("DUPLICATE_DESTINATION_ID")
+    # Owned placeables, ordered by content so their opaque ids are repeatable.
+    places = tuple(Destination(f"place-{n}", (p["x"], p["z"]), p["name"]) for n, p in enumerate(
+        sorted(frame["places"], key=lambda p: (p["name"], p["x"], p["z"]))))
     player = frame["player"]
     return Observation(
         farm_id=str(frame["farm_id"]),
@@ -175,4 +179,5 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = N
         player=None if player is None else (player["x"], player["z"]),
         equipment=equipment,
         destinations=destinations,
+        places=places,
     )

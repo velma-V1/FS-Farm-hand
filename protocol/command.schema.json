@@ -8,13 +8,22 @@
   "properties": {
     "version": {"const": 1},
     "command": {
-      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. stop: cancel the current job now. status: report the current job.",
-      "enum": ["fetch_pair", "stop", "status"]
+      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). stop: cancel the current job now. status: report the current job.",
+      "enum": ["fetch_pair", "move_pair", "stop", "status"]
     },
     "target": {
-      "description": "fetch_pair only. Default 'here' (the requester's position when accepted).",
+      "description": "fetch_pair and move_pair. Default 'here' (the requester's position when accepted). A place is named in the player's words (an AutoDrive marker name or part of an owned building's name).",
       "oneOf": [
         {"const": "here"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "name"],
+          "properties": {
+            "type": {"const": "place"},
+            "name": {"type": "string", "minLength": 1, "maxLength": 64, "not": {"pattern": "[\\u0000-\\u001f\\u007f]"}}
+          }
+        },
         {
           "type": "object",
           "additionalProperties": false,

@@ -193,6 +193,19 @@ function stubs.world(options)
                      [9] = { name = "bad \255 utf8", x = 7, y = 0, z = 8, id = 9 } }
         end
     end
+    -- Placeables as FH reads them (Collectors.lua:628-637) at their root node.
+    if options.places then
+        local list = {}
+        for i, p in ipairs(options.places) do
+            local pl = { ownerFarmId = p.farm or 1, rootNode = (not p.noNode) and node(p.x or 0, p.z or 0) or nil }
+            function pl:getName()
+                if p.brokenName then error("engine error") end
+                return p.name
+            end
+            list[i] = pl
+        end
+        env.g_currentMission.placeableSystem = { placeables = list }
+    end
     world.env = env
     return world
 end
@@ -362,6 +375,22 @@ class LuaContractTests(unittest.TestCase):
         spec = spec.replace("motorized = true", "motorized = true, towed = true")
         item, = observation_from_snapshot(self.snapshot(self.stubs.single(self.lua.eval(spec)))).equipment
         self.assertEqual(item.category, "unknown")
+
+    def test_owned_named_places_are_observed(self):
+        world = self.stubs.world(self.lua.eval("""{ places = {
+            { name = "Cow Barn (Medium)", x = -200, z = 50 },
+            { name = "Neighbour Barn", x = 5, z = 5, farm = 2 },
+            { name = "Broken", brokenName = true },
+            { name = "Bad \\1 name" },
+            { name = "Nowhere", noNode = true },
+            { name = "Machine Shed", x = 300.5, z = -80 } } }"""))
+        frame = self.snapshot(world)
+        self.assertEqual(frame["places"], [{"name": "Cow Barn (Medium)", "x": -200, "z": 50},
+                                           {"name": "Machine Shed", "x": 300.5, "z": -80}])
+        observed = observation_from_snapshot(frame)
+        self.assertEqual([(p.name, p.position) for p in observed.places],
+                         [("Cow Barn (Medium)", (-200, 50)), ("Machine Shed", (300.5, -80))])
+        self.assertEqual(self.snapshot(self.stubs.world())["places"], [])     # no placeable system
 
     def test_attachment_unknown_versus_empty(self):
         tractor = '{ id = 21, file = "STUB_TRACTORS", joints = { "TRAILER" }, modes = { %s } }'

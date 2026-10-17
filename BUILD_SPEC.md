@@ -28,8 +28,16 @@ need to be installed on the user's PC before live game testing is justified. Tha
 is a development workflow constraint, not a runtime architecture decision.
 
 ## Strict scope
-One task: **“Go grab an available tractor and forage wagon, hook them together,
-and bring them here.”** One farm, one requester, one running executor process.
+Two tasks on one capability. AC-001: **“Go grab an available tractor and forage
+wagon, hook them together, and bring them here.”** AC-002 (`move_pair`): move the
+tractor and forage wagon that are already hitched — the pair nearest the requester,
+"this" — to the requester ("come here") or a named place ("take this back to the
+barn"); it reserves, travels, verifies arrival, stops and releases exactly as
+AC-001's delivery does, and never hitches or unhitches. A named place is an
+AutoDrive marker of exactly that name (used when the tractor has AutoDrive) or the
+one building the farm owns whose name contains all its words (GIANTS GOTO to 15 m
+short of it, facing it); none or several block before reservation. One farm, one
+requester, one running executor process.
 “Here” means the requester's position sampled once when the validated intent is
 accepted, not a moving follow target. Coordinates are horizontal metres (x, z).
 AutoDrive is optional. Travel is AutoDrive's when the selected tractor has it and a

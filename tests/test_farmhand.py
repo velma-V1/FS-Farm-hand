@@ -5,7 +5,7 @@ import math
 import random
 import unittest
 
-from companion.executor import DELIVERY_STANDOFF_M, Executor
+from companion.executor import DELIVERY_STANDOFF_M, PLACE_STANDOFF_M, Executor
 from companion.hitch import plan_hitch
 from protocol.model import Destination, Equipment, InputJoint, OutputJoint, Pose
 from simulator.world import MockWorld
@@ -1118,3 +1118,148 @@ class CancellationTests(unittest.TestCase):
         seen = []
         result = Executor(simple_world()).execute(intent(), on_state=seen.append)
         self.assertEqual(tuple(seen), result.states)
+
+
+def hitched_pair(tractor_id, wagon_id, at, capabilities=GOTO_TRACTOR):
+    """A tractor with its forage wagon already hitched behind it, at ``at``."""
+    x, z = at
+    tractor = Equipment(tractor_id, "tractor", "farm-a", (x, z), pto_torque_capacity=1.8,
+                        capabilities=capabilities, heading=0.0, ai_root=Pose(x, z, 0.0),
+                        attached_to=wagon_id,
+                        output_joints=(OutputJoint(3, "drawbar", 0.0, -2.5, False, frozenset({"rearPto"})),))
+    wagon = Equipment(wagon_id, "forage_wagon", "farm-a", (x, z - 7), required_pto_torque=1.0,
+                      heading=0.0, attached_to=tractor_id,
+                      input_joints=(InputJoint(1, "drawbar", (x, z - 2.5), True, frozenset({"rearPto"})),))
+    return tractor, wagon
+
+
+BARN = Destination("place-0", (-200.0, 50.0), "Cow Barn (Medium)")
+SHED = Destination("place-1", (300.0, -80.0), "Machine Shed")
+
+
+def move(target="player_at_acceptance", request_id="move-001"):
+    return {**intent(request_id), "task": "move_pair", "target": target}
+
+
+class MovePairTests(unittest.TestCase):
+    """"come here" / "take this to the barn": the hitched pair nearest the
+    requester ("this") is moved, verified, stopped and released."""
+
+    def test_come_here_moves_the_nearest_hitched_pair(self):
+        for seed in range(10):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                near = hitched_pair(f"t-{rng.randrange(10**6)}", f"w-{rng.randrange(10**6)}", (130.0, 260.0))
+                far = hitched_pair(f"t-{rng.randrange(10**6)}", f"w-{rng.randrange(10**6)}", (-600.0, 900.0))
+                loose = simple_world().snapshot()                     # an unhitched pair: not "this"
+                items = [*near, *far, *loose]
+                rng.shuffle(items)
+                world = MockWorld(items, PLAYERS, ())
+                before = {x.id: x for x in world.snapshot()}
+                result = Executor(world).execute(move())
+                self.assertEqual(result.status, "COMPLETE", result)
+                self.assertEqual(result.states, ("FIND", "RESERVE", "DELIVER", "STOP", "RELEASE"))
+                self.assertEqual(result.equipment_ids, (near[0].id, near[1].id))
+                tractor, wagon = (world.items[x] for x in result.equipment_ids)
+                assert_goto_delivery(self, tractor, wagon, PLAYERS["farm-a"])
+                for item in (*far, *loose):
+                    self.assertEqual(world.items[item.id], before[item.id])
+
+    def test_nothing_hitched_or_usable_blocks_before_reservation(self):
+        tractor, wagon = hitched_pair("t1", "w1", (0.0, 0.0))
+        cases = {"nothing hitched": simple_world().snapshot(),
+                 "occupied": (replace(tractor, occupied=True), wagon),
+                 "busy wagon": (tractor, replace(wagon, busy=True)),
+                 "moving": (replace(tractor, stopped=False), wagon),
+                 "one-sided hitch": (tractor, replace(wagon, attached_to=None)),
+                 "no move capability": (replace(tractor, capabilities=frozenset({"stop"})), wagon),
+                 "other farm": (replace(tractor, farm_id="farm-b"), replace(wagon, farm_id="farm-b"))}
+        for name, items in cases.items():
+            with self.subTest(name):
+                world = MockWorld(items, PLAYERS, ())
+                before = world.snapshot()
+                result = Executor(world).execute(move())
+                self.assertEqual((result.status, result.reason), ("BLOCKED", "NO_HITCHED_PAIR"))
+                self.assertEqual(world.snapshot(), before)
+
+    def test_a_named_building_is_reached_by_goto_short_of_it(self):
+        world = MockWorld(hitched_pair("t1", "w1", (100.0, 180.0)), PLAYERS, (), places=(BARN, SHED))
+        result = Executor(world).execute(move({"type": "place", "name": "barn"}))
+        self.assertEqual(result.status, "COMPLETE", result)
+        root = world.items["t1"].ai_root
+        self.assertAlmostEqual(math.dist((root.x, root.z), BARN.position), PLACE_STANDOFF_M, places=6)
+        toward = (BARN.position[0] - root.x, BARN.position[1] - root.z)
+        self.assertGreater(math.sin(root.yaw) * toward[0] + math.cos(root.yaw) * toward[1], 0)
+
+    def test_an_exact_marker_is_preferred_with_autodrive(self):
+        marker = Destination("m-9", (-180.0, 60.0), "Barn")
+        world = MockWorld(hitched_pair("t1", "w1", (100.0, 180.0), AUTODRIVE_TRACTOR), PLAYERS, (marker,),
+                          places=(BARN,))
+        result = Executor(world).execute(move({"type": "place", "name": "barn"}))
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual(world.items["t1"].position, marker.position)
+        # Without AutoDrive the same words go to the building instead.
+        world = MockWorld(hitched_pair("t1", "w1", (100.0, 180.0)), PLAYERS, (marker,), places=(BARN,))
+        self.assertEqual(Executor(world).execute(move({"type": "place", "name": "barn"})).status, "COMPLETE")
+        root = world.items["t1"].ai_root
+        self.assertAlmostEqual(math.dist((root.x, root.z), BARN.position), PLACE_STANDOFF_M, places=6)
+
+    def test_unknown_ambiguous_or_marker_only_places_block_before_reservation(self):
+        second_barn = Destination("place-2", (10.0, 10.0), "Pig Barn")
+        marker_only = Destination("m-1", (5.0, 5.0), "Yard")
+        cases = [("barn", (BARN, second_barn), (), "DESTINATION_AMBIGUOUS"),
+                 ("silo", (BARN, SHED), (), "DESTINATION_NOT_FOUND"),
+                 ("barn shed", (BARN, SHED), (), "DESTINATION_NOT_FOUND"),   # all words must match one
+                 ("yard", (), (marker_only,), "AUTODRIVE_UNAVAILABLE")]       # marker, but no AutoDrive
+        for name, places, markers, reason in cases:
+            with self.subTest(name=name):
+                world = MockWorld(hitched_pair("t1", "w1", (0.0, 0.0)), PLAYERS, markers, places=places)
+                before = world.snapshot()
+                result = Executor(world).execute(move({"type": "place", "name": name}))
+                self.assertEqual((result.status, result.reason), ("BLOCKED", reason))
+                self.assertEqual(world.snapshot(), before)
+
+    def test_fetch_to_a_named_building(self):
+        base = simple_world()
+        world = MockWorld([replace(x, capabilities=GOTO_TRACTOR) if x.category == "tractor" else x
+                           for x in base.snapshot()], PLAYERS, (), places=(SHED,))
+        result = Executor(world).execute({**intent(), "target": {"type": "place", "name": "machine shed"}})
+        self.assertEqual(result.status, "COMPLETE", result)
+        root = world.items[result.equipment_ids[0]].ai_root
+        self.assertAlmostEqual(math.dist((root.x, root.z), SHED.position), PLACE_STANDOFF_M, places=6)
+
+    def test_move_failures_and_cancel_stop_and_fail_closed(self):
+        import threading
+
+        class Short(MockWorld):
+            def navigate(self, tractor_id, pose, owner):
+                super().navigate(tractor_id, Pose(pose.x + 6.0, pose.z, pose.yaw), owner)
+
+        world = Short(hitched_pair("t1", "w1", (0.0, 0.0)), PLAYERS, ())
+        result = Executor(world).execute(move())
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "DELIVERY_NOT_OBSERVED"))
+        self.assertTrue(all(x.reserved_by is None and x.stopped for x in world.snapshot()))
+        cancel = threading.Event()
+
+        class CancelOnReserve(MockWorld):
+            def reserve(self, ids, owner):
+                ok = super().reserve(ids, owner)
+                cancel.set()
+                return ok
+
+        world = CancelOnReserve(hitched_pair("t1", "w1", (0.0, 0.0)), PLAYERS, ())
+        result = Executor(world).execute(move(), cancel=cancel)
+        self.assertEqual((result.status, result.reason), ("CANCELLED", "CANCELLED_BY_REQUESTER"))
+        self.assertNotIn("DELIVER", result.states)
+        self.assertEqual(world.items["t1"].position, (0.0, 0.0))
+
+    def test_reservation_accepts_only_unattached_or_each_other(self):
+        tractor, wagon = hitched_pair("t1", "w1", (0.0, 0.0))
+        cases = [((tractor, wagon), True),
+                 ((replace(tractor, attached_to="stranger"), replace(wagon, attached_to="stranger-2")), False),
+                 ((tractor, replace(wagon, attached_to=None)), False),          # one-sided
+                 ((replace(tractor, attached_to=None), replace(wagon, attached_to=None)), True)]
+        for (t, w), expected in cases:
+            with self.subTest(attached=(t.attached_to, w.attached_to)):
+                world = MockWorld((t, w), PLAYERS, ())
+                self.assertEqual(world.reserve((t.id, w.id), "owner"), expected)

@@ -35,8 +35,15 @@ def token(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", text)[:64]
 
 
-def result_notice(status: str, reason: str) -> str:
-    if status in ("COMPLETE", "CANCELLED"):
+# The executor task and the player-facing notices of each job command.
+JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE"),
+        "move_pair": ("move_pair", "ACCEPTED_MOVE", "COMPLETE_MOVE")}
+
+
+def result_notice(status: str, reason: str, complete: str = "COMPLETE") -> str:
+    if status == "COMPLETE":
+        return complete
+    if status == "CANCELLED":
         return status
     return token(f"{status}_{reason}")
 
@@ -81,7 +88,7 @@ class Coordinator:
         elif command == "status":
             self.notify(self.status())
         else:
-            self.fetch(proposal.get("target", "here"))
+            self.start(command, proposal.get("target", "here"))
 
     # ------------------------------------------------------------------ status
     def status(self) -> str:
@@ -120,8 +127,8 @@ class Coordinator:
         except (StepFailed, StepUnverified, ValueError) as error:
             log.info("stop for %s: %s", owner, getattr(error, "code", error))
 
-    # ------------------------------------------------------------------- fetch
-    def fetch(self, target) -> None:
+    # -------------------------------------------------------------------- jobs
+    def start(self, command: str, target) -> None:
         with self._lock:
             if self.current is not None:
                 busy = True
@@ -134,16 +141,17 @@ class Coordinator:
         if busy:
             self.notify("BUSY")
             return
-        self.notify("ACCEPTED")
-        self._worker = threading.Thread(target=self._run, args=(job, cancel, target), daemon=True,
+        self.notify(JOBS[command][1])
+        self._worker = threading.Thread(target=self._run, args=(job, cancel, command, target), daemon=True,
                                         name=f"farmhand-job-{job.number}")
         self._worker.start()
 
-    def _run(self, job: Job, cancel: threading.Event, target) -> None:
+    def _run(self, job: Job, cancel: threading.Event, command: str, target) -> None:
+        task, _, complete = JOBS[command]
         try:
             for owner in self.world.retained():   # an earlier job's unconfirmed stop
                 self.world.recover(owner)
-            intent = {"version": 1, "request_id": job.owner, "task": "deliver_tractor_and_forage_wagon",
+            intent = {"version": 1, "request_id": job.owner, "task": task,
                       "farm_id": self.farm(), "target": "player_at_acceptance" if target == "here" else target}
             log.info("job %d intent %s", job.number, json.dumps(intent))
 
@@ -163,7 +171,7 @@ class Coordinator:
         finally:
             with self._lock:
                 self.current, self.last = None, job
-            self.notify(result_notice(job.state, job.reason or ""))
+            self.notify(result_notice(job.state, job.reason or "", complete))
 
     def wait(self, timeout: float | None = None) -> None:
         """Wait for the running job (tests and shutdown)."""

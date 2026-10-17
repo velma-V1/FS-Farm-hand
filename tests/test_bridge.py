@@ -19,7 +19,7 @@ import xml.etree.ElementTree as ET
 from adapters.world import StepFailed, StepUnverified
 from companion import bridge
 from companion.bridge import CommandLink, FS25World
-from companion.executor import DELIVERY_STANDOFF_M, Executor
+from companion.executor import DELIVERY_STANDOFF_M, PLACE_STANDOFF_M, Executor
 from companion.hitch import STAGING_DISTANCE_M
 from protocol.ipc import encode_command, encode_session, parse_frame
 
@@ -72,6 +72,7 @@ class FakeGame:
         self.markers = ({} if not autodrive else
                         markers or {3: ("Yard", 100.0, 200.0), 4: ("Near wagon", 5.0, 30.0)})
         self.player = {"x": 101.0, "z": 199.0}
+        self.places = [("Cow Barn (Medium)", -200.0, 50.0), ("Machine Shed", 300.0, -80.0)]
         self.faults = faults or {}
         self.session_override = session_override
         self.commands, self.lock, self.seq = [], threading.RLock(), 0
@@ -108,7 +109,8 @@ class FakeGame:
                          "farm_id": 1, "map_id": "MapUS", "player": self.player, "truncated": False,
                          "skipped": 0, "vehicles": copy.deepcopy(list(self.vehicles.values())),
                          "destinations": [{"id": i, "name": n, "x": x, "z": z}
-                                          for i, (n, x, z) in self.markers.items()]}
+                                          for i, (n, x, z) in self.markers.items()],
+                         "places": [{"name": n, "x": x, "z": z} for n, x, z in self.places]}
                 if not self.faults.get("silent_snapshots"):
                     self._emit(frame)
             time.sleep(0.005)
@@ -599,6 +601,29 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(game.link_world._reservations, {})     # stopped, then released
         game.say(5, "what are you doing")
         self.wait_for(lambda: notices[-1:] == ["STATUS_LAST_CANCELLED"])
+
+    def test_come_here_and_take_this_back_to_the_barn_move_the_hitched_pair(self):
+        game, notices = self.start(autodrive=False)
+        game.say(1, "bring me a tractor and forage wagon")
+        self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
+        game.player = {"x": -40.0, "z": 120.0}                  # the player walked off
+        before = len(game.commands)
+        game.say(2, "come here")
+        self.wait_for(lambda: notices[-1:] == ["COMPLETE_MOVE"])
+        self.assertEqual(notices[2:], ["ACCEPTED_MOVE", "COMPLETE_MOVE"])
+        self.assertEqual([c["op"] for c in game.commands[before:]], ["navigate", "stop"])
+        goal = game.commands[before]
+        self.assertAlmostEqual(math.dist((float(goal["x"]), float(goal["z"])), (-40.0, 120.0)),
+                               DELIVERY_STANDOFF_M, places=4)
+        before = len(game.commands)
+        game.say(3, "take this back to the barn")
+        self.wait_for(lambda: notices[-1:] == ["COMPLETE_MOVE"] and len(notices) == 6)
+        goal = game.commands[before]
+        barn = next((x, z) for n, x, z in game.places if "Barn" in n)
+        self.assertAlmostEqual(math.dist((float(goal["x"]), float(goal["z"])), barn), PLACE_STANDOFF_M, places=4)
+        game.say(4, "take this to the silo")                    # no such place: nothing moves
+        self.wait_for(lambda: notices[-1:] == ["BLOCKED_DESTINATION_NOT_FOUND"])
+        self.assertEqual(game.link_world._reservations, {})
 
     def test_replayed_or_foreign_requests_never_run(self):
         game, notices = self.start(autodrive=False)

@@ -48,7 +48,8 @@ def snapshot(vehicles, destinations=(), **overrides):
     frame = {"event": "snapshot", "protocol": 2, "seq": 7, "session": None, "farm_id": 1, "map_id": "MapUS",
              "player": {"x": 100.0, "z": 200.0}, "truncated": False, "skipped": 0,
              "vehicles": list(vehicles),
-             "destinations": list(destinations) or [{"id": 3, "name": "Yard", "x": 101.0, "z": 199.0}]}
+             "destinations": list(destinations) or [{"id": 3, "name": "Yard", "x": 101.0, "z": 199.0}],
+             "places": []}
     frame.update(overrides)
     return frame
 

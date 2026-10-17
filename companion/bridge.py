@@ -231,6 +231,9 @@ class FS25World:
     def destinations(self) -> tuple[Destination, ...]:
         return self._observe().destinations
 
+    def places(self) -> tuple[Destination, ...]:
+        return self._observe().places
+
     def map_id(self) -> str | None:
         return self._observe().map_id
 
@@ -243,8 +246,12 @@ class FS25World:
             if any(i not in items for i in ids):
                 return False
             pair = [items[i] for i in ids]
+            # Unattached, or hitched to each other (move_pair); never to anything else.
+            partners = {pair[0].id: pair[1].id, pair[1].id: pair[0].id}
             if any(e.reserved_by is not None or e.busy or e.occupied or not e.available
-                   or e.attached_to is not None or not e.stopped for e in pair):
+                   or e.attached_to not in (None, partners[e.id]) or not e.stopped for e in pair):
+                return False
+            if (pair[0].attached_to is None) != (pair[1].attached_to is None):
                 return False
             if pair[0].farm_id != pair[1].farm_id:
                 return False

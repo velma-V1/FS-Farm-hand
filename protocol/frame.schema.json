@@ -99,11 +99,22 @@
         "z": {"$ref": "#/$defs/coordinate"}
       }
     },
+    "place": {
+      "description": "A named placeable the farm owns (FH Collectors.lua:628-637), at its root node.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "x", "z"],
+      "properties": {
+        "name": {"$ref": "#/$defs/text"},
+        "x": {"$ref": "#/$defs/coordinate"},
+        "z": {"$ref": "#/$defs/coordinate"}
+      }
+    },
     "snapshot": {
       "type": "object",
       "additionalProperties": false,
       "required": ["event", "protocol", "seq", "session", "farm_id", "map_id", "player", "truncated",
-                   "skipped", "vehicles", "destinations"],
+                   "skipped", "vehicles", "destinations", "places"],
       "properties": {
         "event": {"const": "snapshot"},
         "protocol": {"const": 2},
@@ -121,7 +132,8 @@
         "truncated": {"type": "boolean"},
         "skipped": {"type": "integer", "minimum": 0, "maximum": 100000},
         "vehicles": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/vehicle"}},
-        "destinations": {"type": "array", "maxItems": 2000, "items": {"$ref": "#/$defs/destination"}}
+        "destinations": {"type": "array", "maxItems": 2000, "items": {"$ref": "#/$defs/destination"}},
+        "places": {"type": "array", "maxItems": 500, "items": {"$ref": "#/$defs/place"}}
       }
     },
     "result": {
