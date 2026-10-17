@@ -437,6 +437,16 @@ class LuaBridgeTests(unittest.TestCase):
             "1:Farmhand: not delivered - no available tractor and forage wagon",
             "1:Farmhand: not delivered - SOMETHING_NEW"])
 
+    def test_notice_texts_for_progress_status_and_outcomes(self):
+        cases = {"WORKING_DELIVER": ("Farmhand: driving to the destination", False),
+                 "STATUS_WORKING_ALIGN_REVERSE": ("Farmhand: working - reversing to the wagon", False),
+                 "STATUS_LAST_CANCELLED": ("Farmhand: idle; last job stopped", False),
+                 "COMPLETE_MOVE": ("Farmhand: arrived", False),
+                 "FAILED_NAVIGATE_STALLED": ("Farmhand: not delivered - the tractor got stuck", True)}
+        for notice, expected in cases.items():
+            with self.subTest(notice=notice):
+                self.assertEqual(tuple(self.bridge.noticeText(notice)), expected)
+
     def test_non_critical_notices_fall_back_to_the_evidenced_kind(self):
         self.w.env.FSBaseMission.INGAME_NOTIFICATION_OK = None
         self.adopt()

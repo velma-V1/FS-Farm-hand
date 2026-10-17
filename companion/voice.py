@@ -215,6 +215,8 @@ def phrase(code: str) -> str | None:
     """What to say for a notice, or None for notices not worth speaking."""
     if code in PHRASES:
         return PHRASES[code]
+    if code.startswith("WORKING_"):
+        return None                                   # progress is shown, not spoken
     if code.startswith("STATUS_WORKING_"):
         return "Working on it: " + code[len("STATUS_WORKING_"):].replace("_", " ").lower() + "."
     if code.startswith("STATUS_LAST_"):

@@ -35,6 +35,9 @@ def token(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", text)[:64]
 
 
+# Steps worth telling the player about while a job works (WORKING_<step>); the
+# rest is visible on request (STATUS_WORKING_<step>).
+MILESTONES = frozenset({"TRAVEL_NEAR", "STAGE", "DELIVER"})
 # The executor task and the player-facing notices of each job command.
 JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE"),
         "move_pair": ("move_pair", "ACCEPTED_MOVE", "COMPLETE_MOVE")}
@@ -157,6 +160,8 @@ class Coordinator:
 
             def entered(state):
                 job.step = state
+                if state in MILESTONES:
+                    self.notify(f"WORKING_{state}")
 
             result = self.executor.execute(intent, cancel=cancel, on_state=entered)
             job.state, job.reason = result.status, result.reason

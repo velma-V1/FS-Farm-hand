@@ -179,9 +179,10 @@ class ReplyTests(unittest.TestCase):
         replies = voice.Replies(shown.append, Speaker())
         replies("COMPLETE")
         replies.spoken = True
-        for code in ("ACCEPTED", "STATUS_WORKING_ALIGN_REVERSE", "BLOCKED_NO_ELIGIBLE_PAIR", "CONNECTED_X"):
+        for code in ("ACCEPTED", "WORKING_DELIVER", "STATUS_WORKING_ALIGN_REVERSE", "BLOCKED_NO_ELIGIBLE_PAIR",
+                     "CONNECTED_X"):
             replies(code)
-        self.assertEqual(shown, ["COMPLETE", "ACCEPTED", "STATUS_WORKING_ALIGN_REVERSE",
+        self.assertEqual(shown, ["COMPLETE", "ACCEPTED", "WORKING_DELIVER", "STATUS_WORKING_ALIGN_REVERSE",
                                  "BLOCKED_NO_ELIGIBLE_PAIR", "CONNECTED_X"])
         self.assertEqual(said, ["Fetching a tractor and forage wagon.", "Working on it: align reverse.",
                                 "I could not do that. The reason is shown on screen."])

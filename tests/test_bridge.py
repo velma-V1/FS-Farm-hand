@@ -553,7 +553,9 @@ class ServiceTests(unittest.TestCase):
         world = game.link_world = FS25World(game.link)
         notices = []
         original = game.link.notice
-        game.link.notice = lambda code: (notices.append(code), original(code))
+        self.progress = []                  # WORKING_<step> milestones, asserted on their own
+        game.link.notice = lambda code: ((self.progress if code.startswith("WORKING_") else notices).append(code),
+                                         original(code))
         stop = threading.Event()
         self.addCleanup(stop.set)
         patches = [unittest.mock.patch.object(bridge, "ACCEPT_TIMEOUT_S", 0.3),
@@ -583,8 +585,9 @@ class ServiceTests(unittest.TestCase):
         game.press(1)
         self.wait_for(lambda: len(notices) >= 2)
         self.assertEqual(notices, ["ACCEPTED", "COMPLETE"])
+        self.assertEqual(self.progress, ["WORKING_STAGE", "WORKING_DELIVER"])      # lining up, driving
         self.assertEqual(self.ops(game), ["stage", "align", "attach", "navigate", "stop"])
-        self.assertEqual(self.session_notice(game), ("COMPLETE", 2))
+        self.assertEqual(self.session_notice(game), ("COMPLETE", 4))
 
     def ops(self, game):
         return [c["op"] for c in game.commands]

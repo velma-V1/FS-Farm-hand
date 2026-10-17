@@ -575,6 +575,8 @@ Bridge.REASONS = {
 function Bridge.noticeText(notice)
     local fixed = Bridge.NOTICES[notice]
     if fixed ~= nil then return fixed, false end
+    local working = notice:match("^WORKING_([%u_]+)$")
+    if working ~= nil then return "Farmhand: " .. (Bridge.STEPS[working] or working), false end
     local step = notice:match("^STATUS_WORKING_([%u_]+)$")
     if step ~= nil then return "Farmhand: working - " .. (Bridge.STEPS[step] or step), false end
     local last = notice:match("^STATUS_LAST_(%u+)$")

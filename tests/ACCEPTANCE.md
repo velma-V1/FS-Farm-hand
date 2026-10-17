@@ -85,7 +85,8 @@ Executable mapping (`python scripts/check.py`):
   reservations never reach the game; atomic command file; Windows pipe server and
   a second companion refused (on Windows CI).
 - `ServiceTests` (`tests/test_bridge.py`): a key press runs AC-001 "here" through
-  the fake game and the player is told ACCEPTED then COMPLETE; while a job runs a
+  the fake game and the player is told ACCEPTED, the milestones WORKING_STAGE and
+  WORKING_DELIVER, then COMPLETE; while a job runs a
   second fetch is BUSY, "what are you doing?" answers STATUS_WORKING_<step> at once
   and "STOP!" pre-empts the running operation (nothing after it), stops, releases
   and reports CANCELLED, after which status reports the last job; replayed or other
