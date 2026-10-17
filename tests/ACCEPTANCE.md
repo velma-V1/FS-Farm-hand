@@ -1,9 +1,9 @@
 # AC-001 — bring a tractor and forage wagon here
 
 User command: “Go grab an available tractor and forage wagon, hook them together,
-and bring them here.” The player says it with the in-game key (Left Alt + J on
-foot); the companion turns that into this structured intent itself (no language
-interpretation in this build):
+and bring them here.” The player types it in game (Left Alt + K on foot) or
+presses the fixed key (Left Alt + J); the companion turns either into this
+structured intent itself; Left Alt + L or the words "stop"/"cancel" stop:
 
 ```json
 {"version":1,"request_id":"request-001","task":"deliver_tractor_and_forage_wagon","farm_id":"farm-a","target":"player_at_acceptance"}
@@ -85,9 +85,14 @@ Executable mapping (`python scripts/check.py`):
   reservations never reach the game; atomic command file; Windows pipe server and
   a second companion refused (on Windows CI).
 - `ServiceTests` (`tests/test_bridge.py`): a key press runs AC-001 "here" through
-  the fake game and the player is told ACCEPTED then COMPLETE; presses while busy
-  are answered BUSY and never run, replayed or other sessions' presses never run,
-  taking a request marks the link busy atomically; BLOCKED and FAILED results are
+  the fake game and the player is told ACCEPTED then COMPLETE; while a job runs a
+  second fetch is BUSY, "what are you doing?" answers STATUS_WORKING_<step> at once
+  and "STOP!" pre-empts the running operation (nothing after it), stops, releases
+  and reports CANCELLED, after which status reports the last job; replayed or other
+  sessions' requests never run; unknown words are NOT_UNDERSTOOD and move nothing,
+  stop with nothing running is NOTHING_TO_STOP; typed words fetch the pair; a
+  reloaded game restarting its request ids gets fresh work, never a cached result;
+  failing session-file writes never stop the companion; BLOCKED and FAILED results are
   reported with their reason; a reservation kept after an unconfirmed stop is
   released only by a later confirmed stop (DONE and observed at rest; a DONE with
   a moving snapshot keeps it), and the run then completes; a session the game dropped is renewed and a
@@ -108,12 +113,16 @@ Executable mapping (`python scripts/check.py`):
   re-adopted; stop cancels only a GOTO it saw running; attach needs the align that
   found the candidate; the probe cannot start during a companion session; drive
   refuses while AutoDrive's start helper would hand the tractor to another AI;
-  stop cancels only a stage or navigate GOTO it saw running. The request key needs
-  a linked companion (else a critical "not running" notice), sends one schema-valid
-  request per press (2 s cooldown) and never moves anything; companion notices are
-  shown once each, never one from before adoption, failures as critical; the key
-  is hooked into GIANTS' global player actions (originals kept, flags as
-  Courseplay), removed on unload, and not hooked without the input action.
+  stop cancels a GOTO it started (and one that starts late inside the start
+  window, also after a dropped session), never AI appearing after that window. The
+  fetch key needs a linked companion (else a critical "not running" notice), sends
+  one schema-valid request per press (2 s cooldown) and never moves anything; the
+  stop key always sends; the talk key opens GIANTS' text dialog and sends the
+  cleaned words (cancelled or empty dialogs send nothing; text cut on a UTF-8
+  boundary; invalid text dropped); companion notices are shown once each, never one
+  from before adoption, failures as critical; the three keys are hooked into
+  GIANTS' global player actions (originals kept, flags as Courseplay), removed on
+  unload, a missing action disables only its key, and they equal modDesc's actions.
 - `tests/test_lua_probe.py` (Lua 5.1 and 5.4): the diagnostic console probe loads
   as mod globals in modDesc order and registers its three commands only in
   `loadMap`; nothing runs untyped; `fhHitchList` is read-only; one attempt at a
@@ -146,6 +155,16 @@ Executable mapping (`python scripts/check.py`):
   resolved marker; field targets perform only delivery steps; work operations,
   coordinates and mixed selectors are rejected by the schema.
 - `test_replay`: same ID+intent does not execute twice; changed payload is blocked.
+- `CancellationTests`: a cancel before start reserves and moves nothing; a cancel
+  between steps stops before the next one and releases (CANCELLED); a step the
+  requester's stop pre-empted is CANCELLED, not FAILED; a cancelled pair that cannot
+  be stopped stays reserved (UNVERIFIED); states are reported as entered.
+- `tests/test_language.py`: the deterministic rules map many phrasings (address
+  words, punctuation, case) to fetch_pair, stop and status, extract a marker or
+  field destination only when named (a marker called "bus stop" is not a stop), and
+  return nothing for anything else; STOP is decided by the rules before any model,
+  and a failing model never breaks text input; the command schema admits no IDs,
+  farm, coordinates or unknown commands.
 - `test_schema_rejects_bad_intent`: malformed intent yields BLOCKED before action.
 - `tests/test_ipc.py`: untrusted frame decoding (chunking, oversized lines, NaN,
   duplicate keys, nesting that exhausts the decoder followed by valid frames,

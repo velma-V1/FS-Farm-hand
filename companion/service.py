@@ -4,12 +4,14 @@
     python -m companion.service --uninstall    remove the logon start
     python -m companion.service                run in this terminal (diagnostics)
 
-Installed, it runs without a window. It hosts the local link, waits for the game,
-and runs AC-001 "here" each time the player presses the Farmhand key in game
-(mod/FarmhandBridge.lua requestHere). The key press is only a wish: this process
-supplies the request id and the farm, and the executor selects the equipment. The
-outcome is shown in game as a notification (CommandLink.notice). The log is
-modSettings/FS25_Farmhand/companion.log in the FS25 profile folder.
+Installed, it runs without a window. It hosts the local link, waits for the game
+and answers the player: the Farmhand key asks for AC-001 "here" directly; typed
+words are interpreted (companion/language.py) into a command proposal. Either is
+only a wish: the coordinator (companion/coordinator.py) supplies the request id
+and farm, runs one job at a time, and answers STOP and STATUS at once; the
+executor selects the equipment. Replies are shown in game as notifications
+(CommandLink.notice). The log is modSettings/FS25_Farmhand/companion.log in the
+FS25 profile folder.
 
 farmhand.json (optional trusted local configuration; tractors are recognised
 without it):
@@ -23,14 +25,15 @@ import json
 import logging
 import logging.handlers
 from pathlib import Path, PureWindowsPath
-import re
 import subprocess
 import sys
 
 from adapters.world import StepUnverified
 from companion.bridge import (MOD_DIR, SNAPSHOT_TIMEOUT_S, FS25World, game_profile_dir,
                               start_local_link)
+from companion.coordinator import FETCH_HERE, Coordinator
 from companion.executor import Executor
+from companion.language import RuleInterpreter
 
 log = logging.getLogger("farmhand")
 
@@ -56,67 +59,56 @@ def load_config(path: Path) -> tuple[dict[str, str], dict]:
     return {name: "tractor" for name in names}, entrances
 
 
-def notice_code(status: str, reason: str) -> str:
-    """A session-file token for a result (protocol.ipc encode_session)."""
-    if status == "COMPLETE":
-        return "COMPLETE"
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", f"{status}_{reason}")[:64]
+# The fixed keys need no interpretation: STOP never waits for words or a model.
+ACTIONS = {"fetch_here": FETCH_HERE, "stop": {"version": 1, "command": "stop"}}
 
 
-def handle(world: FS25World, executor: Executor, run: int) -> None:
-    """Run one player request as AC-001 "here", telling the player what happened.
-    ``run`` is this process's own counter: the game's request ids restart when it
-    re-adopts the session after a reload, and an executor request id must never
-    repeat (a repeat would return the cached earlier result without any work)."""
-    link = world.link
-    try:
-        frame = link.fresh_snapshot()
-    except StepUnverified as error:
-        link.notice(notice_code("BLOCKED", error.code))
-        return
+def proposal_for(request: dict, interpreter) -> dict | None:
+    """The command proposal for one request frame: a fixed key as is; typed words
+    go through the interpreter (None when not understood)."""
+    if "text" in request:
+        proposal = interpreter.interpret(request["text"])
+        log.info("text %r -> %s", request["text"], json.dumps(proposal))
+        return proposal
+    return dict(ACTIONS[request["action"]])
+
+
+def linked_farm(link):
+    """The farm of the game linked to this companion, from a fresh snapshot."""
+    frame = link.fresh_snapshot()
     if frame["session"] != link.session:
-        link.notice("BLOCKED_NOT_LINKED")
-        return
-    for owner in world.retained():             # an earlier run's unconfirmed stop
-        world.recover(owner)
-    intent = {"version": 1, "request_id": f"{link.session}-{run}",
-              "task": "deliver_tractor_and_forage_wagon", "farm_id": str(frame["farm_id"]),
-              "target": "player_at_acceptance"}
-    log.info("request %s", json.dumps(intent))
-    link.notice("ACCEPTED")
-    result = executor.execute(intent)
-    log.info("result %s", json.dumps({"status": result.status, "reason": result.reason,
-                                      "equipment": list(result.equipment_ids), "states": list(result.states)}))
-    link.notice(notice_code(result.status, result.reason))
+        raise StepUnverified("NOT_LINKED")
+    return str(frame["farm_id"])
 
 
-def serve(world: FS25World, field_entrances=None, should_stop=lambda: False) -> None:
-    """Answer the player's requests, one at a time, until the link closes."""
+def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, interpreter=None) -> None:
+    """Answer the player's requests until the link closes: one job at a time,
+    STOP and STATUS at once (companion/coordinator.py)."""
     link = world.link
-    executor = Executor(world, field_entrances=field_entrances)
-    foreign_since, runs = None, 0
+    interpreter = interpreter or RuleInterpreter()
+    coordinator = Coordinator(world, Executor(world, field_entrances=field_entrances), link.notice,
+                              farm=lambda: linked_farm(link), session=lambda: link.session)
+    foreign_since = None
     while not link.closed.is_set() and not should_stop():
-        request_id = link.next_request(timeout=1.0)
-        if request_id is not None:
-            runs += 1
-            log.info("player request %d (run %d)", request_id, runs)
+        request = link.next_request(timeout=1.0)
+        if request is not None:
             try:
-                handle(world, executor, runs)
-            except Exception:   # keep serving; the executor has already stopped its work
-                log.exception("request %d failed", request_id)
+                coordinator.submit(proposal_for(request, interpreter))
+            except Exception:   # keep serving; a job's own failures end inside the coordinator
+                log.exception("request %s failed", request.get("id"))
                 link.notice("FAILED_INTERNAL_ERROR")
-            finally:
-                link.done()
             continue
         session, last_frame = link.linked_session()
         now = link.clock()
-        if last_frame is not None and now - last_frame < 3 * SNAPSHOT_TIMEOUT_S and session != link.session:
+        if (last_frame is not None and now - last_frame < 3 * SNAPSHOT_TIMEOUT_S and session != link.session
+                and not coordinator.busy):
             foreign_since = now if foreign_since is None else foreign_since
             if now - foreign_since > RENEW_AFTER_S:
                 link.renew()
                 foreign_since = None
         else:
             foreign_since = None
+    coordinator.wait(timeout=30)
 
 
 # ------------------------------------------------------------- Windows logon

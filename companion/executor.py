@@ -46,6 +46,15 @@ class ObservationMismatch(Exception):
     pass
 
 
+class Cancelled(Exception):
+    """The requester cancelled; raised before the next physical step starts."""
+
+
+# Cancellation is honoured before reserving and before each step that starts
+# physical work.
+CANCELLABLE_STEPS = frozenset({"RESERVE", "TRAVEL_NEAR", "STAGE", "ALIGN_REVERSE", "ATTACH", "DELIVER"})
+
+
 def valid_position(position: Position) -> bool:
     return (isinstance(position, (tuple, list)) and len(position) == 2
             and all(type(v) in (float, int) and math.isfinite(v) for v in position))
@@ -171,7 +180,12 @@ class Executor:
         self._lock = Lock()
         self._results: dict[str, tuple[dict, Result]] = {}
 
-    def execute(self, intent: object) -> Result:
+    def execute(self, intent: object, cancel=None, on_state=None) -> Result:
+        """``cancel``: an optional threading.Event; once set, no further physical
+        step starts, the pair is stopped and released as after any failure, and
+        the result is CANCELLED (or UNVERIFIED if that stop is not confirmed). A
+        step already running is interrupted by the caller's own stop command.
+        ``on_state``: optional callback receiving each state as it is entered."""
         if not VALIDATOR.is_valid(intent):
             return Result("BLOCKED", "INVALID_INTENT")
         # Detach caller-owned input, including the nested target object.
@@ -181,7 +195,7 @@ class Executor:
             if request_id in self._results:
                 old, result = self._results[request_id]
                 return result if old == command else Result("BLOCKED", "REQUEST_ID_CONFLICT")
-            result = self._run(command)
+            result = self._run(command, cancel, on_state)
             self._results[request_id] = (command, result)
             return result
 
@@ -275,9 +289,17 @@ class Executor:
                      tractor.position, wagon.position, target, tractor.stopped, wagon.stopped)
             raise ObservationMismatch("DELIVERY_NOT_OBSERVED")
 
-    def _run(self, command):
+    def _run(self, command, cancel=None, on_state=None):
         owner, farm_id = command["request_id"], command["farm_id"]
         states, ids = [], ()
+
+        def enter(state):
+            if state in CANCELLABLE_STEPS and cancel is not None and cancel.is_set():
+                raise Cancelled()
+            states.append(state)
+            if on_state is not None:
+                on_state(state)
+
         reserved = physical_attempted = False
         status, reason = "BLOCKED", "NO_ELIGIBLE_PAIR"
         try:
@@ -286,11 +308,11 @@ class Executor:
                 requester = self.world.player_position(farm_id)
                 if not valid_position(requester):
                     return Result("BLOCKED", "INVALID_REQUESTER_POSITION")
-                states.append("FIND")
+                enter("FIND")
                 target = tuple(requester)
                 log.info("requester at %s", target)
             else:
-                states.append("FIND")
+                enter("FIND")
                 map_id = (self.world.map_id() if command["target"]["type"] == "field_entrance"
                           else None)
                 destination, failure = resolve_explicit_destination(
@@ -308,7 +330,7 @@ class Executor:
             ids = tuple(item.id for item in pair)
             log.info("selected tractor %s wagon %s joints %d/%d staging %s travel %s delivery %s", *ids,
                      plan.tractor_joint, plan.wagon_joint, plan.staging, travel, delivery)
-            states.append("RESERVE")
+            enter("RESERVE")
             if not self.world.reserve(ids, owner):
                 return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
             reserved = True
@@ -317,12 +339,12 @@ class Executor:
             tractor, wagon = self._hitch_state(ids, farm_id, owner, plan)
             physical_attempted = True
             if travel is not None:
-                states.append("TRAVEL_NEAR")
+                enter("TRAVEL_NEAR")
                 self._move(tractor.id, travel, owner)
                 tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
                 if not self._at(tractor, travel):
                     raise ObservationMismatch("TRAVEL_NOT_OBSERVED")
-            states.append("STAGE")
+            enter("STAGE")
             self.world.stage(tractor.id, wagon.id, plan.staging, owner)
             tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
             root = tractor.ai_root
@@ -330,7 +352,7 @@ class Executor:
                     or math.dist((root.x, root.z), (plan.staging.x, plan.staging.z)) > STAGE_POSITION_TOLERANCE_M
                     or _angle(root.yaw, plan.staging.yaw) > STAGE_YAW_TOLERANCE_RAD):
                 raise ObservationMismatch("STAGE_NOT_OBSERVED")
-            states.append("ALIGN_REVERSE")
+            enter("ALIGN_REVERSE")
             self.world.align(tractor.id, wagon.id, plan, owner)
             tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
             joint = next(j for j in tractor.output_joints if j.index == plan.tractor_joint)
@@ -338,9 +360,9 @@ class Executor:
                     or math.dist(tractor.ai_root.to_world(joint.x, joint.z), plan.target)
                     > ALIGN_PROGRESS_TOLERANCE_M):
                 raise ObservationMismatch("ALIGN_NOT_OBSERVED")
-            states.append("ATTACH")
+            enter("ATTACH")
             self.world.attach(tractor.id, wagon.id, (plan.tractor_joint, plan.wagon_joint), owner)
-            states.append("VERIFY")
+            enter("VERIFY")
             tractor, _ = self._pair(ids, farm_id, owner, attached=True)
             if not tractor.stopped:
                 raise ObservationMismatch("EQUIPMENT_MOVING")
@@ -349,10 +371,12 @@ class Executor:
             used = next((j for j in tractor.output_joints if j.index == plan.tractor_joint), None)
             if used is None or used.free:
                 raise ObservationMismatch("ATTACHMENT_MISMATCH")
-            states.append("DELIVER")
+            enter("DELIVER")
             self._move(tractor.id, delivery, owner, deliver=True)
             self._arrival(ids, farm_id, owner, delivery)
             status, reason = "COMPLETE", "DELIVERY_OBSERVED"
+        except Cancelled:
+            status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
         except ObservationMismatch as error:
             status, reason = "UNVERIFIED", str(error)
         except StepUnverified as error:
@@ -360,17 +384,20 @@ class Executor:
         except (RuntimeError, TimeoutError, ValueError, KeyError) as error:
             # Adapter codes (StepFailed, ObservationError) are kept as the reason.
             status, reason = "FAILED", getattr(error, "code", None) or type(error).__name__
+            if cancel is not None and cancel.is_set():
+                # The step ended because the requester's stop pre-empted it.
+                status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
         except Exception as error:
             # An unexpected adapter failure must not fabricate completion.
             status, reason = "UNVERIFIED", type(error).__name__
         finally:
-            if not reserved:
+            if not reserved and status != "CANCELLED":
                 # Nothing can have moved before RESERVE: observation trouble only blocks.
                 status = "BLOCKED"
             if reserved:
                 try:
                     if physical_attempted:
-                        states.append("STOP")
+                        enter("STOP")
                         if not self.world.stop(ids[0], owner):
                             raise ObservationMismatch("STOP_NOT_CONFIRMED")
                         stopped = {item.id: item for item in self.world.snapshot()}
@@ -379,7 +406,7 @@ class Executor:
                             raise ObservationMismatch("STOP_NOT_OBSERVED")
                     if status == "COMPLETE":
                         self._arrival(ids, farm_id, owner, delivery)
-                    states.append("RELEASE")
+                    enter("RELEASE")
                     self.world.release(owner)
                     if any(item.reserved_by == owner for item in self.world.snapshot()):
                         raise ObservationMismatch("RELEASE_NOT_OBSERVED")

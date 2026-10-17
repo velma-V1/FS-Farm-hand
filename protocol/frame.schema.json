@@ -140,16 +140,18 @@
       }
     },
     "request": {
-      "description": "The player pressed the Farmhand key (mod/FarmhandBridge.lua requestHere). A wish only: the companion validates it and supplies all authority itself.",
+      "description": "The player asked (mod/FarmhandBridge.lua): a fixed key (action: fetch_here = AC-001 'here', stop) or typed words (text). A wish only: the companion interprets and validates it and supplies all authority itself.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["event", "protocol", "session", "id", "target"],
+      "required": ["event", "protocol", "session", "id"],
+      "oneOf": [{"required": ["action"]}, {"required": ["text"]}],
       "properties": {
         "event": {"const": "request"},
         "protocol": {"const": 2},
         "session": {"$ref": "#/$defs/token"},
         "id": {"type": "integer", "minimum": 1, "maximum": 2147483647},
-        "target": {"const": "here"}
+        "action": {"enum": ["fetch_here", "stop"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 200, "not": {"pattern": "[\\u0000-\\u001f\\u007f]"}}
       }
     }
   }

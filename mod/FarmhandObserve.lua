@@ -125,6 +125,7 @@ encode = function(value)
 end
 
 Observe.encode = encode
+Observe.validUtf8 = validUtf8
 
 -- ------------------------------------------------------------- vehicles
 

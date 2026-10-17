@@ -55,11 +55,16 @@ provisional contract values to validate against real equipment, AutoDrive marker
 accuracy and GIANTS GOTO accuracy in FS25.
 
 Input to the deterministic executor is versioned structured intent. The player
-asks with an on-foot key in game (default Left Alt + J); the mod sends a request
-frame and the companion (companion/service.py), as trusted local service code,
-supplies request/session authority such as request_id and farm_id before executor
-validation. A future local language layer may interpret speech/text into the same
-task proposal; this build makes no claim of natural-language understanding.
+asks in game, on foot: in their own words in GIANTS' text dialog (Left Alt + K),
+or with fixed keys (Left Alt + J: bring the pair here; Left Alt + L: stop). The
+mod sends a request frame. The companion's language layer (companion/language.py:
+deterministic rules, later a local model behind them) turns words into a command
+proposal (protocol/command.schema.json) that carries no authority; the
+coordinator (companion/coordinator.py), as trusted local service code, validates
+it and supplies request/session authority such as request_id and farm_id before
+executor validation. STOP and STATUS are deterministic and answered at once, never
+through a model; STOP cancels before the next step and pre-empts the running
+operation. Speech (push-to-talk, local speech-to-text) feeds the same text path.
 
 No vehicle IDs come from the LLM. Selection checks categories (forage wagons by
 GIANTS' ForageWagon specialization; tractors as self-propelled vehicles with a
@@ -143,7 +148,11 @@ the source meets it:
 
 | Requirement | Source mechanism | Proven only in FS25 |
 | --- | --- | --- |
-| No developer console | On-foot key `FARMHAND_FETCH_HERE` (modDesc action, Left Alt + J); console commands are diagnostics only | Key registers and fires; notifications show |
+| No developer console | On-foot keys (modDesc actions): Talk (text dialog), Fetch, Stop; console commands are diagnostics only | Keys register and fire; the dialog opens; notifications show |
+| Natural-language text | Typed words → rules (+ local model) → command proposal → coordinator → executor; replies ACCEPTED / BUSY / STATUS_* / STOPPING / CANCELLED / COMPLETE / BLOCKED / FAILED with reason | Text dialog round trip |
+| Fast deterministic STOP and STATUS | Stop key and rule path, never a model; cancel before the next step plus a pre-empting bridge `stop` | Pre-emption of a running GIANTS/AutoDrive job |
+| Local model (optional layer) | Planned: CPU-only llama.cpp `llama-server` with a 4B instruct GGUF, schema-constrained, behind the rules; the executor never depends on it | Latency beside FS25 |
+| Voice (optional front end) | Planned: push-to-talk key, local speech-to-text into the text path; no microphone disables only voice | Real microphone (not a blocker) |
 | No manual vehicle IDs | The executor selects the pair from observations | Equipment detection on the user's farm |
 | No manual JSON editing | Tractors recognised from GIANTS data; `farmhand.json` only for optional field targets | The tractor rule matches the user's tractors only |
 | No manual AutoDrive graph | GIANTS GOTO travel and delivery; AutoDrive optional and preferred when a marker fits | GOTO with the wagon attached, arrival accuracy |

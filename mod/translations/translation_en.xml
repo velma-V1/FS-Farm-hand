@@ -3,5 +3,7 @@
 <l10n>
     <texts>
         <text name="input_FARMHAND_FETCH_HERE" text="Farmhand: bring a tractor and forage wagon here" />
+        <text name="input_FARMHAND_TALK" text="Farmhand: tell Farmhand what to do" />
+        <text name="input_FARMHAND_STOP" text="Farmhand: stop" />
     </texts>
 </l10n>

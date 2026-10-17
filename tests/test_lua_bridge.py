@@ -58,7 +58,11 @@ function W.new()
     -- Player input hook as Courseplay.lua:142-151 uses it; overwrittenFunction
     -- passes the original as the second argument (GIANTS Utils).
     w.registered = {}
-    env.InputAction = { FARMHAND_FETCH_HERE = 77 }
+    env.InputAction = { FARMHAND_FETCH_HERE = 77, FARMHAND_TALK = 78, FARMHAND_STOP = 79 }
+    -- GIANTS text dialog as Courseplay calls it (CustomFieldManager.lua:126-130).
+    env.TextInputDialog = { show = function(callback, target, default, prompt, title, maxChars, okText)
+        w.dialog = { callback = callback, target = target, default = default, maxChars = maxChars, okText = okText }
+    end }
     env.Utils = { overwrittenFunction = function(old, new)
         return function(self, ...) return new(self, old, ...) end
     end }
@@ -97,6 +101,7 @@ function W.new()
                  close = function() end }
     end }
     Bridge.Observe = { PROTOCOL = 2, NULL = Observe.NULL, PIPE_PATH = Observe.PIPE_PATH, encode = Observe.encode,
+                       validUtf8 = Observe.validUtf8,
                        hello = function() return '{"event":"hello"}' end,
                        snapshot = function(_, seq, session)
                            return Observe.encode({ event = "snapshot", seq = seq, session = session or Observe.NULL })
@@ -408,7 +413,8 @@ class LuaBridgeTests(unittest.TestCase):
         self.W.run(self.w, 2100)
         self.bridge.requestHere(self.bridge)
         requests = self.requests()
-        self.assertEqual([(r["id"], r["session"], r["target"]) for r in requests], [(1, "s1", "here"), (2, "s1", "here")])
+        self.assertEqual([(r["id"], r["session"], r["action"]) for r in requests],
+                         [(1, "s1", "fetch_here"), (2, "s1", "fetch_here")])
         for line in self.w.lines.values():
             if '"request"' in line:
                 self.assertEqual(parse_frame((line + "\n").encode())["event"], "request")
@@ -436,20 +442,71 @@ class LuaBridgeTests(unittest.TestCase):
         self.adopt()
         self.assertEqual(self.notices(), ["1:Farmhand: companion connected"])
 
-    def test_request_key_is_added_to_the_players_global_actions_and_removed(self):
+    def test_request_keys_are_added_to_the_players_global_actions_and_removed(self):
         env = self.w.env
         self.bridge.installInput(self.bridge, env)
         component = env.PlayerInputComponent
         component.registerGlobalPlayerActionEvents(component)
         self.assertEqual(self.calls(), ["vanillaGlobalActions"])       # GIANTS' own actions kept
-        entry, = self.w.registered.values()
-        self.assertEqual((entry.action, entry.flags), (77, "falsetruefalsetrue"))
+        entries = {e.action: e for e in self.w.registered.values()}
+        self.assertEqual(sorted(entries), [77, 78, 79])
+        self.assertTrue(all(e.flags == "falsetruefalsetrue" for e in entries.values()))
         self.adopt()
-        entry.callback()
-        self.assertEqual(len(self.requests()), 1)
+        entries[77].callback()
+        entries[79].callback()
+        self.assertEqual([r.get("action") for r in self.requests()], ["fetch_here", "stop"])
+        entries[78].callback()
+        self.assertIsNotNone(self.w.dialog)                          # the text field opened
         self.bridge.deleteMap(self.bridge)
         component.registerGlobalPlayerActionEvents(component)
-        self.assertEqual(len(self.w.registered), 1)                   # hook gone after unload
+        self.assertEqual(len(self.w.registered), 3)                   # hook gone after unload
+
+    def test_keys_match_the_moddesc_actions(self):
+        from xml.etree import ElementTree
+        root = ElementTree.parse(ROOT / "mod/modDesc.xml").getroot()
+        declared = sorted(a.attrib["name"] for a in root.findall("actions/action"))
+        self.assertEqual(sorted(self.bridge.KEYS.keys()), declared)
+
+    def test_a_missing_action_disables_only_its_key(self):
+        env = self.w.env
+        env.InputAction.FARMHAND_TALK = None
+        self.bridge.installInput(self.bridge, env)
+        env.PlayerInputComponent.registerGlobalPlayerActionEvents(env.PlayerInputComponent)
+        self.assertEqual(sorted(e.action for e in self.w.registered.values()), [77, 79])
+
+    def test_stop_key_is_never_held_back(self):
+        self.adopt()
+        for _ in range(3):
+            self.bridge.requestStop(self.bridge)
+        self.assertEqual([r["action"] for r in self.requests()], ["stop", "stop", "stop"])
+
+    def test_typed_words_are_sent_as_text(self):
+        self.adopt()
+        self.bridge.openTextInput(self.bridge)
+        dialog = self.w.dialog
+        self.assertEqual((dialog.default, dialog.maxChars, dialog.okText), ("", 200, "OK"))
+        dialog.callback(dialog.target, "  bring me a tractor\nand forage wagon  ", True)
+        dialog.callback(dialog.target, "never sent", False)        # cancelled dialog
+        dialog.callback(dialog.target, "   ", True)               # nothing to send
+        texts = [r["text"] for r in self.requests()]
+        self.assertEqual(texts, ["bring me a tractor and forage wagon"])
+        for line in self.w.lines.values():
+            if '"request"' in line:
+                parse_frame((line + "\n").encode())
+
+    def test_text_is_cut_on_a_utf8_boundary_and_invalid_text_is_dropped(self):
+        clean = lambda t: self.bridge.cleanText(t, self.observe.validUtf8)
+        self.assertEqual(clean("Hof S\u00fcd"), "Hof S\u00fcd")
+        long = "a" * 199 + "\u00fc" + "b"                         # the 2-byte letter straddles byte 200
+        self.assertEqual(clean(long), "a" * 199)
+        dropped = self.lua.eval("function(clean, valid) return clean('\\255\\254\\253\\252 bad', valid) == nil end")
+        self.assertTrue(dropped(self.bridge.cleanText, self.observe.validUtf8))   # never valid UTF-8
+        self.assertIsNone(clean(None))
+
+    def test_text_field_needs_a_linked_companion(self):
+        self.bridge.openTextInput(self.bridge)
+        self.assertEqual(self.notices(), ["1:Farmhand: the companion is not running"])
+        self.assertFalse(hasattr(self.w, "dialog") and self.w.dialog is not None)
 
     def test_without_the_input_action_no_hook_is_installed(self):
         env = self.w.env

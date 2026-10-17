@@ -19,12 +19,15 @@ run inside FS25.** Upstream capabilities are recorded with source evidence in
 
 How it is used: install once from the CI artifact (copy the `FS25_Farmhand` mod
 folder; double-click `FarmhandCompanion/scripts/install_windows.cmd`), then in
-game press **Left Alt + J** on foot. The
-windowless local companion selects an available tractor and forage wagon, hitches
-them and brings them to you; the game shows its progress as notifications. No
+game, on foot, press **Left Alt + K** and type what you want ("bring me a tractor
+and forage wagon", "what are you doing?", "stop"), or use **Left Alt + J** (bring
+the pair here) and **Left Alt + L** (stop). The windowless local companion
+interprets the words, selects an available tractor and forage wagon, hitches them
+and brings them to you; the game shows its progress as notifications. No
 console, vehicle IDs, configuration file, AutoDrive graph or terminal is needed:
 GIANTS' own helper (GOTO) drives, and AutoDrive is used when it is installed and
-has a marker near you. LLM integration and speech are not part of AC-001. The
+has a marker near you. A local model and push-to-talk speech are being added behind the same text path;
+everything works without them. The
 live validation session: [mod/README.md](mod/README.md).
 
 ## Pre-game CI checks

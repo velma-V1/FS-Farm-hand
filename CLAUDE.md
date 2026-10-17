@@ -57,7 +57,13 @@ ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snap
   Only six ops exist: `drive` (AutoDrive), `navigate` (GIANTS GOTO), `stage`,
   `align`, `attach`, `stop`. ACCEPTED/DONE is never success; the game stops a
   session's motion if the heartbeat is lost for 10 s. Player key presses arrive as
-  `request` frames; `companion/service.py` turns each into an AC-001 intent.
+  `request` frames (a fixed `action` or typed `text`).
+- `companion/language.py` (deterministic rules; a local model may sit behind them)
+  turns words into a command proposal (`protocol/command.schema.json`, no
+  authority); `companion/coordinator.py` validates it, runs one job at a time on a
+  worker thread, answers STOP/STATUS immediately (STOP cancels before the next step
+  and pre-empts the running bridge op); `companion/service.py` is the windowless
+  process wiring it together.
 - `mod/` — FS25 Lua mod `FS25_Farmhand` (load order in `modDesc.xml`):
   `FarmhandObserve` (read-only snapshots), `FarmhandHitch` (GIANTS GOTO staging,
   bounded ALIGN_REVERSE, GIANTS attach), `FarmhandBridge` (executes companion

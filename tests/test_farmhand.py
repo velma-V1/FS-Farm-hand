@@ -1031,3 +1031,90 @@ class PowerAndPtoTests(unittest.TestCase):
         self.assertEqual(result.status, "COMPLETE", result)
         tractor = world.items[result.equipment_ids[0]]
         self.assertEqual([j.index for j in tractor.output_joints if not j.free], [4])
+
+
+class CancellationTests(unittest.TestCase):
+    """STOP/CANCEL: deterministic, honoured before every physical step, and a
+    cancelled pair is stopped and released like after any failure."""
+
+    def test_cancel_before_start_moves_and_reserves_nothing(self):
+        import threading
+        world = simple_world()
+        before = world.snapshot()
+        cancel = threading.Event()
+        cancel.set()
+        result = Executor(world).execute(intent(), cancel=cancel)
+        self.assertEqual((result.status, result.reason), ("CANCELLED", "CANCELLED_BY_REQUESTER"))
+        self.assertNotIn("RESERVE", result.states)
+        self.assertEqual(world.snapshot(), before)
+
+    def test_cancel_between_steps_stops_before_the_next_one(self):
+        import threading
+        for step in ("stage", "align", "attach"):
+            with self.subTest(after=step):
+                cancel = threading.Event()
+                calls = []
+
+                class Cancelling(FaultWorld):
+                    def stage(self, *args):
+                        calls.append("stage")
+                        super().stage(*args)
+                        if step == "stage":
+                            cancel.set()
+
+                    def align(self, *args):
+                        calls.append("align")
+                        super().align(*args)
+                        if step == "align":
+                            cancel.set()
+
+                    def attach(self, *args):
+                        calls.append("attach")
+                        super().attach(*args)
+                        if step == "attach":
+                            cancel.set()
+
+                    def deliver(self, *args):
+                        calls.append("deliver")
+                        super().deliver(*args)
+
+                world = Cancelling(None)
+                result = Executor(world).execute(intent(), cancel=cancel)
+                self.assertEqual((result.status, result.reason), ("CANCELLED", "CANCELLED_BY_REQUESTER"))
+                self.assertEqual(calls[-1], step)                  # nothing after the cancel
+                self.assertEqual(result.states[-2:], ("STOP", "RELEASE"))
+                self.assertTrue(all(x.reserved_by is None and x.stopped for x in world.snapshot()))
+
+    def test_a_step_pre_empted_by_the_stop_is_cancelled_not_failed(self):
+        import threading
+        cancel = threading.Event()
+
+        class Preempted(FaultWorld):
+            def align(self, *args):
+                cancel.set()                                       # the requester said stop...
+                raise RuntimeError("STOPPED")                      # ...and the game pre-empted ALIGN
+
+        result = Executor(Preempted(None)).execute(intent(), cancel=cancel)
+        self.assertEqual(result.status, "CANCELLED")
+        world, plain = Preempted(None), None
+        plain = Executor(world).execute(intent())                  # the same failure without a cancel
+        self.assertEqual(plain.status, "FAILED")
+
+    def test_cancelled_pair_that_cannot_be_stopped_stays_reserved(self):
+        import threading
+        cancel = threading.Event()
+
+        class NoStop(FaultWorld):
+            def stage(self, *args):
+                super().stage(*args)
+                cancel.set()
+
+        world = NoStop("stop")
+        result = Executor(world).execute(intent(), cancel=cancel)
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "CLEANUP_NOT_CONFIRMED"))
+        self.assertTrue(all(x.reserved_by is not None for x in world.snapshot()))
+
+    def test_states_are_reported_as_they_are_entered(self):
+        seen = []
+        result = Executor(simple_world()).execute(intent(), on_state=seen.append)
+        self.assertEqual(tuple(seen), result.states)

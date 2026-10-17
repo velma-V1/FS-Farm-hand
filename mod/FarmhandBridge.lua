@@ -20,9 +20,10 @@
 --    companion and beats while it is alive. Commands must carry that session
 --    and a strictly increasing id; anything else is ignored or REJECTED.
 --
--- 3. Player requests: one on-foot key (modDesc action FARMHAND_FETCH_HERE) asks the
---    companion for AC-001 "here" with a `request` frame; the companion answers
---    through the session file's notice, shown as an in-game notification.
+-- 3. Player requests, on foot: FARMHAND_FETCH_HERE (AC-001 "here") and FARMHAND_STOP
+--    are fixed keys; FARMHAND_TALK opens GIANTS' text dialog and sends the typed
+--    words. Each is a `request` frame; the companion interprets and answers through
+--    the session file's notice, shown as an in-game notification.
 --
 -- Every game and mod call is cited in adapters/EVIDENCE.md. Lua 5.1 compatible.
 
@@ -44,7 +45,8 @@ Bridge.DRIVE_TIMEOUT_MS = 1200000
 Bridge.NAVIGATE_STALL_MS = 90000
 Bridge.NAVIGATE_PROGRESS_M = 2
 Bridge.STOP_TIMEOUT_MS = 15000
-Bridge.REQUEST_COOLDOWN_MS = 2000      -- a held or repeated key sends one request
+Bridge.REQUEST_COOLDOWN_MS = 2000      -- a held or repeated fetch key sends one request
+Bridge.MAX_TEXT = 200                   -- protocol/frame.schema.json request.text
 
 local function log(fmt, ...)
     local ok, msg = pcall(string.format, fmt, ...)
@@ -525,8 +527,29 @@ Bridge.NOTICES = {
     ACCEPTED = "Farmhand: fetching a tractor and forage wagon",
     BUSY = "Farmhand: already working on a request",
     COMPLETE = "Farmhand: tractor and forage wagon delivered",
+    CANCELLED = "Farmhand: stopped",
+    STOPPING = "Farmhand: stopping",
+    NOTHING_TO_STOP = "Farmhand: nothing to stop",
+    NOT_UNDERSTOOD = "Farmhand: sorry, I did not understand that",
     NOT_LINKED = "Farmhand: the companion is not running",
+    NO_TEXT_INPUT = "Farmhand: the text field is unavailable",
+    STATUS_IDLE = "Farmhand: idle",
 }
+-- What each executor state means to the player (STATUS_WORKING_<state>).
+Bridge.STEPS = {
+    FIND = "looking for a tractor and forage wagon",
+    RESERVE = "reserving the equipment",
+    TRAVEL_NEAR = "driving to the wagon",
+    STAGE = "lining up with the wagon",
+    ALIGN_REVERSE = "reversing to the wagon",
+    ATTACH = "hitching the wagon",
+    VERIFY = "checking the hitch",
+    DELIVER = "driving to you",
+    STOP = "stopping",
+    RELEASE = "finishing",
+}
+Bridge.OUTCOMES = { COMPLETE = "delivered", CANCELLED = "stopped", BLOCKED = "not started",
+                    FAILED = "failed", UNVERIFIED = "unclear; check the tractor" }
 -- Readable texts for the most common reasons; any other code is shown as is.
 Bridge.REASONS = {
     NO_ELIGIBLE_PAIR = "no available tractor and forage wagon",
@@ -542,6 +565,10 @@ Bridge.REASONS = {
 function Bridge.noticeText(notice)
     local fixed = Bridge.NOTICES[notice]
     if fixed ~= nil then return fixed, false end
+    local step = notice:match("^STATUS_WORKING_([%u_]+)$")
+    if step ~= nil then return "Farmhand: working - " .. (Bridge.STEPS[step] or step), false end
+    local last = notice:match("^STATUS_LAST_(%u+)$")
+    if last ~= nil then return "Farmhand: idle; last job " .. (Bridge.OUTCOMES[last] or last), false end
     local status, reason = notice:match("^(%u+)_([%w_]+)$")
     if status == "BLOCKED" or status == "FAILED" or status == "UNVERIFIED" then
         return "Farmhand: not delivered - " .. (Bridge.REASONS[reason] or reason), true
@@ -560,36 +587,93 @@ function Bridge:notify(text, critical)
     end)
 end
 
--- The on-foot key. A request is only a wish: the companion validates it, picks
--- the equipment and answers with a notice. Nothing moves here.
+-- A request is only a wish: the companion interprets and validates it, picks the
+-- equipment and answers with a notice. Nothing moves here.
+function Bridge:sendRequest(field, value)
+    if self.session == nil or self.pipe == nil then return self:notify(Bridge.NOTICES.NOT_LINKED, true) end
+    self.requestId = self.requestId + 1
+    log("request %d (%s) sent to companion %s", self.requestId, field, self.session)
+    self:send({ event = "request", protocol = self.Observe.PROTOCOL, session = self.session,
+                id = self.requestId, [field] = value })
+end
+
 function Bridge:requestHere()
     if self.env == nil then return end
     if self.lastRequestAt ~= nil and self.clock - self.lastRequestAt < Bridge.REQUEST_COOLDOWN_MS then return end
     self.lastRequestAt = self.clock
+    self:sendRequest("action", "fetch_here")
+end
+
+-- STOP is a fixed key, never a sentence to type: no cooldown, it is idempotent.
+function Bridge:requestStop()
+    if self.env == nil then return end
+    self:sendRequest("action", "stop")
+end
+
+-- Words for the companion: control characters become spaces, surrounding space
+-- is trimmed, and the text is cut to MAX_TEXT bytes on a UTF-8 boundary. nil if
+-- nothing (valid) is left.
+function Bridge.cleanText(text, validUtf8)
+    if type(text) ~= "string" then return nil end
+    text = text:gsub("%c", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    text = text:sub(1, Bridge.MAX_TEXT)
+    for _ = 1, 3 do
+        if validUtf8(text) then break end
+        text = text:sub(1, -2)
+    end
+    if #text == 0 or not validUtf8(text) then return nil end
+    return text
+end
+
+-- GIANTS' own text dialog, called as Courseplay does (CustomFieldManager.lua:126-130,
+-- CpCourseManagerFrame.lua:636-644): callback(target, text, clickOk), target,
+-- default text, prompt, title, max characters, confirm button text.
+function Bridge:openTextInput()
+    local env = self.env
+    if env == nil then return end
     if self.session == nil or self.pipe == nil then return self:notify(Bridge.NOTICES.NOT_LINKED, true) end
-    self.requestId = self.requestId + 1
-    log("request %d sent to companion %s", self.requestId, self.session)
-    self:send({ event = "request", protocol = self.Observe.PROTOCOL, session = self.session,
-                id = self.requestId, target = "here" })
+    local bridge = self
+    local ok = pcall(function()
+        local okText = env.g_i18n and env.g_i18n:getText("button_ok") or "OK"
+        env.TextInputDialog.show(function(_, text, clickOk)
+            if clickOk then
+                local clean = Bridge.cleanText(text, bridge.Observe.validUtf8)
+                if clean ~= nil then bridge:sendRequest("text", clean) end
+            end
+        end, bridge, "", "Tell Farmhand what to do, for example: bring me a tractor and forage wagon",
+            "Farmhand", Bridge.MAX_TEXT, okText)
+    end)
+    if not ok then self:notify(Bridge.NOTICES.NO_TEXT_INPUT, true) end
 end
 
 -- Add the key to the player's global actions, as Courseplay does
 -- (Courseplay.lua:142-151); GIANTS calls the hook for the owning player whenever
 -- it registers the on-foot actions (PlayerInputComponent 142-151). The original
 -- is restored on unload, so a reloaded savegame never stacks two hooks.
+Bridge.KEYS = { FARMHAND_FETCH_HERE = "requestHere", FARMHAND_TALK = "openTextInput",
+                FARMHAND_STOP = "requestStop" }
+
 function Bridge:installInput(env)
-    local component, action = env.PlayerInputComponent, env.InputAction and env.InputAction.FARMHAND_FETCH_HERE
-    if component == nil or action == nil or env.Utils == nil then
-        log("no player input; the in-game request key is unavailable")
+    local component, actions = env.PlayerInputComponent, env.InputAction
+    if component == nil or actions == nil or env.Utils == nil then
+        log("no player input; the in-game Farmhand keys are unavailable")
         return
     end
-    local bridge = self
+    local bridge, keys = self, {}
+    for name, method in pairs(Bridge.KEYS) do
+        if actions[name] ~= nil then keys[#keys + 1] = { action = actions[name], method = method }
+        else log("input action %s missing; that key is unavailable", name) end
+    end
+    if #keys == 0 then return end
+    table.sort(keys, function(a, b) return a.method < b.method end)
     self.inputOriginal = component.registerGlobalPlayerActionEvents
     component.registerGlobalPlayerActionEvents = env.Utils.overwrittenFunction(self.inputOriginal,
         function(inputComponent, superFunc, ...)
             superFunc(inputComponent, ...)
-            env.g_inputBinding:registerActionEvent(action, inputComponent,
-                function() bridge:requestHere() end, false, true, false, true)
+            for _, key in ipairs(keys) do
+                env.g_inputBinding:registerActionEvent(key.action, inputComponent,
+                    function() bridge[key.method](bridge) end, false, true, false, true)
+            end
         end)
 end
 

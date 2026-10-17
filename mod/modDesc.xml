@@ -10,16 +10,24 @@
         <en>Farmhand AC-001 (development)</en>
     </title>
     <description>
-        <en>Press Left Alt + J on foot: the local Farmhand companion fetches an owned tractor and forage wagon, hitches them and brings them to you. The fhHitch* console commands are diagnostics. Nothing moves on load.</en>
+        <en>On foot: Left Alt + K to tell Farmhand what to do in your own words, Left Alt + J to bring a tractor and forage wagon to you, Left Alt + L to stop. The local Farmhand companion does the work and reports in game. The fhHitch* console commands are diagnostics. Nothing moves on load.</en>
     </description>
     <!-- Actions, bindings and texts as AutoDrive 3.0.1.4 modDesc.xml 51-119. -->
     <l10n filenamePrefix="translations/translation" />
     <actions>
         <action name="FARMHAND_FETCH_HERE"/>
+        <action name="FARMHAND_TALK"/>
+        <action name="FARMHAND_STOP"/>
     </actions>
     <inputBinding>
         <actionBinding action="FARMHAND_FETCH_HERE">
             <binding device="KB_MOUSE_DEFAULT" input="KEY_lalt KEY_j" />
+        </actionBinding>
+        <actionBinding action="FARMHAND_TALK">
+            <binding device="KB_MOUSE_DEFAULT" input="KEY_lalt KEY_k" />
+        </actionBinding>
+        <actionBinding action="FARMHAND_STOP">
+            <binding device="KB_MOUSE_DEFAULT" input="KEY_lalt KEY_l" />
         </actionBinding>
     </inputBinding>
     <multiplayer supported="false"/>

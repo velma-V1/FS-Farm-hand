@@ -61,13 +61,16 @@ class CommandLink:
         self._next_id = 1
         self._beat = 0
         self._last_session: str | None = None
-        self._requests: deque[int] = deque()
+        self._requests: deque[dict] = deque()
         self._last_request = 0
         self._notice: str | None = None
         self._notice_id = 0
         # The heartbeat and pipe threads both write the session file.
         self._write_lock = threading.Lock()
-        self.busy = False
+        # One command file at a time, held from writing it until the game answers
+        # it (normally one frame): a stop from another thread (the requester's
+        # cancel) waits only for that, never for the running operation's end.
+        self._send_lock = threading.Lock()
         self.closed = threading.Event()
 
     def _write_session(self) -> None:
@@ -103,19 +106,11 @@ class CommandLink:
         log.info("new session %s", self.session)
         self._write_session()
 
-    def next_request(self, timeout: float) -> int | None:
-        """The id of the player's next request of this session, or None. Taking one
-        marks the link busy (further presses are answered BUSY) until done()."""
+    def next_request(self, timeout: float) -> dict | None:
+        """The player's next request frame of this session, or None."""
         def pop():
-            if not self._requests:
-                return None
-            self.busy = True
-            return self._requests.popleft()
+            return self._requests.popleft() if self._requests else None
         return self._wait(pop, timeout)
-
-    def done(self) -> None:
-        with self._cond:
-            self.busy = False
 
     def linked_session(self) -> tuple[str | None, float | None]:
         """The session the latest snapshot names, and when any frame last arrived."""
@@ -129,7 +124,6 @@ class CommandLink:
             self.files.remove(SESSION_FILE)
 
     def on_frame(self, frame: dict) -> None:
-        busy = False
         with self._cond:
             self._last_frame_at = self.clock()
             event = frame["event"]
@@ -145,12 +139,8 @@ class CommandLink:
             elif event == "request" and frame["session"] == self.session and frame["id"] > self._last_request:
                 # Strictly increasing per session: a replayed or older press never runs.
                 self._last_request = frame["id"]
-                busy = self.busy
-                if not busy:
-                    self._requests.append(frame["id"])
+                self._requests.append(frame)
             self._cond.notify_all()
-        if busy:
-            self.notice("BUSY")
 
     def _wait(self, predicate, timeout: float):
         deadline = self.clock() + timeout
@@ -175,15 +165,18 @@ class CommandLink:
 
     def command(self, op: str, args: dict) -> tuple[str, str]:
         """Send one command; return its terminal (status, code) from the game."""
-        with self._cond:
-            command_id, self._next_id = self._next_id, self._next_id + 1
-        text = encode_command(self.session, command_id, op, args)
-        log.info("command id=%d op=%s %s", command_id, op, args)
-        self.files.write(COMMAND_FILE, text)
-        first = self._wait(lambda: (self._results.get(command_id) or [None])[0], ACCEPT_TIMEOUT_S)
-        if first is None:
+        with self._send_lock:
+            # Ids are taken in send order: the game ignores any id lower than one it saw.
+            with self._cond:
+                command_id, self._next_id = self._next_id, self._next_id + 1
+            text = encode_command(self.session, command_id, op, args)
+            log.info("command id=%d op=%s %s", command_id, op, args)
+            self.files.write(COMMAND_FILE, text)
+            first = self._wait(lambda: (self._results.get(command_id) or [None])[0], ACCEPT_TIMEOUT_S)
             # Removing the file proves the game never read it; otherwise unknown.
-            if self.files.remove(COMMAND_FILE):
+            unread = first is None and self.files.remove(COMMAND_FILE)
+        if first is None:
+            if unread:
                 raise StepFailed("NOT_ACCEPTED")
             raise StepUnverified("NO_ACCEPTANCE")
         if first[0] == "REJECTED":
@@ -276,6 +269,12 @@ class FS25World:
                 raise ValueError("Cannot release moving or missing equipment")
             del self._reservations[owner]
             log.info("released %s", reservation[1])
+
+    def reservation(self, owner: str) -> tuple[str, str] | None:
+        """The (tractor, wagon) ids ``owner`` holds, if any."""
+        with self._lock:
+            reservation = self._reservations.get(owner)
+        return None if reservation is None else reservation[1]
 
     def retained(self) -> tuple[str, ...]:
         """Owners whose reservation outlived their request (stop never confirmed)."""

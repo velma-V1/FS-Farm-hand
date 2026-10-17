@@ -39,13 +39,17 @@ answer; one sitting covers them. Needs FS25 and Python 3.12 (`py` launcher).
    single-player save with the Farmhand mod. Own one tractor with nothing attached
    (no front weight either) and one forage wagon. Expect the notification
    "Farmhand: companion connected". Get out of the tractor, walk somewhere the
-   tractor can drive to and press **Left Alt + J**. Expect "fetching a tractor and
-   forage wagon", the tractor driving to the wagon, reversing, hitching, then
-   driving to about 10 m in front of you and "tractor and forage wagon delivered".
+   tractor can drive to, press **Left Alt + K** and type "bring me a tractor and
+   forage wagon". Expect "fetching a tractor and forage wagon", the tractor driving
+   to the wagon, reversing, hitching, then driving to about 10 m in front of you and
+   "tractor and forage wagon delivered". During the run, Left Alt + K "what are you
+   doing?" should name the current step.
 3. **Far pickup.** Park the tractor more than 60 m from the wagon and repeat (GIANTS
    GOTO travels to the wagon first).
-4. **Refusals and recovery.** Press the key again during a run (expect "already
-   working on a request"). Attach a front weight to the tractor and press (expect
+4. **Refusals and recovery.** Start a run with **Left Alt + J**, press it again
+   (expect "already working on a request"), then press **Left Alt + L** (expect
+   "stopping", the tractor stopping where it is, then "stopped"); type "stop" during
+   another run for the same. Type something unrelated (expect "did not understand"). Attach a front weight to the tractor and press (expect
    "not delivered - no available tractor and forage wagon"; nothing moves), then
    remove it. Quit to the main menu, load the save again, expect "companion
    connected" and press once more.

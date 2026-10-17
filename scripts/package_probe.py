@@ -26,7 +26,8 @@ RUNTIME_FILES = (
     "translations/translation_en.xml",
 )
 SOURCE_FILES = RUNTIME_FILES[1:5]
-REQUEST_ACTION = "FARMHAND_FETCH_HERE"
+# The on-foot keys (mod/FarmhandBridge.lua Bridge.KEYS).
+REQUEST_ACTIONS = ["FARMHAND_FETCH_HERE", "FARMHAND_TALK", "FARMHAND_STOP"]
 
 
 def fail(message: str) -> None:
@@ -75,20 +76,21 @@ def validate_mod(path: Path, *, exact_files: bool) -> None:
     if lua_files != tuple(sorted(SOURCE_FILES)):
         fail(f"unexpected/unreferenced Lua files: {lua_files!r}")
 
-    # The in-game request key: declared, bound and named (AutoDrive's layout).
+    # The in-game keys: each declared, bound and named exactly once (AutoDrive's layout).
     actions = [a.attrib.get("name") for a in root.findall("actions/action")]
     bindings = [b.attrib.get("action") for b in root.findall("inputBinding/actionBinding")]
     l10n = root.find("l10n")
-    if actions != [REQUEST_ACTION] or bindings != [REQUEST_ACTION]:
-        fail(f"request action not declared and bound exactly once: {actions!r} {bindings!r}")
+    if actions != REQUEST_ACTIONS or bindings != REQUEST_ACTIONS:
+        fail(f"request actions not declared and bound exactly once: {actions!r} {bindings!r}")
     if l10n is None or l10n.attrib.get("filenamePrefix") != "translations/translation":
         fail("modDesc l10n must point at translations/translation")
     try:
         texts = ElementTree.parse(path / "translations" / "translation_en.xml").getroot()
     except (ElementTree.ParseError, OSError) as exc:
         fail(f"invalid translation_en.xml: {exc}")
-    if f"input_{REQUEST_ACTION}" not in [t.attrib.get("name") for t in texts.findall("texts/text")]:
-        fail("translation_en.xml does not name the request action")
+    named = [t.attrib.get("name") for t in texts.findall("texts/text")]
+    if any(f"input_{action}" not in named for action in REQUEST_ACTIONS):
+        fail("translation_en.xml does not name every request action")
 
     if exact_files:
         actual = tuple(sorted(p.relative_to(path).as_posix() for p in path.rglob("*")
@@ -131,10 +133,13 @@ COMPANION_FILES = (
     "adapters/fs25.py",
     "adapters/world.py",
     "companion/bridge.py",
+    "companion/coordinator.py",
     "companion/executor.py",
     "companion/hitch.py",
+    "companion/language.py",
     "companion/run.py",
     "companion/service.py",
+    "protocol/command.schema.json",
     "protocol/frame.schema.json",
     "protocol/intent.schema.json",
     "protocol/ipc.py",

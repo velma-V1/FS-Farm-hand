@@ -75,6 +75,7 @@ class FakeGame:
         self.faults = faults or {}
         self.session_override = session_override
         self.commands, self.lock, self.seq = [], threading.RLock(), 0
+        self.held = None          # (result frame, op, command) of an operation still running
         self.link = CommandLink(FakeFiles(self))
         self.running = True
         threading.Thread(target=self._loop, daemon=True).start()
@@ -86,7 +87,13 @@ class FakeGame:
         """The player's Farmhand key (mod/FarmhandBridge.lua requestHere)."""
         with self.lock:
             self._emit({"event": "request", "protocol": 2, "session": session or self.link.session,
-                        "id": request_id, "target": "here"})
+                        "id": request_id, "action": "fetch_here"})
+
+    def say(self, request_id, text):
+        """Typed words from the in-game text field."""
+        with self.lock:
+            self._emit({"event": "request", "protocol": 2, "session": self.link.session,
+                        "id": request_id, "text": text})
 
     def _emit(self, frame):
         parse_frame((json.dumps(frame) + "\n").encode())        # the real decoder's schema
@@ -121,10 +128,16 @@ class FakeGame:
         if fault == "lost":                       # consumed, then nothing at all
             return
         result = {"event": "result", "protocol": 2, "session": session, "id": cid, "op": op}
+        if op == "stop" and self.held is not None:      # pre-empts the running operation
+            self._emit({**self.held[0], "status": "FAILED", "code": "STOPPED"})
+            self.held = None
         if fault and fault.startswith("REJECTED"):
             return self._emit({**result, "status": "REJECTED", "code": fault.split(":")[1]})
         self._emit({**result, "status": "ACCEPTED", "code": "ACCEPTED"})
         if fault == "no_terminal":
+            return
+        if fault == "hold":                       # still running until finish() or a stop
+            self.held = (result, op, command)
             return
         if fault:
             status, code = fault.split(":")
@@ -564,35 +577,52 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(notices, ["ACCEPTED", "COMPLETE"])
         self.assertEqual(self.ops(game), ["stage", "align", "attach", "navigate", "stop"])
         self.assertEqual(self.session_notice(game), ("COMPLETE", 2))
-        self.assertFalse(game.link.busy)
 
     def ops(self, game):
         return [c["op"] for c in game.commands]
 
-    def test_presses_while_busy_replayed_or_foreign_never_run(self):
-        game, notices = self.start(autodrive=False)
-        game.link.busy = True                      # a request is running
+    def test_while_a_job_runs_presses_are_busy_and_status_and_stop_answer_at_once(self):
+        game, notices = self.start(autodrive=False, faults={"align": "hold"})
         game.press(1)
-        self.wait_for(lambda: notices == ["BUSY"])
-        game.link.done()
+        self.wait_for(lambda: game.held is not None)            # reversing to the wagon
+        game.press(2)
+        self.wait_for(lambda: notices[-1:] == ["BUSY"])
+        game.say(3, "Farmhand, what are you doing?")
+        self.wait_for(lambda: notices[-1:] == ["STATUS_WORKING_ALIGN_REVERSE"])
+        game.say(4, "STOP!")
+        self.wait_for(lambda: notices[-1:] == ["CANCELLED"])
+        self.assertEqual(notices, ["ACCEPTED", "BUSY", "STATUS_WORKING_ALIGN_REVERSE", "STOPPING", "CANCELLED"])
+        ops = self.ops(game)
+        self.assertEqual(ops[:2], ["stage", "align"])
+        self.assertNotIn("attach", ops)                          # nothing after the stop
+        self.assertIn("stop", ops)
+        self.assertEqual(game.link_world._reservations, {})     # stopped, then released
+        game.say(5, "what are you doing")
+        self.wait_for(lambda: notices[-1:] == ["STATUS_LAST_CANCELLED"])
+
+    def test_replayed_or_foreign_requests_never_run(self):
+        game, notices = self.start(autodrive=False)
+        game.press(1)
+        self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
+        commands = len(game.commands)
         game.press(1)                              # replayed id
         game.press(2, session="someone-else")      # not this companion's session
         time.sleep(0.2)
-        self.assertEqual(notices, ["BUSY"])
-        self.assertEqual(game.commands, [])
-        game.press(3)
-        self.wait_for(lambda: notices[-1] == "COMPLETE")
-        self.assertEqual(notices, ["BUSY", "ACCEPTED", "COMPLETE"])
+        self.assertEqual(notices, ["ACCEPTED", "COMPLETE"])
+        self.assertEqual(len(game.commands), commands)
 
-    def test_taking_a_request_marks_the_link_busy(self):
-        link = CommandLink(FakeFiles(None))
-        link.on_frame({"event": "request", "protocol": 2, "session": link.session, "id": 1, "target": "here"})
-        self.assertEqual(link.next_request(0.1), 1)
-        self.assertTrue(link.busy)
-        link.on_frame({"event": "request", "protocol": 2, "session": link.session, "id": 2, "target": "here"})
-        self.assertIsNone(link.next_request(0.05))
-        link.done()
-        self.assertFalse(link.busy)
+    def test_typed_words_are_interpreted_and_unknown_words_change_nothing(self):
+        game, notices = self.start(autodrive=False)
+        game.say(1, "make me a sandwich")
+        self.wait_for(lambda: notices == ["NOT_UNDERSTOOD"])
+        game.say(2, "stop")
+        self.wait_for(lambda: notices[-1:] == ["NOTHING_TO_STOP"])
+        game.say(3, "status")
+        self.wait_for(lambda: notices[-1:] == ["STATUS_IDLE"])
+        self.assertEqual(game.commands, [])
+        game.say(4, "please bring me a tractor and forage wagon")
+        self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
+        self.assertEqual(self.ops(game), ["stage", "align", "attach", "navigate", "stop"])
 
     def test_failures_are_reported_with_their_reason(self):
         game, notices = self.start(autodrive=False)
@@ -664,13 +694,14 @@ class ServiceTests(unittest.TestCase):
         link = CommandLink(Flaky(None))
         link.heartbeat()
         link.notice("BUSY")
-        link.on_frame({"event": "request", "protocol": 2, "session": link.session, "id": 1, "target": "here"})
-        self.assertEqual(link.next_request(0.1), 1)
+        link.on_frame({"event": "request", "protocol": 2, "session": link.session, "id": 1, "action": "fetch_here"})
+        self.assertEqual(link.next_request(0.1)["id"], 1)
         self.assertFalse(link.closed.is_set())
 
     def test_notices_are_strict_tokens(self):
-        from companion.service import notice_code
+        from companion.coordinator import result_notice as notice_code
         self.assertEqual(notice_code("COMPLETE", "DELIVERY_OBSERVED"), "COMPLETE")
+        self.assertEqual(notice_code("CANCELLED", "CANCELLED_BY_REQUESTER"), "CANCELLED")
         self.assertEqual(notice_code("FAILED", "bad reason!"), "FAILED_bad_reason_")
         self.assertEqual(len(notice_code("FAILED", "X" * 200)), 64)
         self.assertIn('notice="BUSY" noticeId="3"', encode_session("s1", 0, "BUSY", 3))
