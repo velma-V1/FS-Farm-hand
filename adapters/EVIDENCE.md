@@ -192,6 +192,19 @@ engine XML API (`XMLFile.loadIfExists`, `getString`), and live under
 | In-game text field | PROVEN use | GIANTS `TextInputDialog` has no FS25 GDN class page (index checked 2026-10-17); Courseplay 8.1.0.3 calls `TextInputDialog.show(callback, target, defaultText, prompt, title, maxCharacters, confirmText, args)` with `callback(target, text, clickOk, args)` (`CustomFieldManager.lua:126-130`, `CpCourseManagerFrame.lua:636-644`, `AIParameterSettingList.lua:554-556`) | `Bridge:openTextInput` (Talk key): 200 characters, the typed words cleaned (control characters to spaces, trimmed, cut on a UTF-8 boundary) and sent as `request.text`; a missing or failing dialog gives a critical notice |
 | In-game notification | PROVEN (critical) / UNVERIFIED (ok) | GDN `PlayerInputComponent` 1150 `mission:addIngameNotification(FSBaseMission.INGAME_NOTIFICATION_CRITICAL, text)`; `INGAME_NOTIFICATION_OK` is not evidenced for FS25 | Failures use the critical kind; other notices use `INGAME_NOTIFICATION_OK` when it exists, else the critical kind |
 
+## Local language model — `companion/model.py` (optional)
+
+Researched and pinned 2026-10-17; the two digests below were re-checked against the
+GitHub release API and the Hugging Face tree API of the pinned revision.
+
+| Part | State | Source | Farmhand use |
+| --- | --- | --- | --- |
+| Runtime | PROVEN artifact / UNVERIFIED on the user's PC | llama.cpp (MIT) release `b11714` (2026-10-17), asset `llama-b11714-bin-win-cpu-x64.zip`, 19,662,606 B, sha256 `f78eded047061a3f86372db426797400a2f1bb0ec37868d5927dd820eb3386c0`. `tools/server/README.md` at `b11714`: `-ngl` defaults to `auto` (so `-ngl 0` is explicit), `-dev/--device none`, `-t`, `-c`, `-np`, `--host`, `--port`, `--no-webui`, `GET /health`, `/v1/chat/completions` with `response_format {"type":"json_schema","schema":…}` | CPU-only build, `-ngl 0 --device none -t 4 -c 2048 -np 1 --host 127.0.0.1`, started windowless at below-normal priority; never VRAM. Driven with stdlib `urllib` through a no-proxy opener |
+| Schema constraint | PROVEN limits | `grammars/README.md` at `b11714`: the schema constrains decoding but is not injected into the prompt; `properties` cannot be mixed with `oneOf`; unsupported features are skipped silently | A flat `MODEL_SCHEMA` (command enum incl. `unknown`, `place`, `field`) described in the prompt; every answer is re-validated in Python and mapped to a proposal checked against `protocol/command.schema.json`; anything else is not understood |
+| Model | PROVEN artifact / UNVERIFIED quality | `unsloth/Qwen3-4B-Instruct-2507-GGUF` @ `a06e946bb6b655725eafa393f4a9745d460374c9` (Apache-2.0), `Qwen3-4B-Instruct-2507-Q4_K_M.gguf`, 2,497,281,120 B, sha256 `3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597`; non-thinking instruct | Downloaded once by `python -m companion.model --install` (the installer asks), size and sha256 verified before use, archive entries confined to the install folder. Alternatives to measure if needed: `ibm-granite/granite-4.2-3b-GGUF`, `unsloth/Qwen3.5-2B-GGUF` (both Apache-2.0) |
+| Speed | UNVERIFIED (estimate) | Research estimate for a ~2.5 GB Q4 model on a 7800X3D: about 2–4 s per short sentence on CPU | 10 s timeout per sentence; the rules answer STOP, STATUS and common wording first, so the model is only consulted for wording they miss |
+| Speech (next) | Researched, not implemented | `faster-whisper` 1.2.1 (MIT; ctranslate2 4.8.3 cp312 win wheel), `Systran/faster-whisper-base.en` (MIT, 145 MB), CPU int8; `sounddevice` 0.5.6 (MIT, PortAudio bundled). TTS: Windows `System.Speech` through Windows PowerShell 5.1; Piper is GPL-3.0 (`piper-tts` 1.8.0), not used without a license review | See BUILD_SPEC.md, finished-product definition |
+
 ## Rejected claims
 
 - DeepWiki stated AutoDrive's `startPathPlanningToVehicle` is useful "for hitching a
@@ -244,3 +257,5 @@ engine XML API (`XMLFile.loadIfExists`, `getString`), and live under
 13. The player path on the user's PC: the Left Alt + J / K / L bindings appearing
    and firing on foot, GIANTS' text dialog opening and returning the typed words, the notifications showing, the companion starting windowless
    at logon from the registry Run key, and its single-instance pipe check.
+14. The local model on the user's PC: install download, start time, sentence
+   latency with FS25 running, and that it never takes VRAM.

@@ -137,6 +137,7 @@ COMPANION_FILES = (
     "companion/executor.py",
     "companion/hitch.py",
     "companion/language.py",
+    "companion/model.py",
     "companion/run.py",
     "companion/service.py",
     "protocol/command.schema.json",

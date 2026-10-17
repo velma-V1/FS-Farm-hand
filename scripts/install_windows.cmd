@@ -9,9 +9,17 @@ if not exist ".venv\Scripts\python.exe" (
     py -3.12 -m venv .venv || goto :failed
 )
 ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check -r requirements.txt || goto :failed
+echo.
+echo Optional: a local language model (about 2.5 GB download, runs on the CPU, never
+echo the graphics card) understands wording the built-in rules do not. Farmhand works
+echo without it.
+choice /c YN /m "Install the local language model now"
+if not errorlevel 2 (
+    ".venv\Scripts\python.exe" -m companion.model --install || echo The model was not installed; Farmhand works without it.
+)
 ".venv\Scripts\python.exe" -m companion.service --install || goto :failed
 echo.
-echo Done. In FS25, press Left Alt + J on foot to bring a tractor and forage wagon.
+echo Done. In FS25, on foot: Left Alt + K to tell Farmhand what to do, Left Alt + L to stop.
 pause
 exit /b 0
 :failed

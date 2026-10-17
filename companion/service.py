@@ -33,7 +33,8 @@ from companion.bridge import (MOD_DIR, SNAPSHOT_TIMEOUT_S, FS25World, game_profi
                               start_local_link)
 from companion.coordinator import FETCH_HERE, Coordinator
 from companion.executor import Executor
-from companion.language import RuleInterpreter
+from companion.language import ChainInterpreter, RuleInterpreter
+from companion.model import ModelInterpreter, ModelServer
 
 log = logging.getLogger("farmhand")
 
@@ -179,9 +180,14 @@ def main(argv=None) -> int:
         log.exception("companion not started")
         return 1
     log.info("companion started; session %s; waiting for FS25", link.session)
+    # The optional local model: words the rules do not know; never STOP, never execution.
+    model = ModelServer()
+    model.start()
+    interpreter = ChainInterpreter(RuleInterpreter(), ModelInterpreter(ready=model.ready))
     try:
-        serve(FS25World(link, categories), entrances)
+        serve(FS25World(link, categories), entrances, interpreter=interpreter)
     finally:
+        model.stop()
         link.close()
     return 0
 

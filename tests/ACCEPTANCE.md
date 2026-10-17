@@ -178,6 +178,15 @@ Executable mapping (`python scripts/check.py`):
   return nothing for anything else; STOP is decided by the rules before any model,
   and a failing model never breaks text input; the command schema admits no IDs,
   farm, coordinates or unknown commands.
+- `tests/test_model.py` (fake llama-server, no model): requests are local,
+  temperature 0 and schema-constrained with the schema described in the prompt;
+  answers map to validated proposals; malformed, off-schema, extra-field, too-long,
+  control-character, empty, HTML and error replies, a slow or unreachable server and
+  an unready one are all "not understood"; rules answer first and STOP never
+  reaches the model; the server command is CPU-only (-ngl 0, no device), local,
+  one slot, at most 4 threads; not installed means rules only; downloads are
+  verified (size, sha256) before use and never left half-written; archive entries
+  cannot escape the install folder; the pinned artifacts are the verified ones.
 - `test_schema_rejects_bad_intent`: malformed intent yields BLOCKED before action.
 - `tests/test_ipc.py`: untrusted frame decoding (chunking, oversized lines, NaN,
   duplicate keys, nesting that exhausts the decoder followed by valid frames,
