@@ -145,14 +145,21 @@ def encode_command(session: str, command_id: int, op: str, args: dict) -> str:
     return '<?xml version="1.0" encoding="utf-8" standalone="no" ?>\n<command ' + " ".join(parts) + " />\n"
 
 
-def encode_session(session: str, beat: int, notice: str | None = None, notice_id: int = 0) -> str:
+MAX_NOTICES = 8
+
+
+def encode_session(session: str, beat: int, notices=()) -> str:
     """The session file: names the companion; ``beat`` changes while it lives.
-    ``notice`` (a token) is shown in game once per increase of ``notice_id``."""
+    ``notices``: the latest (id, token) pairs, oldest first, ids increasing; the
+    game polls once a second and shows each id it has not shown, in order, so a
+    quick STOPPING then CANCELLED are both seen."""
     if not isinstance(session, str) or not _TOKEN.fullmatch(session) or type(beat) is not int or beat < 0:
         raise ValueError("INVALID_SESSION")
-    if type(notice_id) is not int or not 0 <= notice_id <= MAX_COMMAND_ID or (
-            notice is not None and (not isinstance(notice, str) or not _TOKEN.fullmatch(notice))):
+    notices = list(notices)
+    if len(notices) > MAX_NOTICES or any(
+            type(i) is not int or not 1 <= i <= MAX_COMMAND_ID or not isinstance(c, str) or not _TOKEN.fullmatch(c)
+            for i, c in notices) or any(a[0] >= b[0] for a, b in zip(notices, notices[1:])):
         raise ValueError("INVALID_NOTICE")
-    extra = "" if notice is None else f' notice="{notice}" noticeId="{notice_id}"'
+    extra = f' notices="{" ".join(f"{i}:{c}" for i, c in notices)}"' if notices else ""
     return (f'<?xml version="1.0" encoding="utf-8" standalone="no" ?>\n'
             f'<session id="{session}" beat="{beat}"{extra} />\n')

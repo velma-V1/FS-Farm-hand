@@ -26,44 +26,52 @@ session and the probe for a typed command.
 ## The live validation session (one sitting, on the Windows PC)
 
 Everything below is the normal player path plus the checks that only FS25 can
-answer; one sitting covers them. Needs FS25 and Python 3.12 (`py` launcher).
+answer; one sitting covers them. Needs FS25 and Python 3.12 (`py` launcher). No
+microphone is needed: step 6 only confirms that voice says it is unavailable.
 
 1. **Install once.** The CI artifact `FS25_Farmhand-<commit>` holds two folders.
    Copy `FS25_Farmhand` to `Documents/My Games/FarmingSimulator2025/mods/FS25_Farmhand/`
    (a folder, not a ZIP). Put `FarmhandCompanion` anywhere (for example
    `Documents/FarmhandCompanion`) and double-click its
-   `scripts/install_windows.cmd`: it installs the companion and starts it,
-   windowless, now and at every logon. (From a repository checkout, the same
-   script and this `mod/` folder work too.)
-2. **Without AutoDrive.** Disable AutoDrive (if installed) and load a
+   `scripts/install_windows.cmd`. Answer **Y** to the local language model (it
+   runs on the CPU only) and, optionally, to voice. It starts the companion,
+   windowless, now and at every logon.
+2. **Fetch, without AutoDrive.** Disable AutoDrive (if installed) and load a
    single-player save with the Farmhand mod. Own one tractor with nothing attached
-   (no front weight either) and one forage wagon. Expect the notification
-   "Farmhand: companion connected". Get out of the tractor, walk somewhere the
-   tractor can drive to, press **Left Alt + K** and type "bring me a tractor and
-   forage wagon". Expect "fetching a tractor and forage wagon", the tractor driving
-   to the wagon, reversing, hitching, then driving to about 10 m in front of you and
-   "tractor and forage wagon delivered". During the run, Left Alt + K "what are you
-   doing?" should name the current step.
-3. **Far pickup.** Park the tractor more than 60 m from the wagon and repeat (GIANTS
-   GOTO travels to the wagon first).
-4. **Refusals and recovery.** Start a run with **Left Alt + J**, press it again
-   (expect "already working on a request"), then press **Left Alt + L** (expect
-   "stopping", the tractor stopping where it is, then "stopped"); type "stop" during
-   another run for the same. Type something unrelated (expect "did not understand"). Attach a front weight to the tractor and press (expect
-   "not delivered - no available tractor and forage wagon"; nothing moves), then
-   remove it. Quit to the main menu, load the save again, expect "companion
-   connected" and press once more.
-5. **Optional, when there is a microphone.** Hold **Left Alt + V**, say "bring me a
-   tractor and forage wagon", release; expect "listening..." and the same run, with
-   spoken replies. Without a microphone the key says voice is unavailable; that is
-   expected and not a failure.
-6. **With AutoDrive.** Enable AutoDrive with a marker within 50 m of you and leave
+   (no front weight either) and one forage wagon. Expect "Farmhand: companion
+   connected". Get out of the tractor, walk somewhere the tractor can drive to,
+   press **Left Alt + K** and type "bring me a tractor and forage wagon". Expect
+   "fetching a tractor and forage wagon", "lining up with the wagon", the reverse
+   and hitch, "driving to the destination", the pair stopping about 10 m in front
+   of you, facing you, and "tractor and forage wagon delivered". During the run,
+   Left Alt + K "what are you doing?" names the current step.
+3. **Move it.** Walk 50 m away and type "come here" (expect "on my way", the
+   hitched pair driving to you, "arrived"). Type "take this back to the barn" (or
+   the word for one of your buildings, e.g. "shed"): it drives to about 15 m short
+   of that building. Type "take this to the moon" (expect "I do not know that place";
+   nothing moves).
+4. **Far pickup.** Unhitch (by hand), park the tractor more than 60 m from the
+   wagon and fetch again (GIANTS GOTO travels to the wagon first).
+5. **Stop, refusals and recovery.** Start a fetch with **Left Alt + J**, press it
+   again ("already working on a request"), then press **Left Alt + L** ("stopping",
+   the tractor stopping where it is, "stopped"); during another run type "stop"
+   for the same. Type something unrelated ("did not understand"), and something the
+   rules do not know but the model should, e.g. "could you get the forage wagon
+   hooked up and over to me". Attach a front weight and fetch ("no available
+   tractor and forage wagon"; nothing moves), then remove it. Quit to the main
+   menu, load the save again, expect "companion connected" and fetch once more.
+6. **Voice.** Hold **Left Alt + V**. Without a microphone expect "voice is
+   unavailable…" and nothing else; that is correct. With one: say "bring me a
+   tractor and forage wagon" and release; expect "listening..." and the same run,
+   with spoken replies.
+7. **With AutoDrive.** Enable AutoDrive with a marker within 50 m of you and leave
    "start helper" off in the tractor's AutoDrive HUD (Farmhand refuses to drive
-   while AutoDrive would hand the tractor to another AI). Press the key: delivery
-   goes to that marker.
-7. **Send** `Documents/My Games/FarmingSimulator2025/modSettings/FS25_Farmhand/companion.log`,
+   while AutoDrive would hand the tractor to another AI). Fetch: delivery goes to
+   that marker.
+8. **Send** `Documents/My Games/FarmingSimulator2025/modSettings/FS25_Farmhand/companion.log`,
    the `[Farmhand]` lines of `log.txt`, and, if no pair was found, the output of
-   `fhHitchList` (console, `~`). Note what you saw at each step.
+   `fhHitchList` (console, `~`). Note what you saw at each step, and whether the
+   game stayed smooth while the model answered (step 5).
 
 `python -m companion.run here` (or `marker "<name>"`, `marker-id <id>`, or
 `--config farmhand.json field <n>` with `field_entrances` set) runs one request from

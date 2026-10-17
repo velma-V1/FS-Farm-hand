@@ -152,49 +152,116 @@ def server_command(folder: Path, port: int = PORT) -> list[str]:
             "--host", "127.0.0.1", "--port", str(port), "--no-webui"]
 
 
+def bind_to_this_process(process):
+    """Windows: put ``process`` in a Job Object that kills it when its last handle
+    closes, i.e. when this process ends however it ends (Task Manager included).
+    Returns the job handle, which must stay referenced."""
+    import ctypes
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in (
+            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER), ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", BasicLimits), ("IoInfo", IoCounters),
+                    ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
+    limits = ExtendedLimits()
+    limits.BasicLimitInformation.LimitFlags = 0x00002000          # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):   # extended limits
+        raise OSError(ctypes.get_last_error(), "SetInformationJobObject failed")
+    if not kernel32.AssignProcessToJobObject(job, int(process._handle)):
+        raise OSError(ctypes.get_last_error(), "AssignProcessToJobObject failed")
+    return job
+
+
+def close_job(job) -> None:
+    import ctypes
+    ctypes.WinDLL("kernel32").CloseHandle(job)
+
+
 class ModelServer:
-    """Starts llama-server if it is installed; ready() once /health answers."""
+    """Starts llama-server if it is installed; ready() once /health answers from
+    the process it started (never from something else on the port)."""
 
     def __init__(self, folder: Path | None = None, port: int = PORT, opener=LOCAL,
                  popen=subprocess.Popen):
         self.folder, self.port, self.opener, self.popen = folder or install_dir(), port, opener, popen
         self._ready = threading.Event()
-        self.process = None
+        self.process = self.job = None
 
     def installed(self) -> bool:
         return (self.folder / "llama" / "llama-server.exe").is_file() and (self.folder / MODEL["file"]).is_file()
 
-    def ready(self) -> bool:
-        return self._ready.is_set()
+    def _answers(self) -> bool:
+        try:
+            with self.opener(f"http://127.0.0.1:{self.port}/health", timeout=2) as response:
+                return response.status == 200
+        except OSError:
+            return False
 
     def start(self) -> bool:
         if not self.installed():
             log.info("local model not installed (%s): plain commands only", self.folder)
             return False
+        if self._answers():
+            log.warning("port %d already answers; the local model stays off", self.port)
+            return False
         flags = BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW if sys.platform == "win32" else 0
         self.process = self.popen(server_command(self.folder, self.port), stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL, creationflags=flags)
+        if sys.platform == "win32":
+            try:
+                self.job = bind_to_this_process(self.process)
+            except OSError:
+                log.exception("cannot tie the local model to the companion; it stays off")
+                self.stop()
+                return False
         threading.Thread(target=self._wait_ready, daemon=True, name="farmhand-model").start()
         return True
 
     def _wait_ready(self) -> None:
         deadline = time.monotonic() + START_TIMEOUT_S
         while time.monotonic() < deadline and self.process.poll() is None:
-            try:
-                with self.opener(f"http://127.0.0.1:{self.port}/health", timeout=2) as response:
-                    if response.status == 200:
-                        self._ready.set()
-                        log.info("local model ready")
-                        return
-            except OSError:
-                pass
+            if self._answers() and self.process.poll() is None:      # our server, still running
+                self._ready.set()
+                log.info("local model ready")
+                return
             time.sleep(1)
         log.warning("local model did not start; plain commands only")
+
+    def ready(self) -> bool:
+        return self._ready.is_set() and self.process is not None and self.process.poll() is None
 
     def stop(self) -> None:
         self._ready.clear()
         if self.process is not None and self.process.poll() is None:
             self.process.terminate()
+            try:
+                self.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+        if self.job is not None:
+            close_job(self.job)
+            self.job = None
 
 
 # ------------------------------------------------------------------ install

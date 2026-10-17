@@ -58,11 +58,13 @@ class Job:
     state: str = "WORKING"        # WORKING, then COMPLETE/BLOCKED/FAILED/UNVERIFIED/CANCELLED
     step: str | None = None
     reason: str | None = None
+    spoken: bool = False          # asked by voice: replies are spoken too
+    stop_sent: bool = False       # at most one requester stop per job
 
 
 class Coordinator:
-    """``world`` is the FS25World; ``executor`` an Executor over it; ``notify``
-    shows a token in game; ``farm`` returns the linked farm id, or raises
+    """``world`` is the FS25World; ``executor`` an Executor over it; ``notify(code,
+    spoken)`` shows a token in game (and speaks it when the request was spoken); ``farm`` returns the linked farm id, or raises
     StepUnverified when the game is not linked to this companion."""
 
     def __init__(self, world, executor, notify, farm, session):
@@ -80,18 +82,19 @@ class Coordinator:
         with self._lock:
             return self.current is not None
 
-    def submit(self, proposal) -> None:
-        """Answer one proposal now; a fetch runs on its own thread."""
+    def submit(self, proposal, spoken: bool = False) -> None:
+        """Answer one proposal now; a job runs on its own thread. ``spoken``: the
+        request was spoken, so this answer (and that job's notices) are too."""
         if proposal is None or not COMMAND_VALIDATOR.is_valid(proposal):
-            self.notify("NOT_UNDERSTOOD")
+            self.notify("NOT_UNDERSTOOD", spoken)
             return
         command = proposal["command"]
         if command == "stop":
-            self.stop()
+            self.stop(spoken)
         elif command == "status":
-            self.notify(self.status())
+            self.notify(self.status(), spoken)
         else:
-            self.start(command, proposal.get("target", "here"))
+            self.start(command, proposal.get("target", "here"), spoken)
 
     # ------------------------------------------------------------------ status
     def status(self) -> str:
@@ -104,21 +107,27 @@ class Coordinator:
         return "STATUS_IDLE"
 
     # -------------------------------------------------------------------- stop
-    def stop(self) -> None:
-        """Deterministic and immediate; never waits for an interpreter or the job."""
+    def stop(self, spoken: bool = False) -> None:
+        """Deterministic and immediate; never waits for an interpreter or the job.
+        One requester stop per job, never during its own cleanup: a second stop
+        command would pre-empt the job's confirming stop."""
         with self._lock:
             job = self.current
+            send = False
             if job is not None:
                 self._cancel.set()
+                send = not job.stop_sent and job.step not in ("STOP", "RELEASE")
+                job.stop_sent = job.stop_sent or send
         if job is None:
             retained = self.world.retained()
-            self.notify("STOPPING" if retained else "NOTHING_TO_STOP")
+            self.notify("STOPPING" if retained else "NOTHING_TO_STOP", spoken)
             for owner in retained:                 # an earlier job's unconfirmed stop
                 threading.Thread(target=self.world.recover, args=(owner,), daemon=True).start()
             return
-        self.notify("STOPPING")
-        threading.Thread(target=self._stop_reserved, args=(job.owner,), daemon=True,
-                         name="farmhand-stop").start()
+        self.notify("STOPPING", spoken)
+        if send:
+            threading.Thread(target=self._stop_reserved, args=(job.owner,), daemon=True,
+                             name="farmhand-stop").start()
 
     def _stop_reserved(self, owner: str) -> None:
         """Pre-empt the running operation; the job's own cleanup confirms the stop."""
@@ -131,7 +140,7 @@ class Coordinator:
             log.info("stop for %s: %s", owner, getattr(error, "code", error))
 
     # -------------------------------------------------------------------- jobs
-    def start(self, command: str, target) -> None:
+    def start(self, command: str, target, spoken: bool = False) -> None:
         with self._lock:
             if self.current is not None:
                 busy = True
@@ -139,12 +148,12 @@ class Coordinator:
                 busy = False
                 self._jobs += 1
                 self._cancel = threading.Event()
-                self.current = Job(self._jobs, f"{self.session()}-{self._jobs}")
+                self.current = Job(self._jobs, f"{self.session()}-{self._jobs}", spoken=spoken)
                 job, cancel = self.current, self._cancel
         if busy:
-            self.notify("BUSY")
+            self.notify("BUSY", spoken)
             return
-        self.notify(JOBS[command][1])
+        self.notify(JOBS[command][1], spoken)
         self._worker = threading.Thread(target=self._run, args=(job, cancel, command, target), daemon=True,
                                         name=f"farmhand-job-{job.number}")
         self._worker.start()
@@ -161,8 +170,9 @@ class Coordinator:
             def entered(state):
                 job.step = state
                 if state in MILESTONES:
-                    self.notify(f"WORKING_{state}")
+                    self.notify(f"WORKING_{state}", job.spoken)
 
+            self.world.cancel = cancel           # the link refuses steps once it is set
             result = self.executor.execute(intent, cancel=cancel, on_state=entered)
             job.state, job.reason = result.status, result.reason
             log.info("job %d result %s", job.number, json.dumps({
@@ -174,9 +184,10 @@ class Coordinator:
             log.exception("job %d failed", job.number)
             job.state, job.reason = "FAILED", "INTERNAL_ERROR"
         finally:
+            self.world.cancel = None
             with self._lock:
                 self.current, self.last = None, job
-            self.notify(result_notice(job.state, job.reason or "", complete))
+            self.notify(result_notice(job.state, job.reason or "", complete), job.spoken)
 
     def wait(self, timeout: float | None = None) -> None:
         """Wait for the running job (tests and shutdown)."""

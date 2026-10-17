@@ -577,8 +577,10 @@ class ServiceTests(unittest.TestCase):
             time.sleep(0.01)
 
     def session_notice(self, game):
+        """The newest (token, id) in the session file."""
         attrs = ET.fromstring(game.link.files.files["session.xml"].split("\n", 1)[1]).attrib
-        return attrs.get("notice"), int(attrs.get("noticeId", 0))
+        newest = attrs["notices"].split()[-1].split(":")
+        return newest[1], int(newest[0])
 
     def test_key_press_fetches_the_pair_and_tells_the_player(self):
         game, notices = self.start(autodrive=False)
@@ -671,6 +673,81 @@ class ServiceTests(unittest.TestCase):
         game.say(3, "stop")
         self.wait_for(lambda: notices[-1:] == ["NOTHING_TO_STOP"])
 
+    def test_a_stop_that_wins_the_race_with_the_next_step_still_stops_it(self):
+        # The requester's stop reaches the game before DELIVER's command: the game
+        # has nothing to pre-empt, so the link must refuse the drive itself.
+        from companion import coordinator as coordination
+        game = FakeGame(autodrive=False)
+        self.addCleanup(game.stop)
+        world = FS25World(game.link)
+        notices = []
+        holder = {}
+
+        class StopAtDeliver(Executor):
+            def execute(self, intent, cancel=None, on_state=None):
+                def entered(state):
+                    on_state(state)
+                    if state == "DELIVER":
+                        holder["c"].stop()
+                        deadline = time.monotonic() + 5
+                        while not any(c["op"] == "stop" for c in game.commands):
+                            assert time.monotonic() < deadline
+                            time.sleep(0.01)
+                return super().execute(intent, cancel=cancel, on_state=entered)
+
+        with unittest.mock.patch.object(bridge, "ACCEPT_TIMEOUT_S", 0.3), \
+                unittest.mock.patch.dict(bridge.DONE_TIMEOUT_S, {op: 0.3 for op in bridge.DONE_TIMEOUT_S}):
+            c = holder["c"] = coordination.Coordinator(world, StopAtDeliver(world),
+                                                       lambda code, spoken=False: notices.append(code),
+                                                       farm=lambda: "1", session=lambda: game.link.session)
+            c.start("fetch_pair", "here")
+            c.wait(10)
+        self.assertEqual(notices[-1], "CANCELLED")
+        ops = [x["op"] for x in game.commands]
+        self.assertEqual(ops, ["stage", "align", "attach", "stop", "stop"])   # never the drive
+        self.assertEqual(world._reservations, {})
+
+    def test_repeated_stop_presses_keep_the_cancel_confirmed(self):
+        game, notices = self.start(autodrive=False, faults={"align": "hold"})
+        game.press(1)
+        self.wait_for(lambda: game.held is not None)
+        for request_id in range(2, 6):
+            game.key(request_id, "stop")
+        self.wait_for(lambda: notices[-1:] == ["CANCELLED"])
+        self.assertEqual([c["op"] for c in game.commands].count("stop"), 2)    # one requester stop + cleanup
+        self.assertEqual(game.link_world._reservations, {})
+
+    def test_stop_is_answered_while_the_model_thinks(self):
+        asked, release = [], threading.Event()
+
+        class SlowModel:
+            def interpret(self, text):
+                asked.append(text)
+                release.wait(5)
+                return {"version": 1, "command": "status"}
+
+        game, notices = self.start(autodrive=False, voice={"model": SlowModel()})
+        game.say(1, "how far along are we, mate")             # the rules do not know it
+        self.wait_for(lambda: asked == ["how far along are we, mate"])
+        started = time.monotonic()
+        game.key(2, "stop")
+        self.wait_for(lambda: notices[-1:] == ["NOTHING_TO_STOP"])
+        self.assertLess(time.monotonic() - started, 1.0)       # not behind the model
+        release.set()
+        self.wait_for(lambda: notices[-1:] == ["STATUS_IDLE"])
+
+    def test_refused_words_never_reach_the_model(self):
+        asked = []
+        model = type("Model", (), {"interpret": lambda self, text: asked.append(text) or
+                                   {"version": 1, "command": "fetch_pair"}})()
+        game, notices = self.start(autodrive=False, voice={"model": model})
+        for n, text in enumerate(["don't bring the tractor and wagon", "where is the tractor and wagon",
+                                  "never bring it back"], start=1):
+            game.say(n, text)
+        self.wait_for(lambda: notices == ["NOT_UNDERSTOOD"] * 3)
+        self.assertEqual(asked, [])
+        self.assertEqual(game.commands, [])
+
     def test_replayed_or_foreign_requests_never_run(self):
         game, notices = self.start(autodrive=False)
         game.press(1)
@@ -755,6 +832,15 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(notices[2:], ["ACCEPTED", "COMPLETE"])
         self.assertGreater(len(game.commands), first)          # real work, not a cached result
 
+    def test_a_cancelled_link_sends_nothing_but_stop(self):
+        link = CommandLink(FakeFiles(None))
+        cancel = threading.Event()
+        cancel.set()
+        with self.assertRaises(bridge.StepFailed) as refused:
+            link.command("navigate", {"tractor": 11, "x": 0.0, "z": 0.0, "yaw": 0.0}, cancel)
+        self.assertEqual(refused.exception.code, "CANCELLED")
+        self.assertNotIn("command.xml", link.files.files)
+
     def test_failed_session_writes_never_stop_the_companion(self):
         class Flaky(FakeFiles):
             def write(self, name, text):
@@ -775,11 +861,19 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(notice_code("CANCELLED", "CANCELLED_BY_REQUESTER"), "CANCELLED")
         self.assertEqual(notice_code("FAILED", "bad reason!"), "FAILED_bad_reason_")
         self.assertEqual(len(notice_code("FAILED", "X" * 200)), 64)
-        self.assertIn('notice="BUSY" noticeId="3"', encode_session("s1", 0, "BUSY", 3))
+        self.assertIn('notices="3:BUSY 4:CANCELLED"', encode_session("s1", 0, [(3, "BUSY"), (4, "CANCELLED")]))
         self.assertNotIn("notice", encode_session("s1", 0))
-        for bad in (("s1", 0, "two words", 1), ("s1", 0, "OK", -1), ("s1", 0, "OK", True)):
+        for bad in ([(1, "two words")], [(0, "OK")], [(True, "OK")], [(2, "A"), (1, "B")],
+                    [(n, "A") for n in range(1, 10)]):
             with self.assertRaises(ValueError):
-                encode_session(*bad)
+                encode_session("s1", 0, bad)
+
+    def test_the_session_file_keeps_the_latest_notices(self):
+        link = CommandLink(FakeFiles(None))
+        for n in range(10):
+            link.notice(f"N{n}")
+        attrs = ET.fromstring(link.files.files["session.xml"].split("\n", 1)[1]).attrib
+        self.assertEqual(attrs["notices"].split(), [f"{n + 1}:N{n}" for n in range(2, 10)])
 
     def test_closed_link_never_writes_its_session_again(self):
         link = CommandLink(FakeFiles(None))

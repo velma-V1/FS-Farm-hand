@@ -27,13 +27,14 @@ import logging.handlers
 from pathlib import Path, PureWindowsPath
 import subprocess
 import sys
+import threading
 
 from adapters.world import StepUnverified
 from companion.bridge import (MOD_DIR, SNAPSHOT_TIMEOUT_S, FS25World, game_profile_dir,
                               start_local_link)
 from companion.coordinator import FETCH_HERE, Coordinator
 from companion.executor import Executor
-from companion.language import ChainInterpreter, RuleInterpreter
+from companion.language import RuleInterpreter, refuses
 from companion.model import ModelInterpreter, ModelServer
 from companion.voice import Replies, SapiSpeaker, SoundDeviceMicrophone, Unavailable, VoiceInput, WhisperTranscriber
 
@@ -69,14 +70,25 @@ def _no_voice():
 ACTIONS = {"fetch_here": FETCH_HERE, "stop": {"version": 1, "command": "stop"}}
 
 
-def proposal_for(request: dict, interpreter) -> dict | None:
-    """The command proposal for one request: a fixed key as is; typed or spoken
-    words go through the interpreter (None when not understood)."""
+def proposal_for(request: dict, rules) -> dict | None:
+    """The command proposal for one request: a fixed key as is, a model's answer
+    as given, typed or spoken words by the deterministic rules (None when not
+    understood)."""
+    if "proposal" in request:
+        return request["proposal"]
     if "text" in request:
-        proposal = interpreter.interpret(request["text"])
+        proposal = rules.interpret(request["text"])
         log.info("%s %r -> %s", "heard" if request.get("spoken") else "text", request["text"], json.dumps(proposal))
         return proposal
     return dict(ACTIONS[request["action"]])
+
+
+def ask_model(link, model, request) -> None:
+    """On its own thread, so the serve loop keeps answering (STOP above all) while
+    the model thinks; its answer returns through the request queue."""
+    proposal = model.interpret(request["text"])
+    log.info("model %r -> %s", request["text"], json.dumps(proposal))
+    link.inject({"proposal": proposal, "spoken": request.get("spoken", False)})
 
 
 def linked_farm(link):
@@ -88,18 +100,21 @@ def linked_farm(link):
 
 
 def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, interpreter=None,
-          microphone=None, transcriber=None, speaker=None) -> None:
+          microphone=None, transcriber=None, speaker=None, model=None) -> None:
     """Answer the player's requests until the link closes: one job at a time,
-    STOP and STATUS at once (companion/coordinator.py). ``microphone`` and
+    STOP and STATUS at once (companion/coordinator.py). ``model`` (optional)
+    answers only words the rules neither understand nor refuse, off this thread.
+    ``microphone`` and
     ``transcriber`` are factories for push-to-talk (companion/voice.py); without
     them, or when they raise Unavailable, voice is unavailable and text works."""
     link = world.link
-    interpreter = interpreter or RuleInterpreter()
+    rules = interpreter or RuleInterpreter()
     replies = Replies(link.notice, speaker)
     coordinator = Coordinator(world, Executor(world, field_entrances=field_entrances), replies,
                               farm=lambda: linked_farm(link), session=lambda: link.session)
     voice = VoiceInput(microphone or _no_voice, transcriber or _no_voice,
-                       on_text=lambda text: link.inject({"text": text, "spoken": True}), notify=replies,
+                       on_text=lambda text: link.inject({"text": text, "spoken": True}),
+                       notify=lambda code: replies(code, code != "LISTENING"),
                        places=lambda: [p.name for p in world.places()])
     foreign_since = None
     while not link.closed.is_set() and not should_stop():
@@ -113,11 +128,16 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
                 if action == "talk_end":
                     voice.talk_end()
                     continue
-                replies.spoken = bool(request.get("spoken"))
-                coordinator.submit(proposal_for(request, interpreter))
+                spoken = bool(request.get("spoken"))
+                proposal = proposal_for(request, rules)
+                if proposal is None and "text" in request and model is not None and not refuses(request["text"]):
+                    threading.Thread(target=ask_model, args=(link, model, request), daemon=True,
+                                     name="farmhand-model-ask").start()
+                    continue
+                coordinator.submit(proposal, spoken=spoken)
             except Exception:   # keep serving; a job's own failures end inside the coordinator
                 log.exception("request %s failed", request.get("id"))
-                link.notice("FAILED_INTERNAL_ERROR")
+                replies("FAILED_INTERNAL_ERROR")
             continue
         session, last_frame = link.linked_session()
         now = link.clock()
@@ -203,9 +223,8 @@ def main(argv=None) -> int:
     # The optional local model: words the rules do not know; never STOP, never execution.
     model = ModelServer()
     model.start()
-    interpreter = ChainInterpreter(RuleInterpreter(), ModelInterpreter(ready=model.ready))
     try:
-        serve(FS25World(link, categories), entrances, interpreter=interpreter,
+        serve(FS25World(link, categories), entrances, model=ModelInterpreter(ready=model.ready),
               microphone=SoundDeviceMicrophone, transcriber=WhisperTranscriber,
               speaker=SapiSpeaker() if sys.platform == "win32" else None)
     finally:

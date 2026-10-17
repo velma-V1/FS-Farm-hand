@@ -177,16 +177,15 @@ class ReplyTests(unittest.TestCase):
                 said.append(text)
 
         replies = voice.Replies(shown.append, Speaker())
-        replies("COMPLETE")
-        replies.spoken = True
+        replies("COMPLETE")                                          # typed: shown only
         for code in ("ACCEPTED", "WORKING_DELIVER", "STATUS_WORKING_ALIGN_REVERSE", "BLOCKED_NO_ELIGIBLE_PAIR",
                      "CONNECTED_X"):
-            replies(code)
+            replies(code, True)
         self.assertEqual(shown, ["COMPLETE", "ACCEPTED", "WORKING_DELIVER", "STATUS_WORKING_ALIGN_REVERSE",
                                  "BLOCKED_NO_ELIGIBLE_PAIR", "CONNECTED_X"])
         self.assertEqual(said, ["Fetching a tractor and forage wagon.", "Working on it: align reverse.",
                                 "I could not do that. The reason is shown on screen."])
-        voice.Replies(shown.append, None).__call__("COMPLETE")        # no speaker: shown only
+        voice.Replies(shown.append, None)("COMPLETE", True)          # no speaker: shown only
 
     def test_text_to_speech_text_travels_on_stdin_only(self):
         calls = []

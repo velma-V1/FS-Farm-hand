@@ -257,6 +257,19 @@ class LuaBridgeTests(unittest.TestCase):
         self.W.run(self.w, 200)
         self.assertEqual(self.results(3)[-1], (3, "DONE", "STOPPED"))
 
+    def test_a_stop_during_a_stop_joins_it(self):
+        self.adopt()
+        self.w.gotoStarts = True
+        self.send(1, "navigate", self.POSE)
+        self.w.speed = 4.0                                   # still rolling
+        self.send(2, "stop", {"tractor": 11})
+        self.send(3, "stop", {"tractor": 11})               # a second stop while the first runs
+        self.assertNotIn((2, "FAILED", "STOPPED"), self.results())
+        self.w.speed = 0.0
+        self.W.run(self.w, 200)
+        self.assertEqual(self.results(2)[-1], (2, "DONE", "STOPPED"))
+        self.assertEqual(self.results(3)[-1], (3, "DONE", "STOPPED"))
+
     def test_stop_that_cannot_be_observed_fails(self):
         self.adopt()
         self.w.speed = 5.0
@@ -420,20 +433,23 @@ class LuaBridgeTests(unittest.TestCase):
                 self.assertEqual(parse_frame((line + "\n").encode())["event"], "request")
         self.assertEqual(self.calls(), [])                   # a request never moves anything itself
 
-    def test_companion_notices_are_shown_once_each(self):
-        self.write("session.xml", encode_session("s1", 0, "ACCEPTED", 5))
+    def test_companion_notices_are_shown_once_each_and_none_is_lost(self):
+        self.write("session.xml", encode_session("s1", 0, [(5, "ACCEPTED")]))
         self.W.run(self.w, 1000)                              # adopted: the earlier notice is not replayed
-        self.write("session.xml", encode_session("s1", 1, "COMPLETE", 6))
+        self.write("session.xml", encode_session("s1", 1, [(5, "ACCEPTED"), (6, "COMPLETE")]))
         self.W.run(self.w, 1000)
-        self.write("session.xml", encode_session("s1", 2, "COMPLETE", 6))
+        self.write("session.xml", encode_session("s1", 2, [(5, "ACCEPTED"), (6, "COMPLETE")]))
         self.W.run(self.w, 1000)
-        self.write("session.xml", encode_session("s1", 3, "BLOCKED_NO_ELIGIBLE_PAIR", 7))
+        # Two notices inside one poll: both shown, in order.
+        self.write("session.xml", encode_session("s1", 3, [(6, "COMPLETE"), (7, "STOPPING"),
+                                                           (8, "BLOCKED_NO_ELIGIBLE_PAIR")]))
         self.W.run(self.w, 1000)
-        self.write("session.xml", encode_session("s1", 4, "FAILED_SOMETHING_NEW", 8))
+        self.write("session.xml", encode_session("s1", 4, [(9, "FAILED_SOMETHING_NEW")]))
         self.W.run(self.w, 1000)
         self.assertEqual(self.notices(), [
             "4:Farmhand: companion connected",
             "4:Farmhand: tractor and forage wagon delivered",
+            "4:Farmhand: stopping",
             "1:Farmhand: not delivered - no available tractor and forage wagon",
             "1:Farmhand: not delivered - SOMETHING_NEW"])
 
@@ -498,6 +514,18 @@ class LuaBridgeTests(unittest.TestCase):
         for line in self.w.lines.values():
             if '"request"' in line:
                 parse_frame((line + "\n").encode())
+
+    def test_a_release_lost_to_a_menu_does_not_swallow_the_next_press(self):
+        self.adopt()
+        self.bridge.installInput(self.bridge, self.w.env)
+        component = self.w.env.PlayerInputComponent
+        component.registerGlobalPlayerActionEvents(component)
+        hold = next(e for e in self.w.registered.values() if e.action == 80)
+        hold.callback(component, "FARMHAND_PUSH_TO_TALK", 1)       # held, then a menu opens:
+        component.registerGlobalPlayerActionEvents(component)      # GIANTS registers again later
+        hold = [e for e in self.w.registered.values() if e.action == 80][-1]
+        hold.callback(component, "FARMHAND_PUSH_TO_TALK", 1)       # the next press starts again
+        self.assertEqual([r["action"] for r in self.requests()], ["talk_start", "talk_start"])
 
     def test_push_to_talk_without_a_companion_notifies_once_per_press(self):
         for value in (1, 1, 1, 0, 1, 0):

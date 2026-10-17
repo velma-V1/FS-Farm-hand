@@ -75,6 +75,33 @@ class RuleInterpreterTests(unittest.TestCase):
             ("are you done yet", STATUS),
         ])
 
+    def test_negations_and_questions_never_move_anything(self):
+        from companion.language import refuses
+        never = ["don't bring the tractor and wagon", "I don't need the tractor and wagon",
+                 "no, not the tractor and wagon", "where is the tractor and wagon",
+                 "did you bring the tractor and wagon?", "why did you bring the tractor and wagon",
+                 "do not take it back", "dont move it back", "never bring it back", "don't bring it here"]
+        self.check([(text, None) for text in never])
+        self.assertTrue(all(refuses(text) for text in never))
+        self.assertFalse(refuses("stop"))
+        self.assertFalse(refuses("what are you doing"))
+        self.assertFalse(refuses("could you get the forage wagon hooked up and over to me"))
+
+    def test_more_ways_to_say_stop(self):
+        self.check([(text, STOP) for text in ("wait", "whoa", "hold it", "stay there", "stay put",
+                                              "bring it back here and stop", "no stop")])
+
+    def test_destination_is_the_place_not_the_words_around_it(self):
+        barn = {"type": "place", "name": "barn"}
+        self.check([
+            ("bring the tractor and wagon to me at the barn", {**FETCH, "target": barn}),
+            ("take it back to the barn in a minute", {"version": 1, "command": "move_pair", "target": barn}),
+            ("take it back to the barn now please", {"version": 1, "command": "move_pair", "target": barn}),
+            ("bring me a tractor and wagon to the field", None),      # which field? not guessed
+            ("take it over there", None),
+            ("could you bring me a tractor and forage wagon?", FETCH),
+        ])
+
     def test_anything_else_is_not_understood(self):
         self.check([
             ("", None), ("   ", None), ("make me a sandwich", None), ("tractor", None),
@@ -108,6 +135,9 @@ class ChainTests(unittest.TestCase):
         self.assertEqual(chain.interpret("how far along are you"), STATUS)
         self.assertEqual(calls, ["how far along are you"])
         self.assertIsNone(ChainInterpreter(RuleInterpreter(), Broken()).interpret("sing a song"))
+        calls.clear()
+        self.assertIsNone(chain.interpret("don't bring the tractor and wagon"))   # refused: model not asked
+        self.assertEqual(calls, [])
 
 
 class CommandSchemaTests(unittest.TestCase):

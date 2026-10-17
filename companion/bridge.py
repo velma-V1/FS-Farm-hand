@@ -29,7 +29,7 @@ import uuid
 from adapters.fs25 import Observation, observation_from_snapshot
 from adapters.world import StepFailed, StepUnverified
 from companion.hitch import STAGING_DISTANCE_M
-from protocol.ipc import PIPE_PATH, FrameError, FrameReader, encode_command, encode_session
+from protocol.ipc import MAX_NOTICES, PIPE_PATH, FrameError, FrameReader, encode_command, encode_session
 from protocol.model import Destination, Equipment, HitchPlan, Pose, Position
 
 log = logging.getLogger("farmhand")
@@ -63,7 +63,7 @@ class CommandLink:
         self._last_session: str | None = None
         self._requests: deque[dict] = deque()
         self._last_request = 0
-        self._notice: str | None = None
+        self._notices: deque[tuple[int, str]] = deque(maxlen=MAX_NOTICES)
         self._notice_id = 0
         # The heartbeat and pipe threads both write the session file.
         self._write_lock = threading.Lock()
@@ -80,8 +80,9 @@ class CommandLink:
             if self.closed.is_set():
                 return
             try:
-                self.files.write(SESSION_FILE, encode_session(self.session, self._beat,
-                                                              self._notice, self._notice_id))
+                with self._cond:
+                    notices = list(self._notices)
+                self.files.write(SESSION_FILE, encode_session(self.session, self._beat, notices))
             except OSError as error:
                 log.warning("session file not written: %s", error)
 
@@ -92,7 +93,8 @@ class CommandLink:
     def notice(self, code: str) -> None:
         """Tell the player (an in-game notification) via the session file."""
         with self._cond:
-            self._notice, self._notice_id = code, self._notice_id + 1
+            self._notice_id += 1
+            self._notices.append((self._notice_id, code))
         log.info("notice %d %s", self._notice_id, code)
         self._write_session()
 
@@ -169,9 +171,16 @@ class CommandLink:
             raise StepUnverified("STALE_SNAPSHOT")
         return frame
 
-    def command(self, op: str, args: dict) -> tuple[str, str]:
-        """Send one command; return its terminal (status, code) from the game."""
+    def command(self, op: str, args: dict, cancel=None) -> tuple[str, str]:
+        """Send one command; return its terminal (status, code) from the game.
+
+        ``cancel`` (a threading.Event): once set, nothing but a stop is sent. It is
+        checked under the send lock, and the requester's stop sets it before asking
+        for that lock, so a step is either sent before the stop (which pre-empts it)
+        or refused (StepFailed CANCELLED); it can never start after the stop."""
         with self._send_lock:
+            if cancel is not None and cancel.is_set() and op != "stop":
+                raise StepFailed("CANCELLED")
             # Ids are taken in send order: the game ignores any id lower than one it saw.
             with self._cond:
                 command_id, self._next_id = self._next_id, self._next_id + 1
@@ -215,6 +224,9 @@ class FS25World:
     def __init__(self, link: CommandLink, categories: dict[str, str] | None = None):
         self.link = link
         self.categories = dict(categories or {})
+        # The running job's cancel event (companion/coordinator.py): no step is
+        # sent once it is set (CommandLink.command).
+        self.cancel = None
         self._lock = threading.RLock()
         self._reservations: dict[str, tuple[str, tuple[str, str]]] = {}
 
@@ -317,7 +329,7 @@ class FS25World:
 
     # ------------------------------------------------------------- operations
     def _run(self, op: str, **args) -> None:
-        status, code = self.link.command(op, args)
+        status, code = self.link.command(op, args, self.cancel)
         if status == "FAILED":
             raise StepFailed(code)
         if status == "UNVERIFIED":

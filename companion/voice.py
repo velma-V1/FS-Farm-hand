@@ -248,15 +248,15 @@ class SapiSpeaker:
 
 
 class Replies:
-    """Every notice goes to the game; after a spoken request it is also spoken,
-    until the player types or presses a key again."""
+    """Every notice goes to the game; a notice about a spoken request (or its job)
+    is also spoken."""
 
     def __init__(self, notice, speaker=None):
-        self.notice, self.speaker, self.spoken = notice, speaker, False
+        self.notice, self.speaker = notice, speaker
 
-    def __call__(self, code: str) -> None:
+    def __call__(self, code: str, spoken: bool = False) -> None:
         self.notice(code)
-        text = phrase(code) if self.spoken and self.speaker is not None else None
+        text = phrase(code) if spoken and self.speaker is not None else None
         if text:
             self.speaker.say(text)
 

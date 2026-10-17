@@ -390,6 +390,9 @@ function Bridge:dropSession(code)
     if self.active ~= nil then
         Bridge.abort(self.env, self.active.task, code)
         self:result(self.session, self.active.id, self.active.task.op, preempted(self.active.task), code)
+        for _, joined in ipairs(self.active.joined or {}) do
+            self:result(self.session, joined, "stop", "FAILED", code)
+        end
         self.active = nil
     end
     if self:companionOwner() then Bridge.owner = nil end
@@ -401,20 +404,24 @@ end
 
 function Bridge:checkSession()
     local env = self.env
-    local id, beat, notice, noticeId = nil, nil, nil, nil
+    local id, beat, notices = nil, nil, {}
     pcall(function()
         local xml = env.XMLFile.loadIfExists("fhAc001Session", self.dir .. Bridge.SESSION_FILE)
         if xml == nil then return end
         id, beat = token(xml:getString("session#id")), xml:getString("session#beat")
-        notice, noticeId = token(xml:getString("session#notice")), tonumber(xml:getString("session#noticeId"))
+        -- "id:TOKEN id:TOKEN": the companion's latest notices, oldest first.
+        for n, code in tostring(xml:getString("session#notices") or ""):gmatch("(%d+):([%w_%.%-]+)") do
+            if token(code) ~= nil and #notices < 8 then notices[#notices + 1] = { id = tonumber(n), code = code } end
+        end
         xml:delete()
     end)
-    if not finite(noticeId) then noticeId = 0 end
+    local newest = 0
+    for _, n in ipairs(notices) do newest = math.max(newest, n.id) end
     if id ~= nil and id ~= self.session and not self.dropped[id] then
         if self.session ~= nil then self:dropSession("SESSION_CHANGED") end
         if Bridge.owner == nil then
             self.session, self.lastId, self.beat, self.beatAt = id, 0, beat, self.clock
-            self.noticeId = noticeId          -- only notices issued from now on are shown
+            self.noticeId = newest            -- only notices issued from now on are shown
             Bridge.owner = "companion:" .. id
             log("bridge session %s adopted", id)
             self:closePipe()
@@ -423,9 +430,11 @@ function Bridge:checkSession()
         end
     elseif id ~= nil and id == self.session then
         if beat ~= self.beat then self.beat, self.beatAt = beat, self.clock end
-        if notice ~= nil and noticeId > self.noticeId then
-            self.noticeId = noticeId
-            self:notify(Bridge.noticeText(notice))
+        for _, n in ipairs(notices) do
+            if n.id > self.noticeId then
+                self.noticeId = n.id
+                self:notify(Bridge.noticeText(n.code))
+            end
         end
     end
     if self.session ~= nil and self.clock - self.beatAt > Bridge.COMPANION_TIMEOUT_MS then
@@ -482,6 +491,14 @@ function Bridge:handle(cmd)
         if cmd.op ~= "stop" or self.active.task.spec.tractor ~= spec.tractor then
             return self:result(cmd.session, cmd.id, cmd.op, "REJECTED", "BUSY")
         end
+        -- A stop while a stop runs joins it: both get its one observed outcome, so
+        -- a second stop can never turn the first one's confirmation into FAILED.
+        if self.active.task.op == "stop" then
+            self:result(cmd.session, cmd.id, cmd.op, "ACCEPTED", "ACCEPTED")
+            self.active.joined = self.active.joined or {}
+            table.insert(self.active.joined, cmd.id)
+            return
+        end
         spec.target = self.active.task
         self:result(self.session, self.active.id, self.active.task.op, preempted(self.active.task), "STOPPED")
         self.active = nil
@@ -508,6 +525,9 @@ function Bridge:update(dt)
         local status, code = Bridge.step(self.env, self.active.task, dt)
         if status ~= nil then
             self:result(self.session, self.active.id, self.active.task.op, status, code)
+            for _, joined in ipairs(self.active.joined or {}) do
+                self:result(self.session, joined, "stop", status, code)
+            end
             self.active = nil
         end
     end
@@ -700,6 +720,10 @@ function Bridge:installInput(env)
     component.registerGlobalPlayerActionEvents = env.Utils.overwrittenFunction(self.inputOriginal,
         function(inputComponent, superFunc, ...)
             superFunc(inputComponent, ...)
+            -- Re-registered (after a vehicle, menu or dialog): a release delivered
+            -- to no one must not swallow the next press. The companion ignores a
+            -- talk_end with no recording.
+            bridge.talking = false
             for _, key in ipairs(keys) do
                 if Bridge.HOLD[key.method] then
                     env.g_inputBinding:registerActionEvent(key.action, inputComponent,
