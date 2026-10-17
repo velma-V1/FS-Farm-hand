@@ -81,14 +81,30 @@ def set_autostart(command: str | None) -> None:
 
 
 def _process(pid: int):
-    """A Windows handle to wait on process ``pid``, or None if it is not running."""
+    """A Windows handle to wait on process ``pid`` if it is a running Python (the
+    companion), else None: exited (a process object can outlive its process while
+    a handle is open), never existed, or the pid was reused by another program."""
     if sys.platform != "win32":
         return None
     import ctypes
+    from ctypes import wintypes
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.LPWSTR,
+                                                    ctypes.POINTER(wintypes.DWORD)]
     handle = kernel32.OpenProcess(0x00100000 | 0x1000, False, pid)   # SYNCHRONIZE | QUERY_LIMITED_INFORMATION
-    return handle or None
+    if not handle:
+        return None
+    name, size = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+    exited = kernel32.WaitForSingleObject(handle, 0) == 0                 # already signalled
+    image = Path(name.value).name.lower() if kernel32.QueryFullProcessImageNameW(
+        handle, 0, name, ctypes.byref(size)) else ""
+    if exited or image not in ("pythonw.exe", "python.exe"):
+        kernel32.CloseHandle(handle)
+        return None
+    return handle
 
 
 def _wait_exit(handle, seconds: float) -> bool:

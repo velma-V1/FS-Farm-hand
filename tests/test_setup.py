@@ -82,7 +82,7 @@ class SetupTests(unittest.TestCase):
 
     def test_a_companion_that_does_not_quit_stops_the_install(self):
         self.data.mkdir(parents=True)
-        (self.data / setup.PID_FILE).write_text("123")
+        (self.data / setup.PID_FILE).write_text(str(os.getpid()))    # a live Python that never quits
         with unittest.mock.patch.object(setup, "QUIT_WAIT_S", 0.3):
             self.assertFalse(setup.stop_running(self.data, wait=0.3))
             self.assertEqual(setup.install(self.package, self.profile, self.data, self.ui, start=False), 1)
