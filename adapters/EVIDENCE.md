@@ -49,7 +49,8 @@ for API usage only.
 | Farm ownership | PROVEN | FH `Collectors.lua:332` `v.ownerFarmId == farmId`; AD `scripts/Specialization.lua:395-396` `getOwnerFarmId()` | `Equipment.farm_id` |
 | Requester farm | PROVEN | FH `scripts/Farmhand.lua:245` `g_currentMission:getFarmId()` | snapshot `farm_id` → trusted session farm |
 | Opaque stable ID | PROVEN | FH `Collectors.lua:400` `NetworkUtil.getObjectId(v)` (inverse `NetworkUtil.getObject`, FH `Commands.lua:1389`) | `Equipment.id` (stringified) |
-| Category: tractor | PROVEN call / UNVERIFIED names | FH `Collectors.lua:97-106` `g_storeManager:getItemByXMLFilename(v.configFileName).categoryName`, noted there as the only reliable class signal (`typeName` calls wheel loaders "tractor") | category map → `tractor` only; **no store category names are proven**, so the map ships empty |
+| Category: tractor | PROVEN call / UNVERIFIED names | FH `Collectors.lua:97-106` `g_storeManager:getItemByXMLFilename(v.configFileName).categoryName`, noted there as the only reliable class signal (`typeName` calls wheel loaders "tractor") | **no tractor store category names are proven**, so tractors are recognised from GIANTS data instead (next row); an optional local category map can still name them |
+| Category: tractor without configuration | PROVEN data / our rule | Self-propelled = GIANTS `Motorized` spec table (`Motorized:onLoad` 367 `self.spec_motorized`; AD `AutoDriveUtilFuncs.lua:162` tests `vehicle.spec_motorized ~= nil`) and no `Attachable` table (AD `AutoDriveUtilFuncs.lua:951` `spec_attachable ~= nil` = towed). Loader categories as FH classifies them (`Collectors.lua:110-116`: `FRONTLOADERVEHICLES`, `WHEELLOADERVEHICLES`, `TELELOADERVEHICLES`, `FORKLIFTS`, `SKIDSTEERVEHICLES`) | `self_propelled` → `tractor` when also: a loaded motor (Power row), a PTO output on some attacher joint (PTO row), and a readable store category outside FH's loader list (unreadable → unknown). Joint type, power and planned-joint PTO are still checked per pair. Rule is Farmhand's own: a self-propelled vehicle that can power a towed implement; UNVERIFIED that no non-tractor on the user's farm satisfies it |
 | Category: forage wagon | PROVEN | GIANTS `ForageWagon` specialization ("Specialization for a forage wagon"; `onLoad` line 93 `self.spec_forageWagon`); Courseplay identifies forage wagons the same way (`ForageWagonController.lua:10`, `FillLevelUtil.lua:132`) | `forage_wagon` = `spec_forageWagon` on an attachable (`spec_attachable`) vehicle; no store category needed. A store category mapping such a vehicle to `tractor` is contradictory → unknown |
 | Position | PROVEN | FH `Collectors.lua:465` `getWorldTranslation(v.rootNode)` | `Equipment.position` (x, z) |
 | Player position | PROVEN | FH `Collectors.lua:592-598` `g_localPlayer:getPosition()` else `getWorldTranslation(p.rootNode)` | requester position |
@@ -192,8 +193,9 @@ engine XML API (`XMLFile.loadIfExists`, `getString`), and live under
 
 ## Still unresolved (first in-game checks)
 
-1. Real store `categoryName` values for tractors (FH ships a `dumpCategories`
-   diagnostic because guessed names failed). Forage wagons no longer need one.
+1. That the user's tractors satisfy the tractor rule (self-propelled, motor, PTO
+   output, non-loader category) and nothing else they own does; `fhHitchList`
+   prints each vehicle's store category for the optional override.
 2. That the observation calls behave as in upstream use on the user's FS25 version.
 3. Live values of `getPeakTorque`, `getPtoMotorRpmRatio`, `getConsumedPtoTorque`
    and PTO names on the user's equipment, and the switch-on result GIANTS gives.

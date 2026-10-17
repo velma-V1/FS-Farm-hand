@@ -1,11 +1,12 @@
 """Run AC-001 once against the live game on this PC (Windows, next to FS25).
 
-    python -m companion.run --config farmhand.json here
-    python -m companion.run --config farmhand.json marker "Home Yard"
-    python -m companion.run --config farmhand.json marker-id 7
+    python -m companion.run here
+    python -m companion.run marker "Home Yard"
+    python -m companion.run marker-id 7
     python -m companion.run --config farmhand.json field 12
 
-farmhand.json (trusted local configuration):
+farmhand.json (optional trusted local configuration; tractors are recognised
+without it):
     {"tractor_store_categories": ["<categoryName from fhHitchList>", ...],
      "field_entrances": {"<map_id>": {"12": "<AutoDrive marker name>"}}}
 
@@ -71,7 +72,7 @@ def wait_until_linked(world: FS25World) -> str:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--config", type=Path, help="optional farmhand.json")
     parser.add_argument("--profile", type=Path, help="FarmingSimulator2025 folder (default: Documents)")
     parser.add_argument("kind", choices=("here", "marker", "marker-id", "field"))
     parser.add_argument("value", nargs="?")
@@ -79,7 +80,7 @@ def main(argv=None) -> int:
     if (args.kind == "here") != (args.value is None):
         parser.error("'here' takes no value; marker, marker-id and field need one")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    categories, entrances = load_config(args.config)
+    categories, entrances = load_config(args.config) if args.config else ({}, {})
     world = FS25World(start_local_link(args.profile), categories)
     try:
         farm_id = wait_until_linked(world)

@@ -134,7 +134,9 @@ Executable mapping (`python scripts/check.py`):
   duplicate keys, nesting that exhausts the decoder followed by valid frames,
   schema) and fail-closed FS25 snapshot mapping: unknown occupancy/AI/attachment is
   unavailable and never free, observed false and observed-empty stay valid,
-  attachment claims by either vehicle are honoured, and movement capability needs
+  attachment claims by either vehicle are honoured, tractors are recognised with
+  no configuration (self-propelled, motor, PTO output, readable non-loader store
+  category; the optional map still overrides), and movement capability needs
   GIANTS GOTO support plus the live bridge, never AutoDrive (which only adds the
   `autodrive` capability).
 - `tests/test_lua_contract.py` (Lua 5.1 and 5.4): `mod/FarmhandObserve.lua` against

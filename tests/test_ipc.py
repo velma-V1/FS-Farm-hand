@@ -36,6 +36,7 @@ def vehicle(identifier, kind, x=0.0, z=0.0, **overrides):
                                    "pto_names": ["rearPto"]}] if kind == WAGONS else [],
             "forage_wagon": kind == WAGONS,
             "goto_supported": kind == TRACTORS,
+            "self_propelled": kind == TRACTORS,
             # GIANTS torque values: capacity 0.9 * 1.0 * 2.0 = 1.8 >= 1.2 required.
             "motor": {"peak_torque": 1.0, "pto_rpm_ratio": 2.0} if kind == TRACTORS else None,
             "pto_torque": 1.2 if kind == WAGONS else 0.0}
@@ -203,7 +204,8 @@ class MappingTests(unittest.TestCase):
                  ({"ad_active": None}, "available", False),
                  ({"farm_id": 2}, "farm_id", "2"),
                  ({"category": None}, "category", "unknown"),
-                 ({"category": "SOMETHING_ELSE"}, "category", "unknown"),
+                 ({"category": "SOMETHING_ELSE"}, "category", "tractor"),     # recognised, not mapped
+                 ({"category": "WHEELLOADERVEHICLES"}, "category", "unknown"),
                  ({"has_autodrive": False, "ad_active": None}, "capabilities", frozenset())]
         for change, field, expected in cases:
             with self.subTest(change=change):
@@ -293,10 +295,38 @@ class MappingTests(unittest.TestCase):
         frame = parse_frame(line(snapshot([], player=None)))
         self.assertIsNone(observation_from_snapshot(frame, CATEGORIES).player)
 
-    def test_category_map_is_explicit_input(self):
+    def test_tractor_is_recognised_without_configuration(self):
+        no_pto = [{"index": 1, "type": "TRAILER", "x": 0.0, "z": -2.5, "free": True, "pto_names": []}]
+        unknown_pto = [{**no_pto[0], "pto_names": None}]
+        cases = [({}, "tractor"),
+                 ({"category": "ANY_MOD_CATEGORY"}, "tractor"),
+                 ({"self_propelled": False}, "unknown"),           # towed, or no motor table
+                 ({"self_propelled": None}, "unknown"),            # unreadable
+                 ({"motor": None}, "unknown"),
+                 ({"output_joints": []}, "unknown"),
+                 ({"output_joints": no_pto}, "unknown"),           # no PTO output: not a tractor
+                 ({"output_joints": unknown_pto}, "unknown"),
+                 ({"category": None}, "unknown"),                  # loader exclusion needs the category
+                 ({"category": "TELELOADERVEHICLES"}, "unknown"),
+                 ({"category": "skidSteerVehicles"}, "unknown"),
+                 ({"forage_wagon": True}, "forage_wagon")]
+        for change, expected in cases:
+            with self.subTest(change=change):
+                frame = parse_frame(line(snapshot([vehicle(11, TRACTORS, **change)])))
+                for categories in (None, {}):
+                    item, = observation_from_snapshot(frame, categories).equipment
+                    self.assertEqual(item.category, expected)
+        # The optional local map still names tractors the rule would not.
+        frame = parse_frame(line(snapshot([vehicle(11, TRACTORS, self_propelled=None)])))
+        item, = observation_from_snapshot(frame, {TRACTORS: "tractor"}).equipment
+        self.assertEqual(item.category, "tractor")
+        record = vehicle(11, TRACTORS)
+        del record["self_propelled"]
+        with self.assertRaises(FrameError):
+            parse_frame(line(snapshot([record])))
+
+    def test_category_map_names_only_tractors(self):
         frame = parse_frame(line(snapshot([vehicle(11, TRACTORS)])))
-        item, = observation_from_snapshot(frame, {}).equipment
-        self.assertEqual(item.category, "unknown")
         for bad in ({TRACTORS: "harvester"}, {WAGONS: "forage_wagon"}):
             with self.subTest(bad=bad):
                 with self.assertRaises(ObservationError):

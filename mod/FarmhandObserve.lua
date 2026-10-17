@@ -365,6 +365,11 @@ function Observe.vehicle(env, v, ptoNames)
         return canStart and supported
     end)
 
+    -- Self-propelled: GIANTS' Motorized specialization table (Motorized:onLoad 367;
+    -- AutoDrive's motor test, AutoDriveUtilFuncs.lua:162) on a vehicle that is not
+    -- itself towed (no Attachable table; AD AutoDriveUtilFuncs.lua:951).
+    local selfPropelled = try(function() return v.spec_motorized ~= nil and v.spec_attachable == nil end)
+
     -- GIANTS' ForageWagon specialization (ForageWagon:onLoad line 93, as Courseplay
     -- reads it) on a towed implement identifies a forage wagon.
     local forageWagon = try(function() return v.spec_forageWagon ~= nil and v.spec_attachable ~= nil end) == true
@@ -404,6 +409,7 @@ function Observe.vehicle(env, v, ptoNames)
         heading = nullable(heading),
         forage_wagon = forageWagon,
         goto_supported = nullable(gotoSupported),
+        self_propelled = nullable(selfPropelled),
         motor = nullable(motor),
         pto_torque = nullable(ptoTorque),
         ai_root = nullable(aiRoot),

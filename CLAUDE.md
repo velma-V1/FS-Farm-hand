@@ -25,9 +25,10 @@ luacheck mod                                     # Lua lint (CI job; config in .
 CI (`.github/workflows/ci.yml`) runs it on Ubuntu and Windows; Windows named-pipe
 tests only execute on Windows. CodeQL must report zero findings.
 
-The live runner (`python -m companion.run --config farmhand.json here|marker|marker-id|field`)
-only works on the user's Windows PC beside FS25 — see `mod/README.md`. `farmhand.json`
-is gitignored; `farmhand.example.json` is the template.
+The live runner (`python -m companion.run here|marker|marker-id|field`) only works on
+the user's Windows PC beside FS25 — see `mod/README.md`. The optional, gitignored
+`farmhand.json` (`--config`; template `farmhand.example.json`) is needed only for
+field targets or a tractor category override.
 
 ## Architecture
 

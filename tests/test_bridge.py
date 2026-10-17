@@ -39,6 +39,7 @@ def record(identifier, kind, x, z):
                                                        "active": True, "pto_names": ["rearPto"]}],
             "forage_wagon": not tractor,
             "goto_supported": tractor,
+            "self_propelled": tractor,
             "motor": {"peak_torque": 1.0, "pto_rpm_ratio": 2.0} if tractor else None,
             "pto_torque": 0.0 if tractor else 1.2}
 
@@ -276,10 +277,11 @@ class CapabilityTests(unittest.TestCase):
 
 
 class ProductionSequenceTests(unittest.TestCase):
-    def run_ac001(self, target="player_at_acceptance", field_entrances=None, **game_args):
+    def run_ac001(self, target="player_at_acceptance", field_entrances=None, categories=CATEGORIES,
+                  **game_args):
         game = FakeGame(**game_args)
         self.addCleanup(game.stop)
-        world = FS25World(game.link, CATEGORIES)
+        world = FS25World(game.link, categories)
         with unittest.mock.patch.object(bridge, "ACCEPT_TIMEOUT_S", 0.3), \
                 unittest.mock.patch.dict(bridge.DONE_TIMEOUT_S, {op: 0.3 for op in bridge.DONE_TIMEOUT_S}):
             result = Executor(world, field_entrances=field_entrances).execute(intent(target))
@@ -299,6 +301,12 @@ class ProductionSequenceTests(unittest.TestCase):
         self.assertEqual(drive["marker"], "3")                      # "here": marker 3 near the player
         self.assertEqual((game.commands[1]["tj"], game.commands[1]["wj"]), ("1", "1"))
         self.assertEqual(world._reservations, {})                   # released only at the very end
+
+    def test_no_configuration_is_needed(self):
+        # No category map, no AutoDrive: the tractor is recognised from GIANTS data.
+        game, world, result = self.run_ac001(categories=None, autodrive=False)
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
+        self.assertEqual(self.ops(game), ["stage", "align", "attach", "navigate", "stop"])
 
     def test_far_tractor_uses_autodrive_first(self):
         game, _, result = self.run_ac001(tractor_at=(600.0, 600.0))

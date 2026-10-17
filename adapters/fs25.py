@@ -15,9 +15,13 @@ STOPPED_BELOW_KMH = 1.0
 # Never equal to a real ID: IDs are stringified non-negative integers.
 MULTIPLE_ATTACHMENTS = "*multiple*"
 UNKNOWN_ATTACHMENT = "*unknown*"
-# Only tractors come from the (live, still unverified) store category map; forage
-# wagons are identified by GIANTS' ForageWagon specialization instead.
+# The optional category map can only name tractors; forage wagons are identified
+# by GIANTS' ForageWagon specialization.
 ALLOWED_CATEGORIES = frozenset({"tractor"})
+# Store categories Farmhand Companion classifies as loaders (Collectors.lua:110-116;
+# store category is its verified class signal, :97-99). Never a tractor here.
+LOADER_STORE_CATEGORIES = frozenset({"FRONTLOADERVEHICLES", "WHEELLOADERVEHICLES", "TELELOADERVEHICLES",
+                                     "FORKLIFTS", "SKIDSTEERVEHICLES"})
 # GIANTS PowerConsumer:getCanBeTurnedOn (lines 276-282) refuses when the PTO torque
 # divided by motor:getPtoMotorRpmRatio() exceeds 0.9 * motor:getPeakTorque(); the
 # same rule as capacity = 0.9 * peak torque * ratio (ratio > 0). Other implements'
@@ -61,11 +65,25 @@ def _attached_to(vehicle, links: set[int]) -> str | None:
     return str(next(iter(links))) if len(links) == 1 else MULTIPLE_ATTACHMENTS
 
 
+def _towing_vehicle(vehicle) -> bool:
+    """A tractor without configuration: self-propelled (Motorized, not Attachable),
+    with a loaded motor and a PTO output on some attacher joint, and a readable
+    store category that is not a loader's. No tractor store category name is
+    proven (adapters/EVIDENCE.md), so the rule rests on GIANTS' own data; whether
+    the pair can actually hitch and be powered is still decided per joint pair."""
+    category = vehicle["category"]
+    return (vehicle["self_propelled"] is True and vehicle["motor"] is not None
+            and category is not None and category.upper() not in LOADER_STORE_CATEGORIES
+            and any(joint["pto_names"] for joint in vehicle["output_joints"]))
+
+
 def _category(vehicle, categories) -> str | None:
     mapped = categories.get(vehicle["category"]) if vehicle["category"] else None
     if vehicle["forage_wagon"]:
         return "forage_wagon" if mapped is None else None  # contradictory: unknown
-    return mapped
+    if mapped is not None:
+        return mapped                                       # explicit local override
+    return "tractor" if _towing_vehicle(vehicle) else None
 
 
 def _capabilities(vehicle, bridge_ready: bool) -> frozenset[str]:
@@ -128,9 +146,13 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
     )
 
 
-def observation_from_snapshot(frame: dict, categories: dict[str, str],
+def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = None,
                               bridge_ready: bool = False) -> Observation:
-    """Build an authoritative observation, or raise ObservationError."""
+    """Build an authoritative observation, or raise ObservationError.
+
+    ``categories`` optionally maps store categories to "tractor" (a local override;
+    tractors are otherwise recognised by _towing_vehicle)."""
+    categories = categories or {}
     if not set(categories.values()) <= ALLOWED_CATEGORIES:
         raise ObservationError("INVALID_CATEGORY_MAP")
     if frame.get("event") != "snapshot":

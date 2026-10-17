@@ -96,6 +96,9 @@ function stubs.vehicle(world, t)
             return t.ptoTorque, 1
         end
     end
+    -- Motorized spec table (Motorized:onLoad 367); t.towed adds Attachable.
+    if t.motorized then v.spec_motorized = {} end
+    if t.towed then v.spec_attachable = {} end
     -- ForageWagon/Attachable spec tables (ForageWagon:onLoad line 93).
     if t.file == "STUB_WAGONS" and t.forageWagon ~= false then
         v.spec_forageWagon, v.spec_attachable = {}, {}
@@ -339,6 +342,26 @@ class LuaContractTests(unittest.TestCase):
         world = self.stubs.single(self.lua.eval(tractor % ", gotoJob = { canStart = true, supported = true }"))
         self.snapshot(world)
         self.assertEqual(list(world.jobNames.values()), ["AIJobGoTo"])
+
+    def test_self_propelled_is_observed_from_giants_specializations(self):
+        cases = [('{ id = 21, file = "STUB_TRACTORS", motorized = true }', True),
+                 ('{ id = 21, file = "STUB_TRACTORS", motorized = true, towed = true }', False),
+                 ('{ id = 21, file = "STUB_TRACTORS" }', False),
+                 ('{ id = 21, file = "STUB_WAGONS", inputs = { "TRAILER" } }', False)]
+        for spec, expected in cases:
+            with self.subTest(spec=spec):
+                record, _ = self.vehicle_record(spec)
+                self.assertIs(record["self_propelled"], expected)
+
+    def test_unconfigured_lua_observed_tractor_is_recognised(self):
+        spec = ('{ id = 21, file = "ANY_STORE_CATEGORY", motorized = true, joints = { "TRAILER" }, aiDrivable = true,'
+                '  ptos = { { "rearPto" } }, peak = 500 }')
+        frame = self.snapshot(self.stubs.single(self.lua.eval(spec)))
+        item, = observation_from_snapshot(frame).equipment
+        self.assertEqual(item.category, "tractor")
+        spec = spec.replace("motorized = true", "motorized = true, towed = true")
+        item, = observation_from_snapshot(self.snapshot(self.stubs.single(self.lua.eval(spec)))).equipment
+        self.assertEqual(item.category, "unknown")
 
     def test_attachment_unknown_versus_empty(self):
         tractor = '{ id = 21, file = "STUB_TRACTORS", joints = { "TRAILER" }, modes = { %s } }'

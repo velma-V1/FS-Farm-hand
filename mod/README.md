@@ -33,16 +33,16 @@ On the Windows PC with FS25 and Python 3.12 (AutoDrive optional):
    "start helper" off in the tractor's AutoDrive HUD (Farmhand refuses to drive
    while AutoDrive would hand the tractor to another AI). Don't pause the game
    during the run. Get out of the tractor.
-2. Open the console (`~`) and run `fhHitchList`; note the tractor's `store=` value.
-3. Copy `farmhand.example.json` to `farmhand.json` and put that value in
-   `tractor_store_categories`.
-4. In a terminal in this repository (`pip install -r requirements.txt` once), run
-   `python -m companion.run --config farmhand.json here`. Alternatively use
-   `marker "<name>"`, `marker-id <id>` or `field <n>`, with `field_entrances` set.
-5. Watch the run. It ends with one JSON line: `status`, `reason`, the two vehicle IDs
+2. In a terminal in this repository (`pip install -r requirements.txt` once), run
+   `python -m companion.run here`. No configuration is needed: the tractor is
+   recognised from GIANTS data. With AutoDrive, `marker "<name>"` and
+   `marker-id <id>` also work; `field <n>` needs `--config farmhand.json` with
+   `field_entrances` (see `farmhand.example.json`).
+3. Watch the run. It ends with one JSON line: `status`, `reason`, the two vehicle IDs
    and the stages passed. Ctrl+C at any time stops the companion; the game then
    stops its motion within 10 s.
-6. Send the terminal output and the `[Farmhand]` lines of `log.txt`.
+4. Send the terminal output and the `[Farmhand]` lines of `log.txt`. If no pair
+   is found, also send the output of `fhHitchList` (console, `~`).
 
 If the run fails in HITCH, the diagnostic probe repeats only that part:
 `fhHitchProbe <tractorId> <wagonId> [assistRadiusM] [maxVerticalM] [maxSpeedKmh]`

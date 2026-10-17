@@ -60,11 +60,13 @@ before executor validation. This build uses an explicit fixture and makes no cla
 of natural-language understanding.
 
 No vehicle IDs come from the LLM. Selection checks categories (forage wagons by
-GIANTS' ForageWagon specialization), same-farm permission, availability, no
+GIANTS' ForageWagon specialization; tractors as self-propelled vehicles with a
+motor and a PTO output that are not in a loader store category, or by an optional
+local category map), same-farm permission, availability, no
 driver/job/attachment/reservation, a shared attacher joint type (FS25 tractors
 expose several joints), sufficient tractor power by GIANTS' own PTO torque rule, a
 shared PTO at the planned joints when the wagon needs PTO power, and
-movement/attachment/stop capabilities. IDs are opaque;
+movement/attachment/stop capabilities (GIANTS GOTO available for the tractor). IDs are opaque;
 a lexical tie-break provides repeatability but carries no equipment semantics.
 
 ## Architecture and boundaries
@@ -157,15 +159,16 @@ stop, and every HITCH primitive (joint
 geometry, GIANTS GOTO navigation, driveToPoint reversing, attach-range detection,
 normal attachment, attachment observation) are backed by GIANTS/upstream source.
 Their composition on a real tractor and forage wagon is UNVERIFIED until an FS25
-test. Power and PTO now come from GIANTS data on the loaded vehicles; a real pair is
-selectable once the user's tractor store category is configured and the
+test. Power and PTO come from GIANTS data on the loaded vehicles, and tractors are
+recognised from GIANTS data (self-propelled with a motor and a PTO output, not a
+loader category), so a real pair is selectable with no configuration once the
 companion's bridge session is live. The local IPC is the Farmhand Companion
 pattern: a companion-hosted Windows named pipe (game → companion) plus an atomically
 renamed XML command file and a beating session file (companion → game). Do not
 build navigation beyond ALIGN_REVERSE.
 
 The first FS25 test runs the whole of AC-001 from a structured request
-(`python -m companion.run --config farmhand.json here`; steps in mod/README.md),
+(`python -m companion.run here`; steps in mod/README.md),
 with nothing else enabled. If HITCH fails there, the diagnostic console probe
 (`fhHitchList`, `fhHitchProbe`) repeats just that part with the same bridge
 operations and logs the geometry, so the assist radius, vertical guard and

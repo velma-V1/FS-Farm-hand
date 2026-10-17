@@ -139,9 +139,9 @@ class FS25World:
     operation. Physical capability is granted only while the latest snapshot
     names this companion's session (adapters/fs25.py)."""
 
-    def __init__(self, link: CommandLink, categories: dict[str, str]):
+    def __init__(self, link: CommandLink, categories: dict[str, str] | None = None):
         self.link = link
-        self.categories = dict(categories)
+        self.categories = dict(categories or {})
         self._lock = threading.RLock()
         self._reservations: dict[str, tuple[str, tuple[str, str]]] = {}
 
