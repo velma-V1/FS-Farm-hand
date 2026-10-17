@@ -115,7 +115,10 @@ Results: COMPLETE = all observations verified; BLOCKED = invalid input, unavaila
 pair/capability, reservation conflict, or any failure before RESERVE (nothing moved); FAILED = adapter rejected/failed a step
 and stop was confirmed; UNVERIFIED = observation mismatch or unconfirmed stop.
 Reservations release only after a confirmed stop following attempted physical work.
-Failure to stop/release retains ownership conservatively. Repeated identical
+Failure to stop/release retains ownership conservatively; before each new
+request the service tries to confirm that stop (a game `stop` ending DONE and a
+fresh snapshot showing both units at rest) and releases only then, so a lost
+link mid-run needs no companion restart. Repeated identical
 request IDs return the cached outcome within the same executor instance; changed
 payloads with the same ID are blocked. Execution is serialized in that instance.
 Replay across companion restarts is prevented by the bridge, not by persistence:

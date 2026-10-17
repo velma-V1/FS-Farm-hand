@@ -397,6 +397,18 @@ class ProductionSequenceTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("UNVERIFIED", "CLEANUP_NOT_CONFIRMED"))
         self.assertEqual(list(world._reservations.values()), [("1", ("11", "12"))])
 
+    def test_recovery_needs_a_done_stop_and_an_observed_rest(self):
+        game, world, result = self.run_ac001(faults={"align": "FAILED:STALLED", "stop": "FAILED:NOT_STOPPED"})
+        owner, = world.retained()
+        del game.faults["stop"]
+        game.vehicles[11]["speed_kmh"] = 5.0          # the game says DONE, the snapshot says moving
+        self.assertFalse(world.recover(owner))
+        self.assertEqual(world.retained(), (owner,))
+        game.vehicles[11]["speed_kmh"] = 0.0
+        self.assertTrue(world.recover(owner))
+        self.assertEqual(world.retained(), ())
+        self.assertTrue(world.recover(owner))         # nothing left to recover
+
     def test_replayed_request_sends_no_new_command(self):
         game = FakeGame()
         self.addCleanup(game.stop)
@@ -517,7 +529,7 @@ class ServiceTests(unittest.TestCase):
         from companion import service
         game = FakeGame(**game_args)
         self.addCleanup(game.stop)
-        world = FS25World(game.link)
+        world = game.link_world = FS25World(game.link)
         notices = []
         original = game.link.notice
         game.link.notice = lambda code: (notices.append(code), original(code))
@@ -605,6 +617,27 @@ class ServiceTests(unittest.TestCase):
         game.session_override = "someone-else"
         game.press(2)
         self.wait_for(lambda: notices[-1:] == ["BLOCKED_NOT_LINKED"])
+
+    def test_unconfirmed_stop_is_recovered_only_by_a_later_confirmed_stop(self):
+        game, notices = self.start(autodrive=False, faults={"align": "FAILED:STALLED",
+                                                            "stop": "FAILED:NOT_STOPPED"})
+        game.press(1)
+        self.wait_for(lambda: len(notices) >= 2)
+        self.assertEqual(notices, ["ACCEPTED", "UNVERIFIED_CLEANUP_NOT_CONFIRMED"])
+        world_reservations = lambda: game.link_world._reservations
+        self.assertEqual(len(world_reservations()), 1)          # kept: stop never confirmed
+        game.press(2)                                           # stop still fails: still kept
+        self.wait_for(lambda: len(notices) >= 4)
+        self.assertEqual(notices[2:], ["ACCEPTED", "BLOCKED_NO_ELIGIBLE_PAIR"])
+        self.assertEqual(len(world_reservations()), 1)
+        del game.faults["stop"], game.faults["align"]
+        before = len(game.commands)
+        game.press(3)
+        self.wait_for(lambda: len(notices) >= 6)
+        self.assertEqual(notices[4:], ["ACCEPTED", "COMPLETE"])
+        self.assertEqual([c["op"] for c in game.commands[before:]],
+                         ["stop", "stage", "align", "attach", "navigate", "stop"])
+        self.assertEqual(world_reservations(), {})
 
     def test_notices_are_strict_tokens(self):
         from companion.service import notice_code

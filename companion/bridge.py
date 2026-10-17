@@ -267,6 +267,32 @@ class FS25World:
             del self._reservations[owner]
             log.info("released %s", reservation[1])
 
+    def retained(self) -> tuple[str, ...]:
+        """Owners whose reservation outlived their request (stop never confirmed)."""
+        with self._lock:
+            return tuple(self._reservations)
+
+    def recover(self, owner: str) -> bool:
+        """Release a reservation kept after an unconfirmed stop, but only once a stop
+        is confirmed now: the game's `stop` for the tractor ends DONE (its own motion
+        over, at rest) and a fresh snapshot shows both units present and stopped.
+        Otherwise it stays reserved (AGENTS.md); a missing unit is never assumed gone."""
+        with self._lock:
+            reservation = self._reservations.get(owner)
+        if reservation is None:
+            return True
+        try:
+            status, code = self.link.command("stop", {"tractor": int(reservation[1][0])})
+            if status != "DONE":
+                log.info("retained %s: stop %s %s", reservation[1], status, code)
+                return False
+            self.release(owner)                  # re-checks both present and stopped
+        except (StepFailed, StepUnverified, ValueError) as error:
+            log.info("retained %s: %s", reservation[1], getattr(error, "code", error))
+            return False
+        log.info("recovered %s for %s after a confirmed stop", reservation[1], owner)
+        return True
+
     # ------------------------------------------------------------- operations
     def _run(self, op: str, **args) -> None:
         status, code = self.link.command(op, args)

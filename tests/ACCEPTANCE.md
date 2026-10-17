@@ -88,7 +88,9 @@ Executable mapping (`python scripts/check.py`):
   the fake game and the player is told ACCEPTED then COMPLETE; presses while busy
   are answered BUSY and never run, replayed or other sessions' presses never run,
   taking a request marks the link busy atomically; BLOCKED and FAILED results are
-  reported with their reason; a session the game dropped is renewed and a
+  reported with their reason; a reservation kept after an unconfirmed stop is
+  released only by a later confirmed stop (DONE and observed at rest; a DONE with
+  a moving snapshot keeps it), and the run then completes; a session the game dropped is renewed and a
   request on an unlinked game blocks; notices are strict tokens; a closed link
   never rewrites its session file; the logon command is windowless pythonw rooted
   at the repository and refuses quoted paths.

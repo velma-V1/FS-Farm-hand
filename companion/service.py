@@ -74,6 +74,8 @@ def handle(world: FS25World, executor: Executor, request_id: int) -> None:
     if frame["session"] != link.session:
         link.notice("BLOCKED_NOT_LINKED")
         return
+    for owner in world.retained():             # an earlier run's unconfirmed stop
+        world.recover(owner)
     intent = {"version": 1, "request_id": f"{link.session}-{request_id}",
               "task": "deliver_tractor_and_forage_wagon", "farm_id": str(frame["farm_id"]),
               "target": "player_at_acceptance"}
