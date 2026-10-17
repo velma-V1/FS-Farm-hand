@@ -1,4 +1,11 @@
-"""Validate and build the exact FS25_Farmhand install folder (AC-001 bridge + diagnostic probe)."""
+"""Validate and build the exact install folders for the user's Windows PC.
+
+    --check-source              validate mod/ as CI does
+    --build dist/FS25_Farmhand  the FS25 mod folder (copied into the game's mods/)
+    --build-companion dist/FarmhandCompanion
+                                the companion: runtime sources, pinned requirements
+                                and the one-time installer (scripts/install_windows.cmd)
+"""
 
 from __future__ import annotations
 
@@ -115,16 +122,63 @@ def build(destination: Path) -> None:
     print(manifest.read_text(encoding="utf-8"), end="")
 
 
+# The companion's runtime: never tests, the simulator or development tooling.
+COMPANION_FILES = (
+    "README.md",
+    "requirements.txt",
+    "farmhand.example.json",
+    "scripts/install_windows.cmd",
+    "adapters/fs25.py",
+    "adapters/world.py",
+    "companion/bridge.py",
+    "companion/executor.py",
+    "companion/hitch.py",
+    "companion/run.py",
+    "companion/service.py",
+    "protocol/frame.schema.json",
+    "protocol/intent.schema.json",
+    "protocol/ipc.py",
+    "protocol/model.py",
+)
+# The live validation steps travel with the companion.
+COMPANION_DOCS = {"mod/README.md": "LIVE_VALIDATION.md"}
+
+
+def build_companion(destination: Path) -> None:
+    if destination.exists():
+        shutil.rmtree(destination)
+    rows = []
+    for source, target in [(name, name) for name in COMPANION_FILES] + list(COMPANION_DOCS.items()):
+        path = ROOT / source
+        if not path.is_file() or path.is_symlink():
+            fail(f"missing regular companion file: {source}")
+        out = destination / target
+        out.parent.mkdir(parents=True, exist_ok=True)
+        data = path.read_bytes()
+        if source.endswith(".cmd"):          # cmd.exe needs CRLF whatever the checkout did
+            data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        out.write_bytes(data)
+        rows.append(f"{hashlib.sha256(data).hexdigest()}  {destination.name}/{target}")
+    if any("simulator" in p.parts or "tests" in p.parts for p in destination.rglob("*")):
+        fail("the companion bundle must not contain tests or the simulator")
+    manifest = destination.parent / "COMPANION_SHA256SUMS.txt"
+    manifest.write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
+    print(f"Companion bundle built at {destination}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check-source", action="store_true")
     group.add_argument("--build", type=Path)
+    group.add_argument("--build-companion", type=Path)
     args = parser.parse_args()
 
     if args.check_source:
         validate_mod(SOURCE, exact_files=False)
         print("FS25 mod source layout valid.")
+    elif args.build_companion:
+        build_companion(args.build_companion.resolve())
     else:
         build(args.build.resolve())
 

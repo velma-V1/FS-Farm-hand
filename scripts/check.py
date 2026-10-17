@@ -2,6 +2,7 @@
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 from lupa import lua51, lua54
 
@@ -22,5 +23,7 @@ if __name__ == "__main__":
         for path in sorted((ROOT / "mod").rglob("*.lua")):
             compile_lua(path.read_text(), str(path.relative_to(ROOT)))
     run(sys.executable, "scripts/package_probe.py", "--check-source")
+    with tempfile.TemporaryDirectory() as folder:   # every companion runtime file exists
+        run(sys.executable, "scripts/package_probe.py", "--build-companion", str(Path(folder) / "FarmhandCompanion"))
     run("git", "diff", "--check", "HEAD")
-    print("All CI checks passed (Python, schema, Lua, package layout, whitespace).", flush=True)
+    print("All CI checks passed (Python, schema, Lua, package layouts, whitespace).", flush=True)

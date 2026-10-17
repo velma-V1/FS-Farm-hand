@@ -17,8 +17,9 @@ attach them, and bring them to the requester.
 run inside FS25.** Upstream capabilities are recorded with source evidence in
 [adapters/EVIDENCE.md](adapters/EVIDENCE.md).
 
-How it is used: install once (copy the `FS25_Farmhand` mod folder, double-click
-`scripts/install_windows.cmd`), then in game press **Left Alt + J** on foot. The
+How it is used: install once from the CI artifact (copy the `FS25_Farmhand` mod
+folder; double-click `FarmhandCompanion/scripts/install_windows.cmd`), then in
+game press **Left Alt + J** on foot. The
 windowless local companion selects an available tractor and forage wagon, hitches
 them and brings them to you; the game shows its progress as notifications. No
 console, vehicle IDs, configuration file, AutoDrive graph or terminal is needed:

@@ -28,11 +28,13 @@ session and the probe for a typed command.
 Everything below is the normal player path plus the checks that only FS25 can
 answer; one sitting covers them. Needs FS25 and Python 3.12 (`py` launcher).
 
-1. **Install once.** Copy the `FS25_Farmhand` folder from the CI artifact (or this
-   `mod/` folder) to `Documents/My Games/FarmingSimulator2025/mods/FS25_Farmhand/`
-   (a folder, not a ZIP). Double-click `scripts/install_windows.cmd` in this
-   repository: it installs the companion and starts it, windowless, now and at
-   every logon.
+1. **Install once.** The CI artifact `FS25_Farmhand-<commit>` holds two folders.
+   Copy `FS25_Farmhand` to `Documents/My Games/FarmingSimulator2025/mods/FS25_Farmhand/`
+   (a folder, not a ZIP). Put `FarmhandCompanion` anywhere (for example
+   `Documents/FarmhandCompanion`) and double-click its
+   `scripts/install_windows.cmd`: it installs the companion and starts it,
+   windowless, now and at every logon. (From a repository checkout, the same
+   script and this `mod/` folder work too.)
 2. **Without AutoDrive.** Disable AutoDrive (if installed) and load a
    single-player save with the Farmhand mod. Own one tractor with nothing attached
    (no front weight either) and one forage wagon. Expect the notification
