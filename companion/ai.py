@@ -42,6 +42,7 @@ VALIDATION = [
     ("could you rig up a tractor with the forage wagon for me", "fetch_pair"),
 ]
 NEEDED_CORRECT = 5                   # of 6; "plow field 3" must never become a movement
+UNREACHABLE_REPEAT_S = 300.0         # remind at most every five minutes
 
 
 def data_dir() -> Path:
@@ -124,6 +125,7 @@ class OllamaInterpreter:
     def __init__(self, ollama: Ollama, name: str):
         self.ollama, self.name = ollama, name
         self.missing = False                       # Ollama says the model is gone
+        self.unreachable = False                   # Ollama itself is not answering
 
     def _chat(self, text: str, think: bool):
         body = {"model": self.name, "stream": False, "format": managed.MODEL_SCHEMA,
@@ -151,9 +153,14 @@ class OllamaInterpreter:
                     raise
                 reply = self._chat(text, think=True)    # older Ollama: no "think" field
             answer = json.loads(reply["message"]["content"])
+        except urllib.error.URLError as error:
+            self.unreachable = not isinstance(error, urllib.error.HTTPError)
+            log.info("ollama %s: no answer (%s)", self.name, error)
+            return None
         except (OSError, ValueError, KeyError, TypeError) as error:
             log.info("ollama %s: no answer (%s)", self.name, type(error).__name__)
             return None
+        self.unreachable = False
         return managed.to_proposal(answer)
 
 
@@ -228,6 +235,7 @@ class AI:
         self.interpreter = None
         self.busy = False                          # validating or installing
         self.menu: list[Choice] = []
+        self._unreachable_told = None              # when AI_UNREACHABLE was last shown
 
     # -- current interpreter
     def start(self) -> None:
@@ -275,6 +283,11 @@ class AI:
         if getattr(interpreter, "missing", False):
             interpreter.missing = False
             self.notify("AI_MODEL_MISSING")       # reported, never replaced
+        elif getattr(interpreter, "unreachable", False):
+            now = time.monotonic()
+            if self._unreachable_told is None or now - self._unreachable_told > UNREACHABLE_REPEAT_S:
+                self._unreachable_told = now
+                self.notify("AI_UNREACHABLE")     # e.g. Ollama not running; never switched
         return proposal
 
     # -- the menu

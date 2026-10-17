@@ -261,6 +261,15 @@ class ChoiceTests(Fixture):
         self.assertEqual(self.settings.ai(), {"provider": "ollama", "model": "qwen3:4b"})
         self.assertEqual([c["model"] for c in fake.chats], ["qwen3:4b"])     # never another model
 
+    def test_ollama_not_running_is_reported_once_in_a_while_and_never_switched(self):
+        self.settings.set_ai({"provider": "ollama", "model": "qwen3:4b"})
+        brain = self.make_ai(ai.Ollama("http://127.0.0.1:9", timeout=0.3))
+        brain.start()
+        for _ in range(3):
+            self.assertIsNone(brain.interpret("haul that thing over"))
+        self.assertEqual(self.notices, ["AI_UNREACHABLE"])
+        self.assertEqual(self.settings.ai(), {"provider": "ollama", "model": "qwen3:4b"})
+
     def test_stale_or_out_of_range_picks_do_nothing(self):
         _, client = self.ollama()
         brain = self.make_ai(client)
