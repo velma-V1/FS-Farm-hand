@@ -400,4 +400,12 @@ class LiveTest:
         return {"equipment": [{"id": i.id, "category": i.category,
                                "rejected": [] if i in free else rejections(i, farm_id) or ["UNKNOWN"]}
                               for i in relevant][:40],
-                "pair": pair}
+                "pair": pair,
+                # Everything of this farm as observed (read only): what the planner can work with.
+                "inventory": [{"id": i.id, "category": i.category, "name": i.name, "kinds": sorted(i.kinds),
+                               "attached_to": i.attached_to, "position": [round(i.position[0], 1),
+                                                                          round(i.position[1], 1)],
+                               "fill_units": [{"index": u.index, "fill_type": u.fill_type, "level": u.level,
+                                               "capacity": u.capacity, "role": u.role,
+                                               "supported": sorted(u.supported)[:12]} for u in i.fill_units]}
+                              for i in items if i.farm_id == farm_id][:120]}

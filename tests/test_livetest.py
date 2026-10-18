@@ -200,6 +200,9 @@ class CompanionLiveTestTests(CompanionCase):
         self.assertEqual(status["candidates"]["pair"]["wagon"], "12")
         self.assertIsNone(status["test_active"])
         self.assertTrue(status["ready"], status["problems"])
+        inventory = {i["id"]: i for i in status["candidates"]["inventory"]}
+        self.assertEqual(inventory["12"]["kinds"], ["dischargeable", "fill_unit", "forage_wagon"])
+        self.assertEqual((inventory["11"]["category"], inventory["12"]["category"]), ("tractor", "forage_wagon"))
 
     def test_status_names_a_game_running_an_older_mod(self):
         self.start(build="0ld", autodrive=False)
