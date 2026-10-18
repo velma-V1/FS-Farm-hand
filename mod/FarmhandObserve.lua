@@ -348,7 +348,19 @@ function Observe.vehicle(env, v, ptoNames)
 
     -- vehicle.ad is AutoDrive's own presence test (ExternalInterface.lua:116).
     -- Once present, an unreadable state module is unknown, not "no AutoDrive".
+    -- Except AutoDrive's scratch table on implements it handled
+    -- (SpecialDrivingModule.lua:391, AutoDriveUtilFuncs.lua:35, 503): only its
+    -- specialization creates the state module (Specialization.lua:194), only on
+    -- drivable vehicles (prerequisitesPresent), and AutoDrive itself reports a
+    -- vehicle without one as not AutoDrive-active (Specialization.lua:1799). So a
+    -- towed vehicle (Attachable, not Motorized) without a state module has no
+    -- AutoDrive driver; on any other vehicle a missing state module stays unknown.
     local hasAutoDrive = try(function() return v.ad ~= nil end) == true
+    if hasAutoDrive and try(function()
+        return v.ad.stateModule == nil and v.spec_attachable ~= nil and v.spec_motorized == nil
+    end) == true then
+        hasAutoDrive = false
+    end
     local adActive = nil
     if hasAutoDrive then
         adActive = try(function()

@@ -93,7 +93,7 @@ treats it the same way:
 | `getIsControlled` | `getIsEntered` alone decides | AD `AutoDriveUtilFuncs.lua:778-782` |
 | `getIsAIActive` | not AI-active | AD `Manager/HarvestManager.lua:104`; FH `Collectors.lua:457` |
 | `getAttacherVehicle` / `getAttachedImplements` | no attachment on that side, **only if** the vehicle also lacks input / attacher joints | AD `Specialization.lua:1795`; FH `Commands.lua:340`. The joint condition is our own conservative addition |
-| `vehicle.ad` | no AutoDrive | AD `ExternalInterface.lua:116`. Once `vehicle.ad` exists, an unreadable `stateModule` is unknown |
+| `vehicle.ad` | no AutoDrive | AD `ExternalInterface.lua:116`. Once `vehicle.ad` exists, an unreadable `stateModule` is unknown. Exception, AD 3.0.1.4: AD leaves a scratch `ad = {}` on implements it handled (`SpecialDrivingModule.lua:391`, `Utils/AutoDriveUtilFuncs.lua:35, 503`); only its specialization's `onLoad` creates `stateModule` (`Specialization.lua:194`), only on drivable vehicles (`prerequisitesPresent` 1-13), and AD's own `getIsAIActive` treats a vehicle without one as not AD-active (`Specialization.lua:1799`). A towed vehicle (Attachable, not Motorized) with `ad` but no `stateModule` is therefore observed as having no AutoDrive driver; any other vehicle stays unknown. Seen live 2026-10-18: after one attach/detach by an AD tractor the wagon stayed `AI_STATE_UNKNOWN` |
 
 The Python mapping (`adapters/fs25.py`) turns unknown into `available=False`, and
 also into `occupied=True`, `busy=True` or `attached_to="*unknown*"`, so no single

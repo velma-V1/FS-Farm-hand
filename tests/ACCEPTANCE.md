@@ -305,7 +305,10 @@ Executable mapping (`python scripts/check.py`):
   stubs implementing only upstream-evidenced calls, decoded and mapped by Python,
   including every method missing / returning nil / non-boolean / raising, and
   GIANTS GOTO availability by its own rule (agent functions, start allowed, job
-  supported under the name `AIJobGoTo`).
+  supported under the name `AIJobGoTo`). AutoDrive's scratch `ad = {}` on a towed
+  wagon (no state module) is no AutoDrive driver, so a detached wagon is eligible
+  again; an unreadable state module, or one missing on any other vehicle, stays
+  AI_STATE_UNKNOWN (`test_autodrive_scratch_table_on_a_towed_wagon_is_not_an_autodrive_driver`).
 
 - `tests/test_livetest.py`: the development-only live-test bridges. A hitch request
   runs the real serve() loop, coordinator and executor over FakeGame and sends only

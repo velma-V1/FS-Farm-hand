@@ -13,7 +13,7 @@ from lupa import lua51, lua54
 from adapters.fs25 import UNKNOWN_ATTACHMENT, ObservationError, observation_from_snapshot
 from dataclasses import replace
 
-from companion.executor import compatible, power_sufficient
+from companion.executor import compatible, power_sufficient, rejections
 from companion.hitch import plan_hitch
 from companion.executor import Executor
 from protocol.ipc import PIPE_PATH, parse_frame
@@ -134,6 +134,9 @@ function stubs.vehicle(world, t)
     if t.autodrive and world.env.AutoDrive ~= nil then
         v.ad = { stateModule = { isActive = function(self) return t.adActive == true end } }
     end
+    -- AutoDrive's scratch table on an implement it handled (SpecialDrivingModule.lua:391,
+    -- AutoDriveUtilFuncs.lua:35, 503): no state module, which only its specialization makes.
+    if t.adScratch and world.env.AutoDrive ~= nil then v.ad = {} end
     -- Per-method behaviour: absent, returns nil, returns a non-boolean, or raises.
     local behaviours = {
         missing = function() return nil end,
@@ -338,6 +341,33 @@ class LuaContractTests(unittest.TestCase):
                 self.assertEqual(item.available, not unknown)
                 self.assertEqual(not item.occupied and not item.busy, free and not unknown)
                 self.assertEqual(item.ridden, record["entered"] is True)
+
+    def test_autodrive_scratch_table_on_a_towed_wagon_is_not_an_autodrive_driver(self):
+        # Live 2026-10-18: after one attach/detach with an AutoDrive tractor the wagon
+        # kept AD's scratch `ad = {}` and was rejected AI_STATE_UNKNOWN for good.
+        wagon = '{ id = 32, file = "STUB_WAGONS", inputs = { "TRAILER" }, %s }'
+        record, item = self.vehicle_record(wagon % "adScratch = true")
+        self.assertIs(record["has_autodrive"], False)
+        self.assertIsNone(record["ad_active"])
+        self.assertTrue(item.available and not item.busy)
+        self.assertEqual(rejections(item, "1"), [])
+        # A towed vehicle whose state module exists but cannot be read stays unknown.
+        record, item = self.vehicle_record(wagon % "autodrive = true, modes = { isActive = 'raises' }")
+        self.assertIs(record["has_autodrive"], True)
+        self.assertIsNone(record["ad_active"])
+        self.assertIn("AI_STATE_UNKNOWN", rejections(item, "1"))
+        # A towed vehicle that AutoDrive is driving through a state module is busy.
+        record, item = self.vehicle_record(wagon % "autodrive = true, adActive = true")
+        self.assertIs(record["ad_active"], True)
+        self.assertIn("AUTODRIVE_ACTIVE", rejections(item, "1"))
+        # A self-propelled vehicle with `ad` but no state module stays unknown.
+        tractor = '{ id = 21, file = "STUB_TRACTORS", joints = { "TRAILER" }, motorized = true, adScratch = true }'
+        record, item = self.vehicle_record(tractor)
+        self.assertIs(record["has_autodrive"], True)
+        self.assertIn("AI_STATE_UNKNOWN", rejections(item, "1"))
+        # Neither Attachable nor Motorized readable as towed: unknown as before.
+        record, item = self.vehicle_record('{ id = 22, file = "STUB_TRACTORS", joints = { "TRAILER" }, adScratch = true }')
+        self.assertIn("AI_STATE_UNKNOWN", rejections(item, "1"))
 
     def test_giants_goto_availability_is_observed(self):
         tractor = '{ id = 21, file = "STUB_TRACTORS", joints = { "TRAILER" } %s }'
