@@ -32,7 +32,7 @@ Three tasks on one capability (plus `hitch_pair`: hitch an available pair where
 the wagon stands, no delivery). The requester may ride along in the tractor; only a
 conflicting controller (an unrelated AI job, AutoDrive, the seated player taking the
 controls, an unreadable seat) blocks or stops it. A tractor alone or a vehicle by
-name is answered "not supported yet", never guessed. Two tasks on one capability. AC-001: **“Go grab an available tractor and forage
+name is answered "not supported yet", never guessed. AC-001: **“Go grab an available tractor and forage
 wagon, hook them together, and bring them here.”** AC-002 (`move_pair`): move the
 tractor and forage wagon that are already hitched — the pair nearest the requester,
 "this" — to the requester ("come here") or a named place ("take this back to the

@@ -401,6 +401,10 @@ class ProductionSequenceTests(unittest.TestCase):
              ["stage", "align", "stop"]),
             ({"align": "UNVERIFIED:UNKNOWN_OBSERVATION"}, None, "UNVERIFIED", "UNKNOWN_OBSERVATION",
              ["stage", "align", "stop"]),
+            # A rider still in the cab when the last metres begin: the reverse is never
+            # started under their controls; stop, release, and say why.
+            ({"align": "REJECTED:SEATED_DURING_REVERSE"}, None, "FAILED", "REJECTED_SEATED_DURING_REVERSE",
+             ["stage", "align", "stop"]),
             ({"attach": "UNVERIFIED:ATTACH_TIMEOUT"}, None, "UNVERIFIED", "ATTACH_TIMEOUT",
              ["stage", "align", "attach", "stop"]),
             ({"attach": "REJECTED:BUSY"}, None, "FAILED", "REJECTED_BUSY",

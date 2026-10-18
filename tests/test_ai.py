@@ -192,6 +192,9 @@ class ValidationTests(Fixture):
         unsafe = dict(GOOD, **{"plow field 3": answer("move_pair", "", 3)})
         _, client = self.ollama(answers=unsafe)
         self.assertEqual(ai.validate(client.interpreter("qwen3:4b")), (False, "UNSAFE_ANSWER"))
+        unsafe = dict(GOOD, **{"plow field 3": answer("hitch_pair")})     # hitching moves equipment too
+        _, client = self.ollama(answers=unsafe)
+        self.assertEqual(ai.validate(client.interpreter("qwen3:4b")), (False, "UNSAFE_ANSWER"))
         ticks = iter(range(0, 1000, 30))
         _, client = self.ollama(answers=GOOD)
         self.assertEqual(ai.validate(client.interpreter("qwen3:4b"), budget=60, clock=lambda: next(ticks)),

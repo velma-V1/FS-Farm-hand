@@ -24,7 +24,7 @@ function W.new(opts)
     local gap = opts.gap or 4
     local w = { calls = {}, drives = {}, attachCalls = 0, candidateOverride = nil, speedOverride = nil,
                 cruise = {}, ranges = {}, events = {} }
-    local env = {}
+    local env = { NetworkUtil = { getObjectId = function() return 11 end } }
     w.env = env
     local wagon = { ownerFarmId = 1, rootNode = node(0, -4, 0) }
     local wagonJoint = { jointType = 3, node = node(opts.wagonX or 0, 0, 0, opts.wagonY or 0) }
@@ -452,15 +452,31 @@ class LuaHitchTests(unittest.TestCase):
             self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CONTINUE")
             self.assertEqual(self.drives(w)[-1]["maxSpeed"], speed)
 
-    def test_the_requester_may_ride_along_until_they_take_the_controls(self):
+    def test_the_last_metres_need_an_empty_cab(self):
+        # GIANTS applies a seated player's controls every frame outside an AI job
+        # (Drivable:onUpdate 702-747): the bounded reverse would fight them.
         w = self.world()
-        w.entered = True                                       # seated, not driving
+        w.entered = True
+        self.assertEqual(tuple(self.align(w)), (None, "SEATED_DURING_REVERSE"))
+        self.assertEqual(len(w.drives), 0)
+
+    def test_a_takeover_during_an_earlier_step_is_still_seen(self):
+        w = self.world()
+        self.hitch.watchDriver(w.env, w.tractor)              # armed at the job's first motion (STAGE)
+        self.assertTrue(w.takeOver())                         # the player drove between STAGE and ALIGN
+        self.assertEqual(tuple(self.align(w)), (None, "DRIVER_TOOK_OVER"))
+        self.hitch.disarm(w.tractor)                          # the job's stop
+        self.assertTrue(w.takeOver())                         # ordinary driving outside a job: ignored
         session, reason = self.align(w)
         self.assertIsNotNone(session, reason)
-        self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CONTINUE")
-        self.assertTrue(w.takeOver())                          # GIANTS: input always allowed
-        self.assertEqual(self.hitch.alignStep(w.env, session, 100), "DRIVER_TOOK_OVER")
-        self.assertEqual(self.hitch.alignStep(w.env, session, 100), "DRIVER_TOOK_OVER")   # latched: never resumes
+
+    def test_another_mods_control_function_is_never_replaced(self):
+        w = self.world()
+        w.tractor.spec_drivable = self.lua.table(playerControlAllowedFunctions=self.lua.table())
+        w.tractor.spec_drivable.playerControlAllowedFunctions[11] = self.lua.eval("function() return false end")
+        w.controlFunc = None
+        self.hitch.watchDriver(w.env, w.tractor)
+        self.assertIsNone(w.controlFunc)                      # we did not register over it
 
     def test_reverse_refuses_to_start_unless_stopped_and_free_of_ai(self):
         for attr, value, reason in (("ai", True, "AI_ACTIVE"), ("ai", None, "UNKNOWN_OBSERVATION"),

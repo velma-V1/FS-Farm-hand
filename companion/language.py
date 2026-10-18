@@ -45,11 +45,12 @@ _REFERENT = re.compile(r"\b(?:it|this|that|them|these|those|everything)\b")
 _MOVE_VERB = re.compile(r"\b(?:bring|take|drive|move|park|send|return|put)\b")
 _COME = re.compile(r"^(?:come|come here|come to me|come over here|come back|come back here|get over here)$")
 # The destination: whatever follows the last "to"/"at"/"into" (and an optional "the"/"my").
+_PREPOSITION = re.compile(r"\b(?:to|at|into|in)\s+(?:the\s+|my\s+|our\s+)?", re.IGNORECASE)
 _DESTINATION = re.compile(r"\b(?:to|at|into|in)\s+(?:the\s+|my\s+|our\s+)?([^,.!?]+?)[\s,.!?]*$", re.IGNORECASE)
 
 
 _EQUIPMENT_TARGET = {"equipment": True}           # _target: the destination is equipment
-_EQUIPMENT_WAGON = re.compile(r"\b(?:to|at)\s+(?:the\s+|a\s+)?(?:(?:forage|loader|silage)\s+)?wagon")
+_EQUIPMENT_WAGON = re.compile(r"\bto\s+(?:the\s+|a\s+|an\s+)?(?:(?:forage|loader|silage)\s+)?wagon\b")
 _KNOWN_THING = re.compile(r"\b(?:tractor|wagon|forage|it|this|that|them|these|those|pair|setup|rig|combo|everything)\b")
 
 
@@ -131,22 +132,34 @@ class RuleInterpreter:
         target = self._target(text, words)
         if target == _EQUIPMENT_TARGET:
             # "take a tractor to the wagon", "deliver the tractor to the forage wagon":
-            # the tractor goes to the wagon, i.e. hitch it where the wagon stands.
-            return {"version": 1, "command": "hitch_pair"} if wagon or _EQUIPMENT_WAGON.search(text.casefold()) \
-                else None
-        if tractor and wagon and _HITCH_VERB.search(words) and not target and not _DELIVERY.search(words) \
-                and not back:
-            # "take the tractor and attach the forage wagon", "hook the tractor to the forage wagon"
+            # an order (leading verb) to take a named tractor plainly "to" the wagon
+            # means hitch it where the wagon stands. "go to the wagon", "park it next
+            # to the wagon", "i attached the tractor to the wagon": not that.
+            if (_ANY_VERB.match(words) or _HITCH_VERB.match(words)) and tractor and not referent \
+                    and _EQUIPMENT_WAGON.search(words) and not re.search(r"\bnext to\b", words):
+                return {"version": 1, "command": "hitch_pair"}
+            return None
+        # "hook up the forage wagon and bring it to the barn": an "it" after the wagon
+        # is that pair; "hook it up to the wagon" names no pair to fetch.
+        if wagon and _HITCH_VERB.search(words) and not back and (
+                not referent or referent.start() > wagon.start()) and (
+                _ANY_VERB.match(words) or _HITCH_VERB.match(words)):
+            # "take the tractor and attach the forage wagon", "hook up the wagon": hitch
+            # where the wagon stands; with "bring"/"to me" or a place: fetch it there.
+            if target is None:
+                return None
+            if target or _DELIVERY.search(words):
+                return {"version": 1, "command": "fetch_pair", **target}
             return {"version": 1, "command": "hitch_pair"}
         # Naming a tractor and a wagon asks for a pair, even with "hook them together",
         # when it is "a"/"an"/"any"/"available" one, a fetch-only verb is used, or both
         # are named without "back" and without a leading move/park/drive ("take the
         # tractor and get the forage wagon ... and park it at the farm").
-        new_pair = (_NEW_PAIR.search(words) or _FETCH_ONLY.search(words) or _HITCH_VERB.search(words)
+        new_pair = (_NEW_PAIR.search(words) or _FETCH_ONLY.search(words)
                     or (tractor and wagon and not _LEAD_MOVE.match(words)))
         # "grab something that'll pull that forage wagon": a fetch-only verb and a
         # wagon ask for a pair even when no tractor is named.
-        pair_named = tractor or _FETCH_ONLY.search(words) or _HITCH_VERB.search(words)
+        pair_named = tractor or _FETCH_ONLY.search(words)
         if pair_named and wagon and not back and (new_pair or not referent) and (
                 _FETCH_VERB.search(words) or len(words.split()) <= 6):
             return None if target is None else {"version": 1, "command": "fetch_pair", **target}
@@ -177,10 +190,12 @@ class RuleInterpreter:
         previous = None
         while previous != spoken:                     # "... to the barn in a minute please"
             previous, spoken = spoken, _TRAILING.sub("", spoken).rstrip(".!?, ")
-        destination = _DESTINATION.search(spoken)
-        if destination is None:
+        # The last "to/at/into/in" names the destination ("hitch the tractor to the
+        # wagon then take it to the barn" -> barn; "to me at the barn" -> barn).
+        prepositions = list(_PREPOSITION.finditer(spoken))
+        if not prepositions:
             return {}
-        name = destination.group(1).strip()
+        name = spoken[prepositions[-1].end():].strip(" ,.!?")
         # "to me at the barn": the place follows the requester words.
         name = re.sub(r"^(?:me|us|here)\s+(?:at|by|near|to|in)\s+(?:the\s+|my\s+)?", "", name, flags=re.IGNORECASE)
         plain = normalize(name)

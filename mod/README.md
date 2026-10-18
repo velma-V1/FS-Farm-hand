@@ -28,8 +28,11 @@ session and the probe for a typed command.
 Only what the first session found, before the rest of the session below:
 
 1. Sit in an eligible tractor (nothing attached) near the forage wagon, Left Alt + K:
-   "take the tractor and attach the forage wagon". Farmhand drives it with you
-   riding along. Expect "hitching ..." then "hitched".
+   "take the tractor and attach the forage wagon". Farmhand drives it to the wagon
+   and lines it up with you riding along. For the last few metres of reversing
+   onto the wagon the cab must be empty: when Farmhand says "step out of the
+   tractor for the last metres of the hitch", get out and ask again (it stops and
+   releases first). Expect "hitching ..." then "hitched".
 2. Unhitch, sit in again, Left Alt + K "bring me a tractor and forage wagon", and
    press Left Alt + L while it moves (expect "stopping", "stopped"). Then give a
    short pedal or steering input during another run: Farmhand stops and says you

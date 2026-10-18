@@ -132,6 +132,22 @@ class RuleInterpreterTests(unittest.TestCase):
             ("take the tractor to the forage wagon", HITCH),
             ("hook up the forage wagon and bring it to the barn",
              {**FETCH, "target": {"type": "place", "name": "barn"}}),
+            ("hitch the tractor to the forage wagon then take it to the barn",
+             {**FETCH, "target": {"type": "place", "name": "barn"}}),
+            ("attach the forage wagon", HITCH),
+            ("hook up the wagon", HITCH),
+            ("hook up the wagon and bring it here", FETCH),
+        ])
+
+    def test_equipment_is_never_a_destination_and_statements_are_not_orders(self):
+        # Review of the first corrective pass: these must not start a hitch.
+        self.check([
+            ("stay at the wagon", None), ("go to the wagon", None), ("drive to the wagon", None),
+            ("leave the tractor at the wagon", None), ("park the tractor next to the wagon", None),
+            ("i parked the tractor next to the wagon", None), ("the tractor goes to the wagon", None),
+            ("i already attached the tractor to the forage wagon", None),
+            ("take it to the wagon", None), ("bring this to the wagon", None),
+            ("bring it back to the wagon", None), ("hook it up to the wagon", None),
         ])
 
     def test_anything_else_is_not_understood(self):

@@ -72,6 +72,12 @@ class ModelInterpreterTests(unittest.TestCase):
                   {"version": 1, "command": "fetch_pair", "target": {"type": "place", "name": "cow barn"}}),
                  ({"command": "move_pair", "place": "", "field": 7},
                   {"version": 1, "command": "move_pair", "target": {"type": "field_entrance", "field": 7}}),
+                 ({"command": "hitch_pair", "place": "", "field": 0}, {"version": 1, "command": "hitch_pair"}),
+                 # "hitch it and bring it to the barn": a fetch to that place, never a dropped target
+                 ({"command": "hitch_pair", "place": "barn", "field": 0},
+                  {"version": 1, "command": "fetch_pair", "target": {"type": "place", "name": "barn"}}),
+                 ({"command": "hitch_pair", "place": "", "field": 4},
+                  {"version": 1, "command": "fetch_pair", "target": {"type": "field_entrance", "field": 4}}),
                  ({"command": "stop", "place": "barn", "field": 3}, {"version": 1, "command": "stop"}),
                  ({"command": "unknown", "place": "", "field": 0}, None)]
         for answer, expected in cases:

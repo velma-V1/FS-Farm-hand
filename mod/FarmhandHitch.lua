@@ -129,15 +129,38 @@ end
 -- Farmhand's function always allows the input (it never fights the player) and
 -- records the takeover; the running operation then yields: DRIVER_TOOK_OVER.
 Hitch.takeovers = setmetatable({}, { __mode = "k" })   -- tractor -> true once the seated player took control
+Hitch.armed = setmetatable({}, { __mode = "k" })       -- tractor -> true from a job's first motion to its stop
+Hitch.registered = setmetatable({}, { __mode = "k" })  -- tractor -> our function is the one GIANTS asks
 
-function Hitch.watchDriver(tractor)
-    Hitch.takeovers[tractor] = nil
-    if type(tractor.registerPlayerVehicleControlAllowedFunction) == "function" then
-        tractor:registerPlayerVehicleControlAllowedFunction(tractor, function(vehicle)
-            Hitch.takeovers[vehicle.rootVehicle or vehicle] = true
-            return true
-        end)
+local function onPlayerInput(vehicle)
+    local root = vehicle.rootVehicle or vehicle
+    if Hitch.armed[root] then Hitch.takeovers[root] = true end
+    return true                                     -- never block the player
+end
+
+-- Arm the takeover watch at a job's first motion (later steps keep it, so a
+-- takeover between two steps still counts); Hitch.disarm at the job's stop.
+-- Another mod's function registered for this tractor is never replaced
+-- (Drivable:registerPlayerVehicleControlAllowedFunction 1130-1135 keys by the
+-- registering vehicle); without ours a takeover is not seen, nothing else changes.
+function Hitch.watchDriver(env, tractor)
+    if Hitch.armed[tractor] then return end
+    Hitch.armed[tractor], Hitch.takeovers[tractor] = true, nil
+    if Hitch.registered[tractor] or type(tractor.registerPlayerVehicleControlAllowedFunction) ~= "function" then
+        return
     end
+    local ok, taken = pcall(function()
+        local functions = tractor.spec_drivable and tractor.spec_drivable.playerControlAllowedFunctions
+        local id = env.NetworkUtil.getObjectId(tractor)
+        return functions ~= nil and id ~= nil and functions[id] ~= nil
+    end)
+    if ok and taken then return end
+    tractor:registerPlayerVehicleControlAllowedFunction(tractor, onPlayerInput)
+    Hitch.registered[tractor] = true
+end
+
+function Hitch.disarm(tractor)
+    Hitch.armed[tractor], Hitch.takeovers[tractor] = nil, nil
 end
 
 -- nil, or why the tractor is not Farmhand's to drive right now: the seated player
@@ -211,6 +234,11 @@ function Hitch.newAlign(env, args)
         end
         if tractorJoint.jointType ~= wagonJoint.jointType then return nil, "JOINT_TYPE_MISMATCH" end
         if tractorJoint.jointIndex ~= 0 then return nil, "TRACTOR_JOINT_OCCUPIED" end
+        -- The bounded reverse is not a GIANTS AI job, and for a seated player GIANTS
+        -- applies the player's own controls every frame (Drivable:onUpdate 702-747,
+        -- getIsVehicleControlledByPlayer): they would fight. The cab must be empty
+        -- for these last metres; every AI-driven step still allows a rider.
+        if tractor:getIsEntered() == true then return nil, "SEATED_DURING_REVERSE" end
         local speed = tractor:getLastSpeed()
         if not finite(speed) or math.abs(speed) >= 1 then return nil, "NOT_STOPPED" end
         local wx, _, wz = world(env, wagonJoint.node)
@@ -227,7 +255,7 @@ function Hitch.newAlign(env, args)
             dirX = fx, dirZ = fz, elapsed = 0, sinceProgress = 0,
             bestGap = distance(tx, tz, wx, wz), lastGap = distance(tx, tz, wx, wz), result = nil,
         }
-        Hitch.watchDriver(tractor)
+        Hitch.watchDriver(env, tractor)
         local denied = authority(s)
         if denied ~= nil then return nil, denied end
         return s

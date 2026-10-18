@@ -119,7 +119,9 @@ def to_proposal(answer) -> dict | None:
     if not MODEL_VALIDATOR.is_valid(answer) or answer["command"] == "unknown":
         return None
     proposal = {"version": 1, "command": answer["command"]}
-    if answer["command"] in ("fetch_pair", "move_pair"):
+    if answer["command"] == "hitch_pair" and (answer["place"].strip() or answer["field"] > 0):
+        proposal["command"] = "fetch_pair"           # hitch and bring it there: a fetch to that place
+    if proposal["command"] in ("fetch_pair", "move_pair"):
         place = answer["place"].strip()
         if answer["field"] > 0:
             proposal["target"] = {"type": "field_entrance", "field": answer["field"]}

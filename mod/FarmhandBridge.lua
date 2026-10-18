@@ -66,14 +66,14 @@ end
 -- Before any motion: owned, no AI job of any kind, at rest. The requester may sit
 -- in it (ride-along, Hitch.watchDriver); from here on a takeover by the seated
 -- player ends the operation.
-local function idle(v, farmId)
+local function idle(env, v, farmId)
     if v.ownerFarmId ~= farmId then return "NOT_OWNED" end
     local entered = v:getIsEntered()
     if entered ~= true and entered ~= false then return "UNKNOWN_OBSERVATION" end
     local ai = v:getIsAIActive()
     if ai ~= false then return ai == true and "AI_ACTIVE" or "UNKNOWN_OBSERVATION" end
     if not stopped(v) then return "NOT_STOPPED" end
-    Bridge.Hitch.watchDriver(v)
+    Bridge.Hitch.watchDriver(env, v)
     return nil
 end
 
@@ -108,7 +108,7 @@ Bridge.pendingGoto = {}       -- tractor -> ms left to watch an aborted, unseen 
 -- "ended" is not "arrived": the companion verifies the position.
 function starters.drive(env, spec)
     local v = spec.tractor
-    local denied = idle(v, spec.farmId)
+    local denied = idle(env, v, spec.farmId)
     if denied ~= nil then return nil, denied end
     if v.ad == nil or env.AutoDrive == nil then return nil, "NO_AUTODRIVE" end
     -- With the vehicle's "start helper" on, AutoDrive's own stop hands the vehicle
@@ -155,7 +155,7 @@ end
 -- ends the job itself when the target is NOT_REACHABLE (AIDrivable:onUpdate
 -- 320-322). An ended job is not arrival: the companion verifies the pose.
 local function startGoto(env, spec, prefix)
-    local denied = idle(spec.tractor, spec.farmId)
+    local denied = idle(env, spec.tractor, spec.farmId)
     if denied ~= nil then return nil, denied end
     local ok, reason = Bridge.Hitch.startStaging(env, spec.tractor, spec.farmId, spec.x, spec.z, spec.yaw)
     if not ok then return nil, prefix .. tostring(reason) end
@@ -299,7 +299,10 @@ function steppers.stop(env, task)
     local ownMotion = Bridge.pendingGoto[v] ~= nil or (target ~= nil
         and ((target.op == "drive" and v.ad.stateModule:isActive() ~= false)
         or ((target.op == "stage" or target.op == "navigate") and target.seen and v:getIsAIActive() ~= false)))
-    if not ownMotion and stopped(v) then return "DONE", "STOPPED" end
+    if not ownMotion and stopped(v) then
+        Bridge.Hitch.disarm(v)                    -- the job's motion is over: stop watching
+        return "DONE", "STOPPED"
+    end
     if task.elapsed > Bridge.STOP_TIMEOUT_MS then return "FAILED", "NOT_STOPPED" end
     return nil
 end
@@ -614,6 +617,8 @@ Bridge.REASONS = {
     DESTINATION_AMBIGUOUS = "more than one place has that name",
     AUTODRIVE_UNAVAILABLE = "that destination needs AutoDrive",
     NOT_LINKED = "the game is not linked to the companion",
+    SEATED_DURING_REVERSE = "step out of the tractor for the last metres of the hitch, then ask again",
+    REJECTED_SEATED_DURING_REVERSE = "step out of the tractor for the last metres of the hitch, then ask again",
     AI_NOT_CLEARED = "an AI job still controls the tractor; check it",
     CLEANUP_AI_NOT_CLEARED = "an AI job still controls the tractor; check it",
     DRIVER_TOOK_OVER = "you took the controls, so Farmhand stopped",

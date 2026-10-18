@@ -221,7 +221,7 @@ def validate(interpreter, budget: float = VALIDATION_TIMEOUT_S, clock=time.monot
             return False, "TOO_SLOW"
         proposal = interpreter.interpret(text)
         got = proposal["command"] if proposal else "unknown"
-        if expected == "unknown" and got in ("fetch_pair", "move_pair"):
+        if expected == "unknown" and got not in ("unknown", "stop", "status"):   # any movement
             return False, "UNSAFE_ANSWER"
         correct += got == expected
         if getattr(interpreter, "missing", False):
