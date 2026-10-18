@@ -34,6 +34,36 @@ class RuleInterpreterTests(unittest.TestCase):
             ("fetch the forage wagon", FETCH),
         ])
 
+    def test_other_implements_by_their_names(self):
+        def hitch(kind):
+            return {"version": 1, "command": "hitch_pair", "implement": kind}
+
+        def fetch(kind, **target):
+            return {"version": 1, "command": "fetch_pair", "implement": kind, **target}
+        field3 = {"target": {"type": "field_entrance", "field": 3}}
+        self.check([
+            ("hitch the cultivator", hitch("cultivator")),
+            ("hook up the plough", hitch("plow")),
+            ("attach the seeder to a tractor", hitch("sowing_machine")),
+            ("take the tractor to the sprayer", hitch("sprayer")),
+            ("couple a tractor to the trailer", hitch("trailer")),
+            ("hitch the fertilizer spreader", hitch("sprayer")),
+            ("hook up the manure spreader", hitch("manure_barrel")),      # not the sprayer
+            ("hitch the mixer wagon", hitch("mixer_wagon")),               # not the forage wagon
+            ("bring me the cultivator", fetch("cultivator")),
+            ("get the seed drill", fetch("sowing_machine")),
+            ("hitch the mower and bring it here", fetch("mower")),
+            ("bring the seeder to field 3", fetch("sowing_machine", **field3)),
+            ("hook up the trailer and take it to the barn", fetch("trailer", target={"type": "place", "name": "barn"})),
+            # Not orders, or not a hitch: never a job.
+            ("don't hitch the plough", None),
+            ("where is the seeder", None),
+            ("plow field 12", None),                  # field work is not hitching
+            ("the cultivator", None),
+            # The forage wagon keeps its own rules.
+            ("fetch the forage wagon", FETCH),
+        ])
+
     def test_destinations_are_extracted_never_invented(self):
         self.check([
             ("bring a tractor and forage wagon to the Home Yard",

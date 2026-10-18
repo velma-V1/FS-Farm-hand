@@ -100,7 +100,7 @@ class Coordinator:
         elif command == "unsupported":                 # understood: say exactly what is missing
             self.notify(token(f"UNSUPPORTED_{proposal['reason'].upper()}"), spoken)
         else:
-            return self.start(command, proposal.get("target", "here"), spoken)
+            return self.start(command, proposal.get("target", "here"), spoken, proposal.get("implement"))
         return None
 
     # ------------------------------------------------------------------ status
@@ -147,7 +147,7 @@ class Coordinator:
             log.info("stop for %s: %s", owner, getattr(error, "code", error))
 
     # -------------------------------------------------------------------- jobs
-    def start(self, command: str, target, spoken: bool = False) -> Job | None:
+    def start(self, command: str, target, spoken: bool = False, implement: str | None = None) -> Job | None:
         with self._lock:
             if self.current is not None:
                 busy = True
@@ -161,18 +161,20 @@ class Coordinator:
             self.notify("BUSY", spoken)
             return None
         self.notify(JOBS[command][1], spoken)
-        self._worker = threading.Thread(target=self._run, args=(job, cancel, command, target), daemon=True,
+        self._worker = threading.Thread(target=self._run, args=(job, cancel, command, target, implement), daemon=True,
                                         name=f"farmhand-job-{job.number}")
         self._worker.start()
         return job
 
-    def _run(self, job: Job, cancel: threading.Event, command: str, target) -> None:
+    def _run(self, job: Job, cancel: threading.Event, command: str, target, implement: str | None = None) -> None:
         task, _, complete = JOBS[command]
         try:
             for owner in self.world.retained():   # an earlier job's unconfirmed stop
                 self.world.recover(owner)
             intent = {"version": 1, "request_id": job.owner, "task": task,
                       "farm_id": self.farm(), "target": "player_at_acceptance" if target == "here" else target}
+            if implement is not None:
+                intent["implement"] = implement
             log.info("job %d intent %s", job.number, json.dumps(intent))
 
             def entered(state):

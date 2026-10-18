@@ -4,52 +4,192 @@
   "description": "A proposal from the language layer (rules, a local model, or the fixed key). It carries no authority: the coordinator adds request id and farm, and the executor validates the resulting intent (intent.schema.json) and selects all equipment. No vehicle IDs, coordinates or control values can be expressed.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "command"],
+  "required": [
+    "version",
+    "command"
+  ],
   "properties": {
-    "version": {"const": 1},
+    "version": {
+      "const": 1
+    },
     "command": {
       "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. unsupported: understood, but not something Farmhand does yet (reason). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop.",
-      "enum": ["fetch_pair", "move_pair", "hitch_pair", "stop", "status", "settings", "report", "unsupported"]
+      "enum": [
+        "fetch_pair",
+        "move_pair",
+        "hitch_pair",
+        "stop",
+        "status",
+        "settings",
+        "report",
+        "unsupported"
+      ]
     },
-    "reason": {"enum": ["tractor_only", "named_vehicle"]},
+    "reason": {
+      "enum": [
+        "tractor_only",
+        "named_vehicle"
+      ]
+    },
     "target": {
       "description": "fetch_pair and move_pair. Default 'here' (the requester's position when accepted). A place is named in the player's words (an AutoDrive marker name or part of an owned building's name).",
       "oneOf": [
-        {"const": "here"},
+        {
+          "const": "here"
+        },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type", "name"],
+          "required": [
+            "type",
+            "name"
+          ],
           "properties": {
-            "type": {"const": "place"},
-            "name": {"type": "string", "minLength": 1, "maxLength": 64, "not": {"pattern": "[\\u0000-\\u001f\\u007f]"}}
+            "type": {
+              "const": "place"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "not": {
+                "pattern": "[\\u0000-\\u001f\\u007f]"
+              }
+            }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type", "marker_name"],
+          "required": [
+            "type",
+            "marker_name"
+          ],
           "properties": {
-            "type": {"const": "autodrive_marker"},
-            "marker_name": {"type": "string", "minLength": 1, "maxLength": 128, "not": {"pattern": "[\\u0000-\\u001f\\u007f]"}}
+            "type": {
+              "const": "autodrive_marker"
+            },
+            "marker_name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "not": {
+                "pattern": "[\\u0000-\\u001f\\u007f]"
+              }
+            }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type", "field"],
+          "required": [
+            "type",
+            "field"
+          ],
           "properties": {
-            "type": {"const": "field_entrance"},
-            "field": {"type": "integer", "minimum": 1, "maximum": 9999}
+            "type": {
+              "const": "field_entrance"
+            },
+            "field": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9999
+            }
           }
         }
+      ]
+    },
+    "implement": {
+      "description": "The implement to hitch (a GIANTS specialization kind; default forage_wagon). Only for fetch_pair, hitch_pair.",
+      "enum": [
+        "forage_wagon",
+        "plow",
+        "cultivator",
+        "sowing_machine",
+        "sprayer",
+        "mower",
+        "tedder",
+        "windrower",
+        "baler",
+        "bale_wrapper",
+        "trailer",
+        "roller",
+        "weeder",
+        "mulcher",
+        "stone_picker",
+        "manure_barrel",
+        "mixer_wagon",
+        "water_trailer",
+        "salt_spreader",
+        "tree_planter"
       ]
     }
   },
   "allOf": [
-    {"if": {"properties": {"command": {"enum": ["stop", "status", "settings", "report", "hitch_pair", "unsupported"]}}},
-     "then": {"not": {"required": ["target"]}}},
-    {"if": {"properties": {"command": {"const": "unsupported"}}}, "then": {"required": ["reason"]},
-     "else": {"not": {"required": ["reason"]}}}
+    {
+      "if": {
+        "properties": {
+          "command": {
+            "enum": [
+              "stop",
+              "status",
+              "settings",
+              "report",
+              "hitch_pair",
+              "unsupported"
+            ]
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "target"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "command": {
+            "const": "unsupported"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reason"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "reason"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "command": {
+            "not": {
+              "enum": [
+                "fetch_pair",
+                "hitch_pair"
+              ]
+            }
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "implement"
+          ]
+        }
+      }
+    }
   ]
 }

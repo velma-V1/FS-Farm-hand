@@ -1,6 +1,7 @@
 """One deterministic task. No LLM calls, game physics, transport, or simulator import."""
 import copy
 from dataclasses import dataclass
+import functools
 import json
 import logging
 import math
@@ -10,7 +11,8 @@ from threading import Lock
 from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified, World
-from companion.hitch import LOCAL_WORK_RADIUS_M, align_problem, hitch_problem, joint_error, plan_hitch
+from companion.hitch import (IMPLEMENT_CATEGORIES, LOCAL_WORK_RADIUS_M, align_problem, hitch_problem, joint_error,
+                             plan_hitch)
 from protocol.model import Destination, Equipment, HitchPlan, Pose, Position, Result
 
 log = logging.getLogger("farmhand")
@@ -203,10 +205,26 @@ def power_sufficient(tractor: Equipment, wagon: Equipment) -> bool:
     return need == 0 or (_known(capacity) and capacity >= need)
 
 
-def compatible(tractor: Equipment, wagon: Equipment) -> bool:
+# The implement kinds a job may ask for by name (adapters/fs25.py IMPLEMENT_KINDS
+# minus headers, which go on combines). "forage_wagon" is the original task.
+HITCHABLE_KINDS = frozenset({"forage_wagon", "plow", "cultivator", "sowing_machine", "sprayer", "mower",
+                             "tedder", "windrower", "baler", "bale_wrapper", "trailer", "roller", "weeder",
+                             "mulcher", "stone_picker", "manure_barrel", "mixer_wagon", "water_trailer",
+                             "salt_spreader", "tree_planter"})
+
+
+def of_kind(item: Equipment, kind: str) -> bool:
+    """An implement of the asked kind: GIANTS' ForageWagon specialization for the
+    forage wagon (as always), else a towed implement carrying that specialization."""
+    if kind == "forage_wagon":
+        return item.category == "forage_wagon"
+    return item.category in IMPLEMENT_CATEGORIES and kind in item.kinds
+
+
+def compatible(tractor: Equipment, wagon: Equipment, kind: str = "forage_wagon") -> bool:
     """Pair-level checks. Joint type and PTO are checked per planned joint pair in
     plan_hitch, which every HITCH step re-runs."""
-    return (tractor.category == "tractor" and wagon.category == "forage_wagon"
+    return (tractor.category == "tractor" and of_kind(wagon, kind)
             and power_sufficient(tractor, wagon)
             and {"move", "attach", "stop"} <= tractor.capabilities)
 
@@ -232,7 +250,7 @@ def rejections(item: Equipment, farm_id: str) -> list[str]:
         reasons.append("ATTACHMENT_UNKNOWN")
     elif item.attached_to is not None:
         reasons.append("ATTACHED")
-    if item.category not in ("tractor", "forage_wagon"):
+    if item.category != "tractor" and item.category not in IMPLEMENT_CATEGORIES:
         reasons.append(f"CATEGORY_{item.category}")
     if item.category == "tractor":
         reasons += [f"NO_{c.upper()}_CAPABILITY" for c in ("move", "attach", "stop") if c not in item.capabilities]
@@ -240,8 +258,8 @@ def rejections(item: Equipment, farm_id: str) -> list[str]:
 
 
 def movable(tractor: Equipment, wagon: Equipment) -> bool:
-    """move_pair: a tractor with its forage wagon; towing needs no PTO power."""
-    return (tractor.category == "tractor" and wagon.category == "forage_wagon"
+    """move_pair: a tractor with its implement; towing needs no PTO power."""
+    return (tractor.category == "tractor" and wagon.category in IMPLEMENT_CATEGORIES
             and {"move", "stop"} <= tractor.capabilities)
 
 
@@ -258,6 +276,8 @@ class Executor:
         self.field_entrances = validated_field_entrances(field_entrances)
         self._lock = Lock()
         self._results: dict[str, tuple[dict, Result]] = {}
+        self._kind = "forage_wagon"
+        self._compatible = compatible
 
     def execute(self, intent: object, cancel=None, on_state=None) -> Result:
         """``cancel``: an optional threading.Event; once set, no further physical
@@ -278,7 +298,8 @@ class Executor:
             self._results[request_id] = (command, result)
             return result
 
-    def _pair(self, ids, farm_id, owner, attached, check=compatible):
+    def _pair(self, ids, farm_id, owner, attached, check=None):
+        check = check or self._compatible
         observed = {item.id: item for item in self.world.snapshot()}
         if any(identifier not in observed for identifier in ids):
             raise ObservationMismatch("EQUIPMENT_MISSING")
@@ -321,8 +342,8 @@ class Executor:
         reason = "NO_ELIGIBLE_PAIR"
         for tractor in free:
             for wagon in free:
-                if not compatible(tractor, wagon):
-                    if tractor.category == "tractor" and wagon.category == "forage_wagon":
+                if not self._compatible(tractor, wagon):
+                    if tractor.category == "tractor" and of_kind(wagon, self._kind):
                         log.info("pair %s/%s rejected: %s", tractor.id, wagon.id,
                                  "INSUFFICIENT_PTO_POWER" if not power_sufficient(tractor, wagon)
                                  else "MISSING_CAPABILITY")
@@ -402,7 +423,7 @@ class Executor:
         return (point is not None and valid_position(point)
                 and math.dist(point, route_position(route)) <= TRACTOR_ARRIVAL_TOLERANCE_M)
 
-    def _arrival(self, ids, farm_id, owner, route, check=compatible):
+    def _arrival(self, ids, farm_id, owner, route, check=None):
         tractor, wagon = self._pair(ids, farm_id, owner, attached=True, check=check)
         target = route_position(route)
         if (not tractor.stopped or not wagon.stopped or not self._at(tractor, route)
@@ -452,7 +473,10 @@ class Executor:
         status, reason = "BLOCKED", "NO_ELIGIBLE_PAIR"
         moving = command["task"] == "move_pair"
         hitch_only = command["task"] == "hitch_pair"
-        check = movable if moving else compatible
+        # One implement kind per job; every pair check of this job uses it.
+        self._kind = command.get("implement", "forage_wagon")
+        self._compatible = functools.partial(compatible, kind=self._kind)
+        check = movable if moving else self._compatible
         delivery = None
         try:
             # Every destination is resolved and validated before any reservation.
@@ -494,7 +518,7 @@ class Executor:
                 free = [item for item in items if usable(item, farm_id)
                         and item.attached_to is None and item.stopped]
                 for item in items:
-                    if item not in free and item.category in ("tractor", "forage_wagon"):
+                    if item not in free and (item.category == "tractor" or of_kind(item, self._kind)):
                         log.info("candidate %s %s rejected: %s", item.id, item.category,
                                  ", ".join(rejections(item, farm_id)) or "UNKNOWN")
                 pair, plan, travel, delivery, failure = self._choose(free, self.world.destinations(), target)

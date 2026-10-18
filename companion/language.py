@@ -49,6 +49,40 @@ _PREPOSITION = re.compile(r"\b(?:to|at|into|in)\s+(?:the\s+|my\s+|our\s+)?", re.
 _DESTINATION = re.compile(r"\b(?:to|at|into|in)\s+(?:the\s+|my\s+|our\s+)?([^,.!?]+?)[\s,.!?]*$", re.IGNORECASE)
 
 
+# Implements by the player's word -> GIANTS specialization kind (companion/executor.py
+# HITCHABLE_KINDS). Ordered: the longer names first ("manure spreader" before
+# "spreader", "mixer wagon" before the forage wagon's own "wagon" rules).
+_IMPLEMENT_NOUNS = [(re.compile(p), kind) for p, kind in (
+    (r"\bmixer wagons?\b|\bfeed mixers?\b", "mixer_wagon"),
+    (r"\b(?:manure spreaders?|slurry (?:tankers?|tanks?)|manure barrels?|muck spreaders?)\b", "manure_barrel"),
+    (r"\bsalt spreaders?\b", "salt_spreader"),
+    (r"\b(?:water (?:trailers?|tanks?|bowsers?)|liquid (?:trailers?|tanks?))\b", "water_trailer"),
+    (r"\bstone pickers?\b|\brock pickers?\b", "stone_picker"),
+    (r"\b(?:bale )?wrappers?\b", "bale_wrapper"),
+    (r"\btree planters?\b", "tree_planter"),
+    (r"\b(?:ploughs?|plows?)\b", "plow"),
+    (r"\b(?:cultivators?|cultivater|harrows?|discs? harrows?|discers?|subsoilers?)\b", "cultivator"),
+    (r"\b(?:seeders?|seed drills?|drills?|planters?|sowing machines?|sowers?)\b", "sowing_machine"),
+    (r"\b(?:sprayers?|fertili[sz]er spreaders?|spreaders?|lime spreaders?)\b", "sprayer"),
+    (r"\bmowers?\b", "mower"),
+    (r"\btedders?\b", "tedder"),
+    (r"\b(?:windrowers?|rakes?|swathers?)\b", "windrower"),
+    (r"\bbalers?\b", "baler"),
+    (r"\b(?:trailers?|tippers?|grain carts?|grain trailers?)\b", "trailer"),
+    (r"\brollers?\b", "roller"),
+    (r"\bweeders?\b", "weeder"),
+    (r"\bmulchers?\b", "mulcher"),
+)]
+
+
+def implement_kind(words: str) -> str | None:
+    """The implement the words name (first in _IMPLEMENT_NOUNS order), or None."""
+    for pattern, kind in _IMPLEMENT_NOUNS:
+        if pattern.search(words):
+            return kind
+    return None
+
+
 _EQUIPMENT_TARGET = {"equipment": True}           # _target: the destination is equipment
 _EQUIPMENT_WAGON = re.compile(r"\bto\s+(?:the\s+|a\s+|an\s+)?(?:(?:forage|loader|silage)\s+)?wagon\b")
 _KNOWN_THING = re.compile(r"\b(?:tractor|wagon|forage|it|this|that|them|these|those|pair|setup|rig|combo|everything)\b")
@@ -67,6 +101,8 @@ _HITCH_VERB = re.compile(r"\b(?:attach|hook|hitch|couple|connect)\b")
 # A destination that is equipment, not a place: "take the tractor to the wagon".
 _EQUIPMENT = re.compile(r"^(?:(?:the|a|an|my|that|this)\s+)?(?:(?:forage|loader|silage)\s+)?"
                         r"(?:wagon|tractor|trailer|implement)s?$")
+# A destination that is itself a named implement ("take the tractor to the plough").
+_IMPLEMENT_DESTINATION = re.compile(r"^(?:(?:the|a|an|my|that|this)\s+)?[a-z ]{0,30}$")
 # Delivery asked for: the pair is to come to the requester or a place.
 _DELIVERY = re.compile(r"\b(?:bring|deliver|here|to me|over to me)\b")
 _LEAD_MOVE = re.compile(r"^(?:move|park|drive|return)\b")
@@ -126,6 +162,9 @@ class RuleInterpreter:
             return None                               # never an order to move
         if _COME.match(words):
             return {"version": 1, "command": "move_pair"}
+        kind = implement_kind(words)
+        if kind is not None:
+            return self._implement(text, words, kind)
         tractor, wagon = _TRACTOR.search(words), _WAGON.search(words)
         back = re.search(r"\bback\b", words)
         referent = _REFERENT.search(words) or back
@@ -177,6 +216,23 @@ class RuleInterpreter:
             return {"version": 1, "command": "unsupported", "reason": "named_vehicle"}
         return None
 
+    def _implement(self, text: str, words: str, kind: str) -> dict | None:
+        """A named implement other than the forage wagon: hitch it where it stands
+        ("hitch the plough", "take the tractor to the seeder", "attach the trailer
+        to a tractor"), or fetch it hitched to the requester or a place ("bring me
+        the cultivator", "hook up the sprayer and take it to field 3")."""
+        if not (_HITCH_VERB.search(words) or _FETCH_VERB.search(words) or _ANY_VERB.match(words)):
+            return None
+        target = self._target(text, words)
+        if target is None:
+            return None
+        proposal = {"version": 1, "implement": kind}
+        if target == _EQUIPMENT_TARGET:
+            return {**proposal, "command": "hitch_pair"}
+        if target or _DELIVERY.search(words) or (_FETCH_VERB.search(words) and not _HITCH_VERB.search(words)):
+            return {**proposal, "command": "fetch_pair", **target}
+        return {**proposal, "command": "hitch_pair"}
+
     @staticmethod
     def _target(text: str, words: str) -> dict:
         """A field number, a place in the player's own spelling, {} for
@@ -201,7 +257,7 @@ class RuleInterpreter:
         plain = normalize(name)
         if not plain or _HERE.match(plain) or _REFERENT.fullmatch(plain):
             return {}
-        if _EQUIPMENT.match(plain):
+        if _EQUIPMENT.match(plain) or (implement_kind(plain) is not None and _IMPLEMENT_DESTINATION.match(plain)):
             return _EQUIPMENT_TARGET                  # equipment, never a place name
         if plain in _GENERIC or len(plain) > 64:
             return None                               # names no single place: not understood

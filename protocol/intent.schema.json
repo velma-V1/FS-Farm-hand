@@ -126,7 +126,55 @@
           }
         }
       ]
+    },
+    "implement": {
+      "description": "The implement to hitch (a GIANTS specialization kind; default forage_wagon). Only for deliver_tractor_and_forage_wagon, hitch_pair.",
+      "enum": [
+        "forage_wagon",
+        "plow",
+        "cultivator",
+        "sowing_machine",
+        "sprayer",
+        "mower",
+        "tedder",
+        "windrower",
+        "baler",
+        "bale_wrapper",
+        "trailer",
+        "roller",
+        "weeder",
+        "mulcher",
+        "stone_picker",
+        "manure_barrel",
+        "mixer_wagon",
+        "water_trailer",
+        "salt_spreader",
+        "tree_planter"
+      ]
     }
   },
-  "description": "Move farm equipment to a destination. Every target is travel only; no target starts fieldwork. A place is an AutoDrive marker of exactly that name or the one owned placeable whose name contains its words. Arbitrary coordinates and vehicle IDs are unsupported."
+  "description": "Move farm equipment to a destination. Every target is travel only; no target starts fieldwork. A place is an AutoDrive marker of exactly that name or the one owned placeable whose name contains its words. Arbitrary coordinates and vehicle IDs are unsupported.",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "task": {
+            "not": {
+              "enum": [
+                "deliver_tractor_and_forage_wagon",
+                "hitch_pair"
+              ]
+            }
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "implement"
+          ]
+        }
+      }
+    }
+  ]
 }

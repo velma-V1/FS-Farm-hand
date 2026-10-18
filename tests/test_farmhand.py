@@ -1391,6 +1391,31 @@ class HitchOnlyTests(unittest.TestCase):
         self.assertEqual(tractor.ai_root, plan.final)                 # at the wagon, not at the requester
         self.assertIsNone(tractor.reserved_by)
 
+    def test_the_named_implement_kind_decides_the_pair(self):
+        tractor, wagon = simple_world().snapshot()
+        # A cultivator and a seeder beside the forage wagon (IDs sort before it).
+        cultivator = replace(wagon, id="0-cultivator", category="implement", kinds=frozenset({"cultivator"}),
+                             position=(wagon.position[0] + 30, wagon.position[1]),
+                             input_joints=tuple(replace(j, position=(j.position[0] + 30, j.position[1]))
+                                                for j in wagon.input_joints))
+        seeder = replace(cultivator, id="0-seeder", kinds=frozenset({"sowing_machine", "fill_unit"}),
+                         position=(wagon.position[0] - 30, wagon.position[1]),
+                         input_joints=tuple(replace(j, position=(j.position[0] - 30, j.position[1]))
+                                            for j in wagon.input_joints))
+        for kind, expected in ((None, wagon.id), ("forage_wagon", wagon.id), ("cultivator", "0-cultivator"),
+                               ("sowing_machine", "0-seeder")):
+            with self.subTest(kind=kind):
+                world = MockWorld([tractor, cultivator, seeder, wagon], PLAYERS, DESTINATIONS)
+                request = {**intent(), "task": "hitch_pair", **({"implement": kind} if kind else {})}
+                result = Executor(world).execute(request)
+                self.assertEqual((result.status, result.reason), ("COMPLETE", "HITCH_OBSERVED"), kind)
+                self.assertEqual(result.equipment_ids, (tractor.id, expected))
+        world = MockWorld([tractor, cultivator, wagon], PLAYERS, DESTINATIONS)
+        result = Executor(world).execute({**intent(), "task": "hitch_pair", "implement": "plow"})
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "NO_ELIGIBLE_PAIR"))     # none on the farm
+        self.assertEqual(Executor(world).execute({**intent(), "task": "move_pair", "implement": "plow"}).reason,
+                         "INVALID_INTENT")                                                  # not for move_pair
+
     def test_a_failed_hitch_is_never_complete(self):
         world = FaultWorld("false_attach")
         result = Executor(world).execute({**intent(), "task": "hitch_pair"})

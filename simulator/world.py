@@ -85,7 +85,7 @@ class MockWorld:
     @staticmethod
     def _compatible(tractor, wagon):
         # Independent mock-side check at mutation time, under the world lock.
-        if (tractor.category != "tractor" or wagon.category != "forage_wagon"
+        if (tractor.category != "tractor" or wagon.category not in ("forage_wagon", "implement")
                 or not {"move", "attach", "stop"} <= tractor.capabilities
                 or wagon.required_pto_torque is None
                 or not math.isfinite(wagon.required_pto_torque)

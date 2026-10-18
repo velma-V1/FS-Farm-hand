@@ -9,6 +9,10 @@ from dataclasses import dataclass
 
 from protocol.model import Equipment, HitchPlan, Pose
 
+# What a tractor can be hitched to: forage wagons and every other towed implement
+# (adapters/fs25.py: category "implement" = a GIANTS work specialization).
+IMPLEMENT_CATEGORIES = frozenset({"forage_wagon", "implement"})
+
 # Where STAGE aims GIANTS' GOTO: this far straight ahead of the final hitch pose.
 # Only an aim, never a tolerance: GOTO may end anywhere (live: 14 m and 138 degrees
 # off), and what follows is decided by the observed joints (align_problem).
@@ -51,7 +55,7 @@ def plan_hitch(tractor: Equipment, wagon: Equipment,
     """
     if not _finite(staging_distance) or not 0 < staging_distance <= MAX_STAGING_DISTANCE_M:
         raise ValueError("Invalid staging distance")
-    if tractor.category != "tractor" or wagon.category != "forage_wagon":
+    if tractor.category != "tractor" or wagon.category not in IMPLEMENT_CATEGORIES:
         return None
     root, heading = tractor.ai_root, wagon.heading
     if root is None or not _finite(root.x, root.z, root.yaw, heading):
