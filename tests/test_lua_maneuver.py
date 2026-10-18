@@ -83,6 +83,21 @@ function W.new(o)
     function tractor:getAIRootNode() return w.steer end
     function tractor:getLastSpeed() return w.speed end
     function tractor:getActiveFarm() return 1 end
+    -- GIANTS' steering state as driveToPoint and Wheels use it (AIVehicleUtil 27-97,
+    -- Wheels 644, 1950): rotatedTime moves towards getSteeringRotTimeByCurvature at
+    -- getAISteeringSpeed per ms; the wheels' physics.steeringAngle follows the turn.
+    -- o.bareSteering: none of it readable.
+    if not o.bareSteering then
+        tractor.rotatedTime, tractor.minRotTime, tractor.maxRotTime = 0, -1, 1
+        tractor.wheelSteeringDuration, tractor.autoRotateBackSpeed = 1000, 1
+        function tractor:getSteeringRotTimeByCurvature(c) return math.max(-1, math.min(1, -c * w.minRadius)) end
+        function tractor:getAISteeringSpeed() return 0.001 end
+        function tractor:getReverserDirection() return 1 end
+        tractor.spec_wheels = { wheels = { { physics = { rotSpeed = 1, steeringAngle = 0 } },
+                                           { physics = { rotSpeed = 0, steeringAngle = 0 } } } }
+        tractor.isServer, tractor.isActive = true, true
+        function tractor:getIsControlled() return false end
+    end
     function wagon:getInputAttacherJoints() return { [1] = wagonJoint } end
     function wagon:getAttacherVehicle() return nil end
     env.Drivable = { CRUISECONTROL_STATE_OFF = 0 }
@@ -113,6 +128,11 @@ function W.new(o)
         table.insert(w.events, allowed and "drive" or "brake")
         if not allowed or acc <= 0 or w.stuck then w.speed = 0; return end
         local want = 2 * lx / math.max(lx * lx + lz * lz, 1e-6)
+        if v.rotatedTime ~= nil then
+            local target = v:getSteeringRotTimeByCurvature(want)
+            local rate = dt * v:getAISteeringSpeed()
+            v.rotatedTime = v.rotatedTime + math.max(-rate, math.min(rate, target - v.rotatedTime))
+        end
         if w.noSteer then want = 0 end
         local cap = 1 / w.minRadius
         want = math.max(-cap, math.min(cap, want))
@@ -123,6 +143,7 @@ function W.new(o)
         w.steer.x = w.steer.x + sign * ds * math.sin(w.steer.yaw)
         w.steer.z = w.steer.z + sign * ds * math.cos(w.steer.yaw)
         w.steer.yaw = w.steer.yaw + sign * ds * w.kappa
+        if v.spec_wheels then v.spec_wheels.wheels[1].physics.steeringAngle = math.atan(w.kappa * 2.8) end
         w.sync()
         w.speed = sign * maxSpeed
     end
@@ -145,6 +166,8 @@ function W.new(o)
     end
     w.wagonNode = w.wagonRoot
     Hitch.onNote = function(line) table.insert(w.notes, line) end
+    w.steers = {}
+    Hitch.onSteer = function(line) table.insert(w.steers, line) end
     return w
 end
 
@@ -160,6 +183,7 @@ function W.run(w, s, dt, maxSteps, hook)
     w.maxRadius, w.inBody = 0, false
     for i = 1, maxSteps do
         if hook then hook(i) end
+        if w.resetSteer and w.tractor.rotatedTime then w.tractor.rotatedTime = 0 end   -- another writer
         local code = Hitch.maneuverStep(w.env, s, dt)
         local f = s.dirX and { s.dirX, s.dirZ } or { 0, 1 }
         for _, n in ipairs({ w.steer, w.joint }) do
@@ -427,6 +451,66 @@ class LuaManeuverTests(unittest.TestCase):
         self.assertEqual(code, "STALLED")
         self.assertAlmostEqual(steps * 50, self.hitch.LOCAL.stallMs, delta=200)
         self.assert_braked_last(w)
+
+    # --------------------------------------------- steering diagnostics (read-only)
+    def steers(self, w):
+        lines = list(w.steers.values())
+        return [dict(p.split("=", 1) for p in line.split(" ") if "=" in p and not p.startswith("targetLocal"))
+                for line in lines], lines
+
+    def test_steering_is_sampled_at_every_giants_layer_and_changes_nothing(self):
+        w = self.world(**CASE_A)
+        session, _ = self.start(w)
+        code, steps = self.run_to_end(w, session)
+        samples, lines = self.steers(w)
+        fields = list(self.hitch.STEER_FIELDS.values())
+        self.assertGreater(len(samples), self.hitch.STEER_FIRST_FRAMES)
+        self.assertLessEqual(len(samples), self.hitch.STEER_FIRST_FRAMES + steps * 50 // self.hitch.STEER_SAMPLE_MS + 1)
+        for sample, line in zip(samples, lines):
+            self.assertIn(" STEER ", line)
+            self.assertIn("targetLocal=(", line)
+            for field in ["cmdCurvature", "t", "along", *fields]:
+                self.assertIn(field, sample, line)
+        self.assertEqual(samples[0]["articulated"], "false")
+        self.assertEqual((samples[0]["wheels"], samples[0]["steerableWheels"]), ("2", "1"))
+        self.assertTrue(any(abs(float(s["rotatedTime"])) > 0.05 for s in samples))
+        self.assertEqual(len(self.notes(w)), len(set(self.notes(w))))    # phase notes unchanged in kind
+        # Read-only: the same run without the diagnostics drives exactly the same.
+        quiet = self.world(**CASE_A)
+        self.hitch.onSteer = None
+        session, _ = self.start(quiet)
+        self.assertEqual(self.run_to_end(quiet, session), (code, steps))
+        self.assertEqual(self.drives(quiet), self.drives(w))
+
+    def test_steering_diagnostics_show_a_command_the_wheels_do_not_follow(self):
+        # The live 2026-10-18 case: commands grow, the heading never changes.
+        w = self.world(**CASE_A)
+        w.noSteer = True
+        session, _ = self.start(w)
+        self.assertEqual(self.run_to_end(w, session)[0], "DIVERGED")
+        samples, _ = self.steers(w)
+        lost = [s for s in samples if abs(float(s["rotatedTime"])) > 0.1 and float(s["wheelAngleDeg"]) == 0]
+        self.assertTrue(lost)
+        self.assertEqual(len({s["steerNodeYawDeg"] for s in samples}), 1)
+
+    def test_steering_diagnostics_show_another_writer_resetting_the_steering(self):
+        w = self.world(**CASE_A)
+        w.resetSteer = True
+        session, _ = self.start(w)
+        self.run_to_end(w, session)
+        samples, _ = self.steers(w)
+        self.assertTrue(any(s["rotatedTimePrevEnd"] not in ("nil", s["rotatedTimeBefore"]) for s in samples))
+        self.assertTrue(all(float(s["rotatedTimeBefore"]) == 0 for s in samples))
+
+    def test_unreadable_steering_state_is_logged_nil_and_changes_nothing(self):
+        w = self.world(bareSteering=True, **CASE_A)
+        session, _ = self.start(w)
+        code, _ = self.run_to_end(w, session)
+        self.assertEqual(code, "LINED_UP")
+        samples, _ = self.steers(w)
+        self.assertTrue(samples)
+        self.assertEqual({samples[0][f] for f in ("rotatedTime", "targetRotTime", "aiSteeringSpeed", "wheels")},
+                         {"nil"})
 
     def test_divergence_when_the_tractor_does_not_turn(self):
         w = self.world(**CASE_A)

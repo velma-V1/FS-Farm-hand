@@ -255,6 +255,8 @@ aborts.navigate = abortGoto
 -- Hitch.onNote prints each phase line (once per phase and at the end).
 function starters.maneuver(env, spec)
     Bridge.Hitch.onNote = function(line) log("maneuver %s", line) end
+    -- Read-only steering samples of the local maneuver (diagnostics, 2 per second).
+    Bridge.Hitch.onSteer = function(line) log("maneuver %s", line) end
     local session, reason = Bridge.Hitch.newManeuver(env, {
         tractor = spec.tractor, wagon = spec.wagon, tractorJoint = spec.tractorJoint,
         wagonJoint = spec.wagonJoint, farmId = spec.farmId, isReserved = spec.owned,

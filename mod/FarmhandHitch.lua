@@ -742,6 +742,108 @@ function Hitch.note(s, reason, curvature, speed)
     if Hitch.onNote ~= nil then Hitch.onNote(line) end
 end
 
+-- Read-only steering diagnostics: where a steering command ends up at each GIANTS
+-- layer, without changing anything. AIVehicleUtil.driveToPoint (27-97) turns the
+-- target into getSteeringRotTimeByCurvature (Wheels 1950), clamps it to
+-- min/maxRotTime and moves rotatedTime towards it by getAISteeringSpeed() per ms;
+-- Wheels turns rotatedTime into each steered wheel's physics.steeringAngle (read
+-- by GIANTS' dashboards, Wheels 644; wheels with physics.rotSpeed ~= 0 steer,
+-- Wheels 1960), an articulated tractor into its axis rotation (ArticulatedAxis 277,
+-- only with a componentJoint, 235-240). Every read is protected; unreadable is nil.
+Hitch.STEER_SAMPLE_MS = 500
+Hitch.STEER_FIRST_FRAMES = 5
+
+local function readOr(f)
+    local ok, value = pcall(f)
+    if ok then return value end
+    return nil
+end
+
+local function steerValue(v)
+    if type(v) == "number" then
+        if v ~= v or v == math.huge or v == -math.huge then return tostring(v) end
+        if v % 1 == 0 and math.abs(v) < 1e9 then return string.format("%d", v) end
+        return string.format("%.4f", v)
+    end
+    if type(v) == "boolean" then return tostring(v) end
+    return "nil"
+end
+
+function Hitch.steeringState(env, tractor, curvature)
+    local st = {}
+    st.rotatedTime = readOr(function() return tractor.rotatedTime end)
+    st.minRotTime = readOr(function() return tractor.minRotTime end)
+    st.maxRotTime = readOr(function() return tractor.maxRotTime end)
+    st.targetRotTime = readOr(function() return tractor:getSteeringRotTimeByCurvature(curvature) end)
+    st.aiSteeringSpeed = readOr(function() return tractor:getAISteeringSpeed() end)
+    st.wheelSteeringDuration = readOr(function() return tractor.wheelSteeringDuration end)
+    st.autoRotateBackSpeed = readOr(function() return tractor.autoRotateBackSpeed end)
+    st.maxTurningRadius = readOr(function() return tractor.maxTurningRadius end)
+    st.reverser = readOr(function() return tractor:getReverserDirection() end)
+    st.isServer = readOr(function() return tractor.isServer end)
+    st.isActive = readOr(function() return tractor.isActive end)
+    st.controlled = readOr(function() return tractor:getIsControlled() end)
+    st.aiActive = readOr(function() return tractor:getIsAIActive() end)
+    st.speedKmh = readOr(function() return tractor:getLastSpeed() end)
+    local wheels = readOr(function() return tractor.spec_wheels.wheels end)
+    if type(wheels) == "table" then
+        local count, steerable, steered, angle = 0, 0, 0, nil
+        for _, wheel in ipairs(wheels) do
+            count = count + 1
+            local rotSpeed = readOr(function() return wheel.physics.rotSpeed end)
+            local a = readOr(function() return wheel.physics.steeringAngle end)
+            if type(rotSpeed) == "number" and rotSpeed ~= 0 then steerable = steerable + 1 end
+            if type(a) == "number" then
+                if math.abs(a) > 1e-4 then steered = steered + 1 end
+                if angle == nil or math.abs(a) > math.abs(angle) then angle = a end
+            end
+        end
+        st.wheels, st.steerableWheels, st.steeredWheels = count, steerable, steered
+        st.wheelAngleDeg = angle and math.deg(angle) or nil
+    end
+    local axis = readOr(function() return tractor.spec_articulatedAxis end)
+    st.articulated = axis ~= nil
+    if axis ~= nil then
+        st.articulatedJoint = readOr(function() return axis.componentJoint ~= nil end)
+        st.articulatedRotSpeed = readOr(function() return axis.rotSpeed end)
+        st.articulatedRotMin = readOr(function() return axis.rotMin end)
+        st.articulatedRotMax = readOr(function() return axis.rotMax end)
+        st.articulatedInterpolated = readOr(function() return axis.interpolatedRotatedTime end)
+    end
+    local function yawOfNode(node)
+        local dx, _, dz = env.localDirectionToWorld(node, 0, 0, 1)
+        return math.deg(atan2(dx, dz))
+    end
+    st.steerNodeYawDeg = readOr(function() return yawOfNode(tractor:getAISteeringNode()) end)
+    st.rootYawDeg = readOr(function() return yawOfNode(tractor.rootNode) end)
+    return st
+end
+
+Hitch.STEER_FIELDS = { "rotatedTimePrevEnd", "rotatedTimeBefore", "rotatedTime", "targetRotTime", "minRotTime", "maxRotTime",
+                       "aiSteeringSpeed", "wheelSteeringDuration", "autoRotateBackSpeed", "maxTurningRadius",
+                       "wheels", "steerableWheels", "steeredWheels", "wheelAngleDeg", "articulated",
+                       "articulatedJoint", "articulatedRotSpeed", "articulatedRotMin", "articulatedRotMax",
+                       "articulatedInterpolated", "steerNodeYawDeg", "rootYawDeg", "reverser", "isServer",
+                       "isActive", "controlled", "aiActive", "speedKmh" }
+
+-- One STEER line: the command (curvature and its target in the steering node's
+-- frame); rotatedTime right after the previous frame's driveToPoint (PrevEnd), at
+-- the start of this frame (Before: anything else that wrote it in between shows as
+-- a difference) and after this frame's driveToPoint; and the GIANTS steering state.
+function Hitch.steerNote(env, s, curvature, lx, lz, before, prevEnd)
+    local st = Hitch.steeringState(env, s.tractor, curvature)
+    st.rotatedTimeBefore, st.rotatedTimePrevEnd = before, prevEnd
+    local parts = { string.format("%s STEER t=%dms along=%.1f cmdCurvature=%s targetLocal=(%s, %s)",
+        tostring(s.phase or "LOCAL"), s.elapsed, s.progress or 0, steerValue(curvature), steerValue(lx),
+        steerValue(lz)) }
+    for _, field in ipairs(Hitch.STEER_FIELDS) do
+        parts[#parts + 1] = field .. "=" .. steerValue(st[field])
+    end
+    local line = table.concat(parts, " ")
+    if Hitch.onSteer ~= nil then Hitch.onSteer(line) end
+    return line
+end
+
 local function maneuverDrive(env, s, dt)
     local D = Hitch.LOCAL
     local denied = authority(s)
@@ -819,7 +921,15 @@ local function maneuverDrive(env, s, dt)
         Hitch.note(s, from == nil and "START" or ("FROM_" .. from), curvature, s.maxSpeedKmh)
     end
     s.lastCurvature = curvature
+    local before = readOr(function() return tractor.rotatedTime end)
     env.AIVehicleUtil.driveToPoint(tractor, dt, 1, true, true, lx, lz, s.maxSpeedKmh)
+    -- Diagnostics only: sampled, never steering anything.
+    s.steerFrames = (s.steerFrames or 0) + 1
+    if s.steerFrames <= Hitch.STEER_FIRST_FRAMES or s.elapsed >= (s.steerAt or 0) then
+        s.steerAt = s.elapsed + Hitch.STEER_SAMPLE_MS
+        pcall(Hitch.steerNote, env, s, curvature, lx, lz, before, s.rotatedTimeEnd)
+    end
+    s.rotatedTimeEnd = readOr(function() return tractor.rotatedTime end)
     return "CONTINUE"
 end
 

@@ -68,7 +68,11 @@ Executable mapping (`python scripts/check.py`):
   first, and both are refused before moving (a named reason, logged with the
   numbers) for a tractor turning too wide; phases LOCAL_TURN, LOCAL_APPROACH,
   LOCAL_LINEUP are logged once each with joints, gap, errors, steering, direction,
-  speed and time; lateral offset (forward correction), steering to either side and
+  speed and time; read-only steering samples (`STEER`: commanded curvature,
+  rotatedTime before/after each driveToPoint, target rot time and limits, wheel
+  angles, articulated axis, node yaws) change no drive command, show a command
+  the wheels do not follow and another writer resetting the steering, and log
+  unreadable state as nil; lateral offset (forward correction), steering to either side and
   60 random starts all end LINED_UP inside the reverse's envelope or are refused
   unmoved, never leaving the 25 m radius or entering the wagon's box; refusals
   (unknown or out-of-range turning radius, outside the area, beside the wagon,
@@ -322,7 +326,9 @@ Executable mapping (`python scripts/check.py`):
   a second refuses to start (lock or live heartbeat) and removes nothing, a
   superseded runner stops, a request racing two runners is answered once, and the
   client takes no answer that is not its runner's for its request and op
-  (`HostRunnerSingleInstanceTests`, `ClientAnswerIdentityTests`).
+  (`HostRunnerSingleInstanceTests`, `ClientAnswerIdentityTests`). `stop-fs25` takes no
+  argument, ends only FarmingSimulator2025Game.exe (asked, then forced), and never
+  under a running job or test.
 
 Synthetic movement sets coordinates and coupling sets relations. The simulator
 has no physics, terrain, route graph, collision, trigger, animation, network or
