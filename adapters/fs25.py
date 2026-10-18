@@ -6,7 +6,7 @@ upstream data is unproven, the mapping fails closed (ineligible equipment).
 """
 from dataclasses import dataclass
 
-from protocol.model import Destination, Equipment, InputJoint, OutputJoint, Pose, Position
+from protocol.model import Destination, Equipment, FillUnit, InputJoint, OutputJoint, Pose, Position
 
 # AutoDrive treats ``lastSpeedReal * 3600 < 1`` (km/h) as not moving
 # (scripts/Modules/TrailerModule.lua:502); getLastSpeed() reports km/h. Whether
@@ -20,6 +20,14 @@ UNKNOWN_ATTACHMENT = "*unknown*"
 ALLOWED_CATEGORIES = frozenset({"tractor"})
 # Store categories Farmhand Companion classifies as loaders (Collectors.lua:110-116;
 # store category is its verified class signal, :97-99). Never a tractor here.
+# Towed work equipment, by GIANTS specialization (Observe.KINDS). A towed vehicle
+# (input attacher joints, not self-propelled) with one of these is an "implement".
+# Pallets, big bags and loader tools are not.
+IMPLEMENT_KINDS = frozenset({"plow", "cultivator", "sowing_machine", "sprayer", "mower", "tedder", "windrower",
+                             "baler", "bale_wrapper", "bale_loader", "forage_wagon", "trailer", "roller",
+                             "weeder", "mulcher", "stone_picker", "manure_barrel", "tree_planter",
+                             "fruit_preparer", "leveler", "mixer_wagon", "salt_spreader", "water_trailer",
+                             "livestock_trailer", "hook_lift_trailer", "cutter"})
 LOADER_STORE_CATEGORIES = frozenset({"FRONTLOADERVEHICLES", "WHEELLOADERVEHICLES", "TELELOADERVEHICLES",
                                      "FORKLIFTS", "SKIDSTEERVEHICLES"})
 # GIANTS PowerConsumer:getCanBeTurnedOn (lines 276-282) refuses when the PTO torque
@@ -84,7 +92,12 @@ def _category(vehicle, categories) -> str | None:
         return "forage_wagon" if mapped is None else None  # contradictory: unknown
     if mapped is not None:
         return mapped                                       # explicit local override
-    return "tractor" if _towing_vehicle(vehicle) else None
+    if _towing_vehicle(vehicle):
+        return "tractor"
+    if (vehicle["self_propelled"] is False and vehicle["input_joint_poses"]
+            and IMPLEMENT_KINDS & set(vehicle["kinds"])):
+        return "implement"
+    return None
 
 
 def _capabilities(vehicle, bridge_ready: bool) -> frozenset[str]:
@@ -133,6 +146,10 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
         category=category or "unknown",
         farm_id=str(vehicle["farm_id"]),
         position=(vehicle["x"], vehicle["z"]),
+        kinds=frozenset(vehicle["kinds"]),
+        name=vehicle["name"],
+        fill_units=tuple(FillUnit(u["index"], u["fill_type"], u["level"], u["capacity"], frozenset(u["supported"]),
+                                  u["role"]) for u in vehicle["fill_units"]),
         # GIANTS' torque values from the loaded vehicles (actual configuration);
         # None when unobserved, which is never sufficient.
         pto_torque_capacity=None if motor is None else

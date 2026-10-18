@@ -110,7 +110,7 @@ function W.new()
         return { write = function(_, s) table.insert(w.lines, s) end, flush = function() end,
                  close = function() end }
     end }
-    Bridge.Observe = { PROTOCOL = 2, NULL = Observe.NULL, PIPE_PATH = Observe.PIPE_PATH, encode = Observe.encode,
+    Bridge.Observe = { PROTOCOL = 3, NULL = Observe.NULL, PIPE_PATH = Observe.PIPE_PATH, encode = Observe.encode,
                        validUtf8 = Observe.validUtf8,
                        hello = function() return '{"event":"hello"}' end,
                        snapshot = function(_, seq, session)

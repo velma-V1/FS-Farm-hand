@@ -418,7 +418,7 @@ class LuaProbeTests(unittest.TestCase):
             tractor = {"id": 1, "farm_id": 1, "category": "T", "x": 0.0, "z": 0.0, "speed_kmh": 0.0,
                        "entered": False, "ai_active": False, "has_autodrive": False, "ad_active": None,
                        "attachment_observed": True, "attacher_vehicle_id": None, "implement_ids": [],
-                       "heading": 0.0, "forage_wagon": False, "motor": None, "pto_torque": 0.0,
+                       "heading": 0.0, "forage_wagon": False, "kinds": [], "name": None, "fill_units": [], "motor": None, "pto_torque": 0.0,
                        "ai_root": None if rng.random() < 0.1 else {"x": rng.uniform(-50, 50),
                                                                    "z": rng.uniform(-50, 50),
                                                                    "yaw": rng.uniform(-3.2, 3.2)},

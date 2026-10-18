@@ -40,6 +40,9 @@ def record(identifier, kind, x, z):
             "input_joint_poses": [] if tractor else [{"index": 1, "type": "TRAILER", "x": x, "z": z + 4,
                                                        "active": True, "pto_names": ["rearPto"]}],
             "forage_wagon": not tractor,
+            "kinds": [] if tractor else ["forage_wagon", "fill_unit", "dischargeable"],
+            "name": None,
+            "fill_units": [],
             "goto_supported": tractor,
             "self_propelled": tractor,
             "motor": {"peak_torque": 1.0, "pto_rpm_ratio": 2.0} if tractor else None,
@@ -90,25 +93,25 @@ class FakeGame:
     def press(self, request_id, session=None):
         """The player's Farmhand key (mod/FarmhandBridge.lua requestHere)."""
         with self.lock:
-            self._emit({"event": "request", "protocol": 2, "session": session or self.link.session,
+            self._emit({"event": "request", "protocol": 3, "session": session or self.link.session,
                         "id": request_id, "action": "fetch_here"})
 
     def key(self, request_id, action):
         """A fixed key: fetch_here, stop, talk_start, talk_end."""
         with self.lock:
-            self._emit({"event": "request", "protocol": 2, "session": self.link.session,
+            self._emit({"event": "request", "protocol": 3, "session": self.link.session,
                         "id": request_id, "action": action})
 
     def pick(self, request_id, menu, choice):
         """A line picked in the in-game AI menu (GIANTS OptionDialog)."""
         with self.lock:
-            self._emit({"event": "request", "protocol": 2, "session": self.link.session,
+            self._emit({"event": "request", "protocol": 3, "session": self.link.session,
                         "id": request_id, "menu": menu, "choice": choice})
 
     def say(self, request_id, text):
         """Typed words from the in-game text field."""
         with self.lock:
-            self._emit({"event": "request", "protocol": 2, "session": self.link.session,
+            self._emit({"event": "request", "protocol": 3, "session": self.link.session,
                         "id": request_id, "text": text})
 
     def _emit(self, frame):
@@ -120,7 +123,7 @@ class FakeGame:
             with self.lock:
                 self.seq += 1
                 session = self.link.session if self.session_override is None else self.session_override
-                frame = {"event": "snapshot", "protocol": 2, "seq": self.seq, "session": session,
+                frame = {"event": "snapshot", "protocol": 3, "seq": self.seq, "session": session,
                          "farm_id": 1, "map_id": "MapUS", "player": self.player, "truncated": False,
                          "skipped": 0, "vehicles": copy.deepcopy(list(self.vehicles.values())),
                          "destinations": [{"id": i, "name": n, "x": x, "z": z}
@@ -144,7 +147,7 @@ class FakeGame:
             return
         if fault == "lost":                       # consumed, then nothing at all
             return
-        result = {"event": "result", "protocol": 2, "session": session, "id": cid, "op": op}
+        result = {"event": "result", "protocol": 3, "session": session, "id": cid, "op": op}
         if op == "stop" and self.held is not None:      # pre-empts the running operation
             self._emit({**self.held[0], "status": "FAILED", "code": "STOPPED"})
             self.held = None
@@ -252,7 +255,7 @@ class CommandFramingTests(unittest.TestCase):
         game = FakeGame(faults={"stop": "no_terminal"})
         self.addCleanup(game.stop)
         link = game.link
-        link.on_frame({"event": "result", "protocol": 2, "session": "someone-else", "id": 1,
+        link.on_frame({"event": "result", "protocol": 3, "session": "someone-else", "id": 1,
                        "op": "stop", "status": "DONE", "code": "STOPPED"})
         with unittest.mock.patch.dict(bridge.DONE_TIMEOUT_S, {"stop": 0.2}):
             with self.assertRaises(StepUnverified) as caught:
@@ -571,7 +574,7 @@ class LocalIoTests(unittest.TestCase):
         link = CommandLink(FakeFiles(None))
         path = r"\\.\pipe\fs_farmhand_test_" + link.session
         bridge.PipeServer(link, path).start()
-        frame = {"event": "result", "protocol": 2, "session": link.session, "id": 1, "op": "stop",
+        frame = {"event": "result", "protocol": 3, "session": link.session, "id": 1, "op": "stop",
                  "status": "DONE", "code": "STOPPED"}
         deadline = time.monotonic() + 10
         while True:
@@ -1080,7 +1083,7 @@ class ServiceTests(unittest.TestCase):
         first = len(game.commands)
         # Quit and load the save: the game re-adopts the same session, re-opens the
         # pipe (hello) and numbers its requests from 1 again.
-        game.link.on_frame({"event": "hello", "protocol": 2, "mod_version": "0.1.0.0", "autodrive_version": None})
+        game.link.on_frame({"event": "hello", "protocol": 3, "mod_version": "0.1.0.0", "autodrive_version": None})
         for vehicle, xz in ((11, (0.0, 20.0)), (12, (0.0, -4.0))):
             game.vehicles[vehicle] = record(vehicle, "tractor" if vehicle == 11 else "wagon", *xz)
         game.press(1)
@@ -1107,7 +1110,7 @@ class ServiceTests(unittest.TestCase):
         link = CommandLink(Flaky(None))
         link.heartbeat()
         link.notice("BUSY")
-        link.on_frame({"event": "request", "protocol": 2, "session": link.session, "id": 1, "action": "fetch_here"})
+        link.on_frame({"event": "request", "protocol": 3, "session": link.session, "id": 1, "action": "fetch_here"})
         self.assertEqual(link.next_request(0.1)["id"], 1)
         self.assertFalse(link.closed.is_set())
 

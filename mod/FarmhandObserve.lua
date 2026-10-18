@@ -1,4 +1,4 @@
--- Read-only FS25 observation for AC-001: builds protocol v2 frames
+-- Read-only FS25 observation for AC-001: builds protocol v3 frames
 -- (protocol/frame.schema.json). It never moves, attaches or changes anything.
 --
 -- Every game call is taken from upstream FS25 mod source, recorded with file and
@@ -10,7 +10,7 @@
 
 local Observe = {}
 
-Observe.PROTOCOL = 2
+Observe.PROTOCOL = 3
 -- The build this mod was installed from: "source" in the checkout; replaced with the
 -- commit by scripts/package_probe.py in built copies (= companion/buildinfo.py BUILD).
 Observe.BUILD = "source"
@@ -303,6 +303,87 @@ function Observe.hitchGeometry(env, v, ptoNames)
     return heading, aiRoot, outputs, inputs
 end
 
+-- What a vehicle is, by GIANTS' own specialization tables: each class's code
+-- reads its state as self.spec_<name> (GDN Specializations, read 2026-10-18:
+-- Plow 776, Cultivator 652, SowingMachine 797, Sprayer 800 (also on fertilizing
+-- seeders and cultivators, 670/669), Mower 700, Tedder 806, Windrower 828, Baler
+-- 636, BaleWrapper 637, BaleLoader 635, ForageWagon 676, Trailer 812, Combine 644,
+-- Cutter 653, Roller 787, Weeder 824, Mulcher 701, StonePicker 801, ManureBarrel
+-- 694, Pallet 703, BigBag 639, TreePlanter 813, FruitPreparer 678, Leveler 689,
+-- MixerWagon 696, SaltSpreader 790, Shovel 793, Pickup 704, WaterTrailer 822,
+-- LivestockTrailer 692, HookLiftTrailer 684, Dischargeable 657, FillUnit 672,
+-- AIImplement 621, AIFieldWorker 620). A table present = that capability; the
+-- list is fixed, in this order.
+Observe.KINDS = {
+    { "plow", "spec_plow" }, { "cultivator", "spec_cultivator" }, { "sowing_machine", "spec_sowingMachine" },
+    { "sprayer", "spec_sprayer" }, { "mower", "spec_mower" }, { "tedder", "spec_tedder" },
+    { "windrower", "spec_windrower" }, { "baler", "spec_baler" }, { "bale_wrapper", "spec_baleWrapper" },
+    { "bale_loader", "spec_baleLoader" }, { "forage_wagon", "spec_forageWagon" }, { "trailer", "spec_trailer" },
+    { "combine", "spec_combine" }, { "cutter", "spec_cutter" }, { "roller", "spec_roller" },
+    { "weeder", "spec_weeder" }, { "mulcher", "spec_mulcher" }, { "stone_picker", "spec_stonePicker" },
+    { "manure_barrel", "spec_manureBarrel" }, { "pallet", "spec_pallet" }, { "big_bag", "spec_bigBag" },
+    { "tree_planter", "spec_treePlanter" }, { "fruit_preparer", "spec_fruitPreparer" },
+    { "leveler", "spec_leveler" }, { "mixer_wagon", "spec_mixerWagon" }, { "salt_spreader", "spec_saltSpreader" },
+    { "shovel", "spec_shovel" }, { "pickup", "spec_pickup" }, { "water_trailer", "spec_waterTrailer" },
+    { "livestock_trailer", "spec_livestockTrailer" }, { "hook_lift_trailer", "spec_hookLiftTrailer" },
+    { "dischargeable", "spec_dischargeable" }, { "fill_unit", "spec_fillUnit" },
+    { "ai_implement", "spec_aiImplement" }, { "ai_field_worker", "spec_aiFieldWorker" },
+}
+
+function Observe.kinds(v)
+    local kinds = {}
+    for _, kind in ipairs(Observe.KINDS) do
+        if try(function() return v[kind[2]] ~= nil end) == true then kinds[#kinds + 1] = kind[1] end
+    end
+    return Observe.array(kinds)
+end
+
+-- Fill units (GDN FillUnit 672): getFillUnits L822; per unit getFillUnitFillLevel
+-- L884, getFillUnitCapacity L846, getFillUnitFillType L910 and
+-- getFillUnitSupportedFillTypes L997 (a set, [fillType] = true); names by
+-- g_fillTypeManager:getFillTypeNameByIndex (FillTypeManager 409 L476). The seed
+-- unit is getSowingMachineFillUnitIndex (SowingMachine 797 L456), the spray unit
+-- getSprayerFillUnitIndex (Sprayer 800 L756: fertilizer, lime, herbicide). At most
+-- 8 units and 32 supported types each; an unreadable value is nil.
+Observe.MAX_FILL_UNITS, Observe.MAX_FILL_TYPES = 8, 32
+
+function Observe.fillUnits(env, v)
+    local result = {}
+    local ok, units = pcall(function() return v:getFillUnits() end)
+    if not ok or type(units) ~= "table" then return Observe.array(result) end
+    local seed = try(function() return v:getSowingMachineFillUnitIndex() end)
+    local spray = try(function() return v:getSprayerFillUnitIndex() end)
+    local function amount(f)
+        return try(function()
+            local x = f()
+            assert(finite(x) and x >= 0 and x < 1e9)
+            return x
+        end)
+    end
+    local function name(index)
+        return token(env.g_fillTypeManager:getFillTypeNameByIndex(index))
+    end
+    for i = 1, math.min(#units, Observe.MAX_FILL_UNITS) do
+        local supported = {}
+        pcall(function()
+            for fillType, on in pairs(v:getFillUnitSupportedFillTypes(i)) do
+                local n = on and name(fillType)
+                if n and #supported < Observe.MAX_FILL_TYPES then supported[#supported + 1] = n end
+            end
+        end)
+        table.sort(supported)
+        result[#result + 1] = {
+            index = i,
+            fill_type = nullable(try(function() return name(v:getFillUnitFillType(i)) end)),
+            level = nullable(amount(function() return v:getFillUnitFillLevel(i) end)),
+            capacity = nullable(amount(function() return v:getFillUnitCapacity(i) end)),
+            supported = Observe.array(supported),
+            role = nullable((i == seed and "seed") or (i == spray and "spray") or nil),
+        }
+    end
+    return Observe.array(result)
+end
+
 -- Returns one vehicle record, or nil when identity or position cannot be
 -- observed (the vehicle is then counted as skipped).
 function Observe.vehicle(env, v, ptoNames)
@@ -318,6 +399,11 @@ function Observe.vehicle(env, v, ptoNames)
     local category = try(function()
         local item = env.g_storeManager:getItemByXMLFilename(v.configFileName)
         return item and item.categoryName
+    end)
+
+    local storeName = try(function()
+        local item = env.g_storeManager:getItemByXMLFilename(v.configFileName)
+        return item and item.name
     end)
 
     local speed = try(function() return v:getLastSpeed() end)
@@ -416,6 +502,9 @@ function Observe.vehicle(env, v, ptoNames)
         id = id,
         farm_id = farmId,
         category = nullable(token(category)),
+        kinds = Observe.kinds(v),
+        fill_units = Observe.fillUnits(env, v),
+        name = nullable(text(storeName)),
         x = x,
         z = z,
         speed_kmh = nullable(speed),

@@ -55,7 +55,7 @@ class CompanionCase(unittest.TestCase):
         farmhand.setLevel(logging.INFO)
         game = FakeGame(**game_args)
         self.addCleanup(game.stop)
-        game.link.on_frame({"event": "hello", "protocol": 2, "mod_version": "0.1.0.0", "build": build,
+        game.link.on_frame({"event": "hello", "protocol": 3, "mod_version": "0.1.0.0", "build": build,
                             "autodrive_version": None})
         world = game.link_world = FS25World(game.link)
         self.folder = Path(tempfile.mkdtemp())
@@ -86,7 +86,9 @@ class CompanionCase(unittest.TestCase):
         body = raw if raw is not None else json.dumps(value)
         answer = self.folder / f"response-{ident}.json"
         answer.unlink(missing_ok=True)                # a replayed id must not read the earlier answer
-        (self.folder / f"request-{ident}.json").write_bytes(body.encode() if isinstance(body, str) else body)
+        temporary = self.folder / f".request-{ident}.tmp"           # renamed into place, as the runner does
+        temporary.write_bytes(body.encode() if isinstance(body, str) else body)
+        temporary.replace(self.folder / f"request-{ident}.json")
         wait_for(answer.exists)
         time.sleep(0.02)
         return json.loads(answer.read_text())
@@ -207,7 +209,7 @@ class CompanionLiveTestTests(CompanionCase):
 
     def test_an_older_mod_without_a_build_is_not_ready(self):
         game, live = self.start(autodrive=False)
-        game.link.on_frame({"event": "hello", "protocol": 2, "mod_version": "0.1.0.0", "autodrive_version": None})
+        game.link.on_frame({"event": "hello", "protocol": 3, "mod_version": "0.1.0.0", "autodrive_version": None})
         self.assertIn("MOD_BUILD_MISMATCH", live.status()["problems"])
 
     def test_malformed_unauthorized_or_stale_requests_are_refused_and_nothing_moves(self):
@@ -305,7 +307,7 @@ class ReleaseBoundaryTests(unittest.TestCase):
 
     def test_game_frames_cannot_carry_a_live_request(self):
         from protocol.ipc import FrameError, parse_frame
-        frame = {"event": "request", "protocol": 2, "session": "s", "id": 1, "action": "fetch_here",
+        frame = {"event": "request", "protocol": 3, "session": "s", "id": 1, "action": "fetch_here",
                  "live": {"command": "hitch"}}
         with self.assertRaises(FrameError):
             parse_frame((json.dumps(frame) + "\n").encode())

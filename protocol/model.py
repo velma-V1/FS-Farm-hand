@@ -45,11 +45,28 @@ class InputJoint:
 
 
 @dataclass(frozen=True)
+class FillUnit:
+    """One of GIANTS' fill units (FillUnit spec). None = unreadable."""
+    index: int
+    fill_type: str | None          # GIANTS fill type name, e.g. "SEEDS", "FERTILIZER", "UNKNOWN" when empty
+    level: float | None
+    capacity: float | None
+    supported: frozenset[str] = frozenset()
+    role: str | None = None        # "seed" (SowingMachine) or "spray" (Sprayer: fertilizer, lime, herbicide)
+
+
+@dataclass(frozen=True)
 class Equipment:
     id: str
     category: str
     farm_id: str
     position: Position
+    # GIANTS specializations present (mod/FarmhandObserve.lua Observe.KINDS), e.g.
+    # "plow", "sowing_machine", "sprayer", "trailer"; and the store item's name
+    # (for the player's words only, never for selection rules).
+    kinds: frozenset[str] = frozenset()
+    name: str | None = None
+    fill_units: tuple[FillUnit, ...] = ()
     # GIANTS' own power rule (PowerConsumer:getCanBeTurnedOn), rearranged as
     # required_pto_torque <= pto_torque_capacity. Both are in GIANTS' torque unit,
     # so no hp/kW conversion is involved. None = unknown (never sufficient); a

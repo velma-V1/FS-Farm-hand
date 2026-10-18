@@ -1,6 +1,6 @@
 # FS25 Lua side (`FS25_Farmhand`)
 
-- `FarmhandObserve.lua`: read-only observation. Builds protocol v2 `hello` and
+- `FarmhandObserve.lua`: read-only observation. Builds protocol v3 `hello` and
   `snapshot` frames (`protocol/frame.schema.json`) from the game and mod calls
   recorded in `adapters/EVIDENCE.md`, including hitch geometry read from GIANTS'
   own joint offsets. It never changes game state.

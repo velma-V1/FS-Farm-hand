@@ -27,7 +27,7 @@
       "required": ["event", "protocol", "mod_version", "autodrive_version"],
       "properties": {
         "event": {"const": "hello"},
-        "protocol": {"const": 2},
+        "protocol": {"const": 3},
         "mod_version": {"$ref": "#/$defs/token"},
         "build": {"$ref": "#/$defs/token"},
         "autodrive_version": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]}
@@ -36,7 +36,7 @@
     "vehicle": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "farm_id", "category", "x", "z", "speed_kmh", "entered",
+      "required": ["id", "farm_id", "category", "kinds", "name", "fill_units", "x", "z", "speed_kmh", "entered",
                    "ai_active", "has_autodrive", "ad_active", "attachment_observed",
                    "attacher_vehicle_id", "implement_ids", "heading", "ai_root", "output_joints",
                    "input_joint_poses", "forage_wagon", "motor", "pto_torque", "goto_supported",
@@ -48,6 +48,18 @@
         "id": {"$ref": "#/$defs/objectId"},
         "farm_id": {"type": "integer", "minimum": 0, "maximum": 255},
         "category": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},
+        "kinds": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/token"}},
+        "name": {"oneOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
+        "fill_units": {"type": "array", "maxItems": 8, "items": {
+          "type": "object", "additionalProperties": false,
+          "required": ["index", "fill_type", "level", "capacity", "supported", "role"],
+          "properties": {
+            "index": {"type": "integer", "minimum": 1, "maximum": 8},
+            "fill_type": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},
+            "level": {"type": ["number", "null"], "minimum": 0, "maximum": 1000000000},
+            "capacity": {"type": ["number", "null"], "minimum": 0, "maximum": 1000000000},
+            "supported": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/token"}},
+            "role": {"enum": ["seed", "spray", null]}}}},
         "x": {"$ref": "#/$defs/coordinate"},
         "z": {"$ref": "#/$defs/coordinate"},
         "speed_kmh": {"type": ["number", "null"], "minimum": -1000, "maximum": 1000},
@@ -118,7 +130,7 @@
                    "skipped", "vehicles", "destinations", "places"],
       "properties": {
         "event": {"const": "snapshot"},
-        "protocol": {"const": 2},
+        "protocol": {"const": 3},
         "seq": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
         "session": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},
         "farm_id": {"type": "integer", "minimum": 1, "maximum": 255},
@@ -144,7 +156,7 @@
       "required": ["event", "protocol", "session", "id", "op", "status", "code"],
       "properties": {
         "event": {"const": "result"},
-        "protocol": {"const": 2},
+        "protocol": {"const": 3},
         "session": {"$ref": "#/$defs/token"},
         "id": {"type": "integer", "minimum": 1, "maximum": 2147483647},
         "op": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},
@@ -160,7 +172,7 @@
       "oneOf": [{"required": ["action"]}, {"required": ["text"]}, {"required": ["menu", "choice"]}],
       "properties": {
         "event": {"const": "request"},
-        "protocol": {"const": 2},
+        "protocol": {"const": 3},
         "session": {"$ref": "#/$defs/token"},
         "id": {"type": "integer", "minimum": 1, "maximum": 2147483647},
         "action": {"enum": ["fetch_here", "stop", "talk_start", "talk_end", "settings"]},

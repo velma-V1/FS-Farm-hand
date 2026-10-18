@@ -130,6 +130,25 @@ function stubs.vehicle(world, t)
             return t.gotoJob.supported
         end
     end
+    -- GIANTS specialization tables by name (e.g. "spec_plow"), as each class reads them.
+    for _, name in ipairs(t.specs or {}) do v[name] = {} end
+    -- FillUnit (GDN 672): getFillUnits L822 and per-index getters; fill types by index.
+    if t.fillUnits then
+        function v:getFillUnits()
+            if t.fillUnitsBroken then error("engine error") end
+            return t.fillUnits
+        end
+        function v:getFillUnitFillLevel(i) return t.fillUnits[i].level end
+        function v:getFillUnitCapacity(i) return t.fillUnits[i].capacity end
+        function v:getFillUnitFillType(i) return t.fillUnits[i].fillType end
+        function v:getFillUnitSupportedFillTypes(i)
+            local set = {}
+            for _, ft in ipairs(t.fillUnits[i].supported or {}) do set[ft] = true end
+            return set
+        end
+    end
+    if t.seedUnit then function v:getSowingMachineFillUnitIndex() return t.seedUnit end end
+    if t.sprayUnit then function v:getSprayerFillUnitIndex() return t.sprayUnit end end
     -- vehicle.ad only exists when the AutoDrive specialization is installed.
     if t.autodrive and world.env.AutoDrive ~= nil then
         v.ad = { stateModule = { isActive = function(self) return t.adActive == true end } }
@@ -177,7 +196,11 @@ function stubs.world(options)
         MathUtil = { getYRotationFromDirection = function(dx, dz) return (math.atan2 or math.atan)(dx, dz) end },
         g_storeManager = { getItemByXMLFilename = function(self, file)
             if file == nil then return nil end
-            return { categoryName = file }
+            return { categoryName = file, name = "Store " .. file }
+        end },
+        -- FillTypeManager:getFillTypeNameByIndex (GDN 409 L476): indexToName[index].
+        g_fillTypeManager = { getFillTypeNameByIndex = function(self, index)
+            return ({ "UNKNOWN", "SEEDS", "FERTILIZER", "LIME", "WHEAT", 'BAD"NAME' })[index]
         end },
         g_currentMission = { getFarmId = function(self) return options.farm or 1 end,
                              missionInfo = { mapId = options.mapId or "MapUS" },
@@ -258,7 +281,7 @@ class LuaContractTests(unittest.TestCase):
     def test_hello_frame(self):
         world = self.stubs.standard()
         hello = parse_frame(self.observe.hello(world.env).encode())
-        self.assertEqual(hello, {"event": "hello", "protocol": 2, "mod_version": "0.1.0.0", "build": "source",
+        self.assertEqual(hello, {"event": "hello", "protocol": 3, "mod_version": "0.1.0.0", "build": "source",
                                  "autodrive_version": "3.0.1.4"})
         from companion.buildinfo import BUILD
         self.assertEqual(self.observe.BUILD, BUILD)      # both stamped by scripts/package_probe.py
@@ -341,6 +364,39 @@ class LuaContractTests(unittest.TestCase):
                 self.assertEqual(item.available, not unknown)
                 self.assertEqual(not item.occupied and not item.busy, free and not unknown)
                 self.assertEqual(item.ridden, record["entered"] is True)
+
+    def test_what_a_vehicle_is_comes_from_giants_specialization_tables(self):
+        spec = ('{ id = 41, file = "STUB_WAGONS", inputs = { "IMPLEMENT" }, forageWagon = false,'
+                '  specs = { "spec_sowingMachine", "spec_sprayer", "spec_fillUnit", "spec_aiImplement", "spec_unknownMod" } }')
+        record, item = self.vehicle_record(spec)
+        self.assertEqual(record["kinds"], ["sowing_machine", "sprayer", "fill_unit", "ai_implement"])   # fixed order
+        self.assertEqual(record["name"], "Store STUB_WAGONS")
+        self.assertEqual(item.category, "implement")
+        self.assertEqual(item.kinds, frozenset({"sowing_machine", "sprayer", "fill_unit", "ai_implement"}))
+        record, item = self.vehicle_record('{ id = 42, file = "STUB_WAGONS", inputs = { "TRAILER" }, forageWagon = false }')
+        self.assertEqual((record["kinds"], item.category), ([], "unknown"))      # nothing GIANTS names
+        record, item = self.vehicle_record('{ id = 43, file = "STUB_WAGONS", forageWagon = false, specs = { "spec_pallet" } }')
+        self.assertEqual((record["kinds"], item.category), (["pallet"], "unknown"))   # pallets are not implements
+
+    def test_fill_units_are_read_from_giants_fill_unit_getters(self):
+        spec = ('{ id = 44, file = "STUB_WAGONS", inputs = { "IMPLEMENT" }, forageWagon = false,'
+                '  specs = { "spec_sowingMachine", "spec_sprayer", "spec_fillUnit" }, seedUnit = 1, sprayUnit = 2,'
+                '  fillUnits = { { level = 1250.5, capacity = 3000, fillType = 2, supported = { 2 } },'
+                '                { level = 0, capacity = 1500, fillType = 1, supported = { 3, 4, 6 } },'
+                '                { level = 0/0, capacity = -1, fillType = 99, supported = {} } } }')
+        record, item = self.vehicle_record(spec)
+        self.assertEqual(record["fill_units"], [
+            {"index": 1, "fill_type": "SEEDS", "level": 1250.5, "capacity": 3000, "supported": ["SEEDS"], "role": "seed"},
+            {"index": 2, "fill_type": "UNKNOWN", "level": 0, "capacity": 1500, "supported": ["FERTILIZER", "LIME"],
+             "role": "spray"},                                   # an unsafe fill type name is dropped
+            {"index": 3, "fill_type": None, "level": None, "capacity": None, "supported": [], "role": None}])
+        seed, spray, _ = item.fill_units
+        self.assertEqual((seed.fill_type, seed.level, seed.role), ("SEEDS", 1250.5, "seed"))
+        self.assertEqual(spray.supported, frozenset({"FERTILIZER", "LIME"}))
+        for broken in ("fillUnitsBroken = true", "x = 0"):            # unreadable, or no FillUnit at all
+            with self.subTest(broken=broken):
+                record, _ = self.vehicle_record('{ id = 45, file = "STUB_WAGONS", fillUnits = {}, %s }' % broken)
+                self.assertEqual(record["fill_units"], [])
 
     def test_autodrive_scratch_table_on_a_towed_wagon_is_not_an_autodrive_driver(self):
         # Live 2026-10-18: after one attach/detach with an AutoDrive tractor the wagon
