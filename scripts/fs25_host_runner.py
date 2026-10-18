@@ -175,17 +175,26 @@ def _plain(text: str) -> str:
 class System:
     """The few Windows programs the runner uses, each with fixed arguments."""
 
-    def _run(self, args, timeout=30.0) -> str:
-        return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False).stdout
+    def _run(self, args, timeout=30.0) -> subprocess.CompletedProcess:
+        try:
+            return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            raise Refused("WINDOWS_UNREACHABLE", program=args[0]) from None
+
+    def _tasks(self, condition: str) -> list[list[str]]:
+        """tasklist's rows; an answer that is neither rows nor "no tasks" (e.g. WSL
+        interop unavailable) is unknown, never "not running"."""
+        done = self._run(["tasklist.exe", "/FI", condition, "/FO", "CSV", "/NH"])
+        rows = [row for row in csv.reader(io.StringIO(done.stdout)) if len(row) > 1 and row[1].isdigit()]
+        if done.returncode != 0 or (not rows and "INFO:" not in done.stdout + done.stderr):
+            raise Refused("WINDOWS_UNREACHABLE", program="tasklist.exe")
+        return rows
 
     def processes(self, image: str) -> list[int]:
-        out = self._run(["tasklist.exe", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"])
-        return [int(row[1]) for row in csv.reader(io.StringIO(out)) if len(row) > 1 and row[0].lower() == image.lower()
-                and row[1].isdigit()]
+        return [int(row[1]) for row in self._tasks(f"IMAGENAME eq {image}") if row[0].lower() == image.lower()]
 
     def image_of(self, pid: int) -> str | None:
-        out = self._run(["tasklist.exe", "/FI", f"PID eq {int(pid)}", "/FO", "CSV", "/NH"])
-        rows = [row for row in csv.reader(io.StringIO(out)) if len(row) > 1 and row[1] == str(int(pid))]
+        rows = [row for row in self._tasks(f"PID eq {int(pid)}") if row[1] == str(int(pid))]
         return rows[0][0] if rows else None
 
     def close(self, image: str, force: bool) -> None:
@@ -647,8 +656,11 @@ class Runner:
         return pid if image and image.lower() in ("pythonw.exe", "python.exe") else None
 
     def op_status(self):
-        fs25 = self.system.processes(FS25_IMAGE)
-        pid = self._companion_pid()
+        windows = None
+        try:
+            fs25, pid = self.system.processes(FS25_IMAGE), self._companion_pid()
+        except Refused as error:                    # unknown, reported as such, never "not running"
+            fs25, pid, windows = None, None, error.code
         live, problem = None, None
         try:
             answer = self.companion.ask("status")
@@ -661,7 +673,8 @@ class Runner:
         # companion's own build. hitch_ready adds the companion's other checks.
         ready = bool(fs25 and pid and live and live.get("game", {}).get("linked")
                      and not {"MOD_BUILD_MISMATCH", "COMPANION_BUILD_UNSTAMPED"} & set(live.get("problems", ())))
-        return True, "STATUS", {"fs25_running": bool(fs25), "fs25_pids": fs25, "companion_pid": pid,
+        return True, "STATUS", {"fs25_running": None if fs25 is None else bool(fs25), "fs25_pids": fs25,
+                                "windows_problem": windows, "companion_pid": pid,
                                 "installed": builds, "repo_head": head, "live": live, "live_problem": problem,
                                 "farmhand_ready": ready, "hitch_ready": bool(ready and live.get("ready")),
                                 "targets": self.targets.describe()}

@@ -435,6 +435,33 @@ class HostRunnerProtocolTests(RunnerCase):
         with self.assertRaises(host.Refused):
             host.Targets(exe="C:\\x'; Remove-Item C:\\ -Recurse; '")
 
+    def test_an_unreadable_process_list_is_unknown_never_not_running(self):
+        system = host.System()
+        answers = [("", "", 1), ("", "<3>WSL ERROR: UtilConnectUnix socket failed 1", 1), ("", "", 0)]
+        for out, err, code in answers:
+            with self.subTest(err=err, code=code):
+                done = unittest.mock.Mock(stdout=out, stderr=err, returncode=code)
+                with unittest.mock.patch.object(host.subprocess, "run", return_value=done):
+                    with self.assertRaises(host.Refused) as raised:
+                        system.processes(host.FS25_IMAGE)
+                self.assertEqual(raised.exception.code, "WINDOWS_UNREACHABLE")
+        none = unittest.mock.Mock(stdout="INFO: No tasks are running which match the specified criteria.\n",
+                                  stderr="", returncode=0)
+        running = unittest.mock.Mock(stdout='"FarmingSimulator2025Game.exe","4711","Console","1","9,000 K"\n',
+                                     stderr="", returncode=0)
+        with unittest.mock.patch.object(host.subprocess, "run", side_effect=[none, running]):
+            self.assertEqual(system.processes(host.FS25_IMAGE), [])
+            self.assertEqual(system.processes(host.FS25_IMAGE), [4711])
+        with unittest.mock.patch.object(host.subprocess, "run", side_effect=FileNotFoundError()):
+            with self.assertRaises(host.Refused):
+                system.processes(host.FS25_IMAGE)
+
+    def test_install_refuses_when_windows_cannot_be_asked(self):
+        self.build()
+        self.system.processes = unittest.mock.Mock(side_effect=host.Refused("WINDOWS_UNREACHABLE"))
+        self.assertEqual(self.send("install-current-build")["code"], "WINDOWS_UNREACHABLE")
+        self.assertFalse(self.targets.mod.exists())
+
     def test_wsl_paths_map_the_fixed_targets(self):
         with unittest.mock.patch.object(sys, "platform", "linux"):
             self.assertEqual(host.local_path(host.FARMHAND_DATA), Path("/mnt/c/Users/Matt/AppData/Local/FS25Farmhand"))
