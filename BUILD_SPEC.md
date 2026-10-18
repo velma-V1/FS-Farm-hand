@@ -115,10 +115,12 @@ the wagon's front side, within 30 degrees and 2 m of its axis): Farmhand's own
 bounded forward drive, steered by GIANTS' driveToPoint, along one shortest
 forward curve of the tractor's own turning radius (its LOCAL_TURN, LOCAL_APPROACH
 and LOCAL_LINEUP phases) onto the wagon's centreline 3-8 m ahead of its joint,
-chosen before moving to keep clear of a 25 m work radius and of the wagon's body,
-re-observed every frame; refused before moving with a precise reason when no such
-curve exists, and stopped on divergence, stall, timeout (120 s), leaving the area,
-nearing the wagon, wagon movement, a rider, takeover or other AI → OBSERVE again
+chosen before moving to keep clear of a 25 m work radius, of the wagon's body, of
+every other vehicle and of the player, re-observed every frame; refused before
+moving with a precise reason when no such curve exists, and stopped on divergence,
+stall, timeout (120 s), leaving the area, nearing the wagon, wagon movement, any
+other vehicle moving or coming close, the player coming close, a rider, takeover
+or other AI (static objects are not observed: hitting one shows as a stall) → OBSERVE again
 (the envelope must hold, else that precise failure and nothing reverses) →
 ALIGN_REVERSE (the bounded local
 alignment: reverse only, steered onto the wagon's axis from the observed joints,

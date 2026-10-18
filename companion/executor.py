@@ -522,9 +522,9 @@ class Executor:
                 # HITCH: VALIDATE -> [TRAVEL_NEAR] -> [STAGE] -> [LOCAL_MANEUVER] -> ALIGN_REVERSE
                 # -> ATTACH -> VERIFY. Every step is followed by a fresh-snapshot check;
                 # returns are not evidence, and each next step is chosen from it.
-                tractor, wagon = self._hitch_state(ids, farm_id, owner, plan)
                 physical_attempted = True
                 if travel is not None:
+                    tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
                     enter("TRAVEL_NEAR")
                     self._move(tractor.id, travel, owner)
                     tractor, _ = self._hitch_state(ids, farm_id, owner, plan)

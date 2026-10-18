@@ -416,11 +416,13 @@ end
 -- The reference is the shortest forward curve (two arcs of the tractor's own
 -- turning radius and a straight: Dubins' CSC words) from the observed tractor to
 -- that line-up, in the frame of the observed wagon joint. It is chosen once, from
--- at most 16 closed-form candidates, so that it keeps a margin from the local
--- envelope and from the wagon's body; there is no search and no obstacle handling.
--- Every frame re-observes both vehicles, steers at a point LOOKAHEAD metres
--- further along the curve, and stops on any deviation. Forward only, never past
--- the caps; no retry.
+-- at most 30 closed-form candidates (5 line-up points x at most 6 words), so that
+-- it keeps a margin from the work radius, from the wagon's body, from every other
+-- vehicle's root and from the player; there is no search around obstacles: no
+-- such curve, no motion. Every frame re-observes, steers at a point LOOKAHEAD
+-- metres further along the curve, and stops on any deviation, on any other
+-- vehicle moving or coming close, or on the player coming close. Forward only,
+-- never past the caps; no retry.
 Hitch.LOCAL_LIMITS = { workRadiusM = 25, maxPathM = 70, timeoutMs = 180000, minTurnRadiusM = 3,
                        maxTurnRadiusM = 8 }
 Hitch.LOCAL = {
@@ -429,17 +431,28 @@ Hitch.LOCAL = {
     lineupAheadM = { 3.5, 4.5, 5.5, 6.5, 7 },  -- candidate line-up points (planned joint ahead)
     lookaheadM = 3,
     sampleM = 0.5,            -- envelope check spacing along a candidate
-    planMarginM = 1,          -- a candidate keeps this clearance from both envelopes
-    divergeM = 1.5,           -- farther than this from the curve: DIVERGED
+    planMarginM = 1.5,        -- a candidate keeps this clearance from the radius and the wagon's box
+    divergeM = 0.75,          -- farther than this from the curve: DIVERGED (inside planMarginM)
+    keepOutStopM = 0.5,       -- while moving, stop this far short of the wagon's box (braking)
     searchBackM = 0.5, searchAheadM = 3.5, searchStepM = 0.1,
     missedM = 3,              -- this far past the curve's end without lining up: LINEUP_MISSED
     stallMs = 4000, stallProgressM = 0.05,
     doneLateralM = 0.5, doneHeadingDeg = 5, doneMinAheadM = 3, doneMaxAheadM = 8,
+    -- At the curve's end the reverse's own envelope is enough (= companion/hitch.py
+    -- ALIGN_REACH_M, ALIGN_MAX_LATERAL_M, ALIGN_MAX_HEADING_RAD).
+    reverseReachM = 9, reverseLateralM = 2, reverseHeadingDeg = 30, endSlackM = 1.5,
     -- The wagon's body is not observed: a box behind its input joint, as long as
-    -- twice the joint-to-root distance plus 2 m (never under 8 m), and this wide
+    -- twice the joint-to-root distance plus 2 m (never under 12 m), and this wide
     -- either side of the axis (half a wagon plus half a tractor). The tractor is
-    -- checked at its planned joint, its steering node and FRONT_M ahead of it.
-    bodyHalfWidthM = 3, minBodyLengthM = 8, frontM = 4.5,
+    -- checked at its planned joint, its steering node and FRONT_M ahead of it; the
+    -- work radius applies to the planned joint (the companion's measure).
+    bodyHalfWidthM = 3, minBodyLengthM = 12, frontM = 4.5,
+    -- Any other vehicle (its root; not the pair or what is attached to them) must
+    -- stay this far from the curve's tractor points, and stops it when this close
+    -- while moving; the player likewise. Vehicles within the radius plus this are
+    -- watched for movement.
+    vehicleClearanceM = 8, vehicleStopM = 6, playerClearanceM = 6, playerStopM = 4, watchExtraM = 15,
+    movedM = 0.25,
 }
 
 local TAU = 2 * math.pi
@@ -483,8 +496,11 @@ function Hitch.curves(x, y, p, gx, r)
                 headings = { th + a, th - a }
             end
             for _, psi in ipairs(headings) do
-                local a1 = (t1 * (psi - p)) % TAU * r
-                local a2 = (t2 * (0 - psi)) % TAU * r
+                local a1, a2 = (t1 * (psi - p)) % TAU, (t2 * (0 - psi)) % TAU
+                -- No turn that rounding made a full circle.
+                if a1 > TAU - 1e-9 then a1 = 0 end
+                if a2 > TAU - 1e-9 then a2 = 0 end
+                a1, a2 = a1 * r, a2 * r
                 local ax, ay = arcEnd(x, y, p, t1, a1, r)
                 local back = -t2 * a2 / r
                 local bx, by = c2x + t2 * r * math.sin(back), c2y - t2 * r * math.cos(back)
@@ -511,15 +527,31 @@ local function bodyPoints(x, y, p, back)
     return { { x, y }, { x - back * cx, y - back * cy }, { x + front * cx, y + front * cy } }
 end
 
--- nil, "ENVELOPE_EXCEEDED" or "KEEP_OUT" for the pose, with `margin` metres of clearance.
-local function outside(s, x, y, p, margin)
-    local L, half = Hitch.LOCAL_LIMITS.workRadiusM - margin, Hitch.LOCAL.bodyHalfWidthM + margin
-    for _, pt in ipairs(bodyPoints(x, y, p, s.back)) do
-        if math.sqrt(pt[1] ^ 2 + pt[2] ^ 2) > L then return "ENVELOPE_EXCEEDED" end
+-- nil, "ENVELOPE_EXCEEDED", "KEEP_OUT", "OTHER_VEHICLE_NEAR" or "PERSON_TOO_CLOSE"
+-- for the pose: the planned joint `margin` inside the work radius, every point
+-- `margin` outside the wagon's box, `vehicleM` from every other vehicle's root and
+-- `playerM` from the player (both in the wagon frame, s.others / s.player).
+local function outside(s, x, y, p, margin, vehicleM, playerM)
+    local half = Hitch.LOCAL.bodyHalfWidthM + margin
+    local points = bodyPoints(x, y, p, s.back)
+    local joint = points[2]
+    if math.sqrt(joint[1] ^ 2 + joint[2] ^ 2) > Hitch.LOCAL_LIMITS.workRadiusM - margin then
+        return "ENVELOPE_EXCEEDED"
+    end
+    for _, pt in ipairs(points) do
         if pt[1] < margin and pt[1] > -s.bodyLength - margin and math.abs(pt[2]) < half then return "KEEP_OUT" end
+        for _, other in ipairs(s.others) do
+            if math.sqrt((pt[1] - other.x) ^ 2 + (pt[2] - other.y) ^ 2) < vehicleM then return "OTHER_VEHICLE_NEAR" end
+        end
+        if s.player ~= nil and math.sqrt((pt[1] - s.player.x) ^ 2 + (pt[2] - s.player.y) ^ 2) < playerM then
+            return "PERSON_TOO_CLOSE"
+        end
     end
     return nil
 end
+
+local PLAN_REASON = { KEEP_OUT = "LOCAL_PATH_HITS_WAGON", ENVELOPE_EXCEEDED = "LOCAL_PATH_LEAVES_AREA",
+                      OTHER_VEHICLE_NEAR = "LOCAL_PATH_BLOCKED", PERSON_TOO_CLOSE = "LOCAL_PATH_PERSON" }
 
 -- The shortest candidate that keeps the margin, or nil and why none does.
 function Hitch.chooseCurve(s, x, y, p)
@@ -532,10 +564,12 @@ function Hitch.chooseCurve(s, x, y, p)
                 break
             end
             if best ~= nil and c.length >= best.length then break end
+            -- The margin grows over the first metre, so a start near an edge may still
+            -- drive away from it.
             local bad, d = nil, 0
             while d <= c.length and bad == nil do
                 local px, py, pp = Hitch.curvePoint(c, d)
-                bad = outside(s, px, py, pp, D.planMarginM)
+                bad = outside(s, px, py, pp, math.min(D.planMarginM, d), D.vehicleClearanceM, D.playerClearanceM)
                 d = d + D.sampleM
             end
             if bad == nil then
@@ -543,7 +577,7 @@ function Hitch.chooseCurve(s, x, y, p)
                 best = c
                 break
             end
-            why = bad == "KEEP_OUT" and "LOCAL_PATH_HITS_WAGON" or "LOCAL_PATH_LEAVES_AREA"
+            why = PLAN_REASON[bad]
         end
     end
     return best, why
@@ -581,6 +615,40 @@ local function observeLocal(env, s)
     return o
 end
 
+-- A point in the wagon frame of session `s`.
+local function inFrame(s, px, pz)
+    local o = s.last
+    return (px - o.wx) * s.dirX + (pz - o.wz) * s.dirZ, (px - o.wx) * s.dirZ - (pz - o.wz) * s.dirX
+end
+
+-- Every other vehicle within the work radius plus watchExtraM of the wagon's joint
+-- (GIANTS' vehicle list as FarmhandObserve reads it, FH Collectors.lua:323-324;
+-- a vehicle attached to the pair has it as rootVehicle), and the player (as
+-- FarmhandObserve playerPosition). Errors if any position is unreadable.
+local function surroundings(env, s)
+    local mission = env.g_currentMission
+    local vehicles = (mission.vehicleSystem and mission.vehicleSystem.vehicles) or mission.vehicles
+    assert(type(vehicles) == "table")
+    local others, reach = {}, Hitch.LOCAL_LIMITS.workRadiusM + Hitch.LOCAL.watchExtraM
+    for _, v in pairs(vehicles) do
+        local root = v.rootVehicle or v
+        if v ~= s.tractor and v ~= s.wagon and root ~= s.tractor and root ~= s.wagon then
+            local vx, _, vz = world(env, v.rootNode)
+            local x, y = inFrame(s, vx, vz)
+            if math.sqrt(x * x + y * y) <= reach then
+                others[#others + 1] = { vehicle = v, x = x, y = y, wx = vx, wz = vz }
+            end
+        end
+    end
+    local player = env.g_localPlayer
+    local px, _, pz
+    if type(player.getPosition) == "function" then px, _, pz = player:getPosition()
+    else px, _, pz = world(env, player.rootNode) end
+    assert(finite(px) and finite(pz))
+    local x, y = inFrame(s, px, pz)
+    return others, { x = x, y = y }
+end
+
 -- Prepare the local maneuver for the planned joint pair. `args` as Hitch.newAlign
 -- (tractor, wagon, tractorJoint, wagonJoint, farmId, isReserved, optional
 -- maxSpeedKmh, timeoutMs). The tractor must be stopped, empty, free of any AI job
@@ -598,6 +666,10 @@ function Hitch.newManeuver(env, args)
         local tractorJoint = tractor:getAttacherJoints()[args.tractorJoint]
         local wagonJoint = wagon:getInputAttacherJoints()[args.wagonJoint]
         if tractorJoint == nil or wagonJoint == nil then return nil, "UNKNOWN_JOINT" end
+        if type(tractor.getAttacherJointByJointDescIndex) == "function"
+                and tractor:getAttacherJointByJointDescIndex(args.tractorJoint) ~= tractorJoint then
+            return nil, "UNKNOWN_JOINT"
+        end
         if tractorJoint.jointType ~= wagonJoint.jointType then return nil, "JOINT_TYPE_MISMATCH" end
         if tractorJoint.jointIndex ~= 0 then return nil, "TRACTOR_JOINT_OCCUPIED" end
         -- Not an AI job: a seated player's controls would apply alongside (see newAlign).
@@ -614,7 +686,7 @@ function Hitch.newManeuver(env, args)
             tractorJoint = tractorJoint, wagonJoint = wagonJoint, dirX = fx, dirZ = fz,
             maxSpeedKmh = speed, timeoutMs = timeout, elapsed = 0, progress = 0, bestProgress = 0,
             sinceProgress = 0, phase = nil, result = nil, observedRadius = radius,
-            turnRadius = radius * Hitch.LOCAL.turnMargin, log = {},
+            turnRadius = radius * Hitch.LOCAL.turnMargin, log = {}, others = {},
         }
         local o = observeLocal(env, s)
         s.wagonStartX, s.wagonStartZ, s.rootStartX, s.rootStartZ = o.wx, o.wz, o.rx, o.rz
@@ -622,15 +694,20 @@ function Hitch.newManeuver(env, args)
         local rootAhead = (o.rx - o.wx) * fx + (o.rz - o.wz) * fz
         s.bodyLength = math.max(Hitch.LOCAL.minBodyLengthM, 2 * math.abs(rootAhead) + 2)
         s.last = o
+        local okAround, others, player = pcall(surroundings, env, s)
+        if not okAround then return nil, "LOCAL_AREA_UNKNOWN", s end
+        s.others, s.player = others, player
         Hitch.watchDriver(env, tractor)
         local denied = authority(s)
         if denied ~= nil then return nil, denied end
         if s.turnRadius < Hitch.LOCAL_LIMITS.minTurnRadiusM or s.turnRadius > Hitch.LOCAL_LIMITS.maxTurnRadiusM then
             return nil, "TURN_RADIUS_OUT_OF_RANGE", s
         end
-        local start = outside(s, o.x, o.y, o.p, 0)
+        local start = outside(s, o.x, o.y, o.p, 0, Hitch.LOCAL.vehicleStopM,
+                              Hitch.LOCAL.playerStopM)
         if start == "ENVELOPE_EXCEEDED" then return nil, "OUTSIDE_LOCAL_AREA", s end
-        if start ~= nil then return nil, "LOCAL_START_AT_WAGON", s end
+        if start == "KEEP_OUT" then return nil, "LOCAL_START_AT_WAGON", s end
+        if start ~= nil then return nil, PLAN_REASON[start], s end
         local curve, why = Hitch.chooseCurve(s, o.x, o.y, o.p)
         if curve == nil then return nil, why, s end
         s.curve = curve
@@ -677,11 +754,29 @@ local function maneuverDrive(env, s, dt)
         return "WAGON_MOVED"
     end
     if s.elapsed > s.timeoutMs then return "TIMEOUT" end
-    local bad = outside(s, o.x, o.y, o.p, 0)
+    -- Nothing else may move near it, nor come close: no obstacle is ever pushed.
+    for _, other in ipairs(s.others) do
+        local vx, _, vz = world(env, other.vehicle.rootNode)
+        if distance(vx, vz, other.wx, other.wz) > D.movedM then return "OTHER_VEHICLE_MOVED" end
+    end
+    local others, player = surroundings(env, s)
+    s.others, s.player = others, player
+    local bad = outside(s, o.x, o.y, o.p, 0, D.vehicleStopM, D.playerStopM)
+    if bad == nil then
+        -- The wagon's box with the braking margin.
+        bad = outside(s, o.x, o.y, o.p, D.keepOutStopM, 0, 0)
+        if bad == "ENVELOPE_EXCEEDED" then bad = nil end
+    end
     if bad ~= nil then return bad end
     -- Lined up: GIANTS' reverse takes it from here.
     if math.abs(o.jy) <= D.doneLateralM and math.abs(math.deg(o.p)) <= D.doneHeadingDeg
             and o.jx >= D.doneMinAheadM and o.jx <= D.doneMaxAheadM then
+        return "LINED_UP"
+    end
+    -- Past the curve's end, or about to leave the line-up window, the reverse's own
+    -- envelope is enough.
+    if (s.progress >= s.curve.length + D.endSlackM or o.jx >= D.doneMaxAheadM - 0.5) and o.jx > 0 and math.sqrt(o.jx ^ 2 + o.jy ^ 2) <= D.reverseReachM - 1
+            and math.abs(o.jy) <= D.reverseLateralM and math.abs(math.deg(o.p)) <= D.reverseHeadingDeg then
         return "LINED_UP"
     end
     -- Progress: the nearest curve point a little behind to a little ahead of the last.
@@ -731,7 +826,8 @@ end
 -- One update of the local maneuver: "CONTINUE", "LINED_UP" (braked: the planned
 -- joint is on the wagon's axis, 3-8 m ahead, facing its heading) or a failure:
 -- RESERVATION_LOST, DRIVER_TOOK_OVER, SEATED_DURING_MANEUVER, AI_ACTIVE,
--- WAGON_ATTACHED, WAGON_MOVED, TIMEOUT, ENVELOPE_EXCEEDED, KEEP_OUT, DIVERGED,
+-- WAGON_ATTACHED, WAGON_MOVED, OTHER_VEHICLE_MOVED, OTHER_VEHICLE_NEAR,
+-- PERSON_TOO_CLOSE, TIMEOUT, ENVELOPE_EXCEEDED, KEEP_OUT, DIVERGED,
 -- LINEUP_MISSED, STALLED, MOTOR_UNAVAILABLE, UNKNOWN_OBSERVATION. Any result
 -- other than CONTINUE is final (latched): later calls only brake.
 function Hitch.maneuverStep(env, s, dt)

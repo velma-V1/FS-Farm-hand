@@ -75,7 +75,12 @@ Executable mapping (`python scripts/check.py`):
   limits, joints, seated); mid-maneuver takeover, rider getting in, other AI,
   lost reservation, wagon joint or body moved, unreadable geometry, leaving the
   radius, stall, divergence (a tractor that does not turn, or turns wider than it
-  reports), timeout and abort all brake, latch and log.
+  reports), timeout and abort all brake, latch and log; a curve past another
+  vehicle or the player is refused unmoved (attached implements and far vehicles
+  ignored, an unreadable player refuses), and another vehicle moving or driving
+  close, or the player walking up, stops it; a start just beside the wagon may
+  still drive away; a rounding-zero turn is never a full circle; a curve end inside
+  the reverse's envelope is LINED_UP, not missed.
 - `tests/test_lua_hitch.py` (Lua 5.1 and 5.4): GIANTS GOTO start/cancel sequence;
   ALIGN_REVERSE refuses unsafe limits and joints, reverses only, stops the instant
   GIANTS reports the exact pair, and fails closed on timeout, distance limit, stall,

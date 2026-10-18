@@ -32,9 +32,11 @@ tractor up itself: forward only, slowly (3 km/h), on one curve onto the wagon's
 centreline a few metres in front of the drawbar, then the bounded reverse.
 
 0. Same setup as the failing test: tractor 170 (nothing attached) and wagon 173,
-   open ground of about 25 m around the wagon's drawbar. Get out and stand on foot
-   well clear of that area (Farmhand needs an empty cab for the lining up and the
-   reverse). Left Alt + K: "hitch the forage wagon". Expect "driving to the wagon"
+   open ground of about 25 m around the wagon's drawbar, no other vehicle parked
+   within about 10 m of where the tractor will drive (Farmhand refuses a line that
+   passes another vehicle, and stops if one moves or comes close). Get out and
+   stand on foot well clear of that area, more than 6 m from the tractor's way
+   (Farmhand needs an empty cab, and stops if you come within 4 m). Left Alt + K: "hitch the forage wagon". Expect "driving to the wagon"
    (only if farther than 25 m), "lining up with the wagon", "reversing to the
    wagon", "hitching ...", "hitched". Left Alt + L stops it at any time.
    If it fails, the notice names the reason (for example "there is no room to line

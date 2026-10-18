@@ -137,7 +137,8 @@ function Probe:finish(status, reason)
     local task, Bridge = self.task, self.Bridge
     if task ~= nil and task.op ~= nil then Bridge.abort(self.env, task.op, reason) end
     if Bridge.owner == self.owner then Bridge.owner = nil end
-    Bridge.lastAlign = nil
+    Bridge.lastAlign, Bridge.lastManeuver = nil, nil
+    if task ~= nil and task.tractor ~= nil then self.Hitch.disarm(task.tractor) end   -- this attempt's watch
     self.task = nil
     log("RESULT %s %s", status, reason)
 end
@@ -329,7 +330,6 @@ function Probe:advance(task)
     if problem ~= nil then
         if task.phase == "maneuver" then return self:finish("FAILED", problem) end
         task.phase = "maneuver"
-        self.Hitch.onNote = function(line) log("maneuver %s", line) end
         return self:startOp(task, { op = "maneuver", tractorJoint = plan.tractorJoint, wagonJoint = plan.wagonJoint })
     end
     task.phase = "align"

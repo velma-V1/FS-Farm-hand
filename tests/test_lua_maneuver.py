@@ -126,6 +126,24 @@ function W.new(o)
         w.sync()
         w.speed = sign * maxSpeed
     end
+    -- GIANTS' vehicle list (the pair, anything attached to them, and w.others) and
+    -- the local player, standing 60 m off unless moved.
+    w.others = {}
+    w.player = node(ex + 60, ez, 0)
+    local vehicles = { tractor, wagon }        -- a plain table, as in Lua 5.1
+    env.g_currentMission = { vehicleSystem = { vehicles = vehicles } }
+    tractor.rootNode = w.steer
+    env.g_localPlayer = { getPosition = function()
+        if w.playerUnknown then return nil end
+        return w.player.x, 0, w.player.z
+    end }
+    function w.addVehicle(dx, dz, attachedTo)
+        local v = { rootNode = node(ex + dx, ez + dz, 0), rootVehicle = attachedTo }
+        table.insert(w.others, v)
+        table.insert(vehicles, v)
+        return v
+    end
+    w.wagonNode = w.wagonRoot
     Hitch.onNote = function(line) table.insert(w.notes, line) end
     return w
 end
@@ -206,13 +224,15 @@ class LuaManeuverTests(unittest.TestCase):
     def run_to_end(self, w, session, steps=4000, hook=None):
         return self.W.run(w, session, 50, steps, hook)
 
-    def assert_lined_up(self, w):
+    def assert_lined_up(self, w, tight=True):
         gap, ahead, lateral, heading = self.W.error(w)
         # Within the bounded reverse's envelope, as companion/hitch.py checks it.
         self.assertLessEqual(gap, companion_hitch.ALIGN_REACH_M)
         self.assertGreater(ahead, 0)
         self.assertLessEqual(abs(lateral), companion_hitch.ALIGN_MAX_LATERAL_M)
         self.assertLessEqual(abs(heading), companion_hitch.ALIGN_MAX_HEADING_RAD)
+        if not tight:            # ended by the curve's end inside the reverse's envelope
+            return
         # And tighter: the maneuver's own line-up tolerance.
         self.assertLessEqual(abs(lateral), self.hitch.LOCAL.doneLateralM + 0.05)
         self.assertLessEqual(abs(math.degrees(heading)), self.hitch.LOCAL.doneHeadingDeg + 0.5)
@@ -227,6 +247,10 @@ class LuaManeuverTests(unittest.TestCase):
             with self.subTest(radius=radius):
                 w = self.world(radius=radius, minRadius=radius, **CASE_A)
                 session, why = self.start(w)
+                if radius > 6 and session is None:          # a wide tractor may be refused, unmoved
+                    self.assertIn(why, ("LOCAL_PATH_HITS_WAGON", "LOCAL_PATH_LEAVES_AREA"))
+                    self.assertEqual(self.drives(w), [])
+                    continue
                 self.assertIsNotNone(session, why)
                 code, _ = self.run_to_end(w, session)
                 self.assertEqual(code, "LINED_UP")
@@ -326,7 +350,7 @@ class LuaManeuverTests(unittest.TestCase):
             self.assertEqual(code, "LINED_UP", outcomes)
             self.assertLessEqual(w.maxRadius, self.hitch.LOCAL_LIMITS.workRadiusM)
             self.assertFalse(w.inBody)
-            self.assert_lined_up(w)
+            self.assert_lined_up(w, tight=False)
         self.assertGreater(outcomes.get("LINED_UP", 0), 20, outcomes)
 
     # ------------------------------------------------------------ refusals
@@ -351,9 +375,10 @@ class LuaManeuverTests(unittest.TestCase):
                 self.assertEqual(self.drives(w), [])
 
     def test_giants_ai_minimum_radius_raises_the_planned_radius(self):
-        w = self.world(radius=4.0, aiRadius=6.0, **CASE_B)
-        session, _ = self.start(w)
-        self.assertAlmostEqual(session.turnRadius, 6.0 * self.hitch.LOCAL.turnMargin)
+        w = self.world(radius=4.0, aiRadius=5.0, **CASE_A)
+        session, why = self.start(w)
+        self.assertIsNotNone(session, why)
+        self.assertAlmostEqual(session.turnRadius, 5.0 * self.hitch.LOCAL.turnMargin)
 
     def test_seated_tractor_is_refused_and_entering_mid_maneuver_stops_it(self):
         w = self.world(**CASE_A)
@@ -439,12 +464,110 @@ class LuaManeuverTests(unittest.TestCase):
         self.run_to_end(w, session, steps=50)
         self.assertTrue(all(d["maxSpeed"] == 4 for d in self.drives(w)))
 
+    # ------------------------------------------------- review regressions
+    def test_a_start_just_beside_the_wagon_may_still_drive_away(self):
+        # Parallel, 4.2 m beside the drawbar: outside the box, inside its planning
+        # margin. The margin grows along the curve, so this is not refused.
+        for lateral in (4.2, -4.2):
+            with self.subTest(lateral=lateral):
+                w = self.world(ahead=0.0, lateral=lateral, heading=0.0)
+                session, why = self.start(w)
+                self.assertIsNotNone(session, why)
+                self.assertEqual(self.run_to_end(w, session)[0], "LINED_UP")
+                self.assertFalse(w.inBody)
+
+    def test_a_curve_past_another_vehicle_is_refused_unmoved(self):
+        w = self.world(**CASE_A)
+        session, _ = self.start(w)
+        # Put a parked vehicle on the chosen curve, 10 m along it.
+        x, y = self.hitch.curvePoint(session.curve, 10.0)[:2]
+        fx, fz = math.sin(w.eye.yaw), math.cos(w.eye.yaw)
+        w = self.world(**CASE_A)
+        w.addVehicle(x * fx + y * fz, x * fz - y * fx)
+        session, why = self.start(w)
+        if session is not None:          # another curve keeps the clearance: it must hold
+            code, _ = self.run_to_end(w, session)
+            self.assertEqual(code, "LINED_UP")
+        else:
+            self.assertEqual(why, "LOCAL_PATH_BLOCKED")
+            self.assertEqual(self.drives(w), [])
+
+    def test_vehicles_attached_to_the_pair_or_far_away_do_not_block(self):
+        w = self.world(**CASE_A)
+        w.addVehicle(0.0, 60.0)                                  # far away
+        w.addVehicle(w.steer.x - w.eye.x, w.steer.z - w.eye.z, w.tractor)   # e.g. a front weight
+        session, why = self.start(w)
+        self.assertIsNotNone(session, why)
+        self.assertEqual(self.run_to_end(w, session)[0], "LINED_UP")
+
+    def test_another_vehicle_moving_or_coming_close_stops_it(self):
+        w = self.world(**CASE_A)
+        parked = w.addVehicle(-20.0, -20.0)                      # watched: within radius + 15 m
+        session, _ = self.start(w)
+
+        def nudge(i):
+            if i == 30:
+                parked.rootNode.x = parked.rootNode.x + 0.5      # pushed or driven
+        self.assertEqual(self.run_to_end(w, session, hook=nudge), ("OTHER_VEHICLE_MOVED", 30))
+        self.assert_braked_last(w)
+
+        w = self.world(**CASE_A)
+        session, _ = self.start(w)
+
+        def arrive(i):
+            if i == 30:                                          # a vehicle drives up to it
+                w.addVehicle(w.steer.x - w.eye.x + 3.0, w.steer.z - w.eye.z)
+        self.assertEqual(self.run_to_end(w, session, hook=arrive), ("OTHER_VEHICLE_NEAR", 30))
+
+    def test_the_player_on_the_curve_or_coming_close(self):
+        w = self.world(**CASE_A)
+        w.player.x, w.player.z = w.joint.x, w.joint.z            # standing at the tractor
+        session, why = self.start(w)
+        self.assertIsNone(session)
+        self.assertEqual(why, "LOCAL_PATH_PERSON")
+        w = self.world(**CASE_A)
+        w.playerUnknown = True
+        self.assertEqual(tuple(self.start(w))[:2], (None, "LOCAL_AREA_UNKNOWN"))
+        w = self.world(**CASE_A)
+        session, _ = self.start(w)
+
+        def walk_up(i):
+            if i == 30:
+                w.player.x, w.player.z = w.steer.x + 2.0, w.steer.z
+        self.assertEqual(self.run_to_end(w, session, hook=walk_up), ("PERSON_TOO_CLOSE", 30))
+        self.assert_braked_last(w)
+
+    def test_a_zero_turn_never_becomes_a_full_circle(self):
+        for noise in (1e-13, -1e-13, 1e-15):
+            with self.subTest(noise=noise):
+                curves = list(self.hitch.curves(5.0, noise, -noise, 7.0, 6.0).values())
+                self.assertAlmostEqual(curves[0].length, 2.0, places=6)
+                self.assertTrue(all(c.length < 3 for c in curves))
+
+    def test_a_curve_end_inside_the_reverse_envelope_is_lined_up_not_missed(self):
+        w = self.world(**CASE_A)
+        session, _ = self.start(w)
+        self.hitch.LOCAL.doneHeadingDeg = 0.01                  # the tight line-up never happens
+        try:
+            code, _ = self.run_to_end(w, session)
+        finally:
+            self.hitch.LOCAL.doneHeadingDeg = 5
+        self.assertEqual(code, "LINED_UP")
+        self.assert_lined_up(w, tight=False)
+
     def test_limits_are_the_documented_bounds(self):
         L = self.hitch.LOCAL_LIMITS
         self.assertEqual(L.workRadiusM, companion_hitch.LOCAL_WORK_RADIUS_M)
         self.assertLessEqual(self.hitch.LOCAL.timeoutMs, L.timeoutMs)
         self.assertLessEqual(self.hitch.LOCAL.doneMaxAheadM, companion_hitch.ALIGN_REACH_M - 1)
         self.assertLessEqual(self.hitch.LOCAL.doneLateralM, companion_hitch.ALIGN_MAX_LATERAL_M)
+        D = self.hitch.LOCAL
+        self.assertEqual(D.reverseReachM, companion_hitch.ALIGN_REACH_M)
+        self.assertEqual(D.reverseLateralM, companion_hitch.ALIGN_MAX_LATERAL_M)
+        self.assertAlmostEqual(math.radians(D.reverseHeadingDeg), companion_hitch.ALIGN_MAX_HEADING_RAD)
+        self.assertLess(D.divergeM + D.keepOutStopM, D.planMarginM + 0.5)     # drift stops before the box
+        self.assertLess(D.vehicleStopM, D.vehicleClearanceM)
+        self.assertLess(D.playerStopM, D.playerClearanceM)
 
 
 class LuaManeuverTests51(LuaManeuverTests):
