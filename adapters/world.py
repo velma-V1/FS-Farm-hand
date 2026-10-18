@@ -63,7 +63,14 @@ class World(Protocol):
         ...
 
     def stage(self, tractor_id: str, wagon_id: str, pose: Pose, owner: str) -> None:
-        """STAGE: GIANTS AIJobGoTo of the tractor's AI root to ``pose``."""
+        """STAGE: GIANTS AIJobGoTo of the tractor's AI root towards ``pose``, only
+        from outside the local work radius; coarse travel, never arrival."""
+        ...
+
+    def maneuver(self, tractor_id: str, wagon_id: str, plan: HitchPlan, owner: str) -> None:
+        """LOCAL_MANEUVER: bounded forward drive (mod/FarmhandHitch.lua) inside the
+        local work radius that ends braked with the planned joint on the wagon's
+        centreline, a few metres ahead of its joint, facing its heading."""
         ...
 
     def align(self, tractor_id: str, wagon_id: str, plan: HitchPlan, owner: str) -> None:

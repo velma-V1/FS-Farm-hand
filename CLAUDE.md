@@ -62,8 +62,8 @@ ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snap
   game → companion JSON lines over a Windows named pipe hosted by the companion;
   companion → game one command at a time in `modSettings/FS25_Farmhand/command.xml`
   (atomic rename) plus a `session.xml` heartbeat that also carries player notices.
-  Only six ops exist: `drive` (AutoDrive), `navigate` (GIANTS GOTO), `stage`,
-  `align`, `attach`, `stop`. ACCEPTED/DONE is never success; the game stops a
+  Only seven ops exist: `drive` (AutoDrive), `navigate` (GIANTS GOTO), `stage`,
+  `maneuver`, `align`, `attach`, `stop`. ACCEPTED/DONE is never success; the game stops a
   session's motion if the heartbeat is lost for 10 s. Player key presses arrive as
   `request` frames (a fixed `action` or typed `text`).
 - `companion/language.py` (deterministic rules; a local model may sit behind them)
@@ -78,7 +78,7 @@ ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snap
   and `companion/voice.py` (push-to-talk → faster-whisper → the text path).
 - `mod/` — FS25 Lua mod `FS25_Farmhand` (load order in `modDesc.xml`):
   `FarmhandObserve` (read-only snapshots), `FarmhandHitch` (GIANTS GOTO staging,
-  bounded ALIGN_REVERSE, GIANTS attach), `FarmhandBridge` (executes companion
+  bounded LOCAL_MANEUVER and ALIGN_REVERSE, GIANTS attach), `FarmhandBridge` (executes companion
   commands, the player key and notifications; server only), `FarmhandProbe`
   (`fhHitch*` console diagnostics). Each
   file sets one global; game globals come in as `env`, so tests load them with stubs
@@ -99,6 +99,7 @@ rather than asserting fixture IDs.
 
 Nothing has run inside FS25. Passing CI does not prove mod loading, physics, attach
 alignment, routing, IPC on Windows, or game integration — say so when reporting.
-The only self-driven motion allowed is ALIGN_REVERSE's capped final reverse; all
-other travel is delegated to AutoDrive (optional; marker destinations only) or GIANTS
-GOTO (`navigate`, `stage`), whose navigation agent plans for the attached wagon.
+The only self-driven motion allowed is HITCH's capped LOCAL_MANEUVER (forward, inside
+25 m of the wagon's joint) and ALIGN_REVERSE (the final reverse); all other travel is
+delegated to AutoDrive (optional; marker destinations only) or GIANTS GOTO
+(`navigate`, `stage`), whose navigation agent plans for the attached wagon.

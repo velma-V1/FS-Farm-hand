@@ -12,6 +12,7 @@ MOCK_ATTACH_RANGE_M = 0.3
 MOCK_POSE_TOLERANCE_M = 0.5
 MOCK_TRAILER_OFFSET_M = 7.0
 MOCK_REVERSE_REACH_M = 10.0      # the mod's reverse cap (Hitch.LIMITS.maxDistanceM)
+MOCK_LOCAL_RADIUS_M = 25.0       # the mod's local work radius (Hitch.LOCAL_LIMITS.workRadiusM)
 
 
 class MockWorld:
@@ -145,6 +146,20 @@ class MockWorld:
         with self._lock:
             tractor, _ = self._unattached_pair(tractor_id, wagon_id, owner)
             self._place(tractor, pose)
+
+    def maneuver(self, tractor_id, wagon_id, plan, owner):
+        # Mock-only teleport to the staging pose, standing in for the bounded forward
+        # line-up; like the real step, only from within the local work radius.
+        with self._lock:
+            tractor, wagon = self._unattached_pair(tractor_id, wagon_id, owner)
+            joint = next((j for j in wagon.input_joints if j.index == plan.wagon_joint), None)
+            out = next((j for j in tractor.output_joints if j.index == plan.tractor_joint), None)
+            root = tractor.ai_root
+            if (joint is None or root is None or out is None
+                    or math.dist(joint.position, plan.target) > MOCK_POSE_TOLERANCE_M
+                    or math.dist(root.to_world(out.x, out.z), plan.target) > MOCK_LOCAL_RADIUS_M):
+                raise RuntimeError("OUTSIDE_LOCAL_AREA")
+            self._place(tractor, plan.staging)
 
     def align(self, tractor_id, wagon_id, plan, owner):
         with self._lock:

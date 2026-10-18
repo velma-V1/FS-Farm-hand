@@ -65,7 +65,9 @@ class FakeGame:
     Like the mod's single-threaded update() writing one FIFO pipe, frames are built
     and sent under one lock, so a snapshot sent after a result reflects that result."""
 
-    def __init__(self, tractor_at=(0.0, 20.0), markers=None, faults=None, session_override=None,
+    # By default the tractor's joint starts beyond the local work radius (25 m) of the
+    # wagon's, so GIANTS' GOTO (stage) brings it in; tractor_at=(0, 20) starts inside it.
+    def __init__(self, tractor_at=(0.0, 40.0), markers=None, faults=None, session_override=None,
                  autodrive=True):
         self.vehicles = {11: record(11, "tractor", *tractor_at), 12: record(12, "wagon", 0.0, -4.0)}
         if not autodrive:      # AutoDrive not installed: no vehicle.ad, no markers
@@ -167,6 +169,17 @@ class FakeGame:
             if v["ai_root"] is not None:
                 v["ai_root"] = {"x": x, "z": z, "yaw": v["ai_root"]["yaw"] if yaw is None else yaw}
 
+        def place_joint(ahead, lateral, turn):
+            """The tractor with its joint (ahead, lateral) of the wagon's, turned `turn` deg."""
+            eye, heading = wagon["input_joint_poses"][0], wagon["heading"]
+            fx, fz = math.sin(heading), math.cos(heading)
+            jx, jz = eye["x"] + ahead * fx + lateral * fz, eye["z"] + ahead * fz - lateral * fx
+            yaw = heading + math.radians(turn)
+            joint = tractor["output_joints"][0]
+            dx, dz = Pose(0.0, 0.0, yaw).to_world(joint["x"], joint["z"])
+            place(tractor, jx - dx, jz - dz, yaw)
+            tractor["heading"] = yaw
+
         if op == "drive":
             _, x, z = self.markers[int(c["marker"])]
             if self.faults.get("drive_elsewhere"):
@@ -186,20 +199,16 @@ class FakeGame:
             return "GOTO_ENDED"
         if op == "stage":
             x, z, yaw = float(c["x"]) + self.faults.get("stage_offset", 0.0), float(c["z"]), float(c["yaw"])
-            if "stage_end" in self.faults:     # GOTO ended here: (ahead, lateral, heading deg) of the joint
-                ahead, lateral, turn = self.faults["stage_end"]
-                eye, heading = wagon["input_joint_poses"][0], wagon["heading"]
-                fx, fz = math.sin(heading), math.cos(heading)
-                jx, jz = eye["x"] + ahead * fx + lateral * fz, eye["z"] + ahead * fz - lateral * fx
-                yaw = heading + math.radians(turn)
-                joint = tractor["output_joints"][0]
-                dx, dz = Pose(0.0, 0.0, yaw).to_world(joint["x"], joint["z"])
-                x, z = jx - dx, jz - dz
             place(tractor, x, z, yaw)
+            tractor["heading"] = yaw
+            if "stage_end" in self.faults:     # GOTO ended here: (ahead, lateral, heading deg) of the joint
+                place_joint(*self.faults["stage_end"])
             if self.faults.get("stage_ai_stays"):          # GIANTS reports the end, control lingers
                 tractor["ai_active"] = True
-            tractor["heading"] = yaw
             return "STAGE_ENDED"
+        if op == "maneuver":   # lined up on the wagon's axis, 5 m ahead, unless told otherwise
+            place_joint(*self.faults.get("maneuver_end", (5.0, 0.0, 0.0)))
+            return "LINED_UP"
         if op == "align":     # the reverse ends with the tractor joint on the wagon joint
             yaw = tractor["ai_root"]["yaw"]
             joint, eye = tractor["output_joints"][0], wagon["input_joint_poses"][0]
@@ -324,6 +333,9 @@ class CapabilityTests(unittest.TestCase):
                 world.snapshot()
 
 
+NEAR = (0.0, 20.0)      # the tractor's joint starts inside the local work radius
+
+
 class ProductionSequenceTests(unittest.TestCase):
     def run_ac001(self, target="player_at_acceptance", field_entrances=None, categories=CATEGORIES,
                   **game_args):
@@ -364,8 +376,10 @@ class ProductionSequenceTests(unittest.TestCase):
         self.assertEqual(result.states[2], "TRAVEL_NEAR")
 
     def test_without_autodrive_giants_goto_travels_and_delivers_here(self):
-        for tractor_at, ops in (((0.0, 20.0), ["stage", "align", "attach", "navigate", "stop"]),
-                                ((600.0, 600.0), ["navigate", "stage", "align", "attach", "navigate", "stop"])):
+        for tractor_at, ops in (((0.0, 20.0), ["maneuver", "align", "attach", "navigate", "stop"]),
+                                ((0.0, 40.0), ["stage", "align", "attach", "navigate", "stop"]),
+                                # GOTO travel aims at the staging pose: no second GOTO, no maneuver.
+                                ((600.0, 600.0), ["navigate", "align", "attach", "navigate", "stop"])):
             with self.subTest(tractor_at=tractor_at):
                 game, world, result = self.run_ac001(tractor_at=tractor_at, autodrive=False)
                 self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
@@ -428,6 +442,24 @@ class ProductionSequenceTests(unittest.TestCase):
             ({"stage": "no_terminal"}, None, "UNVERIFIED", "RESULT_TIMEOUT", ["stage", "stop"]),
             ({"attach_other_joint": True}, None, "UNVERIFIED", "ATTACHMENT_MISMATCH",
              ["stage", "align", "attach", "stop"]),
+            # LOCAL_MANEUVER (the tractor starts inside the work radius): its refusals
+            # and bounded failures stop, release, and never reverse or attach.
+            ({"maneuver": "FAILED:SEATED_DURING_MANEUVER"}, NEAR, "FAILED", "SEATED_DURING_MANEUVER",
+             ["maneuver", "stop"]),
+            ({"maneuver": "FAILED:LOCAL_PATH_LEAVES_AREA"}, NEAR, "FAILED", "LOCAL_PATH_LEAVES_AREA",
+             ["maneuver", "stop"]),
+            ({"maneuver": "FAILED:TURN_RADIUS_UNKNOWN"}, NEAR, "FAILED", "TURN_RADIUS_UNKNOWN", ["maneuver", "stop"]),
+            ({"maneuver": "FAILED:STALLED"}, NEAR, "FAILED", "STALLED", ["maneuver", "stop"]),
+            ({"maneuver": "FAILED:DIVERGED"}, NEAR, "FAILED", "DIVERGED", ["maneuver", "stop"]),
+            ({"maneuver": "FAILED:TIMEOUT"}, NEAR, "FAILED", "TIMEOUT", ["maneuver", "stop"]),
+            ({"maneuver": "FAILED:ENVELOPE_EXCEEDED"}, NEAR, "FAILED", "ENVELOPE_EXCEEDED", ["maneuver", "stop"]),
+            ({"maneuver": "FAILED:KEEP_OUT"}, NEAR, "FAILED", "KEEP_OUT", ["maneuver", "stop"]),
+            ({"maneuver": "FAILED:WAGON_MOVED"}, NEAR, "FAILED", "WAGON_MOVED", ["maneuver", "stop"]),
+            ({"maneuver": "FAILED:DRIVER_TOOK_OVER"}, NEAR, "FAILED", "DRIVER_TOOK_OVER", ["maneuver", "stop"]),
+            ({"maneuver": "FAILED:AI_ACTIVE"}, NEAR, "FAILED", "AI_ACTIVE", ["maneuver", "stop"]),
+            ({"maneuver": "UNVERIFIED:UNKNOWN_OBSERVATION"}, NEAR, "UNVERIFIED", "UNKNOWN_OBSERVATION",
+             ["maneuver", "stop"]),
+            ({"maneuver": "no_terminal"}, NEAR, "UNVERIFIED", "RESULT_TIMEOUT", ["maneuver", "stop"]),
         ]
         for faults, tractor_at, status, reason, ops in cases:
             with self.subTest(faults=faults):
@@ -884,23 +916,36 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.ops(game), ["stage", "align", "attach", "navigate", "stop"])
 
     def test_live_case_2_stage_end_is_judged_by_the_joints_not_the_pose(self):
-        # Tractor 379 / wagon 400 (STAGE_ENDED 2-4 m off) and tractor 170 / wagon 173
-        # at 5304adc ("hitch the forage wagong": STAGE_ENDED 14 m and 138 degrees off
-        # the staging pose). GOTO is coarse travel: an ended job is never arrival, and
-        # only the observed joints decide whether the bounded reverse takes over.
-        hitched = ["stage", "align", "attach", "stop"]
+        # Tractor 379 / wagon 400 (STAGE_ENDED 2-4 m off), tractor 170 / wagon 173 at
+        # 5304adc (14 m and 138 degrees off) and at 8ffafcc (GIANTS' agent
+        # NOT_REACHABLE twice: A 12.9 m / lateral -12.4 / 85.9 deg, B 18.8 m / -18.0 /
+        # 162.9 deg). GOTO is long-range travel only: inside the local work radius the
+        # bounded forward LOCAL_MANEUVER lines up, unless the joints already lie in the
+        # reverse's envelope; beyond the radius nothing more moves.
+        reverse = ["stage", "align", "attach", "stop"]
+        local = ["stage", "maneuver", "align", "attach", "stop"]
         cases = [
             # (ahead, lateral, heading deg) of the tractor joint from the wagon's joint
-            ((4.4, -15.0, 138.0), "FAILED_TRAVEL_ENDED_TOO_FAR", ["stage", "stop"]),     # the live end
-            ((5.0, 1.5, 15.0), "COMPLETE_HITCH", hitched),        # off the pose, inside the envelope
-            ((8.5, -1.9, -28.0), "COMPLETE_HITCH", hitched),      # edge of the envelope
-            ((6.0, 0.5, 138.0), "FAILED_ALIGN_HEADING_OUT_OF_RANGE", ["stage", "stop"]),  # never turned here
-            ((-2.0, 0.5, 0.0), "FAILED_ALIGN_WRONG_SIDE", ["stage", "stop"]),           # behind the wagon's joint
-            ((6.0, 3.0, 0.0), "FAILED_ALIGN_LATERAL_OUT_OF_RANGE", ["stage", "stop"]),
+            ((3.44, -12.40, 85.9), {}, "COMPLETE_HITCH", local),           # live 8ffafcc A
+            ((5.52, -17.97, 162.9), {}, "COMPLETE_HITCH", local),          # live 8ffafcc B
+            ((4.4, -15.0, 138.0), {}, "COMPLETE_HITCH", local),            # live 5304adc
+            ((6.0, 0.5, 138.0), {}, "COMPLETE_HITCH", local),              # facing away
+            ((6.0, 3.0, 0.0), {}, "COMPLETE_HITCH", local),                # beside the axis
+            ((5.0, 1.5, 15.0), {}, "COMPLETE_HITCH", reverse),             # inside the envelope
+            ((8.5, -1.9, -28.0), {}, "COMPLETE_HITCH", reverse),           # edge of the envelope
+            ((20.0, -18.0, 90.0), {}, "FAILED_TRAVEL_ENDED_TOO_FAR", ["stage", "stop"]),   # beyond 25 m
+            # The game refuses the geometry before moving, or the maneuver's end is not
+            # in the envelope when observed: never reversed.
+            ((5.52, -17.97, 162.9), {"maneuver": "FAILED:LOCAL_PATH_HITS_WAGON"},
+             "FAILED_LOCAL_PATH_HITS_WAGON", ["stage", "maneuver", "stop"]),
+            ((3.44, -12.40, 85.9), {"maneuver_end": (6.0, 3.0, 0.0)},
+             "FAILED_ALIGN_LATERAL_OUT_OF_RANGE", ["stage", "maneuver", "stop"]),
+            ((3.44, -12.40, 85.9), {"maneuver": "FAILED:DIVERGED"}, "FAILED_DIVERGED",
+             ["stage", "maneuver", "stop"]),
         ]
-        for end, outcome, ops in cases:
-            with self.subTest(end=end):
-                game, notices = self.start(autodrive=False, faults={"stage_end": end})
+        for end, faults, outcome, ops in cases:
+            with self.subTest(end=end, faults=faults):
+                game, notices = self.start(autodrive=False, faults={"stage_end": end, **faults})
                 with self.assertLogs("farmhand", level="INFO") as logs:
                     game.say(1, "hitch the forage wagong")
                     self.wait_for(lambda: notices[-1:] == [outcome])
@@ -909,7 +954,20 @@ class ServiceTests(unittest.TestCase):
                 for part in ("tractor joint", "wagon joint", "gap", "ahead", "lateral",
                              "heading %.1f deg" % end[2]):
                     self.assertIn(part, stage_end)
+                if "maneuver" in ops and outcome.startswith("COMPLETE"):
+                    self.assertTrue(any("LOCAL_MANEUVER end:" in line and "-> ALIGN_REVERSE" in line
+                                        for line in logs.output))
                 self.assertEqual(game.link_world._reservations, {})              # stopped, then released
+
+    def test_a_tractor_starting_inside_the_work_radius_never_uses_goto(self):
+        game, notices = self.start(autodrive=False, tractor_at=(0.0, 20.0))
+        game.say(1, "hitch the forage wagon")
+        self.wait_for(lambda: notices[-1:] == ["COMPLETE_HITCH"])
+        self.assertEqual(self.ops(game), ["maneuver", "align", "attach", "stop"])
+        self.assertEqual(self.progress, ["WORKING_LOCAL_MANEUVER"])        # "lining up with the wagon"
+        maneuver = game.commands[0]
+        self.assertEqual((maneuver["tractor"], maneuver["wagon"], maneuver["tj"], maneuver["wj"]),
+                         ("11", "12", "1", "1"))
 
     def test_live_case_3_lingering_ai_is_proven_then_the_tractor_is_reusable(self):
         # STAGE_ENDED -> STOPPED -> AI still active -> later NO_ELIGIBLE_PAIR, now explained.
@@ -1010,8 +1068,9 @@ class ServiceTests(unittest.TestCase):
         game.press(3)
         self.wait_for(lambda: len(notices) >= 6)
         self.assertEqual(notices[4:], ["ACCEPTED", "COMPLETE"])
+        # The tractor still stands where STAGE left it, inside the reverse's envelope.
         self.assertEqual([c["op"] for c in game.commands[before:]],
-                         ["stop", "stage", "align", "attach", "navigate", "stop"])
+                         ["stop", "align", "attach", "navigate", "stop"])
         self.assertEqual(world_reservations(), {})
 
     def test_reloaded_game_restarting_request_ids_is_served_with_fresh_work(self):

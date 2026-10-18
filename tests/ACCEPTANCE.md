@@ -15,8 +15,9 @@ including an available compatible tractor/wagon pair and misleading decoys:
    hitch and PTO. Do not assert specific fixture IDs; inspect selected properties.
 2. RESERVE owns both units atomically; concurrent requests cannot steal either.
 3. MOVE is HITCH: a pure plan picks the joints and the final/staging poses before
-   reservation; STAGE (GIANTS GOTO) and ALIGN_REVERSE (bounded, game-side) are each
-   followed by a fresh check that the pair is still reserved, the wagon has not
+   reservation; STAGE (GIANTS GOTO, only beyond the 25 m local work radius),
+   LOCAL_MANEUVER (bounded, forward, game-side, only outside the reverse's envelope)
+   and ALIGN_REVERSE (bounded, game-side) are each followed by a fresh check that the pair is still reserved, the wagon has not
    moved and the step's outcome is observed. ATTACH re-checks GIANTS' exact
    candidate; VERIFY checks both ends of the attachment from fresh state before any
    delivery movement.
@@ -52,10 +53,29 @@ Executable mapping (`python scripts/check.py`):
   insufficient or unknown power, never rejects a wagon needing no PTO power, and
   matches PTO on the planned joint pair (not any joint).
 - `HitchCompositionTests`: steps use the plan exactly; AutoDrive TRAVEL_NEAR only
-  when far (and unobserved arrival stops); unplannable pairs block
+  when far (and unobserved arrival stops); GOTO (STAGE) only beyond the work radius
+  and never inside it, a STAGE end beyond it fails TRAVEL_ENDED_TOO_FAR with no
+  local motion, one outside the reverse's envelope is lined up by LOCAL_MANEUVER,
+  a maneuver failure or a maneuver end outside the envelope never reverses;
+  unplannable pairs block
   before reservation; staging not observed, wagon moved or rotated, joint occupied,
   reservation lost, no reverse progress, acknowledged-but-absent attach and a moving
   tractor after attach all stop with no further action.
+- `tests/test_lua_maneuver.py` (Lua 5.1 and 5.4, kinematic stub, not GIANTS
+  physics): the live 8ffafcc geometry, case A (gap 12.9 m, lateral -12.4 m, 86 deg)
+  lines up forward and then reverses onto the exact candidate at tractor radii
+  4.5-6.5 m, case B (18.8 m, -18.0 m, 163 deg) lines up without ever reversing
+  first, and both are refused before moving (a named reason, logged with the
+  numbers) for a tractor turning too wide; phases LOCAL_TURN, LOCAL_APPROACH,
+  LOCAL_LINEUP are logged once each with joints, gap, errors, steering, direction,
+  speed and time; lateral offset (forward correction), steering to either side and
+  60 random starts all end LINED_UP inside the reverse's envelope or are refused
+  unmoved, never leaving the 25 m radius or entering the wagon's box; refusals
+  (unknown or out-of-range turning radius, outside the area, beside the wagon,
+  limits, joints, seated); mid-maneuver takeover, rider getting in, other AI,
+  lost reservation, wagon joint or body moved, unreadable geometry, leaving the
+  radius, stall, divergence (a tractor that does not turn, or turns wider than it
+  reports), timeout and abort all brake, latch and log.
 - `tests/test_lua_hitch.py` (Lua 5.1 and 5.4): GIANTS GOTO start/cancel sequence;
   ALIGN_REVERSE refuses unsafe limits and joints, reverses only, stops the instant
   GIANTS reports the exact pair, and fails closed on timeout, distance limit, stall,
@@ -182,9 +202,12 @@ Executable mapping (`python scripts/check.py`):
   `test_an_ended_goto_logs_why_giants_ended_it_and_is_still_only_ended`.
 - First live session (2026-10-17), as regressions: `test_live_case_1_the_requester_rides_along`
   (tractor seated: the fetch completes), `test_live_case_2_stage_end_is_judged_by_the_joints_not_the_pose`
-  (GOTO is coarse: the 5304adc end 14 m / 138 degrees off is FAILED TRAVEL_ENDED_TOO_FAR
-  with nothing reversed; ends off the staging pose but inside the envelope hitch;
-  heading, wrong side and lateral each fail precisely; all logged, stopped, released),
+  (GOTO is long-range only: the 8ffafcc ends A and B and the 5304adc end 14 m /
+  138 degrees off are lined up by LOCAL_MANEUVER and hitch; ends inside the envelope
+  reverse directly; an end beyond 25 m is FAILED TRAVEL_ENDED_TOO_FAR with nothing
+  more moved; a refused or diverging maneuver, or one whose end is off the axis,
+  never reverses; all logged, stopped, released),
+  `test_a_tractor_starting_inside_the_work_radius_never_uses_goto`,
   `test_live_case_3_lingering_ai_is_proven_then_the_tractor_is_reusable` (STAGE ends,
   STOP, AI still active: CLEANUP_AI_NOT_CLEARED and kept reserved; the next request is
   NO_ELIGIBLE_PAIR with "candidate ... rejected: RESERVED, AI_ACTIVE" logged; once idle

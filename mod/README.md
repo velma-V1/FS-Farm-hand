@@ -4,12 +4,13 @@
   `snapshot` frames (`protocol/frame.schema.json`) from the game and mod calls
   recorded in `adapters/EVIDENCE.md`, including hitch geometry read from GIANTS'
   own joint offsets. It never changes game state.
-- `FarmhandHitch.lua`: HITCH primitives: GIANTS GOTO staging, the bounded
-  ALIGN_REVERSE (steering by `AIVehicleUtil.driveToPoint`, Farmhand-local
+- `FarmhandHitch.lua`: HITCH primitives: GIANTS GOTO staging (only from beyond
+  25 m), the bounded forward LOCAL_MANEUVER onto the wagon's centreline and the
+  bounded ALIGN_REVERSE (both steered by `AIVehicleUtil.driveToPoint`; Farmhand-local
   attach-assist distance, vertical guard, brake + cruise off on every stop) and
   GIANTS' normal attach with exact-candidate and exact-joint checks.
-- `FarmhandBridge.lua`: the AC-001 command bridge. Runs only the six operations
-  the companion asks for (`drive`, `navigate`, `stage`, `align`, `attach`, `stop`)
+- `FarmhandBridge.lua`: the AC-001 command bridge. Runs only the seven operations
+  the companion asks for (`drive`, `navigate`, `stage`, `maneuver`, `align`, `attach`, `stop`)
   for its live session, and reports each one's observed end. Server only. It also
   owns the player's key (`FARMHAND_FETCH_HERE`, a `request` frame) and shows the
   companion's notices as in-game notifications.
@@ -25,16 +26,24 @@ session and the probe for a typed command.
 
 ## Hitch retest (do this first)
 
-GOTO now only brings the tractor near the wagon; the observed hitch joints decide
-whether the bounded reverse takes over.
+GIANTS' GOTO is now used only when the tractor's hitch is more than 25 m from the
+wagon's drawbar, and only to get it within 25 m. Inside that, Farmhand lines the
+tractor up itself: forward only, slowly (3 km/h), on one curve onto the wagon's
+centreline a few metres in front of the drawbar, then the bounded reverse.
 
-0. Park an eligible tractor (nothing attached) within about 50 m of the forage
-   wagon, with open ground in front of the wagon's drawbar. Stand on foot nearby
-   (the last metres need an empty cab). Left Alt + K: "hitch the forage wagon".
-   Expect "hitching ..." then "hitched". If it fails instead, the notice names the
-   reason (for example "the tractor stopped too far from the wagon to hitch it");
-   type "report" and send the zip: it holds GIANTS' own reason for ending the GOTO
-   and the joint numbers. Then continue with the steps below if you have time.
+0. Same setup as the failing test: tractor 170 (nothing attached) and wagon 173,
+   open ground of about 25 m around the wagon's drawbar. Get out and stand on foot
+   well clear of that area (Farmhand needs an empty cab for the lining up and the
+   reverse). Left Alt + K: "hitch the forage wagon". Expect "driving to the wagon"
+   (only if farther than 25 m), "lining up with the wagon", "reversing to the
+   wagon", "hitching ...", "hitched". Left Alt + L stops it at any time.
+   If it fails, the notice names the reason (for example "there is no room to line
+   up with the wagon from here" is a refusal before moving, "the tractor could not
+   follow its line to the wagon" a stop while moving). Either way type "report"
+   and send the zip: log.txt has one `[Farmhand] maneuver ...` line per phase
+   (LOCAL_TURN / LOCAL_APPROACH / LOCAL_LINEUP) and at the end, with both joints,
+   gap, ahead, lateral, heading, the steering command, speed, time, the
+   tractor's turning radius and why.
 
 ## Retest after the first live session
 

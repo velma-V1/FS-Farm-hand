@@ -672,6 +672,121 @@ class LuaBridgeTests(unittest.TestCase):
         self.send(1, "attach", {"tractor": 11, "wagon": 12, "tractorJoint": 1, "wagonJoint": 1})
         self.assertEqual(self.results(1)[-1], (1, "FAILED", "NOT_ALIGNED"))
 
+    # ------------------------------------------------------------ maneuver
+    MANEUVER = {"tractor": 11, "wagon": 12, "tractorJoint": 4, "wagonJoint": 1}
+
+    def scripted_maneuver(self, codes, refuse=None):
+        """Bridge.Hitch with a scripted LOCAL_MANEUVER (FarmhandHitch's own is covered by
+        tests/test_lua_maneuver.py): newManeuver refuses with `refuse`, else each step
+        returns the next of `codes` (then the last); abort latches like the real one."""
+        fake = self.lua.execute(r"""
+            local Hitch, codes, refuse, calls = ...
+            local F = setmetatable({}, { __index = Hitch })
+            function F.newManeuver(env, args)
+                table.insert(calls, "newManeuver:" .. tostring(args.tractorJoint) .. "/" .. tostring(args.wagonJoint))
+                if refuse then F.onNote("REFUSED " .. refuse); return nil, refuse end
+                F.onNote("LOCAL_TURN START gap=12.87")
+                return { tractor = args.tractor, wagon = args.wagon, n = 0 }
+            end
+            function F.maneuverStep(env, s, dt)
+                if s.result then table.insert(calls, "brake"); return s.result end
+                s.n = s.n + 1
+                local code = codes[math.min(s.n, #codes)]
+                if code ~= "CONTINUE" then s.result = code; table.insert(calls, "brake") end
+                return code
+            end
+            function F.abort(env, s, code)
+                if s.result == nil then s.result = code end
+                table.insert(calls, "abort:" .. code)
+            end
+            return F
+        """, self.hitch, self.lua.table(*codes), refuse, self.w.calls)
+        self.bridge.Hitch = fake
+        wagon = self.lua.table(ownerFarmId=1)
+        self.w.env.NetworkUtil.getObject = self.lua.eval(
+            "function(t, w) return function(id) if id == 11 then return t elseif id == 12 then return w end end end")(
+            self.w.tractor, wagon)
+        return fake
+
+    def test_maneuver_is_done_only_lined_up_and_at_rest(self):
+        self.adopt()
+        output = []
+        self.lua.globals().print = lambda *a: output.append(" ".join(map(str, a)))
+        self.scripted_maneuver(["CONTINUE", "CONTINUE", "LINED_UP"])
+        self.w.speed = 2.0                                     # still rolling when it lines up
+        self.send(1, "maneuver", self.MANEUVER)
+        self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])
+        self.W.run(self.w, 1000)
+        self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])   # braking, not yet at rest
+        self.assertIn("brake", self.calls())
+        self.w.speed = 0.0
+        self.W.run(self.w, 200)
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "LINED_UP"))
+        self.assertIn("newManeuver:4/1", self.calls())
+        self.assertTrue(any("maneuver LOCAL_TURN START gap=12.87" in line for line in output))
+
+    def test_maneuver_that_never_comes_to_rest_fails(self):
+        self.adopt()
+        self.scripted_maneuver(["LINED_UP"])
+        self.w.speed = 3.0
+        self.send(1, "maneuver", self.MANEUVER)
+        self.beating(7000)
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "NOT_STOPPED"))
+
+    def test_maneuver_failures_and_refusals(self):
+        for codes, refuse, expected in ((["CONTINUE", "DIVERGED"], None, ("FAILED", "DIVERGED")),
+                                        (["KEEP_OUT"], None, ("FAILED", "KEEP_OUT")),
+                                        (["UNKNOWN_OBSERVATION"], None, ("UNVERIFIED", "UNKNOWN_OBSERVATION")),
+                                        ([], "LOCAL_PATH_HITS_WAGON", ("FAILED", "LOCAL_PATH_HITS_WAGON")),
+                                        ([], "SEATED_DURING_MANEUVER", ("FAILED", "SEATED_DURING_MANEUVER"))):
+            with self.subTest(codes=codes, refuse=refuse):
+                self.setUp()
+                self.adopt()
+                self.scripted_maneuver(codes, refuse)
+                self.send(1, "maneuver", self.MANEUVER)
+                self.W.run(self.w, 300)
+                self.assertEqual(self.results(1)[-1], (1, *expected))
+
+    def test_maneuver_needs_the_wagon(self):
+        self.adopt()
+        self.scripted_maneuver(["CONTINUE"])
+        self.send(1, "maneuver", {**self.MANEUVER, "wagon": 99})
+        self.assertEqual(self.results(1)[-1], (1, "REJECTED", "UNKNOWN_VEHICLE"))
+        self.assertNotIn("newManeuver:4/1", self.calls())
+
+    def test_stop_pre_empts_a_maneuver_and_keeps_it_braked(self):
+        self.adopt()
+        self.scripted_maneuver(["CONTINUE"])
+        self.send(1, "maneuver", self.MANEUVER)
+        self.w.speed = 2.0
+        self.send(2, "stop", {"tractor": 11})
+        self.assertIn((1, "FAILED", "STOPPED"), self.results())
+        self.assertIn("abort:STOPPED", self.calls())
+        self.w.speed = 0.0
+        self.W.run(self.w, 200)
+        self.assertEqual(self.results(2)[-1], (2, "DONE", "STOPPED"))
+
+    def test_a_lost_companion_aborts_the_maneuver(self):
+        self.adopt()
+        self.scripted_maneuver(["CONTINUE"])
+        self.send(1, "maneuver", self.MANEUVER)
+        self.W.run(self.w, 11000)
+        self.assertIn((1, "FAILED", "COMPANION_LOST"), self.results())
+        self.assertIn("abort:STOPPED", self.calls())          # braked and latched, as a stop
+        self.assertIsNone(self.bridge.lastManeuver)
+
+    def test_maneuver_notice_texts(self):
+        cases = {"WORKING_LOCAL_MANEUVER": ("Farmhand: lining up with the wagon", False),
+                 "WORKING_STAGE": ("Farmhand: driving to the wagon", False),
+                 "FAILED_SEATED_DURING_MANEUVER": (
+                     "Farmhand: not delivered - step out of the tractor for the last metres of the hitch, "
+                     "then ask again", True),
+                 "FAILED_LOCAL_PATH_HITS_WAGON": (
+                     "Farmhand: not delivered - there is no room to line up with the wagon from here", True)}
+        for notice, expected in cases.items():
+            with self.subTest(notice=notice):
+                self.assertEqual(tuple(self.bridge.noticeText(notice)), expected)
+
     def test_probe_cannot_start_during_a_companion_session(self):
         self.adopt()
         self.assertEqual(self.bridge.owner, "companion:s1")

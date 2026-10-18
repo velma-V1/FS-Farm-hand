@@ -23,6 +23,11 @@ ALIGN_REACH_M = 9.0                 # the reverse's 10 m cap (Hitch.LIMITS.maxDi
 ALIGN_MAX_HEADING_RAD = math.radians(30)
 ALIGN_MAX_LATERAL_M = 2.0
 
+# Inside this distance of the wagon's input joint (the planned tractor joint's gap)
+# Farmhand drives the last forward metres itself (LOCAL_MANEUVER, = mod/FarmhandHitch.lua
+# Hitch.LOCAL_LIMITS.workRadiusM); GIANTS' GOTO is used only from farther away.
+LOCAL_WORK_RADIUS_M = 25.0
+
 
 def _finite(*values) -> bool:
     return all(type(v) in (int, float) and math.isfinite(v) for v in values)

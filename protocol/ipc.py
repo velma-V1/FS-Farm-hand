@@ -111,6 +111,7 @@ COMMAND_ARGS = {
     "drive": ("tractor", "marker"),
     "stage": ("tractor", "x", "z", "yaw"),
     "navigate": ("tractor", "x", "z", "yaw"),
+    "maneuver": ("tractor", "wagon", "tractorJoint", "wagonJoint"),
     "align": ("tractor", "wagon", "tractorJoint", "wagonJoint", "maxDistanceM"),
     "attach": ("tractor", "wagon", "tractorJoint", "wagonJoint"),
     "stop": ("tractor",),

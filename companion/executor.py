@@ -10,7 +10,7 @@ from threading import Lock
 from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified, World
-from companion.hitch import align_problem, hitch_problem, joint_error, plan_hitch
+from companion.hitch import LOCAL_WORK_RADIUS_M, align_problem, hitch_problem, joint_error, plan_hitch
 from protocol.model import Destination, Equipment, HitchPlan, Pose, Position, Result
 
 log = logging.getLogger("farmhand")
@@ -39,9 +39,12 @@ NEAR_RADIUS_M = 60.0                      # beyond this, TRAVEL_NEAR runs before
 # TRAVEL_NEAR and STAGE are coarse GIANTS GOTO (or AutoDrive) travel: an ended job
 # is never taken as having reached its pose. GIANTS also ends a GOTO when its agent
 # finds the target NOT_REACHABLE (AIDrivable:onUpdate 320-322), and live it ended
-# 14 m and 138 degrees off. After TRAVEL_NEAR the tractor need only be near
-# (NEAR_RADIUS_M plus the marker arrival tolerance); after STAGE the observed joints
-# must lie in the bounded reverse's envelope (companion/hitch.py align_problem).
+# 14 m and 138 degrees off, and at 8ffafcc twice NOT_REACHABLE 12.9 and 18.8 m off.
+# So GOTO is only long-range travel: after TRAVEL_NEAR the tractor need only be near
+# (NEAR_RADIUS_M plus the marker arrival tolerance); STAGE runs only while the
+# planned joint is outside LOCAL_WORK_RADIUS_M of the wagon's and must end inside it.
+# There Farmhand's bounded LOCAL_MANEUVER lines the tractor up, unless the observed
+# joints already lie in the bounded reverse's envelope (companion/hitch.py align_problem).
 ALIGN_MAX_DISTANCE_M = 10.0               # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
 WAGON_MOVED_TOLERANCE_M = 0.25
 WAGON_YAW_TOLERANCE_RAD = math.radians(5)
@@ -66,7 +69,8 @@ class Cancelled(Exception):
 
 # Cancellation is honoured before reserving and before each step that starts
 # physical work.
-CANCELLABLE_STEPS = frozenset({"RESERVE", "TRAVEL_NEAR", "STAGE", "ALIGN_REVERSE", "ATTACH", "DELIVER"})
+CANCELLABLE_STEPS = frozenset({"RESERVE", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
+                               "DELIVER"})
 
 
 def valid_position(position: Position) -> bool:
@@ -407,6 +411,22 @@ class Executor:
                      tractor.position, wagon.position, target, tractor.stopped, wagon.stopped)
             raise ObservationMismatch("DELIVERY_NOT_OBSERVED")
 
+    def _joints(self, label, ids, farm_id, owner, plan, beyond="STAGE", unaligned="LOCAL_MANEUVER"):
+        """VALIDATE plus the observed joint error of the planned pair, logged with the
+        step it leads to: ``beyond`` the work radius, ``unaligned`` outside the
+        reverse's envelope, else ALIGN_REVERSE."""
+        tractor, wagon = self._hitch_state(ids, farm_id, owner, plan)
+        error = joint_error(tractor, wagon, plan)
+        problem = align_problem(error)
+        following = ((beyond or problem) if error and error.gap > LOCAL_WORK_RADIUS_M
+                     else (unaligned or problem) if problem else "ALIGN_REVERSE")
+        log.info("%s: ai_root %s root %s stopped %s; %s; reverse envelope: %s -> %s", label, tractor.ai_root,
+                 tractor.position, tractor.stopped, error.describe() if error else "joints unobservable",
+                 problem or "inside", following)
+        if error is None:
+            raise ObservationMismatch("JOINTS_NOT_OBSERVED")
+        return tractor, wagon, error
+
     def _log_joints(self, label, ids, plan):
         """Diagnostics only: the observed joint error of the pair, whatever happened."""
         try:
@@ -499,8 +519,9 @@ class Executor:
                 self._move(tractor.id, delivery, owner, deliver=True)
                 self._arrival(ids, farm_id, owner, delivery, check=movable)
             else:
-                # HITCH: VALIDATE -> [TRAVEL_NEAR] -> STAGE -> ALIGN_REVERSE -> ATTACH -> VERIFY.
-                # Every step is followed by a fresh-snapshot check; returns are not evidence.
+                # HITCH: VALIDATE -> [TRAVEL_NEAR] -> [STAGE] -> [LOCAL_MANEUVER] -> ALIGN_REVERSE
+                # -> ATTACH -> VERIFY. Every step is followed by a fresh-snapshot check;
+                # returns are not evidence, and each next step is chosen from it.
                 tractor, wagon = self._hitch_state(ids, farm_id, owner, plan)
                 physical_attempted = True
                 if travel is not None:
@@ -512,18 +533,26 @@ class Executor:
                              tractor.position, tractor.heading, left)
                     if left > NEAR_RADIUS_M + TRACTOR_ARRIVAL_TOLERANCE_M:
                         raise StepFailed("TRAVEL_ENDED_TOO_FAR")
-                enter("STAGE")
-                self.world.stage(tractor.id, wagon.id, plan.staging, owner)
-                tractor, wagon = self._hitch_state(ids, farm_id, owner, plan)
-                error = joint_error(tractor, wagon, plan)
-                problem = align_problem(error)
-                log.info("STAGE end: ai_root %s root %s staging aim %s stopped %s; %s -> %s",
-                         tractor.ai_root, tractor.position, plan.staging, tractor.stopped,
-                         error.describe() if error else "joints unobservable", problem or "ALIGN")
-                if problem == "UNKNOWN_OBSERVATION":
-                    raise ObservationMismatch("STAGE_NOT_OBSERVED")
-                if problem is not None:
-                    raise StepFailed(problem)
+                tractor, wagon, error = self._joints("HITCH start", ids, farm_id, owner, plan)
+                if error.gap > LOCAL_WORK_RADIUS_M:
+                    enter("STAGE")
+                    self.world.stage(tractor.id, wagon.id, plan.staging, owner)
+                    tractor, wagon, error = self._joints("STAGE end", ids, farm_id, owner, plan,
+                                                         beyond="TRAVEL_ENDED_TOO_FAR")
+                    if error.gap > LOCAL_WORK_RADIUS_M:
+                        raise StepFailed("TRAVEL_ENDED_TOO_FAR")
+                if align_problem(error) is not None:
+                    enter("LOCAL_MANEUVER")
+                    try:
+                        self.world.maneuver(tractor.id, wagon.id, plan, owner)
+                    except Exception:
+                        self._log_joints("LOCAL_MANEUVER failed", ids, plan)
+                        raise
+                    tractor, wagon, error = self._joints("LOCAL_MANEUVER end", ids, farm_id, owner, plan,
+                                                         beyond=None, unaligned=None)
+                    problem = align_problem(error)
+                    if problem is not None:
+                        raise StepFailed(problem)
                 enter("ALIGN_REVERSE")
                 try:
                     self.world.align(tractor.id, wagon.id, plan, owner)

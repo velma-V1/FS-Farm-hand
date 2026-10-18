@@ -8,9 +8,11 @@
 --       read-only: owned vehicles with name, store category, forage-wagon spec,
 --       position, attachment, motor/PTO values and hitch joints.
 --   fhHitchProbe <tractorId> <wagonId> [assistRadiusM] [maxVerticalM] [maxSpeedKmh]
---       one bounded attempt: validate -> plan -> GIANTS GOTO staging -> verify
---       staging -> ALIGN_REVERSE -> exact candidate -> attach -> verify. Ends
---       with exactly one "RESULT PASS|FAILED|UNVERIFIED <reason>" line.
+--       one bounded attempt, in the companion's order: validate -> plan ->
+--       [GIANTS GOTO staging, only from beyond the local work radius] ->
+--       [LOCAL_MANEUVER, unless already in the reverse's envelope] ->
+--       ALIGN_REVERSE -> exact candidate -> attach -> verify. Ends with exactly
+--       one "RESULT PASS|FAILED|UNVERIFIED <reason>" line.
 --   fhHitchStop
 --       abort the running attempt (brake, cruise off, cancel its own GOTO).
 --
@@ -30,6 +32,7 @@ Probe.STAGING_DISTANCE_M = 6.0           -- companion/hitch.py STAGING_DISTANCE_
 Probe.ALIGN_REACH_M = 9.0                -- companion/hitch.py ALIGN_REACH_M
 Probe.ALIGN_MAX_HEADING_DEG = 30         -- companion/hitch.py ALIGN_MAX_HEADING_RAD
 Probe.ALIGN_MAX_LATERAL_M = 2.0          -- companion/hitch.py ALIGN_MAX_LATERAL_M
+Probe.LOCAL_WORK_RADIUS_M = 25.0         -- companion/hitch.py LOCAL_WORK_RADIUS_M
 Probe.PLAN_TOLERANCE_M = 0.25            -- executor WAGON_MOVED_TOLERANCE_M
 
 local function log(fmt, ...)
@@ -228,10 +231,10 @@ function Probe:consoleProbe(tractorId, wagonId, radius, vertical, speed)
         log("limits assistRadiusM=%s maxVerticalM=%.2f maxSpeedKmh=%.1f maxDistanceM=%.1f",
             tostring(args.assistRadiusM or "GIANTS default"), limits.maxVerticalM, limits.maxSpeedKmh,
             limits.maxDistanceM)
-        local task = { phase = "stage", tractor = tractor, wagon = wagon, farmId = farmId, plan = plan,
+        local task = { phase = "validate", tractor = tractor, wagon = wagon, farmId = farmId, plan = plan,
                        args = args, owned = function() return Bridge.owner == owner end }
         self.task = task
-        self:startOp(task, { op = "stage", x = plan.staging.x, z = plan.staging.z, yaw = plan.staging.yaw })
+        self:advance(task)
     end)
     if not ok then
         log("fhHitchProbe error: %s", tostring(err))
@@ -257,7 +260,7 @@ end
 -- As the companion (companion/hitch.py align_problem): a GOTO end is never
 -- arrival; the observed planned joints must lie where the bounded reverse can
 -- take over. Returns nil (inside) or the reason, and the gap for the reverse.
-local function stageProblem(self, task)
+local function jointProblem(self, task)
     local env, plan = self.env, task.plan
     local node = task.tractor:getAIRootNode()
     local x, _, z = env.getWorldTranslation(node)
@@ -272,7 +275,7 @@ local function stageProblem(self, task)
     local lateral = (tx - wx) * fz - (tz - wz) * fx
     local gap = math.sqrt((tx - wx) ^ 2 + (tz - wz) ^ 2)
     local heading = math.deg(math.abs((yaw - plan.final.yaw + math.pi) % (2 * math.pi) - math.pi))
-    log("stage end root %s joint gap=%.2f ahead=%.2f lateral=%.2f heading=%.1f deg",
+    log("%s end root %s joint gap=%.2f ahead=%.2f lateral=%.2f heading=%.1f deg", task.phase,
         fmtPose({ x = x, z = z, yaw = yaw }), gap, ahead, lateral, heading)
     if gap > Probe.ALIGN_REACH_M then return "TRAVEL_ENDED_TOO_FAR", gap end
     if ahead <= 0 then return "ALIGN_WRONG_SIDE", gap end
@@ -312,6 +315,36 @@ local function verify(self, task)
     self:finish("UNVERIFIED", "ATTACHMENT_MISMATCH")
 end
 
+-- The next physical step from a fresh observation, as companion/executor.py:
+-- GOTO only from beyond the work radius (and once), the local maneuver only
+-- outside the reverse's envelope (and once), then the bounded reverse.
+function Probe:advance(task)
+    local problem, gap = jointProblem(self, task)
+    local plan = task.plan
+    if gap > Probe.LOCAL_WORK_RADIUS_M then
+        if task.phase ~= "validate" then return self:finish("FAILED", "TRAVEL_ENDED_TOO_FAR") end
+        task.phase = "stage"
+        return self:startOp(task, { op = "stage", x = plan.staging.x, z = plan.staging.z, yaw = plan.staging.yaw })
+    end
+    if problem ~= nil then
+        if task.phase == "maneuver" then return self:finish("FAILED", problem) end
+        task.phase = "maneuver"
+        self.Hitch.onNote = function(line) log("maneuver %s", line) end
+        return self:startOp(task, { op = "maneuver", tractorJoint = plan.tractorJoint, wagonJoint = plan.wagonJoint })
+    end
+    task.phase = "align"
+    local spec = { op = "align", tractorJoint = plan.tractorJoint, wagonJoint = plan.wagonJoint }
+    for k, v in pairs(task.args) do spec[k] = v end
+    -- The reverse is sized to the gap actually left, as the companion does.
+    spec.maxDistanceM = math.min(self.Hitch.LIMITS.maxDistanceM, math.max(Probe.STAGING_DISTANCE_M, gap) + 2)
+    self:startOp(task, spec)
+    if self.task == task then
+        local s = task.op.session
+        log("reverse started attachDistanceSq=%.4f maxVerticalM=%.2f maxSpeedKmh=%.1f",
+            s.attachDistanceSq, s.maxVerticalM, s.maxSpeedKmh)
+    end
+end
+
 local function step(self, task, dt)
     local status, code = self.Bridge.step(self.env, task.op, dt)
     if status == nil then return end
@@ -322,21 +355,9 @@ local function step(self, task, dt)
     end
     if status ~= "DONE" then return self:finish(status, code) end
     task.op = nil
-    if task.phase == "stage" then
-        local problem, gap = stageProblem(self, task)
-        if problem ~= nil then return self:finish("FAILED", problem) end
+    if task.phase == "stage" or task.phase == "maneuver" then
         if not planUnchanged(self, task) then return self:finish("FAILED", "PLAN_CHANGED") end
-        task.phase = "align"
-        local spec = { op = "align", tractorJoint = task.plan.tractorJoint, wagonJoint = task.plan.wagonJoint }
-        for k, v in pairs(task.args) do spec[k] = v end
-        -- The reverse is sized to the gap actually left, as the companion does.
-        spec.maxDistanceM = math.min(self.Hitch.LIMITS.maxDistanceM, math.max(Probe.STAGING_DISTANCE_M, gap) + 2)
-        self:startOp(task, spec)
-        if self.task == task then
-            s = task.op.session
-            log("reverse started attachDistanceSq=%.4f maxVerticalM=%.2f maxSpeedKmh=%.1f",
-                s.attachDistanceSq, s.maxVerticalM, s.maxSpeedKmh)
-        end
+        self:advance(task)
     elseif task.phase == "align" then
         task.phase = "attach"
         log("attach: requested")

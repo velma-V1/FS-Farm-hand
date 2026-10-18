@@ -43,7 +43,7 @@ HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
 ALIGN_MAX_DISTANCE_M = 10.0      # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
-DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "align": 70.0, "attach": 25.0, "stop": 25.0}
+DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
 
@@ -351,6 +351,11 @@ class FS25World:
     def stage(self, tractor_id: str, wagon_id: str, pose: Pose, owner: str) -> None:
         self._reserved(tractor_id, owner, wagon_id)
         self._run("stage", tractor=int(tractor_id), x=pose.x, z=pose.z, yaw=pose.yaw)
+
+    def maneuver(self, tractor_id: str, wagon_id: str, plan: HitchPlan, owner: str) -> None:
+        self._reserved(tractor_id, owner, wagon_id)
+        self._run("maneuver", tractor=int(tractor_id), wagon=int(wagon_id), tractorJoint=plan.tractor_joint,
+                  wagonJoint=plan.wagon_joint)
 
     def align(self, tractor_id: str, wagon_id: str, plan: HitchPlan, owner: str) -> None:
         self._reserved(tractor_id, owner, wagon_id)

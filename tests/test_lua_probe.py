@@ -33,7 +33,7 @@ function W.new(opts)
     local w = { events = {}, frame = 0, aiActive = false, attacher = nil, implement = nil }
     local env = {}
     w.env = env
-    local tractorRoot = { x = opts.tx or 0, z = opts.tz or 20, yaw = 0 }
+    local tractorRoot = { x = opts.tx or 0, z = opts.tz or 40, yaw = 0 }
     local wagonRoot = { x = 0, z = -4, yaw = 0 }
     local tJoint = { jointType = 3, jointIndex = 0, jointTransform = { parent = tractorRoot, lx = 0, lz = -2.5 } }
     local wJoint = { jointType = 3, node = { parent = wagonRoot, lx = 0, lz = 4, ly = opts.wagonDy or 0 } }
@@ -253,6 +253,8 @@ class LuaProbeTests(unittest.TestCase):
         self.assertEqual(self.probe.ALIGN_REACH_M, hitch.ALIGN_REACH_M)
         self.assertAlmostEqual(math.radians(self.probe.ALIGN_MAX_HEADING_DEG), hitch.ALIGN_MAX_HEADING_RAD)
         self.assertEqual(self.probe.ALIGN_MAX_LATERAL_M, hitch.ALIGN_MAX_LATERAL_M)
+        self.assertEqual(self.probe.LOCAL_WORK_RADIUS_M, hitch.LOCAL_WORK_RADIUS_M)
+        self.assertEqual(self.hitch.LOCAL_LIMITS.workRadiusM, hitch.LOCAL_WORK_RADIUS_M)
         self.assertEqual(hitch.ALIGN_REACH_M, executor.ALIGN_MAX_DISTANCE_M - 1)
         self.assertEqual(self.hitch.DEFAULTS.divergeLateralM, hitch.ALIGN_MAX_LATERAL_M + 1)
         self.assertEqual(self.probe.PLAN_TOLERANCE_M, executor.WAGON_MOVED_TOLERANCE_M)
@@ -322,7 +324,9 @@ class LuaProbeTests(unittest.TestCase):
         self.assertNotIn("cancelGoto", self.events(w))       # never cancels another job
 
     def test_stage_failure_never_reaches_align(self):
-        cases = (("stageOffset", 3.0, "FAILED ALIGN_LATERAL_OUT_OF_RANGE"),    # GOTO ended 3 m to the side
+        # GOTO ended 3 m to the side: the local maneuver follows (this stub tractor has
+        # no turning radius, so it is refused before moving); never the reverse.
+        cases = (("stageOffset", 3.0, "FAILED TURN_RADIUS_UNKNOWN"),
                  ("gotoInvalid", True, "FAILED STAGE_GOTO_INVALID"))
         for attr, value, expected in cases:
             with self.subTest(expected=expected):
@@ -330,6 +334,11 @@ class LuaProbeTests(unittest.TestCase):
                 setattr(w, attr, value)
                 self.assertEqual(self.run_probe(w, 11, 12), [expected])
                 self.assertFalse({"drive", "brake", "attach"} & set(self.events(w)))
+
+    def test_inside_the_work_radius_the_probe_never_uses_goto(self):
+        w = self.world(tz=20)                     # joint 17.5 m from the wagon's: maneuver first
+        self.assertEqual(self.run_probe(w, 11, 12), ["FAILED TURN_RADIUS_UNKNOWN"])
+        self.assertEqual(self.events(w), [])      # refused before any motion, no GOTO
 
     def test_goto_that_never_started_is_not_cancelled(self):
         w = self.world()

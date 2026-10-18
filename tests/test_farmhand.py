@@ -125,7 +125,7 @@ class FaultWorld(MockWorld):
 
     def stage(self, tractor_id, wagon_id, pose, owner):
         self._fault("stage")
-        if self.fault == "stage_elsewhere":
+        if self.fault == "stage_elsewhere" or str(self.fault).startswith("maneuver"):
             pose = Pose(pose.x + 5, pose.z, pose.yaw)
         super().stage(tractor_id, wagon_id, pose, owner)
         if self.fault == "player_moved":
@@ -136,6 +136,13 @@ class FaultWorld(MockWorld):
             self.items[wagon_id] = replace(wagon, input_joints=moved)
         if self.fault == "reservation_lost_after_stage":
             self.items[wagon_id] = replace(self.items[wagon_id], reserved_by="thief")
+
+    def maneuver(self, tractor_id, wagon_id, plan, owner):
+        self._fault("maneuver")
+        super().maneuver(tractor_id, wagon_id, plan, owner)
+        if self.fault == "maneuver_elsewhere":          # "lined up", but observed 3 m to the side
+            pose = self.items[tractor_id].ai_root
+            self._place(self.items[tractor_id], Pose(pose.x + 3, pose.z, pose.yaw))
 
     def align(self, tractor_id, wagon_id, plan, owner):
         self._fault("align")
@@ -605,7 +612,9 @@ class GiantsNavigationTests(unittest.TestCase):
                 plan = plan_hitch(tractor, wagon)
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, "COMPLETE", result)
-                self.assertEqual(result.states[:4], ("FIND", "RESERVE", "TRAVEL_NEAR", "STAGE"))
+                # One GOTO, aimed at the staging pose; it ended there, inside the reverse's
+                # envelope, so neither a second GOTO nor a local maneuver follows.
+                self.assertEqual(result.states[:4], ("FIND", "RESERVE", "TRAVEL_NEAR", "ALIGN_REVERSE"))
                 self.assertEqual(calls[0], plan.staging)
 
     def test_goto_travel_or_delivery_not_observed_stops_and_fails_closed(self):
@@ -624,7 +633,12 @@ class GiantsNavigationTests(unittest.TestCase):
                 self.after.append("stage")
                 return super().stage(*args)
 
-        # Coarse travel need only end near the wagon (STAGE follows); a delivery must arrive.
+            def maneuver(self, *args):
+                self.after.append("maneuver")
+                return super().maneuver(*args)
+
+        # Coarse travel need only end near the wagon (inside the work radius the local
+        # maneuver lines up); a delivery must arrive.
         for step, miss, outcome, far in (("travel", 4.0, ("COMPLETE", "DELIVERY_OBSERVED"), True),
                                          ("travel", 100.0, ("FAILED", "TRAVEL_ENDED_TOO_FAR"), True),
                                          ("deliver", 4.0, ("UNVERIFIED", "DELIVERY_NOT_OBSERVED"), False)):
@@ -635,7 +649,7 @@ class GiantsNavigationTests(unittest.TestCase):
                 self.assertEqual((result.status, result.reason), outcome)
                 self.assertEqual(result.states[-2:], ("STOP", "RELEASE"))
                 if step == "travel":
-                    self.assertEqual(world.after, [] if miss > 60 else ["stage"])
+                    self.assertEqual(world.after, [] if miss > 60 else ["maneuver"])
                 self.assertTrue(all(x.reserved_by is None and x.stopped for x in world.snapshot()))
 
     def test_goto_step_failures_stop_without_further_action(self):
@@ -852,7 +866,9 @@ class HitchCompositionTests(unittest.TestCase):
         world = MockWorld([far, wagon], PLAYERS, DESTINATIONS + (near_wagon,))
         result = Executor(world).execute(intent())
         self.assertEqual(result.status, "COMPLETE", result)
-        self.assertEqual(result.states, ("FIND", "RESERVE", "TRAVEL_NEAR", "STAGE", "ALIGN_REVERSE",
+        # AutoDrive's marker is 10 m from the staging pose: inside the local work
+        # radius, so no GOTO; the local maneuver lines up.
+        self.assertEqual(result.states, ("FIND", "RESERVE", "TRAVEL_NEAR", "LOCAL_MANEUVER", "ALIGN_REVERSE",
                                          "ATTACH", "VERIFY", "DELIVER", "STOP", "RELEASE"))
 
         class ShortTravel(MockWorld):
@@ -907,14 +923,62 @@ class HitchCompositionTests(unittest.TestCase):
                 self.assertEqual(len(world.attach_calls), 1 if attached else 0)
                 self.assertNotIn("DELIVER", result.states)
 
-    def test_a_stage_end_outside_the_reverse_envelope_never_reverses(self):
-        # GOTO ended 5 m to the side of the staging aim: observed, not reachable by a reverse.
+    def test_a_stage_end_outside_the_reverse_envelope_is_lined_up_locally(self):
+        # GOTO ended 5 m to the side of the staging aim: not reachable by a reverse, so
+        # the bounded local maneuver runs first (never a second GOTO).
         world, result = self.run_fault("stage_elsewhere")
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual(result.states[2:5], ("STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE"))
+        self.assertEqual(world.moves, 4)                    # stage, maneuver, align, delivery
+
+    def test_a_maneuver_end_outside_the_reverse_envelope_never_reverses(self):
+        world, result = self.run_fault("maneuver_elsewhere")
         self.assertEqual((result.status, result.reason), ("FAILED", "ALIGN_LATERAL_OUT_OF_RANGE"))
-        self.assertEqual(world.moves, 1)
+        self.assertEqual(world.moves, 2)                    # stage, maneuver
         self.assertEqual(world.attach_calls, [])
-        self.assertEqual(result.states[-3:], ("STAGE", "STOP", "RELEASE"))
+        self.assertEqual(result.states[-4:], ("STAGE", "LOCAL_MANEUVER", "STOP", "RELEASE"))
         self.assertTrue(all(x.reserved_by is None and x.stopped for x in world.snapshot()))
+
+    def test_a_failed_maneuver_stops_and_goes_no_further(self):
+        for fault in ("maneuver", "maneuver_timeout"):
+            with self.subTest(fault=fault):
+                world, result = self.run_fault(fault)
+                self.assertEqual(result.status, "FAILED", result)
+                self.assertEqual(world.moves, 2)
+                self.assertEqual(world.attach_calls, [])
+                self.assertNotIn("ALIGN_REVERSE", result.states)
+                self.assertTrue(all(x.reserved_by is None and x.stopped for x in world.snapshot()))
+
+    def test_stage_ending_beyond_the_work_radius_stops_before_any_local_motion(self):
+        class FarStage(FaultWorld):
+            def stage(self, tractor_id, wagon_id, pose, owner):
+                super().stage(tractor_id, wagon_id, Pose(pose.x + 30, pose.z, pose.yaw), owner)
+
+            def maneuver(self, *args):
+                raise AssertionError("local maneuver beyond the work radius")
+
+        world = FarStage(None)
+        result = Executor(world).execute(intent())
+        self.assertEqual((result.status, result.reason), ("FAILED", "TRAVEL_ENDED_TOO_FAR"))
+        self.assertEqual(world.moves, 1)
+
+    def test_a_tractor_inside_the_work_radius_never_uses_goto(self):
+        base = simple_world()
+        tractor, wagon = base.snapshot()
+        plan = plan_hitch(tractor, wagon)
+        # 15 m to the side of the wagon's joint, turned 90 degrees: inside the radius.
+        start = Pose(plan.target[0] + 15.0, plan.target[1], plan.final.yaw + math.pi / 2)
+        near = replace(tractor, position=(start.x, start.z), ai_root=start, heading=start.yaw)
+
+        class NoGoto(FaultWorld):
+            def stage(self, *args):
+                raise AssertionError("GOTO inside the work radius")
+
+        world = NoGoto(None)
+        world.items[near.id] = near
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual(result.states[2:4], ("LOCAL_MANEUVER", "ALIGN_REVERSE"))
 
     def test_lost_reservation_is_never_released_or_reused(self):
         world, result = self.run_fault("reservation_lost_after_stage")

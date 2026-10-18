@@ -20,10 +20,15 @@ have precedence; report conflicts instead of silently changing the scope.
 - FS25 and existing mods perform physical work. No navigation, pathfinding,
   driving, Courseplay, or AutoDrive replacements. No generalized agent platform,
   autonomous purchasing, fieldwork, or unrelated features in the current task.
-- Sole user-authorized exception: HITCH's ALIGN_REVERSE, a bounded reverse of the
-  last few metres (mod/FarmhandHitch.lua) whose steering is delegated to GIANTS'
-  AIVehicleUtil.driveToPoint and which stops as soon as GIANTS reports the exact
-  planned joints attachable. Keep it capped; never extend it into navigation.
+- User-authorized exceptions, both in mod/FarmhandHitch.lua, both steered by GIANTS'
+  AIVehicleUtil.driveToPoint and both hard-capped; never extend them into navigation:
+  1. HITCH's ALIGN_REVERSE, a bounded reverse of the last few metres that stops as
+     soon as GIANTS reports the exact planned joints attachable.
+  2. HITCH's LOCAL_MANEUVER (authorized 2026-10-18 after GIANTS' GOTO ended
+     NOT_REACHABLE 12-19 m off twice at 8ffafcc): forward only, inside a 25 m work
+     radius of the wagon's joint, from the observed joints onto the wagon's
+     centreline so ALIGN_REVERSE can take over. One closed-form curve, no search,
+     no retry; GOTO stays the provider for anything farther.
 - Keep Python orchestration in companion/, pure contracts in protocol/ and
   adapters/, game-side Lua in mod/, synthetic state in simulator/, tests in tests/.
   Never import simulator into companion or mod. No simulated success in real adapters.

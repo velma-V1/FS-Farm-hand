@@ -495,6 +495,13 @@ class LuaHitchTests(unittest.TestCase):
         w.entered = True
         self.assertEqual(tuple(self.align(w)), (None, "SEATED_DURING_REVERSE"))
         self.assertEqual(len(w.drives), 0)
+        # Someone getting in while it reverses stops it too: their controls would apply.
+        w = self.world()
+        session, _ = self.align(w)
+        self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CONTINUE")
+        w.entered = True
+        self.assertEqual(self.hitch.alignStep(w.env, session, 100), "SEATED_DURING_REVERSE")
+        self.assertEqual(self.drives(w)[-1]["allowed"], False)
 
     def test_a_takeover_during_an_earlier_step_is_still_seen(self):
         w = self.world()

@@ -4,7 +4,10 @@
 --      drive    AutoDrive DRIVETO to a map marker  (TRAVEL_NEAR and DELIVER)
 --      navigate GIANTS GOTO to a pose, any distance  (TRAVEL_NEAR and DELIVER
 --               without AutoDrive or a fitting marker)
---      stage    GIANTS GOTO to the staging pose     (Hitch.startStaging)
+--      stage    GIANTS GOTO towards the staging pose, only from outside the
+--               local work radius                 (Hitch.startStaging)
+--      maneuver Farmhand's bounded forward LOCAL_MANEUVER onto the wagon's
+--               centreline                        (Hitch.newManeuver / maneuverStep)
 --      align  bounded ALIGN_REVERSE               (Hitch.newAlign / alignStep)
 --      attach GIANTS attach of the exact candidate (Hitch.attach / attachState)
 --      stop   stop the Farmhand-owned motion on a tractor
@@ -248,6 +251,30 @@ function steppers.navigate(env, task)
 end
 aborts.navigate = abortGoto
 
+-- --------------------------------------------------------------- maneuver
+-- Hitch.onNote prints each phase line (once per phase and at the end).
+function starters.maneuver(env, spec)
+    Bridge.Hitch.onNote = function(line) log("maneuver %s", line) end
+    local session, reason = Bridge.Hitch.newManeuver(env, {
+        tractor = spec.tractor, wagon = spec.wagon, tractorJoint = spec.tractorJoint,
+        wagonJoint = spec.wagonJoint, farmId = spec.farmId, isReserved = spec.owned,
+    })
+    if session == nil then return nil, reason end
+    Bridge.lastManeuver = session
+    return { session = session }
+end
+
+function steppers.maneuver(env, task, dt)
+    local code = Bridge.Hitch.maneuverStep(env, task.session, dt)
+    if code == "CONTINUE" then return nil end
+    if code ~= "LINED_UP" then return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code end
+    return settle(task, code)       -- braked by the latch; DONE once observed at rest
+end
+
+function aborts.maneuver(env, task)
+    Bridge.Hitch.abort(env, task.session, "STOPPED")
+end
+
 -- ------------------------------------------------------------------ align
 function starters.align(env, spec)
     local session, reason = Bridge.Hitch.newAlign(env, {
@@ -257,7 +284,7 @@ function starters.align(env, spec)
         maxVerticalM = spec.maxVerticalM, maxSpeedKmh = spec.maxSpeedKmh,
     })
     if session == nil then return nil, reason end
-    Bridge.lastAlign = session
+    Bridge.lastAlign, Bridge.lastManeuver = session, nil     -- the maneuver is over
     return { session = session }
 end
 
@@ -312,6 +339,9 @@ function steppers.stop(env, task)
     if Bridge.lastAlign ~= nil and Bridge.lastAlign.tractor == v then
         Bridge.Hitch.alignStep(env, Bridge.lastAlign, 0)       -- latched: brake + cruise off
     end
+    if Bridge.lastManeuver ~= nil and Bridge.lastManeuver.tractor == v then
+        Bridge.Hitch.abort(env, Bridge.lastManeuver, "STOPPED")  -- latched: brake + cruise off
+    end
     local ownMotion = Bridge.pendingGoto[v] ~= nil or (target ~= nil
         and ((target.op == "drive" and v.ad.stateModule:isActive() ~= false)
         or ((target.op == "stage" or target.op == "navigate") and target.seen and v:getIsAIActive() ~= false)))
@@ -327,7 +357,7 @@ function aborts.stop() end
 
 -- --------------------------------------------------------------- runner
 
-Bridge.NEEDS_WAGON = { align = true, attach = true }
+Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true }
 
 function Bridge.start(env, spec)
     local starter = starters[spec.op]
@@ -418,7 +448,7 @@ function Bridge:dropSession(code)
         self.active = nil
     end
     if self:companionOwner() then Bridge.owner = nil end
-    Bridge.lastAlign = nil
+    Bridge.lastAlign, Bridge.lastManeuver = nil, nil
     log("bridge session %s dropped: %s", tostring(self.session), code)
     self.dropped[self.session] = true      -- a dropped session is never re-adopted
     self.session = nil
@@ -609,7 +639,8 @@ Bridge.STEPS = {
     FIND = "looking for a tractor and forage wagon",
     RESERVE = "reserving the equipment",
     TRAVEL_NEAR = "driving to the wagon",
-    STAGE = "lining up with the wagon",
+    STAGE = "driving to the wagon",
+    LOCAL_MANEUVER = "lining up with the wagon",
     ALIGN_REVERSE = "reversing to the wagon",
     ATTACH = "hitching the wagon",
     VERIFY = "checking the hitch",
@@ -634,17 +665,29 @@ Bridge.REASONS = {
     AUTODRIVE_UNAVAILABLE = "that destination needs AutoDrive",
     NOT_LINKED = "the game is not linked to the companion",
     SEATED_DURING_REVERSE = "step out of the tractor for the last metres of the hitch, then ask again",
+    SEATED_DURING_MANEUVER = "step out of the tractor for the last metres of the hitch, then ask again",
     REJECTED_SEATED_DURING_REVERSE = "step out of the tractor for the last metres of the hitch, then ask again",
     AI_NOT_CLEARED = "an AI job still controls the tractor; check it",
     CLEANUP_AI_NOT_CLEARED = "an AI job still controls the tractor; check it",
     DRIVER_TOOK_OVER = "you took the controls, so Farmhand stopped",
     STAGE_NOT_OBSERVED = "the tractor did not line up with the wagon",
+    JOINTS_NOT_OBSERVED = "the hitch points could not be read",
+    LOCAL_PATH_HITS_WAGON = "there is no room to line up with the wagon from here",
+    LOCAL_PATH_LEAVES_AREA = "there is no room to line up with the wagon from here",
+    LOCAL_PATH_TOO_LONG = "there is no room to line up with the wagon from here",
+    LOCAL_START_AT_WAGON = "the tractor is too close beside the wagon to line up",
+    OUTSIDE_LOCAL_AREA = "the tractor stopped too far from the wagon to hitch it",
+    TURN_RADIUS_UNKNOWN = "the tractor's turning circle is unknown",
+    TURN_RADIUS_OUT_OF_RANGE = "the tractor turns too wide to line up with the wagon",
+    KEEP_OUT = "the tractor came too close to the wagon while lining up",
+    ENVELOPE_EXCEEDED = "the tractor left the area around the wagon while lining up",
+    LINEUP_MISSED = "the tractor could not line up with the wagon",
     TRAVEL_ENDED_TOO_FAR = "the tractor stopped too far from the wagon to hitch it",
     ALIGN_WRONG_SIDE = "the tractor stopped on the wrong side of the wagon to hitch it",
     ALIGN_HEADING_OUT_OF_RANGE = "the tractor stopped facing the wrong way to hitch the wagon",
     ALIGN_LATERAL_OUT_OF_RANGE = "the tractor stopped too far to the side of the wagon to hitch it",
-    STALLED = "the tractor could not reverse onto the wagon",
-    DIVERGED = "the tractor could not reverse straight onto the wagon",
+    STALLED = "the tractor got stuck at the wagon",
+    DIVERGED = "the tractor could not follow its line to the wagon",
     WAGON_MOVED = "the wagon moved",
 }
 

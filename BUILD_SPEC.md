@@ -105,11 +105,22 @@ pose). RESERVE atomically owns both or neither. MOVE is HITCH: VALIDATE (fresh
 reserved, unattached, stopped pair; wagon unmoved; same planned joints) before and
 after every step → TRAVEL_NEAR (AutoDrive or GIANTS GOTO, only when far; coarse:
 it need only end near the wagon) → STAGE (GIANTS AIJobGoTo aimed 6 m ahead of the
-final hitch pose, facing the wagon's heading; coarse too: GOTO may end anywhere, so
-its end is never arrival) → OBSERVE (the planned tractor joint relative to the
-wagon's input joint, from a fresh snapshot: within 9 m, on the wagon's front side,
-within 30 degrees and 2 m of its axis, else a precise failure such as
-TRAVEL_ENDED_TOO_FAR, and nothing reverses) → ALIGN_REVERSE (the bounded local
+final hitch pose, facing the wagon's heading, run only while the planned tractor
+joint is more than 25 m from the wagon's input joint; coarse: GOTO may end anywhere
+(live at 8ffafcc twice NOT_REACHABLE 12.9 and 18.8 m off), so it need only end
+within those 25 m, else TRAVEL_ENDED_TOO_FAR; never retried) → OBSERVE (the
+planned tractor joint relative to the wagon's input joint, from a fresh snapshot)
+→ LOCAL_MANEUVER, only if that is outside the reverse's envelope (within 9 m, on
+the wagon's front side, within 30 degrees and 2 m of its axis): Farmhand's own
+bounded forward drive, steered by GIANTS' driveToPoint, along one shortest
+forward curve of the tractor's own turning radius (its LOCAL_TURN, LOCAL_APPROACH
+and LOCAL_LINEUP phases) onto the wagon's centreline 3-8 m ahead of its joint,
+chosen before moving to keep clear of a 25 m work radius and of the wagon's body,
+re-observed every frame; refused before moving with a precise reason when no such
+curve exists, and stopped on divergence, stall, timeout (120 s), leaving the area,
+nearing the wagon, wagon movement, a rider, takeover or other AI → OBSERVE again
+(the envelope must hold, else that precise failure and nothing reverses) →
+ALIGN_REVERSE (the bounded local
 alignment: reverse only, steered onto the wagon's axis from the observed joints,
 capped at 10 m, 30 s and 5 km/h, ends on stall, divergence, wagon movement,
 takeover or other AI; stops when GIANTS reports the exact planned joints as the
@@ -129,7 +140,7 @@ Reservations bind an unused owner ID to the exact equipment pair and its farm.
 The mock rechecks this binding and compatibility atomically before movement;
 stop/release cannot sweep unrelated equipment sharing a request ID.
 The real adapter is `companion/bridge.py` `FS25World`: every physical step is
-one bounded bridge operation (`drive`, `navigate`, `stage`, `align`, `attach`, `stop`;
+one bounded bridge operation (`drive`, `navigate`, `stage`, `maneuver`, `align`, `attach`, `stop`;
 adapters/EVIDENCE.md) whose terminal result is awaited with a bound, and a step
 that ends without a known outcome is UNVERIFIED. The game re-checks ownership,
 occupancy and AI state on every frame and stops what a lost or replaced
@@ -219,7 +230,7 @@ loader category), so a real pair is selectable with no configuration once the
 companion's bridge session is live. The local IPC is the Farmhand Companion
 pattern: a companion-hosted Windows named pipe (game → companion) plus an atomically
 renamed XML command file and a beating session file (companion → game). Do not
-build navigation beyond ALIGN_REVERSE.
+build navigation beyond LOCAL_MANEUVER and ALIGN_REVERSE.
 
 The first FS25 test runs the whole of AC-001 the way the player will (install
 once, then the in-game key; steps in mod/README.md), with nothing else enabled,
