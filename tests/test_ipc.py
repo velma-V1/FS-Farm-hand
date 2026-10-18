@@ -193,7 +193,8 @@ class MappingTests(unittest.TestCase):
             parse_frame(line(snapshot([vehicle(11, TRACTORS, goto_supported="yes")])))
 
     def test_state_mapping(self):
-        cases = [({"entered": True}, "occupied", True),
+        cases = [({"entered": True}, "occupied", False),      # ride-along: not a conflict
+                 ({"entered": True}, "ridden", True),
                  ({"ai_active": True}, "busy", True),
                  ({"ad_active": True}, "busy", True),
                  ({"speed_kmh": STOPPED_BELOW_KMH}, "stopped", False),

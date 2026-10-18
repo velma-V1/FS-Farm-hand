@@ -108,10 +108,36 @@ class RuleInterpreterTests(unittest.TestCase):
             ("could you bring me a tractor and forage wagon?", FETCH),
         ])
 
+    def test_live_session_language_cases(self):
+        # The first FS25 session, with the intended meaning of each sentence.
+        farm = {"type": "place", "name": "farm"}
+        HITCH = {"version": 1, "command": "hitch_pair"}
+        TRACTOR_ONLY = {"version": 1, "command": "unsupported", "reason": "tractor_only"}
+        self.check([
+            ("bring the tractor and forage wagon from the store to the farm", {**FETCH, "target": farm}),
+            ("bring the available tractor and forage wagon from the store to the farm", {**FETCH, "target": farm}),
+            ("bring the tractor and wagon from the store to the farm", {**FETCH, "target": farm}),
+            ("take the tractor and get the forage wagon from the store and park it at the farm",
+             {**FETCH, "target": farm}),
+            ("bring the Boss Hoss to the farm", {"version": 1, "command": "unsupported", "reason": "named_vehicle"}),
+            ("take the tractor and attach the forage wagon", HITCH),
+            ("deliver the tractor to the forage wagon", HITCH),       # equipment, never a place
+            ("take a tractor to the wagon", HITCH),
+            ("take a tractor to the store", TRACTOR_ONLY),          # never adds a wagon
+            ("brin a tractor to me", TRACTOR_ONLY),
+            ("bring a tractor to me", TRACTOR_ONLY),
+            ("bring me a tractor", TRACTOR_ONLY),
+            ("hook the tractor to the forage wagon", HITCH),
+            ("get the tractor and hook up the forage wagon", HITCH),
+            ("take the tractor to the forage wagon", HITCH),
+            ("hook up the forage wagon and bring it to the barn",
+             {**FETCH, "target": {"type": "place", "name": "barn"}}),
+        ])
+
     def test_anything_else_is_not_understood(self):
         self.check([
             ("", None), ("   ", None), ("make me a sandwich", None), ("tractor", None),
-            ("bring me a tractor", None),               # the pair is the only fetch supported
+
             ("plow field 3", None), ("sell the forage wagon", None),
         ])
         self.assertIsNone(self.rules.interpret(None))

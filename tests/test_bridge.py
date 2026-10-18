@@ -21,6 +21,7 @@ from companion import bridge
 from companion.bridge import CommandLink, FS25World
 from companion.executor import DELIVERY_STANDOFF_M, PLACE_STANDOFF_M, Executor
 from companion.hitch import STAGING_DISTANCE_M
+from protocol.model import Pose
 from protocol.ipc import encode_command, encode_session, parse_frame
 
 TRACTOR_CATEGORY = "TRACTORS_TEST"
@@ -184,13 +185,17 @@ class FakeGame:
                 place(wagon, x - 7 * math.sin(yaw), z - 7 * math.cos(yaw))
             return "GOTO_ENDED"
         if op == "stage":
-            place(tractor, float(c["x"]), float(c["z"]), float(c["yaw"]))
+            x, z = float(c["x"]) + self.faults.get("stage_offset", 0.0), float(c["z"])
+            place(tractor, x, z, float(c["yaw"]))
+            if self.faults.get("stage_ai_stays"):          # GIANTS reports the end, control lingers
+                tractor["ai_active"] = True
             tractor["heading"] = float(c["yaw"])
             return "STAGE_ENDED"
-        if op == "align":     # reverse straight back by the staging distance onto the joint
-            root = tractor["ai_root"]
-            place(tractor, root["x"] - STAGING_DISTANCE_M * math.sin(root["yaw"]),
-                  root["z"] - STAGING_DISTANCE_M * math.cos(root["yaw"]))
+        if op == "align":     # the reverse ends with the tractor joint on the wagon joint
+            yaw = tractor["ai_root"]["yaw"]
+            joint, eye = tractor["output_joints"][0], wagon["input_joint_poses"][0]
+            dx, dz = Pose(0.0, 0.0, yaw).to_world(joint["x"], joint["z"])
+            place(tractor, eye["x"] - dx, eye["z"] - dz, yaw)
             return "CANDIDATE"
         if op == "attach":
             if not self.faults.get("attach_other_joint"):
@@ -841,6 +846,59 @@ class ServiceTests(unittest.TestCase):
         game2.say(1, "save a report")
         self.wait_for(lambda: notices == ["REPORT_SAVED"])
         self.assertEqual(made, [1])
+
+    def test_live_case_1_the_requester_rides_along(self):
+        # Tractor 170 / wagon 400: "navigate -> FAILED OCCUPIED" with the requester seated.
+        game, notices = self.start(autodrive=False)
+        game.vehicles[11]["entered"] = True
+        game.say(1, "bring me a tractor and forage wagon")
+        self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
+        self.assertEqual(self.ops(game), ["stage", "align", "attach", "navigate", "stop"])
+
+    def test_live_case_2_stage_end_is_judged_by_what_the_reverse_needs(self):
+        # Tractor 379 / wagon 400: STAGE DONE STAGE_ENDED, STOP DONE, then STAGE_NOT_OBSERVED.
+        for offset, outcome in ((2.0, "COMPLETE"), (4.0, "UNVERIFIED_STAGE_NOT_OBSERVED")):
+            with self.subTest(offset=offset):
+                game, notices = self.start(autodrive=False, faults={"stage_offset": offset})
+                with self.assertLogs("farmhand", level="INFO") as logs:
+                    game.press(1)
+                    self.wait_for(lambda: notices[-1:] == [outcome])
+                self.assertTrue(any("STAGE end:" in line and "offset" in line for line in logs.output))
+                self.assertEqual(game.link_world._reservations, {})
+
+    def test_live_case_3_lingering_ai_is_proven_then_the_tractor_is_reusable(self):
+        # STAGE_ENDED -> STOPPED -> AI still active -> later NO_ELIGIBLE_PAIR, now explained.
+        game, notices = self.start(autodrive=False, faults={"stage_ai_stays": True})
+        game.press(1)
+        self.wait_for(lambda: len(notices) >= 2)
+        self.assertEqual(notices, ["ACCEPTED", "UNVERIFIED_CLEANUP_AI_NOT_CLEARED"])
+        self.assertEqual(len(game.link_world._reservations), 1)          # never released while controlled
+        self.assertNotIn("stopCurrentAIJob", str(game.commands))         # nobody else's job is touched
+        with self.assertLogs("farmhand", level="INFO") as logs:
+            game.press(2)                                                 # still controlled
+            self.wait_for(lambda: len(notices) >= 4)
+        self.assertEqual(notices[2:], ["ACCEPTED", "BLOCKED_NO_ELIGIBLE_PAIR"])
+        self.assertTrue(any("candidate 11 tractor rejected:" in line and "RESERVED" in line and "AI_ACTIVE" in line
+                            for line in logs.output), logs.output)
+        del game.faults["stage_ai_stays"]
+        game.vehicles[11]["ai_active"] = False                            # genuinely idle now
+        game.press(3)
+        self.wait_for(lambda: len(notices) >= 6)
+        self.assertEqual(notices[4:], ["ACCEPTED", "COMPLETE"])
+        self.assertEqual(game.link_world._reservations, {})
+
+    def test_hitch_only_and_unsupported_requests(self):
+        game, notices = self.start(autodrive=False)
+        game.say(1, "take the tractor and attach the forage wagon")
+        self.wait_for(lambda: notices[-1:] == ["COMPLETE_HITCH"])
+        self.assertEqual(notices, ["ACCEPTED_HITCH", "COMPLETE_HITCH"])
+        self.assertEqual(self.ops(game), ["stage", "align", "attach", "stop"])    # no drive anywhere
+        commands = len(game.commands)
+        game.say(2, "bring a tractor to me")
+        game.say(3, "bring the Boss Hoss to the farm")
+        self.wait_for(lambda: len(notices) >= 4)
+        self.assertEqual(notices[2:], ["UNSUPPORTED_TRACTOR_ONLY", "UNSUPPORTED_NAMED_VEHICLE"])
+        self.assertEqual(len(game.commands), commands)                           # nothing moved
 
     def test_replayed_or_foreign_requests_never_run(self):
         game, notices = self.start(autodrive=False)

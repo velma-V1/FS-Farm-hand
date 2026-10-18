@@ -14,9 +14,10 @@ from companion import ai, model
 class FakeOllama:
     """/api/tags and /api/chat; `answers` maps a sentence to the JSON content."""
 
-    def __init__(self, models=("qwen3:4b",), answers=None, reject_think=False):
+    def __init__(self, models=("qwen3:4b",), answers=None, reject_think=False, load_delay=0.0):
         outer = self
         self.models, self.answers, self.reject_think, self.chats = list(models), answers or {}, reject_think, []
+        self.load_delay, self.loaded, self.loads = load_delay, set(), []
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -36,9 +37,16 @@ class FakeOllama:
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                outer.chats.append(body)
+                if self.path == "/api/chat":
+                    outer.chats.append(body)
                 if body["model"] not in outer.models:
                     return self.reply(404, {"error": "model not found"})
+                if body["model"] not in outer.loaded:          # a cold model loads first
+                    time.sleep(outer.load_delay)
+                    outer.loaded.add(body["model"])
+                if self.path == "/api/generate":                # "Load a model"
+                    outer.loads.append(body)
+                    return self.reply(200, {"model": body["model"], "done": True})
                 if outer.reject_think and "think" in body:
                     return self.reply(400, {"error": "unknown field think"})
                 text = body["messages"][-1]["content"]
@@ -157,6 +165,24 @@ class OllamaTests(Fixture):
 
 
 class ValidationTests(Fixture):
+    def test_a_slow_cold_load_is_not_counted_as_wrong_answers(self):
+        # Live: a 7B Ollama model failed ONLY_4_OF_6 with two timeouts; the load had
+        # counted against the 10 s per-sentence limit. Loaded first, the same six
+        # sentences are judged on their answers.
+        fake, client = self.ollama(models=["big:7b"], answers=GOOD, load_delay=1.2)
+        cold = ai.Ollama(fake.url, timeout=0.5)
+        self.assertIsNone(cold.interpreter("big:7b").interpret(ai.VALIDATION[0][0]))   # the cold load times out
+        fake.loaded.clear()
+        brain = self.make_ai(ai.Ollama(fake.url, timeout=0.5))
+        self.assertEqual(brain._validate(brain.ollama.interpreter("big:7b")), (True, "6_OF_6"))
+        self.assertEqual(fake.loads[-1]["keep_alive"], ai.KEEP_ALIVE)
+        self.assertTrue(all(c["keep_alive"] == ai.KEEP_ALIVE for c in fake.chats))
+
+    def test_a_model_that_does_not_load_is_incompatible(self):
+        _, client = self.ollama(models=["other"])
+        brain = self.make_ai(client)
+        self.assertEqual(brain._validate(client.interpreter("missing:7b")), (False, "MODEL_DID_NOT_LOAD"))
+
     def test_validation_checks_only_what_farmhand_needs(self):
         _, client = self.ollama(answers=GOOD)
         self.assertEqual(ai.validate(client.interpreter("qwen3:4b")), (True, "6_OF_6"))

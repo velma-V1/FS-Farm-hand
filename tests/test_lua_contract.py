@@ -290,7 +290,7 @@ class LuaContractTests(unittest.TestCase):
         self.assertEqual((items["13"].attached_to, items["14"].attached_to), ("14", "13"))
         self.assertTrue(items["13"].busy)                       # AutoDrive active
         self.assertFalse(items["17"].available)                 # NaN speed is unobserved
-        self.assertTrue(items["17"].occupied)                   # getIsControlled()
+        self.assertTrue(items["17"].ridden and not items["17"].occupied)   # getIsControlled(): ride-along
         self.assertEqual(items["18"].category, "unknown")       # unsafe category rejected
         self.assertEqual(observed.farm_id, "1")
 
@@ -331,9 +331,11 @@ class LuaContractTests(unittest.TestCase):
                 for field, value in expected.items():
                     self.assertIs(record[field], value)
                 unknown = any(record[f] is None for f in ("entered", "ai_active", "ad_active"))
-                free = not any(record[f] for f in ("entered", "ai_active", "ad_active"))
+                # A seated requester is a ride-along, not a conflict; AI is.
+                free = not any(record[f] for f in ("ai_active", "ad_active"))
                 self.assertEqual(item.available, not unknown)
                 self.assertEqual(not item.occupied and not item.busy, free and not unknown)
+                self.assertEqual(item.ridden, record["entered"] is True)
 
     def test_giants_goto_availability_is_observed(self):
         tractor = '{ id = 21, file = "STUB_TRACTORS", joints = { "TRAILER" } %s }'

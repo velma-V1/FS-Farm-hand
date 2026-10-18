@@ -61,3 +61,25 @@ def plan_hitch(tractor: Equipment, wagon: Equipment,
     staging = Pose(final.x + staging_distance * math.sin(heading),
                    final.z + staging_distance * math.cos(heading), heading)
     return HitchPlan(joint.index, inp.index, joint.joint_type, target, final, staging)
+
+
+def hitch_problem(tractor: Equipment, wagon: Equipment) -> str:
+    """Why plan_hitch finds no plan, for diagnostics only (never a decision)."""
+    if tractor.ai_root is None or not _finite(tractor.ai_root.x, tractor.ai_root.z, tractor.ai_root.yaw):
+        return "TRACTOR_GEOMETRY_UNKNOWN"
+    if not _finite(wagon.heading):
+        return "WAGON_HEADING_UNKNOWN"
+    if not _finite(wagon.required_pto_torque):
+        return "PTO_NEED_UNKNOWN"
+    rear = [j for j in tractor.output_joints if j.free and _finite(j.x, j.z) and j.z < 0]
+    active = [j for j in wagon.input_joints if j.active]
+    if not rear:
+        return "NO_FREE_REAR_JOINT"
+    if not active:
+        return "NO_ACTIVE_WAGON_JOINT"
+    shared = [(o, i) for o in rear for i in active if o.joint_type == i.joint_type]
+    if not shared:
+        return "INCOMPATIBLE_HITCH_TYPE"
+    if wagon.required_pto_torque > 0 and not any(_pto_connects(o.pto_names, i.pto_names) for o, i in shared):
+        return "NO_MATCHING_PTO"
+    return "NO_VALID_HITCH_GEOMETRY"

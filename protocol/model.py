@@ -59,8 +59,12 @@ class Equipment:
     capabilities: frozenset[str] = frozenset()
     available: bool = True
     busy: bool = False
+    busy_reason: str | None = None        # AI_ACTIVE, AUTODRIVE_ACTIVE, AI_STATE_UNKNOWN (diagnostics)
     occupied: bool = False
     reserved_by: str | None = None
+    # The requester sits in it (single player): allowed, never "occupied"; such a
+    # tractor is preferred, so "bring a forage wagon" uses the one you are riding.
+    ridden: bool = False
     attached_to: str | None = None
     stopped: bool = True
     # Hitch geometry; unknown values are None/empty and make a vehicle unhitchable.

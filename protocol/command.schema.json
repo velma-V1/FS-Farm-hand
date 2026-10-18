@@ -8,9 +8,10 @@
   "properties": {
     "version": {"const": 1},
     "command": {
-      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop.",
-      "enum": ["fetch_pair", "move_pair", "stop", "status", "settings", "report"]
+      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. unsupported: understood, but not something Farmhand does yet (reason). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop.",
+      "enum": ["fetch_pair", "move_pair", "hitch_pair", "stop", "status", "settings", "report", "unsupported"]
     },
+    "reason": {"enum": ["tractor_only", "named_vehicle"]},
     "target": {
       "description": "fetch_pair and move_pair. Default 'here' (the requester's position when accepted). A place is named in the player's words (an AutoDrive marker name or part of an owned building's name).",
       "oneOf": [
@@ -45,6 +46,10 @@
       ]
     }
   },
-  "if": {"properties": {"command": {"enum": ["stop", "status", "settings", "report"]}}},
-  "then": {"not": {"required": ["target"]}}
+  "allOf": [
+    {"if": {"properties": {"command": {"enum": ["stop", "status", "settings", "report", "hitch_pair", "unsupported"]}}},
+     "then": {"not": {"required": ["target"]}}},
+    {"if": {"properties": {"command": {"const": "unsupported"}}}, "then": {"required": ["reason"]},
+     "else": {"not": {"required": ["reason"]}}}
+  ]
 }

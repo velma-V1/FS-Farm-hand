@@ -26,9 +26,10 @@
     "task": {
       "enum": [
         "deliver_tractor_and_forage_wagon",
-        "move_pair"
+        "move_pair",
+        "hitch_pair"
       ],
-      "description": "deliver_tractor_and_forage_wagon: select, hitch and deliver an available pair. move_pair: move the hitched tractor and forage wagon nearest the requester."
+      "description": "deliver_tractor_and_forage_wagon: select, hitch and deliver an available pair. move_pair: move the hitched tractor and forage wagon nearest the requester. hitch_pair: select and hitch an available pair where the wagon stands, no delivery."
     },
     "farm_id": {
       "type": "string",

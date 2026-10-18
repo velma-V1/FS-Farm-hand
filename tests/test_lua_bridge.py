@@ -39,6 +39,9 @@ function W.new()
     }
     function tractor:getLastSpeed() return w.speed end
     function tractor:getIsEntered() return w.entered end
+    tractor.rootVehicle = tractor
+    function tractor:registerPlayerVehicleControlAllowedFunction(vehicle, func) w.controlFunc = func end
+    w.takeOver = function() return w.controlFunc(tractor) end
     function tractor:getIsAIActive() return w.aiActive or w.adActive end   -- AD's override
     function tractor:stopAutoDrive() call("stopAutoDrive"); w.adActive = false end
     function tractor:stopCurrentAIJob() call("stopCurrentAIJob"); w.aiActive = false end
@@ -206,7 +209,7 @@ class LuaBridgeTests(unittest.TestCase):
     def test_drive_failures(self):
         cases = [("startsAD", False, "AD_NOT_STARTED", 6000),
                  ("error", True, "AD_STOPPED_WITH_ERROR", 500),
-                 ("entered", True, "OCCUPIED", 500)]
+                 ("takeover", True, "DRIVER_TOOK_OVER", 500)]
         for attr, value, code, ms in cases:
             with self.subTest(code=code):
                 self.w = self.W.new()
@@ -217,11 +220,12 @@ class LuaBridgeTests(unittest.TestCase):
                 if attr == "error":
                     self.w.tractor.ad.isStoppingWithError = True
                     self.w.adActive = False
-                if attr == "entered":
+                if attr == "takeover":
                     self.w.entered = True
+                    self.assertTrue(self.w.takeOver())          # the player's input is always allowed
                 self.W.run(self.w, ms)
                 self.assertEqual(self.results(1)[-1], (1, "FAILED", code))
-                self.assertEqual("stopAutoDrive" in self.calls(), attr == "entered")
+                self.assertEqual("stopAutoDrive" in self.calls(), attr == "takeover")
 
     def test_drive_refuses_when_autodrive_would_hand_off_to_another_ai(self):
         self.adopt()
@@ -347,7 +351,8 @@ class LuaBridgeTests(unittest.TestCase):
 
     def test_navigate_failures(self):
         cases = [("never_started", "FAILED", "GOTO_NOT_STARTED", False),
-                 ("entered", "FAILED", "OCCUPIED", True),
+                 ("takeover", "FAILED", "DRIVER_TOOK_OVER", True),
+                 ("seat_unreadable", "UNVERIFIED", "UNKNOWN_OBSERVATION", True),
                  ("position_unreadable", "UNVERIFIED", "UNKNOWN_OBSERVATION", True)]
         for fault, status, code, cancelled in cases:
             with self.subTest(fault=fault):
@@ -355,13 +360,35 @@ class LuaBridgeTests(unittest.TestCase):
                 self.adopt()
                 self.w.gotoStarts = fault != "never_started"
                 self.send(1, "navigate", self.POSE)
-                if fault == "entered":
+                if fault == "takeover":
                     self.w.entered = True
+                    self.w.takeOver()
+                if fault == "seat_unreadable":
+                    self.w.entered = None
                 if fault == "position_unreadable":
                     self.w.x = float("nan")
                 self.W.run(self.w, 6000)
                 self.assertEqual(self.results(1)[-1], (1, status, code))
                 self.assertEqual("stopCurrentAIJob" in self.calls(), cancelled)
+
+    def test_the_requester_may_ride_along(self):
+        # Seated in the tractor (single player: the requester), nothing conflicting:
+        # every motion op runs; only taking the controls ends it.
+        for op, args in (("navigate", self.POSE), ("stage", self.POSE), ("drive", {"tractor": 11, "marker": 3})):
+            with self.subTest(op=op):
+                self.w = self.W.new()
+                self.adopt()
+                self.w.entered = True
+                self.w.gotoStarts = True
+                self.send(1, op, args)
+                self.beating(3000)
+                self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])     # running, not OCCUPIED
+                self.w.aiActive, self.w.adActive = False, False
+                self.W.run(self.w, 500)
+                self.assertEqual(self.results(1)[-1][1], "DONE")
+                self.send(2, "stop", {"tractor": 11})                         # STOP while riding
+                self.W.run(self.w, 200)
+                self.assertEqual(self.results(2)[-1], (2, "DONE", "STOPPED"))
 
     def test_navigate_refuses_a_busy_or_moving_tractor(self):
         for attr, code in (("aiActive", "AI_ACTIVE"), ("speed", "NOT_STOPPED")):

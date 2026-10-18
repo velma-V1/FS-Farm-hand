@@ -23,6 +23,26 @@ value; CI loads the returned tables. Game globals are passed as `env`
 (`getfenv(0)` in game). Nothing moves on load: the bridge waits for a companion
 session and the probe for a typed command.
 
+## Retest after the first live session (do this first)
+
+Only what the first session found, before the rest of the session below:
+
+1. Sit in an eligible tractor (nothing attached) near the forage wagon, Left Alt + K:
+   "take the tractor and attach the forage wagon". Farmhand drives it with you
+   riding along. Expect "hitching ..." then "hitched".
+2. Unhitch, sit in again, Left Alt + K "bring me a tractor and forage wagon", and
+   press Left Alt + L while it moves (expect "stopping", "stopped"). Then give a
+   short pedal or steering input during another run: Farmhand stops and says you
+   took the controls.
+3. Repeat the pickup that ended "the tractor did not line up with the wagon"
+   (STAGE_NOT_OBSERVED) and afterwards ask once more: the same tractor must be used
+   again.
+4. Type "take a tractor to the wagon" (hitch), "bring a tractor to me" (expect "a
+   tractor on its own is not supported yet") and "bring the Boss Hoss to the farm"
+   (expect "choosing a vehicle by its name is not supported yet").
+5. If you want: Left Alt + N, pick the xLAM model again; it is loaded first now.
+6. Type "report" and send the zip. If all of this passes, continue below.
+
 ## The live validation session (one sitting, on the Windows PC)
 
 Everything below is the normal player path plus the checks that only FS25 can

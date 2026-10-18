@@ -40,7 +40,8 @@ def token(text: str) -> str:
 MILESTONES = frozenset({"TRAVEL_NEAR", "STAGE", "DELIVER"})
 # The executor task and the player-facing notices of each job command.
 JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE"),
-        "move_pair": ("move_pair", "ACCEPTED_MOVE", "COMPLETE_MOVE")}
+        "move_pair": ("move_pair", "ACCEPTED_MOVE", "COMPLETE_MOVE"),
+        "hitch_pair": ("hitch_pair", "ACCEPTED_HITCH", "COMPLETE_HITCH")}
 
 
 def result_notice(status: str, reason: str, complete: str = "COMPLETE") -> str:
@@ -93,6 +94,8 @@ class Coordinator:
             self.stop(spoken)
         elif command == "status":
             self.notify(self.status(), spoken)
+        elif command == "unsupported":                 # understood: say exactly what is missing
+            self.notify(token(f"UNSUPPORTED_{proposal['reason'].upper()}"), spoken)
         else:
             self.start(command, proposal.get("target", "here"), spoken)
 

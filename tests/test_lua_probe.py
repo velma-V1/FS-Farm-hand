@@ -254,6 +254,9 @@ class LuaProbeTests(unittest.TestCase):
         self.assertAlmostEqual(math.radians(self.probe.STAGE_YAW_TOLERANCE_DEG), executor.STAGE_YAW_TOLERANCE_RAD)
         self.assertEqual(self.probe.PLAN_TOLERANCE_M, executor.WAGON_MOVED_TOLERANCE_M)
         self.assertEqual(self.hitch.LIMITS.maxAssistRadiusM, executor.ALIGN_PROGRESS_TOLERANCE_M)
+        from companion import bridge
+        self.assertEqual(self.hitch.LIMITS.maxDistanceM, executor.ALIGN_MAX_DISTANCE_M)
+        self.assertEqual(self.hitch.LIMITS.maxDistanceM, bridge.ALIGN_MAX_DISTANCE_M)
 
     # ------------------------------------------------------------ list
     def test_list_is_read_only_and_names_what_selection_needs(self):
@@ -316,7 +319,7 @@ class LuaProbeTests(unittest.TestCase):
         self.assertNotIn("cancelGoto", self.events(w))       # never cancels another job
 
     def test_stage_failure_never_reaches_align(self):
-        cases = (("stageOffset", 1.5, "FAILED STAGE_NOT_OBSERVED"),
+        cases = (("stageOffset", 3.0, "FAILED STAGE_NOT_OBSERVED"),
                  ("gotoInvalid", True, "FAILED STAGE_GOTO_INVALID"))
         for attr, value, expected in cases:
             with self.subTest(expected=expected):

@@ -23,7 +23,8 @@ _STOP_TAIL = re.compile(r"\b(?:and|then|now)\s+(?:stop|halt|cancel)$")
 _NEGATION = re.compile(r"\b(?:don t|dont|do not|does not|doesn t|not|never|no|didn t|didnt|won t|wont)\b")
 _QUESTION = re.compile(r"^(?:where|why|did|is|are|was|were|has|have|had|who|when|which|what|whose|does|do)\b")
 # Too general to name one place; the sentence is not understood instead.
-_GENERIC = frozenset({"field", "the field", "farm", "the farm", "there", "over there", "that", "it", "this",
+# ("farm" is a name the executor resolves exactly or blocks: a marker or one building.)
+_GENERIC = frozenset({"field", "the field", "there", "over there", "that", "it", "this",
                       "place", "somewhere", "building", "a building", "anywhere"})
 # Trailing words about time or manner, not the place ("to the barn in a minute").
 _TRAILING = re.compile(r"\s+(?:please|now|right now|right away|asap|quickly|soon|again|thanks|thank you|"
@@ -47,14 +48,35 @@ _COME = re.compile(r"^(?:come|come here|come to me|come over here|come back|come
 _DESTINATION = re.compile(r"\b(?:to|at|into|in)\s+(?:the\s+|my\s+|our\s+)?([^,.!?]+?)[\s,.!?]*$", re.IGNORECASE)
 
 
+_EQUIPMENT_TARGET = {"equipment": True}           # _target: the destination is equipment
+_EQUIPMENT_WAGON = re.compile(r"\b(?:to|at)\s+(?:the\s+|a\s+)?(?:(?:forage|loader|silage)\s+)?wagon")
+_KNOWN_THING = re.compile(r"\b(?:tractor|wagon|forage|it|this|that|them|these|those|pair|setup|rig|combo|everything)\b")
+
+
 class Interpreter(Protocol):
     def interpret(self, text: str) -> dict | None:
         """A command proposal, or None when the words are not understood."""
         ...
 
 
+# Common typing slips for the words the rules key on; nothing else is "corrected".
+_TYPOS = {"brin": "bring", "brng": "bring", "brign": "bring", "bringg": "bring", "tracter": "tractor",
+          "trator": "tractor", "tractr": "tractor", "wagin": "wagon", "waggon": "wagon", "wagn": "wagon"}
+_HITCH_VERB = re.compile(r"\b(?:attach|hook|hitch|couple|connect)\b")
+# A destination that is equipment, not a place: "take the tractor to the wagon".
+_EQUIPMENT = re.compile(r"^(?:(?:the|a|an|my|that|this)\s+)?(?:(?:forage|loader|silage)\s+)?"
+                        r"(?:wagon|tractor|trailer|implement)s?$")
+# Delivery asked for: the pair is to come to the requester or a place.
+_DELIVERY = re.compile(r"\b(?:bring|deliver|here|to me|over to me)\b")
+_LEAD_MOVE = re.compile(r"^(?:move|park|drive|return)\b")
+_ANY_VERB = re.compile(r"^(?:bring|take|get|fetch|grab|send|drive|deliver|move)\b")
+_NAMED = re.compile(r"^(?:bring|take|get|fetch|grab|send|drive|deliver|move)\s+(?:the|my|our)\s+"
+                    r"([a-z0-9][a-z0-9 ]*?)\s+(?:to|here|over|back|into|at)\b")
+
+
 def normalize(text: str) -> str:
     words = re.sub(r"[^0-9a-z]+", " ", text.casefold()).strip()
+    words = " ".join(_TYPOS.get(w, w) for w in words.split())
     previous = None
     while previous != words:                      # "hey farmhand please stop" -> "stop"
         previous, words = words, _ADDRESS.sub("", words).strip()
@@ -103,23 +125,43 @@ class RuleInterpreter:
             return None                               # never an order to move
         if _COME.match(words):
             return {"version": 1, "command": "move_pair"}
+        tractor, wagon = _TRACTOR.search(words), _WAGON.search(words)
         back = re.search(r"\bback\b", words)
         referent = _REFERENT.search(words) or back
+        target = self._target(text, words)
+        if target == _EQUIPMENT_TARGET:
+            # "take a tractor to the wagon", "deliver the tractor to the forage wagon":
+            # the tractor goes to the wagon, i.e. hitch it where the wagon stands.
+            return {"version": 1, "command": "hitch_pair"} if wagon or _EQUIPMENT_WAGON.search(text.casefold()) \
+                else None
+        if tractor and wagon and _HITCH_VERB.search(words) and not target and not _DELIVERY.search(words) \
+                and not back:
+            # "take the tractor and attach the forage wagon", "hook the tractor to the forage wagon"
+            return {"version": 1, "command": "hitch_pair"}
         # Naming a tractor and a wagon asks for a pair, even with "hook them together",
-        # when it is "a"/"an"/"any"/"available" one or a fetch-only verb is used; "the
-        # tractor and wagon ... back" or "this" is the pair already out there.
-        new_pair = _NEW_PAIR.search(words) or _FETCH_ONLY.search(words)
+        # when it is "a"/"an"/"any"/"available" one, a fetch-only verb is used, or both
+        # are named without "back" and without a leading move/park/drive ("take the
+        # tractor and get the forage wagon ... and park it at the farm").
+        new_pair = (_NEW_PAIR.search(words) or _FETCH_ONLY.search(words) or _HITCH_VERB.search(words)
+                    or (tractor and wagon and not _LEAD_MOVE.match(words)))
         # "grab something that'll pull that forage wagon": a fetch-only verb and a
         # wagon ask for a pair even when no tractor is named.
-        pair_named = _TRACTOR.search(words) or _FETCH_ONLY.search(words)
-        if pair_named and _WAGON.search(words) and not back and (new_pair or not referent) and (
+        pair_named = tractor or _FETCH_ONLY.search(words) or _HITCH_VERB.search(words)
+        if pair_named and wagon and not back and (new_pair or not referent) and (
                 _FETCH_VERB.search(words) or len(words.split()) <= 6):
-            target = self._target(text, words)
             return None if target is None else {"version": 1, "command": "fetch_pair", **target}
-        if referent and _MOVE_VERB.search(words):
-            target = self._target(text, words)
+        if (referent or (tractor and wagon)) and _MOVE_VERB.search(words):
             if target is not None and (target or re.search(r"\b(?:here|to me|back)\b", words)):
                 return {"version": 1, "command": "move_pair", **target}
+        if tractor and not wagon and _ANY_VERB.match(words):
+            # "bring a tractor to me": a tractor alone is not a job Farmhand does yet;
+            # never add a forage wagon the player did not ask for.
+            return {"version": 1, "command": "unsupported", "reason": "tractor_only"}
+        named = _NAMED.match(words)
+        if named and not _KNOWN_THING.search(named.group(1)):
+            # "bring the Boss Hoss to the farm": a vehicle by its name is not
+            # supported yet; never guessed.
+            return {"version": 1, "command": "unsupported", "reason": "named_vehicle"}
         return None
 
     @staticmethod
@@ -144,6 +186,8 @@ class RuleInterpreter:
         plain = normalize(name)
         if not plain or _HERE.match(plain) or _REFERENT.fullmatch(plain):
             return {}
+        if _EQUIPMENT.match(plain):
+            return _EQUIPMENT_TARGET                  # equipment, never a place name
         if plain in _GENERIC or len(plain) > 64:
             return None                               # names no single place: not understood
         return {"target": {"type": "place", "name": name[:64]}}

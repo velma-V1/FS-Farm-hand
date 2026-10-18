@@ -30,7 +30,9 @@ log = logging.getLogger("farmhand")
 
 LOCAL = managed.LOCAL
 OLLAMA_URL = "http://127.0.0.1:11434"
-VALIDATION_TIMEOUT_S = 60.0          # the whole validation, model load included
+VALIDATION_TIMEOUT_S = 60.0          # the six sentences, after the model is loaded
+LOAD_TIMEOUT_S = 180.0               # Ollama loading a model into memory (a 7B can take a while)
+KEEP_ALIVE = "15m"                   # Ollama keeps the chosen model loaded this long after a request
 # What Farmhand needs from a model: valid structured answers, the right command for
 # plain wording, and no movement for a sentence that is not a supported command.
 VALIDATION = [
@@ -119,6 +121,20 @@ class Ollama:
     def interpreter(self, name: str) -> "OllamaInterpreter":
         return OllamaInterpreter(self, name)
 
+    def load(self, name: str, timeout: float = LOAD_TIMEOUT_S) -> bool:
+        """Load ``name`` into memory first (docs/api.md "Load a model": /api/generate
+        with no prompt), so validation measures answers, not the cold load."""
+        body = json.dumps({"model": name, "stream": False, "keep_alive": KEEP_ALIVE}).encode()
+        request = urllib.request.Request(self.url + "/api/generate", data=body,
+                                         headers={"Content-Type": "application/json"})
+        try:
+            with self.opener(request, timeout=timeout) as response:
+                json.loads(response.read())
+            return True
+        except (OSError, ValueError) as error:
+            log.info("ollama could not load %s: %s", name, error)
+            return False
+
 
 class OllamaInterpreter:
     """Schema-constrained /api/chat; None whenever it is not sure, down or slow."""
@@ -130,7 +146,7 @@ class OllamaInterpreter:
 
     def _chat(self, text: str, think: bool):
         body = {"model": self.name, "stream": False, "format": managed.MODEL_SCHEMA,
-                "options": {"temperature": 0},
+                "options": {"temperature": 0}, "keep_alive": KEEP_ALIVE,
                 "messages": [{"role": "system", "content": managed.PROMPT},
                              {"role": "user", "content": text[:200]}]}
         if not think:
@@ -378,6 +394,8 @@ class AI:
     def _validate(self, interpreter, server=None) -> tuple[bool, str]:
         if interpreter is None:
             return False, "NOT_RUNNING"
+        if isinstance(interpreter, OllamaInterpreter) and not self.ollama.load(interpreter.name):
+            return False, "MODEL_DID_NOT_LOAD"
         if server is not None:                     # managed: wait for the model to load
             deadline = time.monotonic() + managed.START_TIMEOUT_S
             while not server.ready() and time.monotonic() < deadline and server.process.poll() is None:

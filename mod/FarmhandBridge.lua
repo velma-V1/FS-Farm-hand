@@ -63,25 +63,27 @@ local function stopped(v)
     return finite(speed) and math.abs(speed) < 1
 end
 
--- Before any motion: owned, unoccupied, no AI job of any kind, at rest.
+-- Before any motion: owned, no AI job of any kind, at rest. The requester may sit
+-- in it (ride-along, Hitch.watchDriver); from here on a takeover by the seated
+-- player ends the operation.
 local function idle(v, farmId)
     if v.ownerFarmId ~= farmId then return "NOT_OWNED" end
     local entered = v:getIsEntered()
-    if entered ~= false then return entered == true and "OCCUPIED" or "UNKNOWN_OBSERVATION" end
+    if entered ~= true and entered ~= false then return "UNKNOWN_OBSERVATION" end
     local ai = v:getIsAIActive()
     if ai ~= false then return ai == true and "AI_ACTIVE" or "UNKNOWN_OBSERVATION" end
     if not stopped(v) then return "NOT_STOPPED" end
+    Bridge.Hitch.watchDriver(v)
     return nil
 end
 
--- While a job we started runs: still ours and nobody got in.
+-- While a job we started runs: still ours, and the seated player (if any) has
+-- not taken the controls.
 local function stillOurs(spec)
     local v = spec.tractor
     if spec.owned() ~= true or v.ownerFarmId ~= spec.farmId then return "FAILED", "RESERVATION_LOST" end
-    local entered = v:getIsEntered()
-    if entered ~= false then
-        return entered == true and "FAILED" or "UNVERIFIED", entered == true and "OCCUPIED" or "UNKNOWN_OBSERVATION"
-    end
+    local conflict = Bridge.Hitch.driverConflict(v)
+    if conflict ~= nil then return conflict == "DRIVER_TOOK_OVER" and "FAILED" or "UNVERIFIED", conflict end
     return nil
 end
 
@@ -549,6 +551,10 @@ Bridge.NOTICES = {
     BUSY = "Farmhand: already working on a request",
     COMPLETE = "Farmhand: tractor and forage wagon delivered",
     ACCEPTED_MOVE = "Farmhand: on my way",
+    ACCEPTED_HITCH = "Farmhand: hitching a tractor to the forage wagon",
+    COMPLETE_HITCH = "Farmhand: tractor and forage wagon hitched",
+    UNSUPPORTED_TRACTOR_ONLY = "Farmhand: moving a tractor on its own is not supported yet; ask for a tractor and forage wagon",
+    UNSUPPORTED_NAMED_VEHICLE = "Farmhand: choosing a vehicle by its name is not supported yet; say tractor and forage wagon",
     COMPLETE_MOVE = "Farmhand: arrived",
     CANCELLED = "Farmhand: stopped",
     STOPPING = "Farmhand: stopping",
@@ -608,6 +614,10 @@ Bridge.REASONS = {
     DESTINATION_AMBIGUOUS = "more than one place has that name",
     AUTODRIVE_UNAVAILABLE = "that destination needs AutoDrive",
     NOT_LINKED = "the game is not linked to the companion",
+    AI_NOT_CLEARED = "an AI job still controls the tractor; check it",
+    CLEANUP_AI_NOT_CLEARED = "an AI job still controls the tractor; check it",
+    DRIVER_TOOK_OVER = "you took the controls, so Farmhand stopped",
+    STAGE_NOT_OBSERVED = "the tractor did not line up with the wagon",
 }
 
 -- Text and whether it is critical, for a companion notice token.

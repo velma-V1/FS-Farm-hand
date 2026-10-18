@@ -1284,3 +1284,39 @@ class MovePairTests(unittest.TestCase):
             with self.subTest(attached=(t.attached_to, w.attached_to)):
                 world = MockWorld((t, w), PLAYERS, ())
                 self.assertEqual(world.reserve((t.id, w.id), "owner"), expected)
+
+
+class RideAlongTests(unittest.TestCase):
+    def test_the_tractor_the_requester_rides_is_used_first(self):
+        tractor, wagon = simple_world().snapshot()
+        other = replace(tractor, id="000-first-by-id")
+        ridden = replace(tractor, id="zzz-ridden", ridden=True)
+        world = MockWorld([other, ridden, wagon], PLAYERS, DESTINATIONS)
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual(result.equipment_ids[0], "zzz-ridden")
+
+    def test_an_unknown_seat_still_fails_closed(self):
+        tractor, wagon = simple_world().snapshot()
+        world = MockWorld([replace(tractor, occupied=True), wagon], PLAYERS, DESTINATIONS)
+        self.assertEqual(Executor(world).execute(intent()).status, "BLOCKED")
+
+
+class HitchOnlyTests(unittest.TestCase):
+    def test_hitch_pair_hitches_where_the_wagon_stands_and_delivers_nothing(self):
+        world = simple_world()
+        tractor, wagon = world.snapshot()
+        plan = plan_hitch(tractor, wagon)
+        result = Executor(world).execute({**intent(), "task": "hitch_pair"})
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "HITCH_OBSERVED"))
+        self.assertEqual(result.states, ("FIND", "RESERVE", "STAGE", "ALIGN_REVERSE", "ATTACH", "VERIFY",
+                                         "STOP", "RELEASE"))
+        tractor, wagon = (world.items[x] for x in result.equipment_ids)
+        self.assertEqual((tractor.attached_to, wagon.attached_to), (wagon.id, tractor.id))
+        self.assertEqual(tractor.ai_root, plan.final)                 # at the wagon, not at the requester
+        self.assertIsNone(tractor.reserved_by)
+
+    def test_a_failed_hitch_is_never_complete(self):
+        world = FaultWorld("false_attach")
+        result = Executor(world).execute({**intent(), "task": "hitch_pair"})
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "ATTACHMENT_MISMATCH"))

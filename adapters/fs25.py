@@ -96,6 +96,17 @@ def _capabilities(vehicle, bridge_ready: bool) -> frozenset[str]:
     return frozenset({"move", "attach", "stop"} | ({"autodrive"} if vehicle["has_autodrive"] else set()))
 
 
+def _busy_reason(vehicle) -> str | None:
+    """Which controller holds the vehicle, for diagnostics (busy decides)."""
+    if vehicle["has_autodrive"] and vehicle["ad_active"] is True:
+        return "AUTODRIVE_ACTIVE"
+    if vehicle["ai_active"] is True:
+        return "AI_ACTIVE"
+    if vehicle["ai_active"] is None or (vehicle["has_autodrive"] and vehicle["ad_active"] is None):
+        return "AI_STATE_UNKNOWN"
+    return None
+
+
 def _pto_names(names) -> frozenset[str] | None:
     return None if names is None else frozenset(names)
 
@@ -131,7 +142,11 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
         available=observed,
         busy=(vehicle["ai_active"] is not False
               or (has_autodrive and vehicle["ad_active"] is not False)),
-        occupied=vehicle["entered"] is not False,
+        busy_reason=_busy_reason(vehicle),
+        # Ride-along: a seated requester is not a conflicting controller (single
+        # player; the mod refuses multiplayer). Only an unreadable seat counts.
+        occupied=vehicle["entered"] is None,
+        ridden=vehicle["entered"] is True,
         # Reservations are owned by the companion, never by game state.
         reserved_by=None,
         attached_to=_attached_to(vehicle, set(links)),

@@ -45,6 +45,11 @@ function W.new(opts)
     function tractor:getAttacherJoints() return joints end
     function tractor:getAttacherJointByJointDescIndex(i) return joints[i] end
     function tractor:getIsEntered() return w.entered end
+    -- GIANTS Drivable:registerPlayerVehicleControlAllowedFunction; w.takeOver() is the
+    -- seated player pressing a pedal or steering (actionEventAccelerate etc.).
+    tractor.rootVehicle = tractor
+    function tractor:registerPlayerVehicleControlAllowedFunction(vehicle, func) w.controlFunc = func end
+    w.takeOver = function() return w.controlFunc(tractor) end
     function tractor:getIsAIActive() return w.ai end
     function tractor:setCruiseControlState(state)
         table.insert(w.cruise, state)
@@ -298,7 +303,7 @@ class LuaHitchTests(unittest.TestCase):
             "DISTANCE_LIMIT": (dict(gap=4, wagonX=1.0), dict(maxDistanceM=2), lambda w: None),
             "STALLED": (dict(gap=4), {}, lambda w: setattr(w, "stuck", True)),
             "RESERVATION_LOST": (dict(gap=4), {}, lambda w: setattr(w, "reserved", False)),
-            "OCCUPIED": (dict(gap=4), {}, lambda w: setattr(w, "entered", True)),
+            "DRIVER_TOOK_OVER": (dict(gap=4), {}, lambda w: w.takeOver()),
             "UNKNOWN_OBSERVATION": (dict(gap=4), {}, lambda w: setattr(w, "entered", None)),
             "WAGON_ATTACHED": (dict(gap=4), {}, lambda w: setattr(w, "wagonAttacher", w.otherWagon)),
             "WAGON_MOVED": (dict(gap=4), {}, lambda w: setattr(w.wagonJoint.node, "x", 0.5)),
@@ -400,7 +405,7 @@ class LuaHitchTests(unittest.TestCase):
             "NOT_STOPPED": lambda w: setattr(w, "speedOverride", 1.5),
             "RESERVATION_LOST": lambda w: setattr(w, "reserved", False),
             "UNKNOWN_OBSERVATION": lambda w: setattr(w, "candidateBroken", True),
-            "OCCUPIED": lambda w: setattr(w, "entered", True),
+            "DRIVER_TOOK_OVER": lambda w: w.takeOver(),
             "AI_ACTIVE": lambda w: setattr(w, "ai", True),
             "VERTICAL_MISMATCH": lambda w: setattr(w.wagonJoint.node, "y", 0.9),
         }
@@ -447,9 +452,19 @@ class LuaHitchTests(unittest.TestCase):
             self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CONTINUE")
             self.assertEqual(self.drives(w)[-1]["maxSpeed"], speed)
 
+    def test_the_requester_may_ride_along_until_they_take_the_controls(self):
+        w = self.world()
+        w.entered = True                                       # seated, not driving
+        session, reason = self.align(w)
+        self.assertIsNotNone(session, reason)
+        self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CONTINUE")
+        self.assertTrue(w.takeOver())                          # GIANTS: input always allowed
+        self.assertEqual(self.hitch.alignStep(w.env, session, 100), "DRIVER_TOOK_OVER")
+        self.assertEqual(self.hitch.alignStep(w.env, session, 100), "DRIVER_TOOK_OVER")   # latched: never resumes
+
     def test_reverse_refuses_to_start_unless_stopped_and_free_of_ai(self):
         for attr, value, reason in (("ai", True, "AI_ACTIVE"), ("ai", None, "UNKNOWN_OBSERVATION"),
-                                    ("entered", True, "OCCUPIED"), ("speed", 1.5, "NOT_STOPPED"),
+                                    ("entered", None, "UNKNOWN_OBSERVATION"), ("speed", 1.5, "NOT_STOPPED"),
                                     ("reserved", False, "RESERVATION_LOST")):
             with self.subTest(reason=reason):
                 w = self.world()

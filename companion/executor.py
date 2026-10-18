@@ -10,7 +10,7 @@ from threading import Lock
 from jsonschema import Draft202012Validator
 
 from adapters.world import StepUnverified, World
-from companion.hitch import plan_hitch
+from companion.hitch import hitch_problem, plan_hitch
 from protocol.model import Destination, Equipment, HitchPlan, Pose, Position, Result
 
 log = logging.getLogger("farmhand")
@@ -36,8 +36,14 @@ WAGON_ARRIVAL_TOLERANCE_M = 15.0
 # coarse cross-checks of each step's outcome, not GIANTS' attach rules: GIANTS'
 # attachableInfo stays the authority on attachability (adapters/EVIDENCE.md).
 NEAR_RADIUS_M = 60.0                      # beyond this, TRAVEL_NEAR runs before STAGE
-STAGE_POSITION_TOLERANCE_M = 1.0
-STAGE_YAW_TOLERANCE_RAD = math.radians(10)
+# STAGE only has to leave the tractor where the bounded reverse can take over:
+# GIANTS' own GOTO arrival tolerance is engine-internal (the agent's
+# TARGET_REACHED, AIDrivable:onUpdate 317-319), and the first live test ended
+# "STAGE_ENDED" yet outside the earlier 1 m. Provisional; every STAGE end logs
+# its deviation so the value can be set from evidence.
+STAGE_POSITION_TOLERANCE_M = 2.5
+STAGE_YAW_TOLERANCE_RAD = math.radians(20)
+ALIGN_MAX_DISTANCE_M = 10.0               # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
 WAGON_MOVED_TOLERANCE_M = 0.25
 WAGON_YAW_TOLERANCE_RAD = math.radians(5)
 # ALIGN_REVERSE may stop as soon as GIANTS names the exact pair within the
@@ -48,6 +54,10 @@ ALIGN_PROGRESS_TOLERANCE_M = 1.5
 
 class ObservationMismatch(Exception):
     pass
+
+
+class _CleanupFailed(Exception):
+    """Cleanup could not prove the pair is idle; the reason says what remained."""
 
 
 class Cancelled(Exception):
@@ -198,6 +208,34 @@ def compatible(tractor: Equipment, wagon: Equipment) -> bool:
             and {"move", "attach", "stop"} <= tractor.capabilities)
 
 
+def rejections(item: Equipment, farm_id: str) -> list[str]:
+    """Why ``item`` cannot take part in a new job (diagnostics; usable() decides)."""
+    reasons = []
+    if item.farm_id != farm_id:
+        reasons.append("WRONG_FARM")
+    if not item.available:
+        reasons.append("STATE_UNOBSERVED")
+    if item.occupied:
+        reasons.append("SEAT_UNKNOWN")
+    if item.busy:
+        reasons.append(item.busy_reason or "BUSY")
+    if item.reserved_by is not None:
+        reasons.append("RESERVED")
+    if not valid_position(item.position):
+        reasons.append("INVALID_POSITION")
+    if not item.stopped:
+        reasons.append("MOVING")
+    if item.attached_to == "*unknown*":                  # adapters.fs25 UNKNOWN_ATTACHMENT
+        reasons.append("ATTACHMENT_UNKNOWN")
+    elif item.attached_to is not None:
+        reasons.append("ATTACHED")
+    if item.category not in ("tractor", "forage_wagon"):
+        reasons.append(f"CATEGORY_{item.category}")
+    if item.category == "tractor":
+        reasons += [f"NO_{c.upper()}_CAPABILITY" for c in ("move", "attach", "stop") if c not in item.capabilities]
+    return reasons
+
+
 def movable(tractor: Equipment, wagon: Equipment) -> bool:
     """move_pair: a tractor with its forage wagon; towing needs no PTO power."""
     return (tractor.category == "tractor" and wagon.category == "forage_wagon"
@@ -243,6 +281,12 @@ class Executor:
             raise ObservationMismatch("EQUIPMENT_MISSING")
         tractor, wagon = (observed[identifier] for identifier in ids)
         if not all(usable(item, farm_id, owner) for item in (tractor, wagon)):
+            changed = {i.id: rejections(i, farm_id) for i in (tractor, wagon) if not usable(i, farm_id, owner)}
+            log.info("reserved pair changed: %s", changed)
+            if any(i.busy for i in (tractor, wagon)) and all(i.available for i in (tractor, wagon)):
+                # An AI job or AutoDrive still controls a reserved unit: after a step
+                # of ours, our own control has not cleared.
+                raise ObservationMismatch("AI_NOT_CLEARED")
             raise ObservationMismatch("EQUIPMENT_CHANGED")
         if not check(tractor, wagon):
             raise ObservationMismatch("COMPATIBILITY_CHANGED")
@@ -275,14 +319,20 @@ class Executor:
         for tractor in free:
             for wagon in free:
                 if not compatible(tractor, wagon):
+                    if tractor.category == "tractor" and wagon.category == "forage_wagon":
+                        log.info("pair %s/%s rejected: %s", tractor.id, wagon.id,
+                                 "INSUFFICIENT_PTO_POWER" if not power_sufficient(tractor, wagon)
+                                 else "MISSING_CAPABILITY")
                     continue
                 plan = plan_hitch(tractor, wagon)
                 if plan is None:
+                    log.info("pair %s/%s rejected: %s", tractor.id, wagon.id, hitch_problem(tractor, wagon))
                     reason = "NO_HITCH_GEOMETRY" if reason == "NO_ELIGIBLE_PAIR" else reason
                     continue
                 autodrive = "autodrive" in tractor.capabilities
                 delivery, failure = self._route(target, tractor, plan.target, plan.final.yaw, destinations)
                 if delivery is None:
+                    log.info("pair %s/%s rejected: %s", tractor.id, wagon.id, failure)
                     reason = failure
                     continue
                 staging = (plan.staging.x, plan.staging.z)
@@ -372,6 +422,7 @@ class Executor:
         reserved = physical_attempted = False
         status, reason = "BLOCKED", "NO_ELIGIBLE_PAIR"
         moving = command["task"] == "move_pair"
+        hitch_only = command["task"] == "hitch_pair"
         check = movable if moving else compatible
         delivery = None
         try:
@@ -404,7 +455,8 @@ class Executor:
                     return Result("BLOCKED", failure, states=tuple(states))
                 target = destination
                 log.info("destination %s %r at %s", destination.id, destination.name, destination.position)
-            items = sorted(self.world.snapshot(), key=lambda item: item.id)
+            # The tractor the requester rides comes first; then the opaque-ID order.
+            items = sorted(self.world.snapshot(), key=lambda item: (not item.ridden, item.id))
             if moving:
                 pair, delivery, failure = self._choose_hitched(items, farm_id, requester, target,
                                                                self.world.destinations())
@@ -412,6 +464,10 @@ class Executor:
             else:
                 free = [item for item in items if usable(item, farm_id)
                         and item.attached_to is None and item.stopped]
+                for item in items:
+                    if item not in free and item.category in ("tractor", "forage_wagon"):
+                        log.info("candidate %s %s rejected: %s", item.id, item.category,
+                                 ", ".join(rejections(item, farm_id)) or "UNKNOWN")
                 pair, plan, travel, delivery, failure = self._choose(free, self.world.destinations(), target)
             if pair is None:
                 return Result(status, failure, states=tuple(states))
@@ -448,9 +504,15 @@ class Executor:
                 self.world.stage(tractor.id, wagon.id, plan.staging, owner)
                 tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
                 root = tractor.ai_root
-                if (root is None
-                        or math.dist((root.x, root.z), (plan.staging.x, plan.staging.z)) > STAGE_POSITION_TOLERANCE_M
-                        or _angle(root.yaw, plan.staging.yaw) > STAGE_YAW_TOLERANCE_RAD):
+                joint = next(j for j in tractor.output_joints if j.index == plan.tractor_joint)
+                offset = None if root is None else math.dist((root.x, root.z), (plan.staging.x, plan.staging.z))
+                turn = None if root is None else math.degrees(_angle(root.yaw, plan.staging.yaw))
+                gap = None if root is None else math.dist(root.to_world(joint.x, joint.z), plan.target)
+                log.info("STAGE end: ai_root %s root %s heading %s staging %s offset %s m turn %s deg "
+                         "joint gap %s m stopped %s", root, tractor.position, tractor.heading, plan.staging,
+                         offset and round(offset, 2), turn and round(turn, 1), gap and round(gap, 2), tractor.stopped)
+                if (root is None or offset > STAGE_POSITION_TOLERANCE_M
+                        or math.radians(turn) > STAGE_YAW_TOLERANCE_RAD or gap > ALIGN_MAX_DISTANCE_M - 1):
                     raise ObservationMismatch("STAGE_NOT_OBSERVED")
                 enter("ALIGN_REVERSE")
                 self.world.align(tractor.id, wagon.id, plan, owner)
@@ -471,10 +533,14 @@ class Executor:
                 used = next((j for j in tractor.output_joints if j.index == plan.tractor_joint), None)
                 if used is None or used.free:
                     raise ObservationMismatch("ATTACHMENT_MISMATCH")
-                enter("DELIVER")
-                self._move(tractor.id, delivery, owner, deliver=True)
-                self._arrival(ids, farm_id, owner, delivery)
-            status, reason = "COMPLETE", "DELIVERY_OBSERVED"
+                if hitch_only:
+                    status, reason = "COMPLETE", "HITCH_OBSERVED"     # hitched where the wagon stood
+                else:
+                    enter("DELIVER")
+                    self._move(tractor.id, delivery, owner, deliver=True)
+                    self._arrival(ids, farm_id, owner, delivery)
+            if not hitch_only:
+                status, reason = "COMPLETE", "DELIVERY_OBSERVED"
         except Cancelled:
             status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
         except ObservationMismatch as error:
@@ -509,12 +575,24 @@ class Executor:
                         if any(identifier not in stopped or not stopped[identifier].stopped
                                or stopped[identifier].reserved_by != owner for identifier in ids):
                             raise ObservationMismatch("STOP_NOT_OBSERVED")
-                    if status == "COMPLETE":
+                        if any(stopped[identifier].busy for identifier in ids):
+                            # STOP said STOPPED, but an AI job or AutoDrive still controls a
+                            # unit: never released as idle; logged, kept reserved.
+                            log.info("after STOP still controlled: %s",
+                                     {i: stopped[i].busy_reason for i in ids if stopped[i].busy})
+                            raise _CleanupFailed("CLEANUP_AI_NOT_CLEARED")
+                    if status == "COMPLETE" and hitch_only:
+                        tractor, _ = self._pair(ids, farm_id, owner, attached=True)
+                        if not tractor.stopped:
+                            raise ObservationMismatch("EQUIPMENT_MOVING")
+                    elif status == "COMPLETE":
                         self._arrival(ids, farm_id, owner, delivery, check=check)
                     enter("RELEASE")
                     self.world.release(owner)
                     if any(item.reserved_by == owner for item in self.world.snapshot()):
                         raise ObservationMismatch("RELEASE_NOT_OBSERVED")
+                except _CleanupFailed as error:
+                    status, reason = "UNVERIFIED", str(error)
                 except Exception:
                     status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
         log.info("result %s %s states %s", status, reason, ",".join(states))

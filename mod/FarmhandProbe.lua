@@ -27,8 +27,8 @@ Probe.COMMANDS = {
 }
 -- Mirrors of companion constants (checked by tests/test_lua_probe.py).
 Probe.STAGING_DISTANCE_M = 4.0           -- companion/hitch.py STAGING_DISTANCE_M
-Probe.STAGE_POSITION_TOLERANCE_M = 1.0   -- executor STAGE_POSITION_TOLERANCE_M
-Probe.STAGE_YAW_TOLERANCE_DEG = 10       -- executor STAGE_YAW_TOLERANCE_RAD
+Probe.STAGE_POSITION_TOLERANCE_M = 2.5   -- executor STAGE_POSITION_TOLERANCE_M
+Probe.STAGE_YAW_TOLERANCE_DEG = 20       -- executor STAGE_YAW_TOLERANCE_RAD
 Probe.PLAN_TOLERANCE_M = 0.25            -- executor WAGON_MOVED_TOLERANCE_M
 
 local function log(fmt, ...)
@@ -171,7 +171,7 @@ end
 -- Idle, stopped, unattached, observed, own farm. Returns nil or a reason.
 local function unsafe(r, farmId, null)
     if r.farm_id ~= farmId then return "NOT_YOUR_FARM" end
-    if r.entered ~= false then return "OCCUPIED_OR_UNKNOWN" end
+    if r.entered ~= true and r.entered ~= false then return "OCCUPIED_OR_UNKNOWN" end   -- ride-along allowed
     if r.ai_active ~= false or (r.has_autodrive and r.ad_active ~= false) then return "AI_ACTIVE_OR_UNKNOWN" end
     if not r.attachment_observed or r.attacher_vehicle_id ~= null or #r.implement_ids > 0 then
         return "ATTACHED_OR_UNKNOWN"

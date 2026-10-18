@@ -171,6 +171,18 @@ Executable mapping (`python scripts/check.py`):
   partial-word or AutoDrive-only places block; fetch can deliver to a building;
   an unobserved arrival is UNVERIFIED and a cancel before travel moves nothing;
   reservations accept only unattached units or a pair hitched to each other.
+- First live session (2026-10-18), as regressions: `test_live_case_1_the_requester_rides_along`
+  (tractor seated: the fetch completes), `test_live_case_2_stage_end_is_judged_by_what_the_reverse_needs`
+  (2 m off: completes; 4 m off: STAGE_NOT_OBSERVED with the deviation logged),
+  `test_live_case_3_lingering_ai_is_proven_then_the_tractor_is_reusable` (STAGE ends,
+  STOP, AI still active: CLEANUP_AI_NOT_CLEARED and kept reserved; the next request is
+  NO_ELIGIBLE_PAIR with "candidate ... rejected: RESERVED, AI_ACTIVE" logged; once idle
+  it is recovered and completes), `test_live_session_language_cases`, the ride-along
+  Lua tests (seated: every op runs; a takeover yields; an unreadable seat fails
+  closed), `RideAlongTests` (the ridden tractor first) and `HitchOnlyTests`
+  (hitch_pair hitches in place, delivers nothing, a failed hitch is never COMPLETE);
+  `test_a_slow_cold_load_is_not_counted_as_wrong_answers` (Ollama loads the model
+  before the unchanged validation).
 - `tests/test_language.py`: the deterministic rules map many phrasings (address
   words, punctuation, case) to fetch_pair, move_pair ("come here", "take this back
   to the barn"; the canonical AC-001 sentence with "hook them together" stays a

@@ -85,7 +85,7 @@ MODEL_SCHEMA = {
     "additionalProperties": False,
     "required": ["command", "place", "field"],
     "properties": {
-        "command": {"enum": ["fetch_pair", "move_pair", "stop", "status", "unknown"]},
+        "command": {"enum": ["fetch_pair", "move_pair", "hitch_pair", "stop", "status", "unknown"]},
         "place": {"type": "string", "maxLength": 64},
         "field": {"type": "integer", "minimum": 0, "maximum": 9999},
     },
@@ -96,15 +96,17 @@ MODEL_VALIDATOR = Draft202012Validator(MODEL_SCHEMA)
 PROMPT = """You turn one sentence from a Farming Simulator player into JSON for Farmhand, a farmhand that can only:
 - fetch_pair: bring an available tractor and forage wagon, hitched together.
 - move_pair: move the tractor and forage wagon that are already hitched ("this", "it") somewhere.
+- hitch_pair: hitch an available tractor to the forage wagon where it stands, without moving it anywhere.
 - stop: stop or cancel what it is doing.
 - status: say what it is doing.
-Answer with JSON only: {"command": one of fetch_pair, move_pair, stop, status, unknown, "place": the destination \
+Answer with JSON only: {"command": one of fetch_pair, move_pair, hitch_pair, stop, status, unknown, "place": the destination \
 in the player's own words, or "" for here/me/none, "field": a field number, or 0}.
 Use "unknown" for anything else, including other machines, fieldwork, buying or selling. Never invent a place.
 Examples:
 "get me the tractor and the forage wagon" -> {"command": "fetch_pair", "place": "", "field": 0}
 "could you bring the tractor with the wagon over to the cow barn" -> {"command": "fetch_pair", "place": "cow barn", "field": 0}
 "bring that back to the shed" -> {"command": "move_pair", "place": "shed", "field": 0}
+"go hitch a tractor up to the forage wagon" -> {"command": "hitch_pair", "place": "", "field": 0}
 "get over here with it" -> {"command": "move_pair", "place": "", "field": 0}
 "drive it to field 7" -> {"command": "move_pair", "place": "", "field": 7}
 "how far along are you" -> {"command": "status", "place": "", "field": 0}

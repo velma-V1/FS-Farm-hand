@@ -118,13 +118,44 @@ local function exactCandidate(env, s)
     return "CANDIDATE", info
 end
 
+-- ------------------------------------------------------------ ride-along
+-- The requester may sit in the tractor while Farmhand drives it (single player:
+-- the mod declares multiplayer unsupported, so a seated player is the requester).
+-- What matters is control, not presence: GIANTS asks every function registered
+-- with Drivable:registerPlayerVehicleControlAllowedFunction (GDN Drivable
+-- 1130-1135) whenever the seated player gives a non-zero accelerate, brake or
+-- steer input (actionEventAccelerate 1407-1422, actionEventBrake 1427-1442,
+-- actionEventSteer 1447-1478, via getIsPlayerVehicleControlAllowed 1105-1123).
+-- Farmhand's function always allows the input (it never fights the player) and
+-- records the takeover; the running operation then yields: DRIVER_TOOK_OVER.
+Hitch.takeovers = setmetatable({}, { __mode = "k" })   -- tractor -> true once the seated player took control
+
+function Hitch.watchDriver(tractor)
+    Hitch.takeovers[tractor] = nil
+    if type(tractor.registerPlayerVehicleControlAllowedFunction) == "function" then
+        tractor:registerPlayerVehicleControlAllowedFunction(tractor, function(vehicle)
+            Hitch.takeovers[vehicle.rootVehicle or vehicle] = true
+            return true
+        end)
+    end
+end
+
+-- nil, or why the tractor is not Farmhand's to drive right now: the seated player
+-- took control, or whether anyone sits in it cannot be read (fail closed).
+function Hitch.driverConflict(tractor)
+    local entered = tractor:getIsEntered()
+    if entered ~= true and entered ~= false then return "UNKNOWN_OBSERVATION" end
+    if Hitch.takeovers[tractor] then return "DRIVER_TOOK_OVER" end
+    return nil
+end
+
 -- The minimum authority re-check before every movement and before attaching.
 local function authority(s)
     local tractor, wagon = s.tractor, s.wagon
     if s.isReserved() ~= true then return "RESERVATION_LOST" end
     if tractor.ownerFarmId ~= s.farmId or wagon.ownerFarmId ~= s.farmId then return "RESERVATION_LOST" end
-    local entered = tractor:getIsEntered()
-    if entered ~= false then return entered == true and "OCCUPIED" or "UNKNOWN_OBSERVATION" end
+    local conflict = Hitch.driverConflict(tractor)
+    if conflict ~= nil then return conflict end
     -- Any GIANTS AI job, and AutoDrive (its override, Specialization.lua:1794-1800).
     local ai = tractor:getIsAIActive()
     if ai ~= false then return ai == true and "AI_ACTIVE" or "UNKNOWN_OBSERVATION" end
@@ -196,6 +227,7 @@ function Hitch.newAlign(env, args)
             dirX = fx, dirZ = fz, elapsed = 0, sinceProgress = 0,
             bestGap = distance(tx, tz, wx, wz), lastGap = distance(tx, tz, wx, wz), result = nil,
         }
+        Hitch.watchDriver(tractor)
         local denied = authority(s)
         if denied ~= nil then return nil, denied end
         return s

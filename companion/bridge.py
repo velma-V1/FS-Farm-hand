@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import replace
 import logging
+import math
 import os
 from pathlib import Path
 import sys
@@ -41,6 +42,7 @@ ACCEPT_TIMEOUT_S = 5.0        # the game reads the command file every frame
 HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
+ALIGN_MAX_DISTANCE_M = 10.0      # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
 DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "align": 70.0, "attach": 25.0, "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -292,6 +294,9 @@ class FS25World:
             items = {e.id: e for e in self._observe().equipment}
             if any(i not in items or not items[i].stopped for i in reservation[1]):
                 raise ValueError("Cannot release moving or missing equipment")
+            if any(items[i].busy for i in reservation[1]):
+                # An AI job or AutoDrive still controls it: not idle, not released.
+                raise ValueError("Cannot release equipment still under AI control")
             del self._reservations[owner]
             log.info("released %s", reservation[1])
 
@@ -350,7 +355,17 @@ class FS25World:
     def align(self, tractor_id: str, wagon_id: str, plan: HitchPlan, owner: str) -> None:
         self._reserved(tractor_id, owner, wagon_id)
         self._run("align", tractor=int(tractor_id), wagon=int(wagon_id), tractorJoint=plan.tractor_joint,
-                  wagonJoint=plan.wagon_joint, maxDistanceM=STAGING_DISTANCE_M + 2)
+                  wagonJoint=plan.wagon_joint, maxDistanceM=self._reverse_length(tractor_id, plan))
+
+    def _reverse_length(self, tractor_id: str, plan: HitchPlan) -> float:
+        """The bounded reverse's length: the gap STAGE actually left plus 2 m, never
+        less than the planned staging distance + 2 nor more than the mod's cap."""
+        tractor = next((e for e in self._observe().equipment if e.id == tractor_id), None)
+        joint = tractor and next((j for j in tractor.output_joints if j.index == plan.tractor_joint), None)
+        gap = STAGING_DISTANCE_M
+        if tractor is not None and joint is not None and tractor.ai_root is not None:
+            gap = max(gap, math.dist(tractor.ai_root.to_world(joint.x, joint.z), plan.target))
+        return min(ALIGN_MAX_DISTANCE_M, gap + 2)
 
     def attach(self, tractor_id: str, wagon_id: str, joints: tuple[int, int], owner: str) -> None:
         self._reserved(tractor_id, owner, wagon_id)
