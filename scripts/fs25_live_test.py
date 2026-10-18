@@ -9,6 +9,7 @@ which alone reaches FS25 and the Farmhand companion.
     python scripts/fs25_live_test.py install    build this checkout, install it (FS25 closed)
     python scripts/fs25_live_test.py launch     start FS25
     python scripts/fs25_live_test.py restart    stop FS25, start it, wait for Farmhand READY
+    python scripts/fs25_live_test.py stop-fs25  close FS25 (refused while a job runs)
     python scripts/fs25_live_test.py hitch      one production hitch_pair; waits for its end
     python scripts/fs25_live_test.py stop       the production STOP
     python scripts/fs25_live_test.py collect [--test ID]
@@ -35,7 +36,7 @@ BUILD = ROOT / ".fs25-dev" / "build"
 RUNNER_STALE_S = 5.0
 # How long each op may take on the host (its own bounds plus a margin).
 TIMEOUT_S = {"status": 40.0, "install-current-build": 180.0, "launch-fs25": 90.0, "restart-fs25": 1100.0,
-             "run-hitch-test": 30.0, "stop-test": 30.0, "collect": 30.0}
+             "stop-fs25": 90.0, "run-hitch-test": 30.0, "stop-test": 30.0, "collect": 30.0}
 HITCH_WAIT_S = 2400.0          # beyond the longest job: TRAVEL_NEAR alone may take 20 min
 EXIT = {"COMPLETE": 0, "FAILED": 1, "BLOCKED": 3, "UNVERIFIED": 4, "CANCELLED": 5}
 INFRASTRUCTURE = 10
@@ -166,7 +167,7 @@ def command_hitch(wait: float = HITCH_WAIT_S, poll: float = 3.0) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("status", "install", "launch", "restart", "hitch", "stop"):
+    for name in ("status", "install", "launch", "restart", "stop-fs25", "hitch", "stop"):
         sub.add_parser(name)
     collect = sub.add_parser("collect")
     collect.add_argument("--test", help="a test id (default: the latest)")
@@ -184,7 +185,7 @@ def main(argv=None) -> int:
             subprocess.run([sys.executable, str(ROOT / "scripts" / "package_probe.py"), "--build-dev", str(BUILD)],
                            check=True, stdout=subprocess.DEVNULL)
         op = {"status": "status", "install": "install-current-build", "launch": "launch-fs25",
-              "restart": "restart-fs25", "stop": "stop-test"}[args.command]
+              "restart": "restart-fs25", "stop-fs25": "stop-fs25", "stop": "stop-test"}[args.command]
         response = call(op)
         emit(event=op, ok=response.get("ok"), code=response.get("code"), result=response.get("result"))
         if op == "status":

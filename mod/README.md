@@ -32,8 +32,8 @@ programs, so two narrow bridges carry a live test:
 1. Claude → host runner: `python scripts/fs25_live_test.py <command>` (in the
    sandbox) writes one request at a time to `.fs25-dev/host/requests` in this
    checkout; `scripts/fs25_host_runner.py`, started once by the user outside the
-   sandbox, answers in `.fs25-dev/host/responses`. Only seven ops exist (`status`,
-   `install-current-build`, `launch-fs25`, `restart-fs25`, `run-hitch-test`,
+   sandbox, answers in `.fs25-dev/host/responses`. Only eight ops exist (`status`,
+   `install-current-build`, `launch-fs25`, `restart-fs25`, `stop-fs25`, `run-hitch-test`,
    `stop-test`, `collect`); none takes a path, program or command text, and every
    request names the runner's per-start token and a fresh, increasing id. One
    runner per checkout: a second one refuses to start (OS lock on
@@ -54,7 +54,9 @@ be installed by its Setup.cmd):
     python3 scripts/fs25_host_runner.py install-runner
     python3 ~/.local/share/fs25-farmhand-host/fs25_host_runner.py serve --repo ~/projects/FS-Farm-hand [--savegame N]
 
-Then Claude runs `status`, `install` (FS25 closed), `restart`, `hitch`, `collect`.
+Then Claude runs `status`, `stop-fs25` (only FarmingSimulator2025Game.exe, refused
+while a job or test runs), `install` (FS25 closed), `launch` or `restart`, `hitch`,
+`collect`.
 The runner copies only the files of `scripts/package_probe.py --build-dev` whose
 sha256 its manifest names and whose build is the checkout's commit, to the fixed mod
 and companion folders. `--savegame N` passes FS25's `-autoStartSavegameId N`

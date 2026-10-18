@@ -11,6 +11,7 @@ operations for it and nothing else:
                            companion folders, then start the companion with --live-test
     launch-fs25            start the configured FS25 executable
     restart-fs25           stop only FS25, start it again, wait for Farmhand READY
+    stop-fs25              close FS25 (its own image name only; refused under a running job)
     run-hitch-test         ask the companion for the production hitch_pair (livetest)
     stop-test              the companion's production STOP
     collect                the latest test record plus bounded game/companion log lines
@@ -80,9 +81,9 @@ BUILD_FILES = tuple(f"mod/{MOD_NAME}/{n}" for n in MOD_FILES) + tuple(f"app/{n}"
 MAX_BUILD_FILE_BYTES = 2_000_000
 
 # The allowlist: each op and the only arguments it takes (validated in parse_request).
-OPS = {"status": (), "install-current-build": (), "launch-fs25": (), "restart-fs25": (),
+OPS = {"status": (), "install-current-build": (), "launch-fs25": (), "restart-fs25": (), "stop-fs25": (),
        "run-hitch-test": (), "stop-test": (), "collect": ("test_id",)}
-LIFECYCLE = frozenset({"install-current-build", "launch-fs25", "restart-fs25"})
+LIFECYCLE = frozenset({"install-current-build", "launch-fs25", "restart-fs25", "stop-fs25"})
 REQUEST_MAX_BYTES = 4096
 REQUEST_MAX_AGE_S = 60.0
 POLL_S = 0.2
@@ -201,8 +202,9 @@ class System:
         rows = [row for row in self._tasks(f"PID eq {int(pid)}") if row[1] == str(int(pid))]
         return rows[0][0] if rows else None
 
-    def close(self, image: str, force: bool) -> None:
-        self._run(["taskkill.exe", *(["/F"] if force else []), "/IM", image])
+    def close_fs25(self, force: bool) -> None:
+        """taskkill of FS25's own image name, the only process the runner ever ends."""
+        self._run(["taskkill.exe", *(["/F"] if force else []), "/IM", FS25_IMAGE])
 
     def start(self, program: str, arguments: list[str], folder: str) -> None:
         """Detached, so it outlives this runner. Every value is fixed or validated."""
@@ -880,13 +882,33 @@ class Runner:
             raise Refused("FS25_RUNNING")
         return True, "LAUNCHED", {"fs25_pids": self._launch(), "arguments": self.targets.game_arguments()}
 
-    def op_restart_fs25(self, ready_timeout: float = READY_S):
-        if self.system.processes(FS25_IMAGE):
-            self.system.close(FS25_IMAGE, force=False)
+    def _stop_game(self) -> list[int]:
+        """Close FS25 (its image name only): asked first, forced after GAME_CLOSE_S."""
+        pids = self.system.processes(FS25_IMAGE)
+        if pids:
+            self.system.close_fs25(force=False)
             if not self._gone(GAME_CLOSE_S):
-                self.system.close(FS25_IMAGE, force=True)
+                self.system.close_fs25(force=True)
                 if not self._gone(GAME_KILL_S):
                     raise Refused("FS25_DID_NOT_STOP")
+        return pids
+
+    def op_stop_fs25(self):
+        """Only FarmingSimulator2025Game.exe, and never under a running job or test
+        (stop-test first): the companion's own answer decides; if it cannot answer,
+        the game is closed anyway (nothing of Farmhand can then be driving)."""
+        try:
+            live = self.companion.ask("status")
+        except Refused:
+            live = {}
+        result = live.get("result") or {}
+        if result.get("test_active") or (result.get("job") or {}).get("running"):
+            raise Refused("JOB_RUNNING", hint="stop-test first")
+        pids = self._stop_game()
+        return True, ("STOPPED" if pids else "NOT_RUNNING"), {"fs25_pids": pids}
+
+    def op_restart_fs25(self, ready_timeout: float = READY_S):
+        self._stop_game()
         pids = self._launch()
         deadline = time.monotonic() + ready_timeout
         status = None

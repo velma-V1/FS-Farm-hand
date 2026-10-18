@@ -285,8 +285,8 @@ class FakeSystem:
     def image_of(self, pid):
         return "pythonw.exe" if pid == self.companion_pid else None
 
-    def close(self, image, force):
-        self.calls.append(("close", image, force))
+    def close_fs25(self, force):
+        self.calls.append(("close", host.FS25_IMAGE, force))
         if force or not getattr(self, "stubborn", False):
             self.fs25 = []
 
@@ -686,6 +686,43 @@ class HostRunnerLifecycleTests(RunnerCase):
             except host.Refused as error:
                 code = error.code
         self.assertEqual(code, "NOT_READY")
+
+    def test_stop_fs25_closes_only_fs25(self):
+        self.system.fs25 = [999]
+        answer = self.send("stop-fs25")
+        self.assertEqual((answer["ok"], answer["code"], answer["result"]), (True, "STOPPED", {"fs25_pids": [999]}))
+        self.assertEqual(self.system.calls, [("close", host.FS25_IMAGE, False)])
+        self.assertEqual(self.send("stop-fs25")["code"], "NOT_RUNNING")
+        self.assertEqual(len(self.system.calls), 1)
+
+    def test_stop_fs25_forces_only_after_asking(self):
+        self.system.fs25, self.system.stubborn = [999], True
+        with unittest.mock.patch.object(host, "GAME_CLOSE_S", 0.1):
+            self.assertEqual(self.send("stop-fs25")["code"], "STOPPED")
+        self.assertEqual(self.system.calls, [("close", host.FS25_IMAGE, False), ("close", host.FS25_IMAGE, True)])
+
+    def test_stop_fs25_never_closes_the_game_under_a_running_job_or_test(self):
+        self.system.fs25 = [999]
+        for result in ({"job": {"running": "owner-1"}}, {"test_active": "owner-1"}):
+            with self.subTest(result=result), unittest.mock.patch.object(
+                    self.runner.companion, "ask", return_value={"ok": True, "result": result}):
+                self.assertEqual(self.send("stop-fs25")["code"], "JOB_RUNNING")
+        self.assertEqual(self.system.calls, [])
+        self.assertEqual(self.system.fs25, [999])
+
+    def test_stop_fs25_takes_no_argument_and_kills_no_other_program(self):
+        for args in ({"image": "explorer.exe"}, {"pid": 4}, {"force": True}):
+            with self.subTest(args=args):
+                self.assertEqual(self.send("stop-fs25", args=args)["code"], "BAD_ARGUMENTS")
+        self.assertEqual(self.system.calls, [])
+        ran = []
+        system = host.System()
+        with unittest.mock.patch.object(system, "_run", lambda args, timeout=30.0: ran.append(args)):
+            system.close_fs25(force=False)
+            system.close_fs25(force=True)
+        self.assertEqual(ran, [["taskkill.exe", "/IM", "FarmingSimulator2025Game.exe"],
+                               ["taskkill.exe", "/F", "/IM", "FarmingSimulator2025Game.exe"]])
+        self.assertFalse(hasattr(system, "close"))
 
     def test_only_one_lifecycle_op_at_a_time(self):
         self.runner._lifecycle.acquire()
