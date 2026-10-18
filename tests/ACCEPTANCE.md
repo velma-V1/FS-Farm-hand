@@ -171,9 +171,20 @@ Executable mapping (`python scripts/check.py`):
   partial-word or AutoDrive-only places block; fetch can deliver to a building;
   an unobserved arrival is UNVERIFIED and a cancel before travel moves nothing;
   reservations accept only unattached units or a pair hitched to each other.
+- Hitch travel and local alignment (5304adc live): `AlignEnvelopeTests` (joint error in the
+  wagon frame for any heading; the staging aim inside the envelope; each reason),
+  `test_goto_travel_or_delivery_not_observed_stops_and_fails_closed` (coarse travel 4 m off
+  continues, 100 m off TRAVEL_ENDED_TOO_FAR), `test_a_stage_end_outside_the_reverse_envelope_never_reverses`,
+  the bridge failure table (STALLED, WAGON_MOVED, DRIVER_TOOK_OVER, AI_ACTIVE, DIVERGED;
+  ATTACH_TIMEOUT and the wrong joint stay UNVERIFIED), `test_a_failed_local_alignment_logs_the_joints`,
+  Lua `test_steering_follows_the_wagon_axis_from_the_observed_joints`, the DIVERGED guard,
+  `test_the_end_of_a_reverse_describes_its_progress`,
+  `test_an_ended_goto_logs_why_giants_ended_it_and_is_still_only_ended`.
 - First live session (2026-10-17), as regressions: `test_live_case_1_the_requester_rides_along`
-  (tractor seated: the fetch completes), `test_live_case_2_stage_end_is_judged_by_what_the_reverse_needs`
-  (2 m off: completes; 4 m off: STAGE_NOT_OBSERVED with the deviation logged),
+  (tractor seated: the fetch completes), `test_live_case_2_stage_end_is_judged_by_the_joints_not_the_pose`
+  (GOTO is coarse: the 5304adc end 14 m / 138 degrees off is FAILED TRAVEL_ENDED_TOO_FAR
+  with nothing reversed; ends off the staging pose but inside the envelope hitch;
+  heading, wrong side and lateral each fail precisely; all logged, stopped, released),
   `test_live_case_3_lingering_ai_is_proven_then_the_tractor_is_reusable` (STAGE ends,
   STOP, AI still active: CLEANUP_AI_NOT_CLEARED and kept reserved; the next request is
   NO_ELIGIBLE_PAIR with "candidate ... rejected: RESERVED, AI_ACTIVE" logged; once idle

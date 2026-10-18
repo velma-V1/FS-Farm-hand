@@ -11,6 +11,7 @@ from protocol.model import Destination, Equipment, Pose
 MOCK_ATTACH_RANGE_M = 0.3
 MOCK_POSE_TOLERANCE_M = 0.5
 MOCK_TRAILER_OFFSET_M = 7.0
+MOCK_REVERSE_REACH_M = 10.0      # the mod's reverse cap (Hitch.LIMITS.maxDistanceM)
 
 
 class MockWorld:
@@ -150,11 +151,13 @@ class MockWorld:
             tractor, wagon = self._unattached_pair(tractor_id, wagon_id, owner)
             joint = next((j for j in wagon.input_joints if j.index == plan.wagon_joint), None)
             root = tractor.ai_root
-            # Like the real step, only reverse from the staging pose towards an unmoved wagon.
-            if (joint is None or root is None
+            # Like the real step, only reverse towards an unmoved wagon from within the
+            # reverse's reach of its joint (never from the exact staging pose alone).
+            out = next((j for j in tractor.output_joints if j.index == plan.tractor_joint), None)
+            if (joint is None or root is None or out is None
                     or math.dist(joint.position, plan.target) > MOCK_POSE_TOLERANCE_M
-                    or math.dist((root.x, root.z), (plan.staging.x, plan.staging.z)) > MOCK_POSE_TOLERANCE_M):
-                raise RuntimeError("Not staged for this wagon")
+                    or math.dist(root.to_world(out.x, out.z), plan.target) > MOCK_REVERSE_REACH_M):
+                raise RuntimeError("Not within reach of this wagon")
             self._place(tractor, plan.final)
 
     def deliver(self, tractor_id, destination_id, owner):

@@ -185,11 +185,20 @@ class FakeGame:
                 place(wagon, x - 7 * math.sin(yaw), z - 7 * math.cos(yaw))
             return "GOTO_ENDED"
         if op == "stage":
-            x, z = float(c["x"]) + self.faults.get("stage_offset", 0.0), float(c["z"])
-            place(tractor, x, z, float(c["yaw"]))
+            x, z, yaw = float(c["x"]) + self.faults.get("stage_offset", 0.0), float(c["z"]), float(c["yaw"])
+            if "stage_end" in self.faults:     # GOTO ended here: (ahead, lateral, heading deg) of the joint
+                ahead, lateral, turn = self.faults["stage_end"]
+                eye, heading = wagon["input_joint_poses"][0], wagon["heading"]
+                fx, fz = math.sin(heading), math.cos(heading)
+                jx, jz = eye["x"] + ahead * fx + lateral * fz, eye["z"] + ahead * fz - lateral * fx
+                yaw = heading + math.radians(turn)
+                joint = tractor["output_joints"][0]
+                dx, dz = Pose(0.0, 0.0, yaw).to_world(joint["x"], joint["z"])
+                x, z = jx - dx, jz - dz
+            place(tractor, x, z, yaw)
             if self.faults.get("stage_ai_stays"):          # GIANTS reports the end, control lingers
                 tractor["ai_active"] = True
-            tractor["heading"] = float(c["yaw"])
+            tractor["heading"] = yaw
             return "STAGE_ENDED"
         if op == "align":     # the reverse ends with the tractor joint on the wagon joint
             yaw = tractor["ai_root"]["yaw"]
@@ -405,6 +414,13 @@ class ProductionSequenceTests(unittest.TestCase):
             # started under their controls; stop, release, and say why.
             ({"align": "REJECTED:SEATED_DURING_REVERSE"}, None, "FAILED", "REJECTED_SEATED_DURING_REVERSE",
              ["stage", "align", "stop"]),
+            # Local alignment's own bounded failures: stalled, the wagon moved, the
+            # seated player took the controls, another AI job, diverging.
+            ({"align": "FAILED:STALLED"}, None, "FAILED", "STALLED", ["stage", "align", "stop"]),
+            ({"align": "FAILED:WAGON_MOVED"}, None, "FAILED", "WAGON_MOVED", ["stage", "align", "stop"]),
+            ({"align": "FAILED:DRIVER_TOOK_OVER"}, None, "FAILED", "DRIVER_TOOK_OVER", ["stage", "align", "stop"]),
+            ({"align": "FAILED:AI_ACTIVE"}, None, "FAILED", "AI_ACTIVE", ["stage", "align", "stop"]),
+            ({"align": "FAILED:DIVERGED"}, None, "FAILED", "DIVERGED", ["stage", "align", "stop"]),
             ({"attach": "UNVERIFIED:ATTACH_TIMEOUT"}, None, "UNVERIFIED", "ATTACH_TIMEOUT",
              ["stage", "align", "attach", "stop"]),
             ({"attach": "REJECTED:BUSY"}, None, "FAILED", "REJECTED_BUSY",
@@ -419,6 +435,14 @@ class ProductionSequenceTests(unittest.TestCase):
                 self.assertEqual((result.status, result.reason), (status, reason), result)
                 self.assertEqual(self.ops(game), ops)
                 self.assertEqual(world._reservations, {})            # stop observed: released
+
+    def test_a_failed_local_alignment_logs_the_joints(self):
+        with self.assertLogs("farmhand", level="INFO") as logs:
+            _, _, result = self.run_ac001(faults={"align": "FAILED:STALLED"})
+        self.assertEqual((result.status, result.reason), ("FAILED", "STALLED"))
+        end = next(line for line in logs.output if "ALIGN_REVERSE end:" in line)
+        for part in ("tractor joint", "wagon joint", "gap", "ahead", "lateral", "heading"):
+            self.assertIn(part, end)
 
     def test_delivery_and_arrival(self):
         # AutoDrive "ended" elsewhere: not arrival.
@@ -859,16 +883,33 @@ class ServiceTests(unittest.TestCase):
         self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
         self.assertEqual(self.ops(game), ["stage", "align", "attach", "navigate", "stop"])
 
-    def test_live_case_2_stage_end_is_judged_by_what_the_reverse_needs(self):
-        # Tractor 379 / wagon 400: STAGE DONE STAGE_ENDED, STOP DONE, then STAGE_NOT_OBSERVED.
-        for offset, outcome in ((2.0, "COMPLETE"), (4.0, "UNVERIFIED_STAGE_NOT_OBSERVED")):
-            with self.subTest(offset=offset):
-                game, notices = self.start(autodrive=False, faults={"stage_offset": offset})
+    def test_live_case_2_stage_end_is_judged_by_the_joints_not_the_pose(self):
+        # Tractor 379 / wagon 400 (STAGE_ENDED 2-4 m off) and tractor 170 / wagon 173
+        # at 5304adc ("hitch the forage wagong": STAGE_ENDED 14 m and 138 degrees off
+        # the staging pose). GOTO is coarse travel: an ended job is never arrival, and
+        # only the observed joints decide whether the bounded reverse takes over.
+        hitched = ["stage", "align", "attach", "stop"]
+        cases = [
+            # (ahead, lateral, heading deg) of the tractor joint from the wagon's joint
+            ((4.4, -15.0, 138.0), "FAILED_TRAVEL_ENDED_TOO_FAR", ["stage", "stop"]),     # the live end
+            ((5.0, 1.5, 15.0), "COMPLETE_HITCH", hitched),        # off the pose, inside the envelope
+            ((8.5, -1.9, -28.0), "COMPLETE_HITCH", hitched),      # edge of the envelope
+            ((6.0, 0.5, 138.0), "FAILED_ALIGN_HEADING_OUT_OF_RANGE", ["stage", "stop"]),  # never turned here
+            ((-2.0, 0.5, 0.0), "FAILED_ALIGN_WRONG_SIDE", ["stage", "stop"]),           # behind the wagon's joint
+            ((6.0, 3.0, 0.0), "FAILED_ALIGN_LATERAL_OUT_OF_RANGE", ["stage", "stop"]),
+        ]
+        for end, outcome, ops in cases:
+            with self.subTest(end=end):
+                game, notices = self.start(autodrive=False, faults={"stage_end": end})
                 with self.assertLogs("farmhand", level="INFO") as logs:
-                    game.press(1)
+                    game.say(1, "hitch the forage wagong")
                     self.wait_for(lambda: notices[-1:] == [outcome])
-                self.assertTrue(any("STAGE end:" in line and "offset" in line for line in logs.output))
-                self.assertEqual(game.link_world._reservations, {})
+                self.assertEqual(self.ops(game), ops)
+                stage_end = next(line for line in logs.output if "STAGE end:" in line)
+                for part in ("tractor joint", "wagon joint", "gap", "ahead", "lateral",
+                             "heading %.1f deg" % end[2]):
+                    self.assertIn(part, stage_end)
+                self.assertEqual(game.link_world._reservations, {})              # stopped, then released
 
     def test_live_case_3_lingering_ai_is_proven_then_the_tractor_is_reusable(self):
         # STAGE_ENDED -> STOPPED -> AI still active -> later NO_ELIGIBLE_PAIR, now explained.

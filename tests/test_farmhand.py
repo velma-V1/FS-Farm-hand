@@ -610,30 +610,32 @@ class GiantsNavigationTests(unittest.TestCase):
 
     def test_goto_travel_or_delivery_not_observed_stops_and_fails_closed(self):
         class Short(MockWorld):
-            def __init__(self, *args, step):
+            def __init__(self, *args, step, miss):
                 super().__init__(*args)
-                self.step, self.after = step, []
+                self.step, self.miss, self.after = step, miss, []
 
             def navigate(self, tractor_id, pose, owner):
                 attached = self.items[tractor_id].attached_to is not None
                 if (self.step == "deliver") == attached:
-                    pose = Pose(pose.x + 4.0, pose.z, pose.yaw)     # GIANTS ended elsewhere
+                    pose = Pose(pose.x + self.miss, pose.z, pose.yaw)     # GIANTS ended elsewhere
                 super().navigate(tractor_id, pose, owner)
 
             def stage(self, *args):
                 self.after.append("stage")
                 return super().stage(*args)
 
-        for step, reason, far in (("travel", "TRAVEL_NOT_OBSERVED", True),
-                                  ("deliver", "DELIVERY_NOT_OBSERVED", False)):
-            with self.subTest(step=step):
+        # Coarse travel need only end near the wagon (STAGE follows); a delivery must arrive.
+        for step, miss, outcome, far in (("travel", 4.0, ("COMPLETE", "DELIVERY_OBSERVED"), True),
+                                         ("travel", 100.0, ("FAILED", "TRAVEL_ENDED_TOO_FAR"), True),
+                                         ("deliver", 4.0, ("UNVERIFIED", "DELIVERY_NOT_OBSERVED"), False)):
+            with self.subTest(step=step, miss=miss):
                 tractor, wagon = self.world(far=far).snapshot()
-                world = Short([tractor, wagon], PLAYERS, (), step=step)
+                world = Short([tractor, wagon], PLAYERS, (), step=step, miss=miss)
                 result = Executor(world).execute(intent())
-                self.assertEqual((result.status, result.reason), ("UNVERIFIED", reason))
+                self.assertEqual((result.status, result.reason), outcome)
                 self.assertEqual(result.states[-2:], ("STOP", "RELEASE"))
                 if step == "travel":
-                    self.assertEqual(world.after, [])
+                    self.assertEqual(world.after, [] if miss > 60 else ["stage"])
                 self.assertTrue(all(x.reserved_by is None and x.stopped for x in world.snapshot()))
 
     def test_goto_step_failures_stop_without_further_action(self):
@@ -857,14 +859,15 @@ class HitchCompositionTests(unittest.TestCase):
             def travel(self, tractor_id, destination_id, owner):
                 super().travel(tractor_id, destination_id, owner)
                 tractor = self.items[tractor_id]
-                self.items[tractor_id] = replace(tractor, position=(0.0, 0.0), ai_root=Pose(0.0, 0.0, 0.0))
+                # AutoDrive ended far from the marker (and the wagon).
+                self.items[tractor_id] = replace(tractor, position=(500.0, 500.0), ai_root=Pose(500.0, 500.0, 0.0))
 
             def stage(self, *args):
-                raise AssertionError("staged after unobserved travel")
+                raise AssertionError("staged after travel that ended far away")
 
         world = ShortTravel([far, wagon], PLAYERS, DESTINATIONS + (near_wagon,))
         result = Executor(world).execute(intent())
-        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "TRAVEL_NOT_OBSERVED"))
+        self.assertEqual((result.status, result.reason), ("FAILED", "TRAVEL_ENDED_TOO_FAR"))
 
     def test_unreachable_or_unplannable_pairs_block_before_reservation(self):
         base = simple_world()
@@ -890,7 +893,6 @@ class HitchCompositionTests(unittest.TestCase):
     def test_observed_step_failures_stop_without_further_action(self):
         cases = {
             # fault: (reason, physical steps run, attach attempted)
-            "stage_elsewhere": ("STAGE_NOT_OBSERVED", 1, False),
             "wagon_moved_after_stage": ("WAGON_MOVED", 1, False),
             "reservation_lost_after_stage": ("CLEANUP_NOT_CONFIRMED", 1, False),
             "align_no_progress": ("ALIGN_NOT_OBSERVED", 2, False),
@@ -904,6 +906,15 @@ class HitchCompositionTests(unittest.TestCase):
                 self.assertEqual(world.moves, moves)
                 self.assertEqual(len(world.attach_calls), 1 if attached else 0)
                 self.assertNotIn("DELIVER", result.states)
+
+    def test_a_stage_end_outside_the_reverse_envelope_never_reverses(self):
+        # GOTO ended 5 m to the side of the staging aim: observed, not reachable by a reverse.
+        world, result = self.run_fault("stage_elsewhere")
+        self.assertEqual((result.status, result.reason), ("FAILED", "ALIGN_LATERAL_OUT_OF_RANGE"))
+        self.assertEqual(world.moves, 1)
+        self.assertEqual(world.attach_calls, [])
+        self.assertEqual(result.states[-3:], ("STAGE", "STOP", "RELEASE"))
+        self.assertTrue(all(x.reserved_by is None and x.stopped for x in world.snapshot()))
 
     def test_lost_reservation_is_never_released_or_reused(self):
         world, result = self.run_fault("reservation_lost_after_stage")

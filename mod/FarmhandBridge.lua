@@ -189,6 +189,21 @@ local function stepGoto(env, task, timeoutMs, timeoutCode, endCode, progress)
         end
         return nil
     end
+    if not task.endLogged then
+        -- Diagnostics only: why GIANTS ended it. The agent's last state (TARGET_REACHED,
+        -- or NOT_REACHABLE, which ends the job with AIMessageErrorNotReachable) and its
+        -- distance to the target, both left in spec_aiDrivable after the job
+        -- (AIDrivable:onUpdate 277, 317-325; unsetAITarget 496-505 resets neither).
+        task.endLogged = true
+        pcall(function()
+            local spec = v.spec_aiDrivable
+            local names = env.AIDrivable and env.AIDrivable.STATES
+            local left = spec.distanceToTarget
+            log("%s ended: agent state %s, %s m from its target", task.op,
+                tostring(names and names[spec.lastState] or spec.lastState),
+                finite(left) and string.format("%.1f", left) or "?")
+        end)
+    end
     return settle(task, endCode)
 end
 
@@ -249,6 +264,7 @@ end
 function steppers.align(env, task, dt)
     local code = Bridge.Hitch.alignStep(env, task.session, dt)
     if code == "CONTINUE" then return nil end
+    log("align end %s %s", code, Bridge.Hitch.describe(task.session))
     if code == "CANDIDATE" then return "DONE", code end
     return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code
 end
@@ -623,6 +639,13 @@ Bridge.REASONS = {
     CLEANUP_AI_NOT_CLEARED = "an AI job still controls the tractor; check it",
     DRIVER_TOOK_OVER = "you took the controls, so Farmhand stopped",
     STAGE_NOT_OBSERVED = "the tractor did not line up with the wagon",
+    TRAVEL_ENDED_TOO_FAR = "the tractor stopped too far from the wagon to hitch it",
+    ALIGN_WRONG_SIDE = "the tractor stopped on the wrong side of the wagon to hitch it",
+    ALIGN_HEADING_OUT_OF_RANGE = "the tractor stopped facing the wrong way to hitch the wagon",
+    ALIGN_LATERAL_OUT_OF_RANGE = "the tractor stopped too far to the side of the wagon to hitch it",
+    STALLED = "the tractor could not reverse onto the wagon",
+    DIVERGED = "the tractor could not reverse straight onto the wagon",
+    WAGON_MOVED = "the wagon moved",
 }
 
 -- Text and whether it is critical, for a companion notice token.

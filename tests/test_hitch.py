@@ -8,8 +8,10 @@ These tests prove arithmetic only, not that FS25 places vehicles this way.
 import math
 import random
 import unittest
+from dataclasses import replace
 
-from companion.hitch import STAGING_DISTANCE_M, plan_hitch
+from companion.hitch import (ALIGN_MAX_HEADING_RAD, ALIGN_MAX_LATERAL_M, ALIGN_REACH_M, STAGING_DISTANCE_M,
+                            align_problem, joint_error, plan_hitch)
 from protocol.model import Equipment, InputJoint, OutputJoint, Pose
 
 
@@ -171,3 +173,59 @@ class PtoTests(unittest.TestCase):
         for need in (None, float("nan"), -0.1, float("inf")):
             with self.subTest(need=need):
                 self.assertIsNone(self.plan(need))
+
+
+class AlignEnvelopeTests(unittest.TestCase):
+    """Where the bounded reverse may take over, from the observed joints only."""
+
+    def setUp(self):
+        self.rng = random.Random(11)
+
+    def case(self, heading, ahead, lateral, turn):
+        w = wagon((self.rng.uniform(-500, 500), self.rng.uniform(-500, 500)), heading)
+        plan = plan_hitch(tractor(), w)
+        fx, fz = math.sin(heading), math.cos(heading)
+        eye = plan.target
+        jx, jz = eye[0] + ahead * fx + lateral * fz, eye[1] + ahead * fz - lateral * fx
+        yaw = heading + turn
+        dx, dz = Pose(0.0, 0.0, yaw).to_world(0.0, -2.5)
+        return tractor(Pose(jx - dx, jz - dz, yaw)), w, plan
+
+    def test_the_error_is_measured_on_the_joints_in_the_wagon_frame(self):
+        for _ in range(50):
+            heading = self.rng.uniform(-math.pi, math.pi)
+            ahead, lateral, turn = self.rng.uniform(-9, 9), self.rng.uniform(-5, 5), self.rng.uniform(-3, 3)
+            t, w, plan = self.case(heading, ahead, lateral, turn)
+            error = joint_error(t, w, plan)
+            self.assertAlmostEqual(error.ahead, ahead)
+            self.assertAlmostEqual(error.lateral, lateral)
+            self.assertAlmostEqual(error.gap, math.hypot(ahead, lateral))
+            self.assertAlmostEqual(math.cos(error.heading), math.cos(turn))
+            self.assertAlmostEqual(math.sin(error.heading), math.sin(turn))
+            self.assertLessEqual(abs(error.heading), math.pi)
+
+    def test_the_staging_aim_is_inside_the_envelope_and_the_pose_itself_is_not_required(self):
+        t, w, plan = self.case(0.7, STAGING_DISTANCE_M, 0.0, 0.0)
+        self.assertIsNone(align_problem(joint_error(t, w, plan)))
+        self.assertLessEqual(STAGING_DISTANCE_M + 1, ALIGN_REACH_M)       # slack for GOTO
+        for ahead, lateral, turn in ((3.0, 1.9, 0.5), (8.9, -1.0, -0.5), (1.0, 0.0, 0.0)):
+            t, w, plan = self.case(-2.0, ahead, lateral, turn)
+            self.assertIsNone(align_problem(joint_error(t, w, plan)), (ahead, lateral, turn))
+
+    def test_outside_the_envelope_each_reason_is_precise(self):
+        cases = [((4.4, -15.0, math.radians(138)), "TRAVEL_ENDED_TOO_FAR"),        # 5304adc live end
+                 ((ALIGN_REACH_M + 0.1, 0.0, 0.0), "TRAVEL_ENDED_TOO_FAR"),
+                 ((-0.5, 0.0, 0.0), "ALIGN_WRONG_SIDE"),
+                 ((6.0, 0.0, math.radians(138)), "ALIGN_HEADING_OUT_OF_RANGE"),
+                 ((6.0, 0.0, -ALIGN_MAX_HEADING_RAD - 0.01), "ALIGN_HEADING_OUT_OF_RANGE"),
+                 ((6.0, ALIGN_MAX_LATERAL_M + 0.1, 0.0), "ALIGN_LATERAL_OUT_OF_RANGE")]
+        for (ahead, lateral, turn), reason in cases:
+            with self.subTest(reason=reason, ahead=ahead):
+                t, w, plan = self.case(1.1478, ahead, lateral, turn)
+                self.assertEqual(align_problem(joint_error(t, w, plan)), reason)
+
+    def test_unobservable_joints_are_never_inside(self):
+        t, w, plan = self.case(0.0, 5.0, 0.0, 0.0)
+        self.assertIsNone(joint_error(replace(t, ai_root=None), w, plan))
+        self.assertIsNone(joint_error(t, replace(w, input_joints=()), plan))
+        self.assertEqual(align_problem(None), "UNKNOWN_OBSERVATION")

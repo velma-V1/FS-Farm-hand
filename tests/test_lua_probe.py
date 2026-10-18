@@ -197,7 +197,7 @@ class LuaProbeTests(unittest.TestCase):
     def world(self, **opts):
         return self.W.new(self.lua.table(**opts))
 
-    def run_probe(self, w, *args, frames=400, between=None, dt=16):
+    def run_probe(self, w, *args, frames=1000, between=None, dt=16):    # 16 s of game time
         self.output.clear()
         self.probe.consoleProbe(self.probe, *[str(a) for a in args])
         for i in range(frames):
@@ -250,8 +250,11 @@ class LuaProbeTests(unittest.TestCase):
 
     def test_mirrored_constants_match_the_companion(self):
         self.assertEqual(self.probe.STAGING_DISTANCE_M, hitch.STAGING_DISTANCE_M)
-        self.assertEqual(self.probe.STAGE_POSITION_TOLERANCE_M, executor.STAGE_POSITION_TOLERANCE_M)
-        self.assertAlmostEqual(math.radians(self.probe.STAGE_YAW_TOLERANCE_DEG), executor.STAGE_YAW_TOLERANCE_RAD)
+        self.assertEqual(self.probe.ALIGN_REACH_M, hitch.ALIGN_REACH_M)
+        self.assertAlmostEqual(math.radians(self.probe.ALIGN_MAX_HEADING_DEG), hitch.ALIGN_MAX_HEADING_RAD)
+        self.assertEqual(self.probe.ALIGN_MAX_LATERAL_M, hitch.ALIGN_MAX_LATERAL_M)
+        self.assertEqual(hitch.ALIGN_REACH_M, executor.ALIGN_MAX_DISTANCE_M - 1)
+        self.assertEqual(self.hitch.DEFAULTS.divergeLateralM, hitch.ALIGN_MAX_LATERAL_M + 1)
         self.assertEqual(self.probe.PLAN_TOLERANCE_M, executor.WAGON_MOVED_TOLERANCE_M)
         self.assertEqual(self.hitch.LIMITS.maxAssistRadiusM, executor.ALIGN_PROGRESS_TOLERANCE_M)
         from companion import bridge
@@ -319,7 +322,7 @@ class LuaProbeTests(unittest.TestCase):
         self.assertNotIn("cancelGoto", self.events(w))       # never cancels another job
 
     def test_stage_failure_never_reaches_align(self):
-        cases = (("stageOffset", 3.0, "FAILED STAGE_NOT_OBSERVED"),
+        cases = (("stageOffset", 3.0, "FAILED ALIGN_LATERAL_OUT_OF_RANGE"),    # GOTO ended 3 m to the side
                  ("gotoInvalid", True, "FAILED STAGE_GOTO_INVALID"))
         for attr, value, expected in cases:
             with self.subTest(expected=expected):

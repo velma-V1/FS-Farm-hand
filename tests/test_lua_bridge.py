@@ -336,6 +336,30 @@ class LuaBridgeTests(unittest.TestCase):
             if '"result"' in line:
                 parse_frame((line + "\n").encode())
 
+    def test_an_ended_goto_logs_why_giants_ended_it_and_is_still_only_ended(self):
+        # 5304adc live: STAGE_ENDED 14 m off. GIANTS leaves the agent's last state
+        # (AIDrivable:onUpdate 317-325) for the log; the result stays "ended".
+        output = []
+        self.lua.globals().print = lambda *a: output.append(" ".join(map(str, a)))
+        self.adopt()
+        self.w.gotoStarts = True
+        self.send(1, "stage", self.POSE)
+        self.W.run(self.w, 1000)
+        self.w.tractor.spec_aiDrivable = self.lua.table(lastState=5, distanceToTarget=14.0)
+        self.lua.execute("local w = ...; w.env.AIDrivable = { STATES = { [5] = 'NOT_REACHABLE' } }", self.w)
+        self.w.aiActive = False
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "STAGE_ENDED"))
+        self.assertTrue(any("stage ended: agent state NOT_REACHABLE, 14.0 m from its target" in line
+                            for line in output), output)
+        # Unreadable diagnostics never change the outcome.
+        self.w.tractor.spec_aiDrivable = None
+        self.send(2, "navigate", self.POSE)
+        self.W.run(self.w, 1000)
+        self.w.aiActive = False
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(2)[-1], (2, "DONE", "GOTO_ENDED"))
+
     def test_navigate_without_progress_is_stopped(self):
         self.adopt()
         self.w.gotoStarts = True

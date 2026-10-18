@@ -1,9 +1,10 @@
 -- Game-side HITCH primitives for one reserved tractor/wagon pair (server only).
 --
 -- Composition (companion/executor.py owns the order and verifies every step):
---   STAGE          GIANTS AIJobGoTo to the staging pose          (Hitch.startStaging)
---   ALIGN_REVERSE  bounded reverse; steering by GIANTS'
---                  AIVehicleUtil.driveToPoint                      (Hitch.newAlign/alignStep)
+--   STAGE          GIANTS AIJobGoTo towards the staging pose: coarse travel only,
+--                  its end is never arrival                        (Hitch.startStaging)
+--   ALIGN_REVERSE  bounded reverse on the observed joints; steering by
+--                  GIANTS' AIVehicleUtil.driveToPoint               (Hitch.newAlign/alignStep)
 --   ATTACH         GIANTS attachableInfo + isAttachAllowed +
 --                  attachImplementFromInfo                         (Hitch.attach/attachState)
 -- Every game call is cited in adapters/EVIDENCE.md. This is a library: only the
@@ -26,7 +27,16 @@ Hitch.DEFAULTS = {
     wagonToleranceM = 0.25,  -- the wagon's input joint may not move more than this
     stallMs = 4000,          -- no progress for this long means stalled
     stallProgressM = 0.05,   -- minimum gap reduction that counts as progress
-    lookaheadM = 3,          -- steer at a point this far past the joint, on the wagon axis
+    -- Steer at a point on the wagon's axis this far beyond the joint's projection
+    -- onto it, never more than this far past the wagon's joint: the observed joint
+    -- is led onto the axis, then straight in (pure pursuit on the axis line).
+    lookaheadM = 3,
+    -- The reverse never corrects more than this: drifting this far sideways of the
+    -- axis, or past the wagon's joint, ends it (DIVERGED). companion/hitch.py only
+    -- starts it within ALIGN_MAX_LATERAL_M (2 m) of the axis.
+    divergeLateralM = 3,
+    divergeBehindM = 1,
+    traceMs = 1000,          -- one progress sample per second for the end-of-reverse log
     attachTimeoutMs = 15000, -- bound on the attach animation
     -- Farmhand's own maximum hitch-point height difference, independent of the
     -- candidate distance: the attach-range rule derives its vertical tolerance
@@ -34,6 +44,8 @@ Hitch.DEFAULTS = {
     -- dy^2 < 4*maxDistanceSq), so a larger radius would otherwise loosen it too.
     maxVerticalM = 0.5,
 }
+
+local atan2 = math.atan2 or math.atan   -- Lua 5.1 (FS25) / 5.4 (tests)
 
 local function finite(n)
     return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
@@ -252,7 +264,7 @@ function Hitch.newAlign(env, args)
             maxDistanceM = lim.maxDistanceM, maxSpeedKmh = lim.maxSpeedKmh, timeoutMs = lim.timeoutMs,
             attachDistanceSq = math.max(vanillaSq, lim.assistRadiusM ^ 2), maxVerticalM = lim.maxVerticalM,
             wagonStartX = wx, wagonStartZ = wz, tractorStartX = tx, tractorStartZ = tz,
-            dirX = fx, dirZ = fz, elapsed = 0, sinceProgress = 0,
+            dirX = fx, dirZ = fz, elapsed = 0, sinceProgress = 0, trace = {}, sinceTrace = nil,
             bestGap = distance(tx, tz, wx, wz), lastGap = distance(tx, tz, wx, wz), result = nil,
         }
         Hitch.watchDriver(env, tractor)
@@ -274,6 +286,41 @@ function Hitch.halt(env, s, dt)
     pcall(function() s.tractor:setCruiseControlState(env.Drivable.CRUISECONTROL_STATE_OFF) end)
 end
 
+-- The tractor's heading off the wagon's, in degrees (diagnostics only: GIANTS'
+-- AI root, AIDrivable:getAIRootNode 515-516), or nil if unreadable.
+local function headingError(env, s)
+    local ok, deg = pcall(function()
+        local x, _, z = env.localDirectionToWorld(s.tractor:getAIRootNode(), 0, 0, 1)
+        assert(finite(x) and finite(z))
+        return math.deg(atan2(x * s.dirZ - z * s.dirX, x * s.dirX + z * s.dirZ))
+    end)
+    return ok and deg or nil
+end
+
+-- Record one progress sample per traceMs (and the first): elapsed, gap, ahead,
+-- lateral, heading. Kept to the last 30 samples; logged when the reverse ends.
+function Hitch.sample(env, s, dt)
+    if s.sinceTrace ~= nil and s.sinceTrace + dt < Hitch.DEFAULTS.traceMs then
+        s.sinceTrace = s.sinceTrace + dt
+        return
+    end
+    s.sinceTrace = 0
+    table.insert(s.trace, { s.elapsed, s.lastGap, s.lastAhead, s.lastLateral, headingError(env, s) })
+    if #s.trace > 30 then table.remove(s.trace, 1) end
+end
+
+-- One line for the log: the latest error and the progress over time.
+function Hitch.describe(s)
+    local parts = {}
+    for _, t in ipairs(s.trace or {}) do
+        parts[#parts + 1] = string.format("%d:%.2f/%.2f/%.2f/%s", t[1], t[2], t[3], t[4],
+            t[5] and string.format("%.1f", t[5]) or "?")
+    end
+    return string.format("gap=%.2f ahead=%s lateral=%s dy=%s progress(ms:gap/ahead/lateral/headingDeg)=%s",
+        s.lastGap or -1, tostring(s.lastAhead), tostring(s.lastLateral), tostring(s.lastDy),
+        table.concat(parts, " "))
+end
+
 local function checkAndDrive(env, s, dt)
     local tractor = s.tractor
     local denied = authority(s)
@@ -292,6 +339,14 @@ local function checkAndDrive(env, s, dt)
     if s.elapsed > s.timeoutMs then return "TIMEOUT" end
     local gap = distance(tx, tz, wx, wz)
     s.lastGap = gap
+    -- The observed joints in the wagon's frame: the error signal, never a root pose.
+    local ahead = (tx - wx) * s.dirX + (tz - wz) * s.dirZ
+    local lateral = (tx - wx) * s.dirZ - (tz - wz) * s.dirX
+    s.lastAhead, s.lastLateral = ahead, lateral
+    Hitch.sample(env, s, dt)
+    if math.abs(lateral) > Hitch.DEFAULTS.divergeLateralM or ahead < -Hitch.DEFAULTS.divergeBehindM then
+        return "DIVERGED"
+    end
     if gap < s.bestGap - Hitch.DEFAULTS.stallProgressM then
         s.bestGap, s.sinceProgress = gap, 0
     else
@@ -305,11 +360,13 @@ local function checkAndDrive(env, s, dt)
         tractor:startMotor()
     end
     tractor:raiseActive()
-    -- Steer at a point on the wagon axis past the joint, at the joint's height;
-    -- GIANTS does the steering. Local target in the reverser node, else the
+    -- Steer at a point on the wagon axis, lookaheadM nearer the wagon than the
+    -- joint's projection (at most lookaheadM past the wagon's joint), at the joint's
+    -- height; GIANTS does the steering. Local target in the reverser node, else the
     -- steering node, as Courseplay (CpAIWorker.lua:396-409).
-    local gx = wx - s.dirX * Hitch.DEFAULTS.lookaheadM
-    local gz = wz - s.dirZ * Hitch.DEFAULTS.lookaheadM
+    local along = math.max(ahead - Hitch.DEFAULTS.lookaheadM, -Hitch.DEFAULTS.lookaheadM)
+    local gx = wx + s.dirX * along
+    local gz = wz + s.dirZ * along
     local node = tractor:getAIReverserNode() or tractor:getAISteeringNode()
     local lx, _, lz = env.worldToLocal(node, gx, wy, gz)
     env.AIVehicleUtil.driveToPoint(tractor, dt, 1, true, false, lx, lz, s.maxSpeedKmh)
@@ -318,8 +375,8 @@ end
 
 -- One update of the bounded reverse. Returns "CONTINUE", "CANDIDATE" (GIANTS
 -- reports exactly the planned joints; the tractor is braked), or a failure:
--- RESERVATION_LOST, OCCUPIED, AI_ACTIVE, WAGON_ATTACHED, WAGON_MOVED,
--- OTHER_CANDIDATE, VERTICAL_MISMATCH, DISTANCE_LIMIT, TIMEOUT, STALLED,
+-- RESERVATION_LOST, DRIVER_TOOK_OVER, AI_ACTIVE, WAGON_ATTACHED, WAGON_MOVED,
+-- OTHER_CANDIDATE, VERTICAL_MISMATCH, DISTANCE_LIMIT, TIMEOUT, STALLED, DIVERGED,
 -- MOTOR_UNAVAILABLE, UNKNOWN_OBSERVATION. Any result other than CONTINUE is
 -- final: later calls only brake.
 function Hitch.alignStep(env, s, dt)

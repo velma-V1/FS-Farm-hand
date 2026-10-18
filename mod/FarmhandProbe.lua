@@ -26,9 +26,10 @@ Probe.COMMANDS = {
     { "fhHitchStop", "Farmhand dev: abort the running hitch probe", "consoleStop" },
 }
 -- Mirrors of companion constants (checked by tests/test_lua_probe.py).
-Probe.STAGING_DISTANCE_M = 4.0           -- companion/hitch.py STAGING_DISTANCE_M
-Probe.STAGE_POSITION_TOLERANCE_M = 2.5   -- executor STAGE_POSITION_TOLERANCE_M
-Probe.STAGE_YAW_TOLERANCE_DEG = 20       -- executor STAGE_YAW_TOLERANCE_RAD
+Probe.STAGING_DISTANCE_M = 6.0           -- companion/hitch.py STAGING_DISTANCE_M
+Probe.ALIGN_REACH_M = 9.0                -- companion/hitch.py ALIGN_REACH_M
+Probe.ALIGN_MAX_HEADING_DEG = 30         -- companion/hitch.py ALIGN_MAX_HEADING_RAD
+Probe.ALIGN_MAX_LATERAL_M = 2.0          -- companion/hitch.py ALIGN_MAX_LATERAL_M
 Probe.PLAN_TOLERANCE_M = 0.25            -- executor WAGON_MOVED_TOLERANCE_M
 
 local function log(fmt, ...)
@@ -253,17 +254,31 @@ function Probe:startOp(task, spec)
     task.op = op
 end
 
-local function stageObserved(self, task)
-    local env = self.env
+-- As the companion (companion/hitch.py align_problem): a GOTO end is never
+-- arrival; the observed planned joints must lie where the bounded reverse can
+-- take over. Returns nil (inside) or the reason, and the gap for the reverse.
+local function stageProblem(self, task)
+    local env, plan = self.env, task.plan
     local node = task.tractor:getAIRootNode()
     local x, _, z = env.getWorldTranslation(node)
     local dx, _, dz = env.localDirectionToWorld(node, 0, 0, 1)
-    local root = { x = x, z = z, yaw = env.MathUtil.getYRotationFromDirection(dx, dz) }
-    local p = task.plan.staging
-    local err = math.sqrt((root.x - p.x) ^ 2 + (root.z - p.z) ^ 2)
-    local yawErr = math.deg(math.abs((root.yaw - p.yaw + math.pi) % (2 * math.pi) - math.pi))
-    log("stage observed %s error=%.3f m %.2f deg", fmtPose(root), err, yawErr)
-    return err <= Probe.STAGE_POSITION_TOLERANCE_M and yawErr <= Probe.STAGE_YAW_TOLERANCE_DEG
+    local yaw = env.MathUtil.getYRotationFromDirection(dx, dz)
+    local joint = task.tractor:getAttacherJoints()[plan.tractorJoint]
+    local eye = task.wagon:getInputAttacherJoints()[plan.wagonJoint]
+    local tx, _, tz = env.getWorldTranslation(joint.jointTransform)
+    local wx, _, wz = env.getWorldTranslation(eye.node)
+    local fx, fz = math.sin(plan.final.yaw), math.cos(plan.final.yaw)
+    local ahead = (tx - wx) * fx + (tz - wz) * fz
+    local lateral = (tx - wx) * fz - (tz - wz) * fx
+    local gap = math.sqrt((tx - wx) ^ 2 + (tz - wz) ^ 2)
+    local heading = math.deg(math.abs((yaw - plan.final.yaw + math.pi) % (2 * math.pi) - math.pi))
+    log("stage end root %s joint gap=%.2f ahead=%.2f lateral=%.2f heading=%.1f deg",
+        fmtPose({ x = x, z = z, yaw = yaw }), gap, ahead, lateral, heading)
+    if gap > Probe.ALIGN_REACH_M then return "TRAVEL_ENDED_TOO_FAR", gap end
+    if ahead <= 0 then return "ALIGN_WRONG_SIDE", gap end
+    if heading > Probe.ALIGN_MAX_HEADING_DEG then return "ALIGN_HEADING_OUT_OF_RANGE", gap end
+    if math.abs(lateral) > Probe.ALIGN_MAX_LATERAL_M then return "ALIGN_LATERAL_OUT_OF_RANGE", gap end
+    return nil, gap
 end
 
 -- The wagon and joints must still be exactly what was planned.
@@ -308,11 +323,14 @@ local function step(self, task, dt)
     if status ~= "DONE" then return self:finish(status, code) end
     task.op = nil
     if task.phase == "stage" then
-        if not stageObserved(self, task) then return self:finish("FAILED", "STAGE_NOT_OBSERVED") end
+        local problem, gap = stageProblem(self, task)
+        if problem ~= nil then return self:finish("FAILED", problem) end
         if not planUnchanged(self, task) then return self:finish("FAILED", "PLAN_CHANGED") end
         task.phase = "align"
         local spec = { op = "align", tractorJoint = task.plan.tractorJoint, wagonJoint = task.plan.wagonJoint }
         for k, v in pairs(task.args) do spec[k] = v end
+        -- The reverse is sized to the gap actually left, as the companion does.
+        spec.maxDistanceM = math.min(self.Hitch.LIMITS.maxDistanceM, math.max(Probe.STAGING_DISTANCE_M, gap) + 2)
         self:startOp(task, spec)
         if self.task == task then
             s = task.op.session

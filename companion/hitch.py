@@ -1,16 +1,27 @@
-"""Pure hitch geometry for HITCH: which joints, final pose, staging pose.
+"""Pure hitch geometry for HITCH: which joints, final pose, staging pose, and
+where the bounded reverse can take over.
 
 No game calls and no steering. GIANTS remains the authority on whether the pair
 can actually attach (attachableInfo); this only says where to put the tractor.
 """
 import math
+from dataclasses import dataclass
 
 from protocol.model import Equipment, HitchPlan, Pose
 
-# Distance the staging pose sits straight ahead of the final hitch pose, i.e. the
-# length of the bounded reverse. Provisional: tune at the first FS25 test.
-STAGING_DISTANCE_M = 4.0
+# Where STAGE aims GIANTS' GOTO: this far straight ahead of the final hitch pose.
+# Only an aim, never a tolerance: GOTO may end anywhere (live: 14 m and 138 degrees
+# off), and what follows is decided by the observed joints (align_problem).
+# 6 m leaves the agent room in front of the drawbar and slack inside ALIGN_REACH_M.
+STAGING_DISTANCE_M = 6.0
 MAX_STAGING_DISTANCE_M = 10.0
+
+# The envelope from which the bounded reverse (mod/FarmhandHitch.lua) can bring the
+# planned tractor joint to the wagon's input joint, measured on the observed joints
+# in the wagon's frame. Provisional: every check logs the numbers.
+ALIGN_REACH_M = 9.0                 # the reverse's 10 m cap (Hitch.LIMITS.maxDistanceM) less 1 m of curve
+ALIGN_MAX_HEADING_RAD = math.radians(30)
+ALIGN_MAX_LATERAL_M = 2.0
 
 
 def _finite(*values) -> bool:
@@ -83,3 +94,54 @@ def hitch_problem(tractor: Equipment, wagon: Equipment) -> str:
     if wagon.required_pto_torque > 0 and not any(_pto_connects(o.pto_names, i.pto_names) for o, i in shared):
         return "NO_MATCHING_PTO"
     return "NO_VALID_HITCH_GEOMETRY"
+
+
+@dataclass(frozen=True)
+class JointError:
+    """The planned tractor joint relative to the wagon's input joint, in the wagon's
+    frame: ``ahead`` along its forward axis (the side a tractor hitches from),
+    ``lateral`` sideways (its local +x), ``heading`` the tractor's turn off the wagon's
+    heading (radians, signed). ``joint`` and ``eye`` are the world points."""
+    gap: float
+    ahead: float
+    lateral: float
+    heading: float
+    joint: tuple
+    eye: tuple
+
+    def describe(self) -> str:
+        return ("tractor joint (%.2f, %.2f) wagon joint (%.2f, %.2f) gap %.2f m ahead %.2f m "
+                "lateral %.2f m heading %.1f deg" % (*self.joint, *self.eye, self.gap, self.ahead,
+                                                     self.lateral, math.degrees(self.heading)))
+
+
+def joint_error(tractor: Equipment, wagon: Equipment, plan: HitchPlan) -> JointError | None:
+    """The observed error of the planned joint pair, or None if unobservable."""
+    root = tractor.ai_root
+    joint = next((j for j in tractor.output_joints if j.index == plan.tractor_joint), None)
+    eye = next((j for j in wagon.input_joints if j.index == plan.wagon_joint), None)
+    if root is None or joint is None or eye is None or not _finite(
+            root.x, root.z, root.yaw, joint.x, joint.z, *eye.position, plan.final.yaw):
+        return None
+    jx, jz = root.to_world(joint.x, joint.z)
+    dx, dz = jx - eye.position[0], jz - eye.position[1]
+    fx, fz = math.sin(plan.final.yaw), math.cos(plan.final.yaw)
+    heading = (root.yaw - plan.final.yaw + math.pi) % (2 * math.pi) - math.pi
+    return JointError(math.hypot(dx, dz), dx * fx + dz * fz, dx * fz - dz * fx, heading,
+                      (jx, jz), tuple(eye.position))
+
+
+def align_problem(error: JointError | None) -> str | None:
+    """None when the bounded reverse can take over from here, else why not. The
+    reverse only reverses: it never turns a tractor around or crosses the wagon."""
+    if error is None:
+        return "UNKNOWN_OBSERVATION"
+    if error.gap > ALIGN_REACH_M:
+        return "TRAVEL_ENDED_TOO_FAR"
+    if error.ahead <= 0:
+        return "ALIGN_WRONG_SIDE"
+    if abs(error.heading) > ALIGN_MAX_HEADING_RAD:
+        return "ALIGN_HEADING_OUT_OF_RANGE"
+    if abs(error.lateral) > ALIGN_MAX_LATERAL_M:
+        return "ALIGN_LATERAL_OUT_OF_RANGE"
+    return None

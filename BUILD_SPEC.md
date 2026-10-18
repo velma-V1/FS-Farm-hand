@@ -103,10 +103,17 @@ FIND resolves the destination and selects an eligible pair with a hitch plan
 route (an AutoDrive marker near the staging pose, else GIANTS GOTO to the staging
 pose). RESERVE atomically owns both or neither. MOVE is HITCH: VALIDATE (fresh
 reserved, unattached, stopped pair; wagon unmoved; same planned joints) before and
-after every step → TRAVEL_NEAR (AutoDrive or GIANTS GOTO, only when far) → STAGE (GIANTS AIJobGoTo
-to a pose a few metres ahead of the final hitch pose, facing the wagon's heading) →
-ALIGN_REVERSE (bounded reverse; stops when GIANTS reports the exact planned joints
-as the attach candidate). ATTACH uses GIANTS' normal attachment after re-checking
+after every step → TRAVEL_NEAR (AutoDrive or GIANTS GOTO, only when far; coarse:
+it need only end near the wagon) → STAGE (GIANTS AIJobGoTo aimed 6 m ahead of the
+final hitch pose, facing the wagon's heading; coarse too: GOTO may end anywhere, so
+its end is never arrival) → OBSERVE (the planned tractor joint relative to the
+wagon's input joint, from a fresh snapshot: within 9 m, on the wagon's front side,
+within 30 degrees and 2 m of its axis, else a precise failure such as
+TRAVEL_ENDED_TOO_FAR, and nothing reverses) → ALIGN_REVERSE (the bounded local
+alignment: reverse only, steered onto the wagon's axis from the observed joints,
+capped at 10 m, 30 s and 5 km/h, ends on stall, divergence, wagon movement,
+takeover or other AI; stops when GIANTS reports the exact planned joints as the
+attach candidate). ATTACH uses GIANTS' normal attachment after re-checking
 that candidate and isAttachAllowed. VERIFY reads fresh attachment state and a
 stopped tractor before DELIVER requests transport to the chosen destination
 (AutoDrive `drive` to a marker or GIANTS `navigate` to a pose). One

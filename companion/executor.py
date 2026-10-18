@@ -9,8 +9,8 @@ from threading import Lock
 
 from jsonschema import Draft202012Validator
 
-from adapters.world import StepUnverified, World
-from companion.hitch import hitch_problem, plan_hitch
+from adapters.world import StepFailed, StepUnverified, World
+from companion.hitch import align_problem, hitch_problem, joint_error, plan_hitch
 from protocol.model import Destination, Equipment, HitchPlan, Pose, Position, Result
 
 log = logging.getLogger("farmhand")
@@ -36,13 +36,12 @@ WAGON_ARRIVAL_TOLERANCE_M = 15.0
 # coarse cross-checks of each step's outcome, not GIANTS' attach rules: GIANTS'
 # attachableInfo stays the authority on attachability (adapters/EVIDENCE.md).
 NEAR_RADIUS_M = 60.0                      # beyond this, TRAVEL_NEAR runs before STAGE
-# STAGE only has to leave the tractor where the bounded reverse can take over:
-# GIANTS' own GOTO arrival tolerance is engine-internal (the agent's
-# TARGET_REACHED, AIDrivable:onUpdate 317-319), and the first live test ended
-# "STAGE_ENDED" yet outside the earlier 1 m. Provisional; every STAGE end logs
-# its deviation so the value can be set from evidence.
-STAGE_POSITION_TOLERANCE_M = 2.5
-STAGE_YAW_TOLERANCE_RAD = math.radians(20)
+# TRAVEL_NEAR and STAGE are coarse GIANTS GOTO (or AutoDrive) travel: an ended job
+# is never taken as having reached its pose. GIANTS also ends a GOTO when its agent
+# finds the target NOT_REACHABLE (AIDrivable:onUpdate 320-322), and live it ended
+# 14 m and 138 degrees off. After TRAVEL_NEAR the tractor need only be near
+# (NEAR_RADIUS_M plus the marker arrival tolerance); after STAGE the observed joints
+# must lie in the bounded reverse's envelope (companion/hitch.py align_problem).
 ALIGN_MAX_DISTANCE_M = 10.0               # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
 WAGON_MOVED_TOLERANCE_M = 0.25
 WAGON_YAW_TOLERANCE_RAD = math.radians(5)
@@ -408,6 +407,16 @@ class Executor:
                      tractor.position, wagon.position, target, tractor.stopped, wagon.stopped)
             raise ObservationMismatch("DELIVERY_NOT_OBSERVED")
 
+    def _log_joints(self, label, ids, plan):
+        """Diagnostics only: the observed joint error of the pair, whatever happened."""
+        try:
+            observed = {item.id: item for item in self.world.snapshot()}
+            error = joint_error(observed[ids[0]], observed[ids[1]], plan)
+        except Exception as failure:                  # never hides the step's own outcome
+            error = None
+            log.info("%s: no observation (%s)", label, type(failure).__name__)
+        log.info("%s: %s", label, error.describe() if error else "joints unobservable")
+
     def _run(self, command, cancel=None, on_state=None):
         owner, farm_id = command["request_id"], command["farm_id"]
         states, ids = [], ()
@@ -498,29 +507,31 @@ class Executor:
                     enter("TRAVEL_NEAR")
                     self._move(tractor.id, travel, owner)
                     tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
-                    if not self._at(tractor, travel):
-                        raise ObservationMismatch("TRAVEL_NOT_OBSERVED")
+                    left = math.dist(tractor.position, (plan.staging.x, plan.staging.z))
+                    log.info("TRAVEL_NEAR end: root %s heading %s, %.1f m from the hitch area",
+                             tractor.position, tractor.heading, left)
+                    if left > NEAR_RADIUS_M + TRACTOR_ARRIVAL_TOLERANCE_M:
+                        raise StepFailed("TRAVEL_ENDED_TOO_FAR")
                 enter("STAGE")
                 self.world.stage(tractor.id, wagon.id, plan.staging, owner)
-                tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
-                root = tractor.ai_root
-                joint = next(j for j in tractor.output_joints if j.index == plan.tractor_joint)
-                offset = None if root is None else math.dist((root.x, root.z), (plan.staging.x, plan.staging.z))
-                turn = None if root is None else math.degrees(_angle(root.yaw, plan.staging.yaw))
-                gap = None if root is None else math.dist(root.to_world(joint.x, joint.z), plan.target)
-                log.info("STAGE end: ai_root %s root %s heading %s staging %s offset %s m turn %s deg "
-                         "joint gap %s m stopped %s", root, tractor.position, tractor.heading, plan.staging,
-                         offset and round(offset, 2), turn and round(turn, 1), gap and round(gap, 2), tractor.stopped)
-                if (root is None or offset > STAGE_POSITION_TOLERANCE_M
-                        or math.radians(turn) > STAGE_YAW_TOLERANCE_RAD or gap > ALIGN_MAX_DISTANCE_M - 1):
+                tractor, wagon = self._hitch_state(ids, farm_id, owner, plan)
+                error = joint_error(tractor, wagon, plan)
+                problem = align_problem(error)
+                log.info("STAGE end: ai_root %s root %s staging aim %s stopped %s; %s -> %s",
+                         tractor.ai_root, tractor.position, plan.staging, tractor.stopped,
+                         error.describe() if error else "joints unobservable", problem or "ALIGN")
+                if problem == "UNKNOWN_OBSERVATION":
                     raise ObservationMismatch("STAGE_NOT_OBSERVED")
+                if problem is not None:
+                    raise StepFailed(problem)
                 enter("ALIGN_REVERSE")
-                self.world.align(tractor.id, wagon.id, plan, owner)
-                tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
-                joint = next(j for j in tractor.output_joints if j.index == plan.tractor_joint)
-                if (tractor.ai_root is None
-                        or math.dist(tractor.ai_root.to_world(joint.x, joint.z), plan.target)
-                        > ALIGN_PROGRESS_TOLERANCE_M):
+                try:
+                    self.world.align(tractor.id, wagon.id, plan, owner)
+                finally:
+                    self._log_joints("ALIGN_REVERSE end", ids, plan)
+                tractor, wagon = self._hitch_state(ids, farm_id, owner, plan)
+                error = joint_error(tractor, wagon, plan)
+                if error is None or error.gap > ALIGN_PROGRESS_TOLERANCE_M:
                     raise ObservationMismatch("ALIGN_NOT_OBSERVED")
                 enter("ATTACH")
                 self.world.attach(tractor.id, wagon.id, (plan.tractor_joint, plan.wagon_joint), owner)

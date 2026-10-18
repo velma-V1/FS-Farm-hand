@@ -61,6 +61,8 @@ function W.new(opts)
     function tractor:raiseActive() end
     function tractor:getAIReverserNode() return tractorJoint.jointTransform end
     function tractor:getAISteeringNode() return tractorJoint.jointTransform end
+    w.aiRoot = node(0, gap + 2.5, opts.tractorYaw or 0)
+    function tractor:getAIRootNode() return w.aiRoot end
     function tractor:getLastSpeed() return w.speedOverride or w.speed end
     function tractor:getActiveFarm() return 1 end
     function tractor:attachImplementFromInfo(info)
@@ -319,6 +321,8 @@ class LuaHitchTests(unittest.TestCase):
             "AI_ACTIVE": (dict(gap=4), {}, lambda w: setattr(w, "ai", True)),
             "AI_UNKNOWN": (dict(gap=4), {}, lambda w: setattr(w, "ai", None)),
             "VERTICAL_MISMATCH": (dict(gap=4), {}, lambda w: setattr(w.wagonJoint.node, "y", 0.6)),
+            # Swung 3.5 m off the wagon's axis: never chased further.
+            "DIVERGED": (dict(gap=4), {}, lambda w: setattr(w.tractorJoint.jointTransform, "x", 3.5)),
         }
         expected = {"WRONG_JOINT": "OTHER_CANDIDATE", "CANDIDATE_UNREADABLE": "UNKNOWN_OBSERVATION",
                     "NODE_UNREADABLE": "UNKNOWN_OBSERVATION", "FARM_CHANGED": "RESERVATION_LOST",
@@ -341,6 +345,38 @@ class LuaHitchTests(unittest.TestCase):
                 self.assertEqual(self.hitch.attach(w.env, session), "NOT_ALIGNED")
                 # Another controller's job is never cancelled or taken over.
                 self.assertNotIn("stopCurrentAIJob:stoppedByUser", list(w.calls.values()))
+
+    def test_steering_follows_the_wagon_axis_from_the_observed_joints(self):
+        # Joint 6 m ahead and 1.5 m beside the drawbar: aim on the axis 3 m nearer
+        # the wagon than the joint's projection (pure pursuit onto the line).
+        w = self.world(gap=6, wagonX=1.5)
+        session, _ = self.align(w, maxDistanceM=8)
+        self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CONTINUE")
+        first = self.drives(w)[0]
+        self.assertAlmostEqual(first["lx"], 1.5)
+        self.assertAlmostEqual(first["lz"], 3 - 6)
+        # Close in: 2 m past the wagon's joint for a joint 1 m ahead of it...
+        w = self.world(gap=1)
+        session, _ = self.align(w)
+        self.hitch.alignStep(w.env, session, 100)
+        self.assertAlmostEqual(self.drives(w)[0]["lz"], (1 - 3) - 1)
+        # ...and never more than 3 m past it, even with the joint beside the drawbar.
+        w = self.world(gap=-0.5, wagonX=0.8)
+        session, _ = self.align(w)
+        self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CONTINUE")
+        self.assertAlmostEqual(self.drives(w)[0]["lz"], -3 + 0.5)
+
+    def test_the_end_of_a_reverse_describes_its_progress(self):
+        w = self.world(gap=4)
+        session, _ = self.align(w)
+        result, _ = self.W.run(w, session, 100, 200, lambda i: setattr(w, "stuck", i > 20))
+        self.assertEqual(result, "STALLED")
+        text = self.hitch.describe(session)
+        self.assertIn("gap=", text)
+        self.assertIn("lateral=0", text)
+        samples = text.split("=")[-1].split()
+        self.assertGreaterEqual(len(samples), 6)                # one a second, from the start
+        self.assertTrue(samples[0].startswith("100:4.00/4.00/0.00/0.0"), samples[0])
 
     def test_terminal_result_never_resumes_when_the_cause_clears(self):
         # Reservation lost, then restored: the session must stay stopped.
