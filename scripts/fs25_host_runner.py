@@ -213,17 +213,22 @@ class System:
         """taskkill of FS25's own image name, the only process the runner ever ends."""
         self._run(["taskkill.exe", *(["/F"] if force else []), "/IM", FS25_IMAGE])
 
-    def start(self, program: str, arguments: list[str], folder: str) -> None:
-        """Detached, so it outlives this runner. Every value is fixed or validated."""
+    def start(self, program: str, arguments: list[str], folder: str) -> dict:
+        """Detached, so it outlives this runner. Every value is fixed or validated.
+        Returns what the starter said (for a launch that never appears), bounded."""
         if sys.platform == "win32":
-            subprocess.Popen([program, *arguments], cwd=folder, close_fds=True,
-                             creationflags=0x00000008 | 0x00000200)   # DETACHED_PROCESS | NEW_PROCESS_GROUP
-            return
+            try:
+                subprocess.Popen([program, *arguments], cwd=folder, close_fds=True,
+                                 creationflags=0x00000008 | 0x00000200)   # DETACHED_PROCESS | NEW_PROCESS_GROUP
+            except OSError as error:
+                return {"error": str(error)[:300]}
+            return {}
         quoted = " ".join(f'"{_plain(a)}"' if " " in a else _plain(a) for a in arguments)
         command = f"Start-Process -FilePath '{_plain(program)}' -WorkingDirectory '{_plain(folder)}'"
         if quoted:
             command += f" -ArgumentList '{quoted}'"
-        self._run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command])
+        done = self._run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command])
+        return {"exit": done.returncode, "stderr": (done.stderr or "")[-600:], "stdout": (done.stdout or "")[-300:]}
 
 
 class Targets:
@@ -881,14 +886,15 @@ class Runner:
                                    "installed": self._installed_builds()}
 
     def _launch(self):
-        self.system.start(self.targets.exe, self.targets.game_arguments(), str(PureWindowsPath(self.targets.exe).parent))
+        said = self.system.start(self.targets.exe, self.targets.game_arguments(),
+                                 str(PureWindowsPath(self.targets.exe).parent))
         deadline = time.monotonic() + GAME_APPEAR_S
         while time.monotonic() < deadline:
             pids = self.system.processes(FS25_IMAGE)
             if pids:
                 return pids
             time.sleep(1.0)
-        raise Refused("FS25_DID_NOT_START")
+        raise Refused("FS25_DID_NOT_START", starter=said or {})
 
     def op_launch_fs25(self):
         if self.system.processes(FS25_IMAGE):

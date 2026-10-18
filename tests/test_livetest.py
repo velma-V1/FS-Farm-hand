@@ -338,6 +338,8 @@ class FakeSystem:
 
     def start(self, program, arguments, folder):
         self.calls.append(("start", program, tuple(arguments), folder))
+        if getattr(self, "start_fails", None):
+            return {"exit": 1, "stderr": self.start_fails, "stdout": ""}
         if program.endswith("pythonw.exe"):
             self.companion_pid = 4242
             (self.data / "companion.pid").write_text("4242")
@@ -751,6 +753,13 @@ class HostRunnerLifecycleTests(RunnerCase):
             self.assertFalse(self.runner.op_status()[2]["farmhand_ready"])
             live.update(problems=[], ready=True)
             self.assertTrue(self.runner.op_status()[2]["farmhand_ready"])
+
+    def test_a_launch_that_never_appears_says_what_the_starter_said(self):
+        self.system.start_fails = "Start-Process : This command cannot be run due to the error: Access is denied."
+        with unittest.mock.patch.object(host, "GAME_APPEAR_S", 0.1):
+            answer = self.send("launch-fs25")
+        self.assertEqual(answer["code"], "FS25_DID_NOT_START")
+        self.assertIn("Access is denied", answer["result"]["starter"]["stderr"])
 
     def test_restart_reports_not_ready_within_its_bound(self):
         with unittest.mock.patch.object(self.runner, "op_status",
