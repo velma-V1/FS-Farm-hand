@@ -82,8 +82,9 @@ class CompanionCase(unittest.TestCase):
         body = raw if raw is not None else json.dumps({"version": 1, "id": ident, "command": command,
                                                        "session": session or self.game.link.session,
                                                        "created": time.time() if created is None else created})
-        (self.folder / f"request-{ident}.json").write_bytes(body.encode() if isinstance(body, str) else body)
         answer = self.folder / f"response-{ident}.json"
+        answer.unlink(missing_ok=True)                # a replayed id must not read the earlier answer
+        (self.folder / f"request-{ident}.json").write_bytes(body.encode() if isinstance(body, str) else body)
         wait_for(answer.exists)
         time.sleep(0.02)
         return json.loads(answer.read_text())
@@ -328,9 +329,10 @@ class RunnerCase(unittest.TestCase):
         body = raw if raw is not None else json.dumps({
             "version": 1, "id": ident, "token": token or self.runner.token, "op": op, "args": args or {},
             "created": time.time() if created is None else created})
+        answer = self.runner.responses / f"response-{ident}.json"
+        answer.unlink(missing_ok=True)                # a replayed id must not read the earlier answer
         (self.runner.requests / f"request-{ident}.json").write_bytes(body.encode() if isinstance(body, str) else body)
         self.runner.poll_once()
-        answer = self.runner.responses / f"response-{ident}.json"
         wait_for(answer.exists)
         time.sleep(0.02)
         return json.loads(answer.read_text())
