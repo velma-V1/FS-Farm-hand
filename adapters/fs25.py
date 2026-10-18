@@ -28,6 +28,11 @@ IMPLEMENT_KINDS = frozenset({"plow", "cultivator", "sowing_machine", "sprayer", 
                              "weeder", "mulcher", "stone_picker", "manure_barrel", "tree_planter",
                              "fruit_preparer", "leveler", "mixer_wagon", "salt_spreader", "water_trailer",
                              "livestock_trailer", "hook_lift_trailer", "cutter"})
+# A self-propelled vehicle that itself does work (a combine, a self-propelled
+# sprayer or mower) is a machine, never a tractor (live 2026-10-18: the CH7.70
+# combine has a motor and a PTO output). Loader tools (shovel) are not implements.
+WORK_KINDS = (IMPLEMENT_KINDS | {"combine"}) - {"trailer"}
+LOADER_TOOL_KINDS = frozenset({"shovel"})
 LOADER_STORE_CATEGORIES = frozenset({"FRONTLOADERVEHICLES", "WHEELLOADERVEHICLES", "TELELOADERVEHICLES",
                                      "FORKLIFTS", "SKIDSTEERVEHICLES"})
 # GIANTS PowerConsumer:getCanBeTurnedOn (lines 276-282) refuses when the PTO torque
@@ -83,6 +88,7 @@ def _towing_vehicle(vehicle) -> bool:
     category = vehicle["category"]
     return (vehicle["self_propelled"] is True and vehicle["motor"] is not None
             and category is not None and category.upper() not in LOADER_STORE_CATEGORIES
+            and not WORK_KINDS & set(vehicle["kinds"])
             and any(joint["pto_names"] for joint in vehicle["output_joints"]))
 
 
@@ -95,7 +101,7 @@ def _category(vehicle, categories) -> str | None:
     if _towing_vehicle(vehicle):
         return "tractor"
     if (vehicle["self_propelled"] is False and vehicle["input_joint_poses"]
-            and IMPLEMENT_KINDS & set(vehicle["kinds"])):
+            and IMPLEMENT_KINDS & set(vehicle["kinds"]) and not LOADER_TOOL_KINDS & set(vehicle["kinds"])):
         return "implement"
     return None
 

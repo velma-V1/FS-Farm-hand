@@ -314,7 +314,11 @@ class MappingTests(unittest.TestCase):
                  ({"category": None}, "unknown"),                  # loader exclusion needs the category
                  ({"category": "TELELOADERVEHICLES"}, "unknown"),
                  ({"category": "skidSteerVehicles"}, "unknown"),
-                 ({"forage_wagon": True}, "forage_wagon")]
+                 ({"forage_wagon": True}, "forage_wagon"),
+                 # Live 2026-10-18: a combine (motor, PTO output) is a machine, not a tractor.
+                 ({"kinds": ["combine", "fill_unit", "ai_field_worker"]}, "unknown"),
+                 ({"kinds": ["sprayer", "fill_unit"]}, "unknown"),              # self-propelled sprayer
+                 ({"kinds": ["fill_unit", "ai_field_worker", "ai_implement"]}, "tractor")]
         for change, expected in cases:
             with self.subTest(change=change):
                 frame = parse_frame(line(snapshot([vehicle(11, TRACTORS, **change)])))
@@ -342,6 +346,7 @@ class MappingTests(unittest.TestCase):
                  ({"category": None}, "forage_wagon"),
                  ({"forage_wagon": False, "kinds": []}, "unknown"),       # nothing GIANTS names
                  ({"forage_wagon": False, "kinds": ["trailer"]}, "implement"),   # an ordinary trailer
+                 ({"forage_wagon": False, "kinds": ["shovel", "leveler"]}, "unknown"),   # a loader tool
                  ({"category": TRACTORS}, "unknown")]                     # contradictory: never guessed
         for change, expected in cases:
             with self.subTest(change=change):

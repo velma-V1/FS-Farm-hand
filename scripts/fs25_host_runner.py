@@ -790,10 +790,14 @@ class Runner:
             problem = error.code
         builds = self._installed_builds()
         head = repo_head(self.repo)
-        # READY: FS25 and the companion run, the game is linked to it and runs the
-        # companion's own build. hitch_ready adds the companion's other checks.
+        # READY: FS25 and the companion run, the game is linked to it with fresh
+        # snapshots (live 2026-10-18: a restarted game still "linked" by the old
+        # game's last frame showed GAME_STALE_SNAPSHOT) and runs the companion's own
+        # build. hitch_ready adds the companion's other checks.
+        problems = set(live.get("problems", ())) if live else set()
         ready = bool(fs25 and pid and live and live.get("game", {}).get("linked")
-                     and not {"MOD_BUILD_MISMATCH", "COMPANION_BUILD_UNSTAMPED"} & set(live.get("problems", ())))
+                     and not {"MOD_BUILD_MISMATCH", "COMPANION_BUILD_UNSTAMPED"} & problems
+                     and not any(p.startswith("GAME_") for p in problems))
         return True, "STATUS", {"fs25_running": None if fs25 is None else bool(fs25), "fs25_pids": fs25,
                                 "windows_problem": windows, "companion_pid": pid,
                                 "installed": builds, "repo_head": head, "live": live, "live_problem": problem,
@@ -919,11 +923,14 @@ class Runner:
     def op_restart_fs25(self, ready_timeout: float = READY_S):
         self._stop_game()
         pids = self._launch()
-        deadline = time.monotonic() + ready_timeout
+        launched = time.monotonic()
+        deadline = launched + ready_timeout
         status = None
         while time.monotonic() < deadline:
             _, _, status = self.op_status()
-            if status["farmhand_ready"]:
+            # Ready from the new game only: its snapshot is newer than the launch.
+            age = ((status.get("live") or {}).get("game") or {}).get("last_frame_age_s")
+            if status["farmhand_ready"] and age is not None and age < time.monotonic() - launched:
                 return True, "READY", {"fs25_pids": pids, "status": status}
             time.sleep(5.0)
         raise Refused("NOT_READY", status=status)

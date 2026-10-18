@@ -731,13 +731,26 @@ class HostRunnerLifecycleTests(RunnerCase):
 
     def test_restart_stops_only_fs25_then_waits_for_ready(self):
         self.system.fs25 = [1]
-        with unittest.mock.patch.object(host, "READY_S", 0.5), \
-                unittest.mock.patch.object(self.runner, "op_status",
-                                           return_value=(True, "STATUS", {"farmhand_ready": True})):
+        # Live 2026-10-18: the old game's last snapshot is not the new game being ready.
+        old = (True, "STATUS", {"farmhand_ready": True, "live": {"game": {"last_frame_age_s": 9999}}})
+        new = (True, "STATUS", {"farmhand_ready": True, "live": {"game": {"last_frame_age_s": 0.0}}})
+        with unittest.mock.patch.object(host, "READY_S", 30), unittest.mock.patch.object(host.time, "sleep"), \
+                unittest.mock.patch.object(self.runner, "op_status", side_effect=[old, old, new]) as status:
             answer = self.send("restart-fs25")
         self.assertEqual((answer["ok"], answer["code"]), (True, "READY"))
+        self.assertEqual(status.call_count, 3)
         self.assertEqual(self.system.calls[0], ("close", host.FS25_IMAGE, False))
         self.assertEqual(self.system.calls[1][:2], ("start", host.FS25_EXE))
+
+    def test_a_stale_game_link_is_not_ready(self):
+        self.system.fs25, self.system.companion_pid = [1], 4242
+        (self.data / "companion.pid").write_text("4242")
+        live = {"game": {"linked": True, "last_frame_age_s": 64.8}, "problems": ["GAME_STALE_SNAPSHOT"],
+                "ready": False}
+        with unittest.mock.patch.object(self.runner.companion, "ask", return_value={"result": live}):
+            self.assertFalse(self.runner.op_status()[2]["farmhand_ready"])
+            live.update(problems=[], ready=True)
+            self.assertTrue(self.runner.op_status()[2]["farmhand_ready"])
 
     def test_restart_reports_not_ready_within_its_bound(self):
         with unittest.mock.patch.object(self.runner, "op_status",
