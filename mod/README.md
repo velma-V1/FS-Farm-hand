@@ -24,6 +24,38 @@ value; CI loads the returned tables. Game globals are passed as `env`
 (`getfenv(0)` in game). Nothing moves on load: the bridge waits for a companion
 session and the probe for a typed command.
 
+## Live tests driven by Claude Code (development only)
+
+Claude Code runs in a sandbox that cannot write the FS25 folders or start Windows
+programs, so two narrow bridges carry a live test:
+
+1. Claude → host runner: `python scripts/fs25_live_test.py <command>` (in the
+   sandbox) writes one request at a time to `.fs25-dev/host/requests` in this
+   checkout; `scripts/fs25_host_runner.py`, started once by the user outside the
+   sandbox, answers in `.fs25-dev/host/responses`. Only seven ops exist (`status`,
+   `install-current-build`, `launch-fs25`, `restart-fs25`, `run-hitch-test`,
+   `stop-test`, `collect`); none takes a path, program or command text, and every
+   request names the runner's per-start token and a fresh, increasing id.
+2. Runner → companion: `companion/livetest.py`, active only when the companion is
+   started with `--live-test` (install-current-build does; the logon start never
+   does), reads `modSettings/FS25_Farmhand/livetest`. `hitch` submits the player's
+   own proposal (`hitch_pair`) to the coordinator, so the production executor runs
+   FIND → RESERVE → STAGE → LOCAL_MANEUVER → ALIGN_REVERSE → ATTACH → VERIFY;
+   `stop` is the STOP key; `status` only reads.
+
+Once, on the PC (WSL, outside Claude's sandbox; the companion package must already
+be installed by its Setup.cmd):
+
+    python3 scripts/fs25_host_runner.py install-runner
+    python3 ~/.local/share/fs25-farmhand-host/fs25_host_runner.py serve --repo ~/projects/FS-Farm-hand [--savegame N]
+
+Then Claude runs `status`, `install` (FS25 closed), `restart`, `hitch`, `collect`.
+The runner copies only the files of `scripts/package_probe.py --build-dev` whose
+sha256 its manifest names and whose build is the checkout's commit, to the fixed mod
+and companion folders. `--savegame N` passes FS25's `-autoStartSavegameId N`
+(UNVERIFIED on the Microsoft Store build). Stop the runner with Ctrl+C; nothing of
+it is in the release.
+
 ## Hitch retest (do this first)
 
 GIANTS' GOTO is now used only when the tractor's hitch is more than 25 m from the

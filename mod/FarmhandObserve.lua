@@ -11,6 +11,9 @@
 local Observe = {}
 
 Observe.PROTOCOL = 2
+-- The build this mod was installed from: "source" in the checkout; replaced with the
+-- commit by scripts/package_probe.py in built copies (= companion/buildinfo.py BUILD).
+Observe.BUILD = "source"
 -- Must equal protocol/ipc.py PIPE_PATH. The companion hosts this pipe; the mod
 -- is a write-only client (pattern from Farmhand Companion scripts/Transport.lua).
 Observe.PIPE_PATH = "\\\\.\\pipe\\fs_farmhand_ac001"
@@ -432,6 +435,7 @@ function Observe.hello(env)
         event = "hello",
         protocol = Observe.PROTOCOL,
         mod_version = token(modVersion) or "unknown",
+        build = token(Observe.BUILD) or "unknown",
         autodrive_version = nullable(token(autoDriveVersion)),
     })
 end

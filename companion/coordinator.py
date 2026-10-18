@@ -61,6 +61,8 @@ class Job:
     reason: str | None = None
     spoken: bool = False          # asked by voice: replies are spoken too
     stop_sent: bool = False       # at most one requester stop per job
+    states: tuple = ()            # the executor's result: states entered, equipment used
+    equipment: tuple = ()
 
 
 class Coordinator:
@@ -83,12 +85,13 @@ class Coordinator:
         with self._lock:
             return self.current is not None
 
-    def submit(self, proposal, spoken: bool = False) -> None:
-        """Answer one proposal now; a job runs on its own thread. ``spoken``: the
-        request was spoken, so this answer (and that job's notices) are too."""
+    def submit(self, proposal, spoken: bool = False) -> Job | None:
+        """Answer one proposal now; a job runs on its own thread and is returned
+        (None when none started). ``spoken``: the request was spoken, so this answer
+        (and that job's notices) are too."""
         if proposal is None or not COMMAND_VALIDATOR.is_valid(proposal):
             self.notify("NOT_UNDERSTOOD", spoken)
-            return
+            return None
         command = proposal["command"]
         if command == "stop":
             self.stop(spoken)
@@ -97,7 +100,8 @@ class Coordinator:
         elif command == "unsupported":                 # understood: say exactly what is missing
             self.notify(token(f"UNSUPPORTED_{proposal['reason'].upper()}"), spoken)
         else:
-            self.start(command, proposal.get("target", "here"), spoken)
+            return self.start(command, proposal.get("target", "here"), spoken)
+        return None
 
     # ------------------------------------------------------------------ status
     def status(self) -> str:
@@ -143,7 +147,7 @@ class Coordinator:
             log.info("stop for %s: %s", owner, getattr(error, "code", error))
 
     # -------------------------------------------------------------------- jobs
-    def start(self, command: str, target, spoken: bool = False) -> None:
+    def start(self, command: str, target, spoken: bool = False) -> Job | None:
         with self._lock:
             if self.current is not None:
                 busy = True
@@ -155,11 +159,12 @@ class Coordinator:
                 job, cancel = self.current, self._cancel
         if busy:
             self.notify("BUSY", spoken)
-            return
+            return None
         self.notify(JOBS[command][1], spoken)
         self._worker = threading.Thread(target=self._run, args=(job, cancel, command, target), daemon=True,
                                         name=f"farmhand-job-{job.number}")
         self._worker.start()
+        return job
 
     def _run(self, job: Job, cancel: threading.Event, command: str, target) -> None:
         task, _, complete = JOBS[command]
@@ -177,6 +182,7 @@ class Coordinator:
 
             self.world.cancel = cancel           # the link refuses steps once it is set
             result = self.executor.execute(intent, cancel=cancel, on_state=entered)
+            job.states, job.equipment = tuple(result.states), tuple(result.equipment_ids)
             job.state, job.reason = result.status, result.reason
             log.info("job %d result %s", job.number, json.dumps({
                 "status": result.status, "reason": result.reason,

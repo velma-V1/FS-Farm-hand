@@ -54,6 +54,11 @@ have precedence; report conflicts instead of silently changing the scope.
 - This remote development workflow does NOT change the local runtime architecture.
 - The finished farmhand must be able to run locally beside FS25 without GitHub or a
   hosted service being required for ordinary operation.
+- Development-only live tests (user-authorized 2026-10-18): the host runner
+  `scripts/fs25_host_runner.py`, started by the user outside the agent's sandbox,
+  performs only its fixed allowlist (status, install the checkout's build, launch or
+  restart FS25, the production hitch_pair, STOP, collect). Never widen it into a
+  shell, file or program interface, and never ship it or `--live-test` as release.
 - Live FS25 behavior, Windows service behavior, local IPC, local model execution,
   speech, and game/mod integration must eventually be verified on the user's PC.
 

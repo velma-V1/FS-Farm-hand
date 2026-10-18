@@ -57,6 +57,7 @@ class CommandLink:
         self.session = session or uuid.uuid4().hex[:16]
         self._cond = threading.Condition()
         self._snapshot: dict | None = None
+        self.hello: dict | None = None    # the game's latest hello (its mod version and build)
         self._snapshots = 0
         self._last_frame_at: float | None = None
         self._results: dict[int, list[tuple[str, str]]] = {}
@@ -141,6 +142,7 @@ class CommandLink:
                 # The game (re)opened the pipe, e.g. on re-adopting this session
                 # after a savegame reload: its request ids restart there.
                 self._last_request = 0
+                self.hello = frame
             elif event == "snapshot":
                 self._snapshot, self._snapshots = frame, self._snapshots + 1
                 self._last_session = frame["session"]

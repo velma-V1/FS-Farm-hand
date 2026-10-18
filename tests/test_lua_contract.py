@@ -255,8 +255,10 @@ class LuaContractTests(unittest.TestCase):
     def test_hello_frame(self):
         world = self.stubs.standard()
         hello = parse_frame(self.observe.hello(world.env).encode())
-        self.assertEqual(hello, {"event": "hello", "protocol": 2, "mod_version": "0.1.0.0",
+        self.assertEqual(hello, {"event": "hello", "protocol": 2, "mod_version": "0.1.0.0", "build": "source",
                                  "autodrive_version": "3.0.1.4"})
+        from companion.buildinfo import BUILD
+        self.assertEqual(self.observe.BUILD, BUILD)      # both stamped by scripts/package_probe.py
         bare = self.stubs.world(self.lua.table(noAutoDrive=True))
         self.assertIsNone(parse_frame(self.observe.hello(bare.env).encode())["autodrive_version"])
 

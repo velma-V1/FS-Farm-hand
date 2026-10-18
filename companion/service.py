@@ -136,19 +136,23 @@ def linked_farm(link):
 
 
 def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, interpreter=None,
-          microphone=None, transcriber=None, speaker=None, ai=None, report=None) -> None:
+          microphone=None, transcriber=None, speaker=None, ai=None, report=None, live=None) -> None:
     """Answer the player's requests until the link closes: one job at a time,
     STOP and STATUS at once (companion/coordinator.py). ``ai`` (companion/ai.py,
     optional) answers only words the rules neither understand nor refuse, off
     this thread, and owns the in-game AI menu.
     ``microphone`` and
     ``transcriber`` are factories for push-to-talk (companion/voice.py); without
-    them, or when they raise Unavailable, voice is unavailable and text works."""
+    them, or when they raise Unavailable, voice is unavailable and text works.
+    ``live``: the development-only live-test hook (companion/livetest.py), None in
+    normal use; its hitch and stop run here, as the player's own requests do."""
     link = world.link
     rules = interpreter or RuleInterpreter()
     replies = Replies(link.notice, speaker)
     coordinator = Coordinator(world, Executor(world, field_entrances=field_entrances), replies,
                               farm=lambda: linked_farm(link), session=lambda: link.session)
+    if live is not None:
+        live.attach(coordinator)
     voice = VoiceInput(microphone or _no_voice, transcriber or _no_voice,
                        on_text=lambda text: link.inject({"text": text, "spoken": True}),
                        notify=lambda code: replies(code, code != "LISTENING"),
@@ -189,6 +193,12 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
                         current = request["menu"] == menu["id"]
                     if current and request["choice"] > 0 and hasattr(ai, "choose"):
                         ai.choose(request["choice"])
+                    continue
+                if "live" in request:              # only ever queued by companion/livetest.py
+                    if live is not None:
+                        if request["live"]["command"] == "stop":
+                            generation[0] += 1      # as the STOP key: answers being thought about are void
+                        live.run(request["live"], coordinator)
                     continue
                 if "proposal" in request and request.get("generation") != generation[0]:
                     log.info("model answer dropped: a stop or new session came first")
@@ -265,6 +275,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, help="optional farmhand.json")
     parser.add_argument("--profile", type=Path, help="FarmingSimulator2025 folder (default: Documents)")
+    parser.add_argument("--live-test", action="store_true",
+                        help="development only: accept the host test runner's requests (companion/livetest.py)")
     args = parser.parse_args(argv)
     profile = args.profile or game_profile_dir()
     if not profile.is_dir():
@@ -285,12 +297,20 @@ def main(argv=None) -> int:
     data.mkdir(parents=True, exist_ok=True)
     (data / QUIT_FILE).unlink(missing_ok=True)
     (data / PID_FILE).write_text(str(os.getpid()), encoding="utf-8")
+    world = FS25World(link, categories)
+    live = None
+    if args.live_test:
+        from companion.livetest import FOLDER, LiveTest
+        live = LiveTest(world, profile.joinpath(*MOD_DIR, FOLDER))
+        live.start()
     try:
-        serve(FS25World(link, categories), entrances, ai=ai, should_stop=(data / QUIT_FILE).exists,
+        serve(world, entrances, ai=ai, should_stop=(data / QUIT_FILE).exists,
               report=lambda: save_report(profile, link),
               microphone=SoundDeviceMicrophone, transcriber=WhisperTranscriber,
-              speaker=SapiSpeaker() if sys.platform == "win32" else None)
+              speaker=SapiSpeaker() if sys.platform == "win32" else None, live=live)
     finally:
+        if live is not None:
+            live.close()
         ai.stop()
         link.close()
         (data / PID_FILE).unlink(missing_ok=True)

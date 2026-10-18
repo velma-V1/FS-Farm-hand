@@ -227,6 +227,15 @@ GitHub release API and the Hugging Face tree API of the pinned revision.
 | Bundled Python | PROVEN artifact | python.org `python-3.12.10-embed-amd64.zip`, sha256 `4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3`, equal to the digest in python.org's `.sigstore` bundle for that file (checked 2026-10-17); includes `_ctypes`, `winreg`, `pythonw.exe`; no pip, no tkinter | `runtime/` with `python312._pth` (`python312.zip`, `.`, `Lib\site-packages`, `..\app`, `import site`); the pinned cp312 win_amd64 wheels installed into it at build time (`pip --target --platform win_amd64 --only-binary`), third-party self-tests pruned; about 260 MB unpacked, 93 MB zipped |
 | Setup | Implemented, UNVERIFIED on the user's PC | Win32 `MessageBoxW`; HKCU Run; `CSIDL_PERSONAL` for Documents (bridge) | `Setup.cmd` → `pythonw -m companion.setup install`; a running companion is asked to quit through `%LOCALAPPDATA%\FS25Farmhand\quit` and its pid file (it stops a running job first); CI installs and uninstalls the built package on Windows |
 
+## Development live-test bridges — `companion/livetest.py`, `scripts/fs25_host_runner.py` (development only)
+
+| Part | State | Source | Farmhand use |
+| --- | --- | --- | --- |
+| Build identity | Implemented | No game call: `Observe.BUILD` and `companion/buildinfo.py` `BUILD`, both stamped with the commit by `scripts/package_probe.py` | the optional `build` of the `hello` frame; `status` names a game still running an older mod |
+| Live-test hook | Implemented, UNVERIFIED on Windows/FS25 | the coordinator's own `submit` (the proposal `hitch_pair`, the STOP key's `stop`) | only with `companion.service --live-test`; strict, fresh, session-bound request files |
+| Process control | Implemented, UNVERIFIED on the user's PC | Windows `tasklist.exe` (`/FI IMAGENAME`, `/FI PID`, CSV), `taskkill.exe /IM FarmingSimulator2025Game.exe` (then `/F`), PowerShell `Start-Process` (from WSL) or `CreateProcess` (Windows) with fixed targets | `status`, `restart-fs25`, `launch-fs25`, starting the companion |
+| FS25 autostart | UNVERIFIED | `-autoStartSavegameId <n>`, the GIANTS launch argument for loading a savegame at start; not observed on the Microsoft Store/GDK build, whose executable may refuse direct starts (`MicrosoftGame.config` `Executable x64/FarmingSimulator2025Game.exe`, appx entry `GameLaunchHelper.exe`) | passed only when the runner is started with `--savegame` |
+
 ## First live session corrections (2026-10-17)
 
 | Part | State | Source | Farmhand use |

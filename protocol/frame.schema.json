@@ -29,6 +29,7 @@
         "event": {"const": "hello"},
         "protocol": {"const": 2},
         "mod_version": {"$ref": "#/$defs/token"},
+        "build": {"$ref": "#/$defs/token"},
         "autodrive_version": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]}
       }
     },

@@ -27,6 +27,6 @@ if __name__ == "__main__":
         app = Path(folder) / "app"
         run(sys.executable, "scripts/package_probe.py", "--build-app", str(app))
         subprocess.run([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, '.'); "
-                        "import companion.service, companion.setup, companion.run"], cwd=app, check=True)
+                        "import companion.service, companion.setup, companion.run, companion.livetest"], cwd=app, check=True)
     run("git", "diff", "--check", "HEAD")
     print("All CI checks passed (Python, schema, Lua, package layouts, whitespace).", flush=True)

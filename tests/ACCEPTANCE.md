@@ -307,6 +307,16 @@ Executable mapping (`python scripts/check.py`):
   GIANTS GOTO availability by its own rule (agent functions, start allowed, job
   supported under the name `AIJobGoTo`).
 
+- `tests/test_livetest.py`: the development-only live-test bridges. A hitch request
+  runs the real serve() loop, coordinator and executor over FakeGame and sends only
+  the production ops (stage, maneuver, align, attach, stop); STOP cancels it through
+  the production stop; malformed, unknown, foreign-session, stale, replayed,
+  oversized, duplicate-key and non-finite requests are refused with nothing sent;
+  the host runner refuses every op outside its allowlist, every argument naming a
+  path or program, links out of the checkout, and any build not exactly the
+  checkout's; the sandbox client → runner → companion → executor path ends with the
+  test's status, reason, states, joints and attach lines.
+
 Synthetic movement sets coordinates and coupling sets relations. The simulator
 has no physics, terrain, route graph, collision, trigger, animation, network or
 actual GIANTS API. Failure injections test orchestration only. The actual game

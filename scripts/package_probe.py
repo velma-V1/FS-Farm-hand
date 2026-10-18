@@ -3,6 +3,8 @@
     --check-source              validate mod/ as CI does
     --build dist/FS25_Farmhand  the FS25 mod folder alone
     --build-app dist/app        the companion sources alone (no network)
+    --build-dev .fs25-dev/build  the mod and companion app with MANIFEST.json, for the
+                                development host runner (scripts/fs25_host_runner.py)
     --build-package dist/FS25Farmhand
                                 the qualification package: Setup.cmd, Uninstall.cmd,
                                 README.txt, mod/, app/ and runtime/ (the official
@@ -15,7 +17,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import shutil
+import subprocess
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -37,6 +41,32 @@ REQUEST_ACTIONS = ["FARMHAND_FETCH_HERE", "FARMHAND_TALK", "FARMHAND_STOP", "FAR
 
 def fail(message: str) -> None:
     raise SystemExit(message)
+
+
+def build_id() -> str:
+    """The checkout's commit, "-dirty" when tracked files differ from it; "unknown"
+    without git. Stamped into the built mod and companion (companion/buildinfo.py)."""
+    try:
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True,
+                              check=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=ROOT,
+                               capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return head + ("-dirty" if dirty else "")
+
+
+# The one line each side carries its build in; replaced in built copies only.
+BUILD_LINES = {"FarmhandObserve.lua": ('Observe.BUILD = "source"', 'Observe.BUILD = "{}"'),
+               "companion/buildinfo.py": ('BUILD = "source"', 'BUILD = "{}"')}
+
+
+def stamp(path: Path, name: str, build: str) -> None:
+    old, new = BUILD_LINES[name]
+    text = path.read_text(encoding="utf-8")
+    if text.count(old) != 1:
+        fail(f"{name}: expected exactly one {old!r}")
+    path.write_bytes(text.replace(old, new.format(build)).encode("utf-8"))
 
 
 def validate_mod(path: Path, *, exact_files: bool) -> None:
@@ -105,8 +135,9 @@ def validate_mod(path: Path, *, exact_files: bool) -> None:
             fail(f"artifact contains unexpected files: {actual!r}")
 
 
-def build(destination: Path) -> None:
+def build(destination: Path, build_name: str | None = None) -> None:
     validate_mod(SOURCE, exact_files=False)
+    build_name = build_name or build_id()
 
     if destination.exists():
         shutil.rmtree(destination)
@@ -115,6 +146,7 @@ def build(destination: Path) -> None:
     for name in RUNTIME_FILES:
         (destination / name).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(SOURCE / name, destination / name)
+    stamp(destination / "FarmhandObserve.lua", "FarmhandObserve.lua", build_name)
 
     validate_mod(destination, exact_files=True)
 
@@ -136,10 +168,12 @@ APP_FILES = (
     "adapters/world.py",
     "companion/ai.py",
     "companion/bridge.py",
+    "companion/buildinfo.py",
     "companion/coordinator.py",
     "companion/executor.py",
     "companion/hitch.py",
     "companion/language.py",
+    "companion/livetest.py",          # development only: inert unless started with --live-test
     "companion/model.py",
     "companion/run.py",
     "companion/service.py",
@@ -179,8 +213,9 @@ Remove: double-click Uninstall.cmd.
 """
 
 
-def build_app(destination: Path) -> list[str]:
+def build_app(destination: Path, build_name: str | None = None) -> list[str]:
     """The companion sources; returns manifest rows."""
+    build_name = build_name or build_id()
     if destination.exists():
         shutil.rmtree(destination)
     rows = []
@@ -192,6 +227,9 @@ def build_app(destination: Path) -> list[str]:
         out.parent.mkdir(parents=True, exist_ok=True)
         data = path.read_bytes()
         out.write_bytes(data)
+        if name in BUILD_LINES:
+            stamp(out, name, build_name)
+            data = out.read_bytes()
         rows.append(f"{hashlib.sha256(data).hexdigest()}  app/{name}")
     return rows
 
@@ -215,6 +253,24 @@ def build_runtime(destination: Path) -> None:
                     "--target", str(destination / "Lib" / "site-packages"), "--platform", "win_amd64",
                     "--python-version", "3.12", "--implementation", "cp", "--only-binary=:all:",
                     "-r", str(ROOT / "requirements-voice.txt")], check=True)
+
+
+def build_dev(destination: Path) -> dict:
+    """mod/FS25_Farmhand and app/ of this checkout, one build id, and MANIFEST.json
+    naming every file's sha256: what the host runner's install-current-build copies."""
+    build_name = build_id()
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    build(destination / "mod" / "FS25_Farmhand", build_name)
+    (destination / "mod" / "SHA256SUMS.txt").unlink()       # MANIFEST.json covers both parts
+    build_app(destination / "app", build_name)
+    files = {p.relative_to(destination).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in sorted(destination.rglob("*")) if p.is_file()}
+    manifest = {"version": 1, "build": build_name, "files": files}
+    (destination / "MANIFEST.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8", newline="\n")
+    print(f"Development build {build_name} at {destination}")
+    return manifest
 
 
 def build_package(destination: Path) -> None:
@@ -245,6 +301,7 @@ def main() -> None:
     group.add_argument("--check-source", action="store_true")
     group.add_argument("--build", type=Path)
     group.add_argument("--build-app", type=Path)
+    group.add_argument("--build-dev", type=Path)
     group.add_argument("--build-package", type=Path)
     args = parser.parse_args()
 
@@ -254,6 +311,8 @@ def main() -> None:
     elif args.build_app:
         build_app(args.build_app.resolve())
         print(f"Companion app built at {args.build_app}")
+    elif args.build_dev:
+        build_dev(args.build_dev.resolve())
     elif args.build_package:
         build_package(args.build_package.resolve())
     else:

@@ -17,6 +17,7 @@ python -m unittest tests.test_hitch -v           # one module
 python -m unittest tests.test_farmhand.ExplicitDestinationTests.<test_name>   # one test
 python scripts/package_probe.py --build dist/FS25_Farmhand   # build the mod folder as CI does
 luacheck mod                                     # Lua lint (CI job; config in .luacheckrc)
+python scripts/fs25_live_test.py status          # live FS25 via the user's host runner (mod/README.md)
 ```
 
 Optional voice: `pip install -r requirements-voice.txt`, `python -m companion.voice --install`,
@@ -83,6 +84,10 @@ ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snap
   (`fhHitch*` console diagnostics). Each
   file sets one global; game globals come in as `env`, so tests load them with stubs
   that implement only evidenced calls.
+- Development only: `companion/livetest.py` (on with `companion.service --live-test`)
+  lets the host runner `scripts/fs25_host_runner.py` (started by the user outside the
+  sandbox) ask for the production `hitch_pair` and STOP; `scripts/fs25_live_test.py`
+  is Claude's client. Neither bridge takes paths, programs or code.
 - `simulator/world.py` — in-memory `MockWorld` for tests. Never import it from
   `companion/` or `mod/`.
 
