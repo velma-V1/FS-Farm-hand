@@ -35,7 +35,12 @@ programs, so two narrow bridges carry a live test:
    sandbox, answers in `.fs25-dev/host/responses`. Only seven ops exist (`status`,
    `install-current-build`, `launch-fs25`, `restart-fs25`, `run-hitch-test`,
    `stop-test`, `collect`); none takes a path, program or command text, and every
-   request names the runner's per-start token and a fresh, increasing id.
+   request names the runner's per-start token and a fresh, increasing id. One
+   runner per checkout: a second one refuses to start (OS lock on
+   `.fs25-dev/host/runner.lock`, or another runner's live heartbeat in
+   `runner.json`), a runner whose heartbeat another took over stops, a request is
+   claimed by one atomic rename, and every answer names its runner, so the client
+   never takes another process's answer as the outcome (`ANOTHER_RUNNER_ANSWERED`).
 2. Runner → companion: `companion/livetest.py`, active only when the companion is
    started with `--live-test` (install-current-build does; the logon start never
    does), reads `modSettings/FS25_Farmhand/livetest`. `hitch` submits the player's

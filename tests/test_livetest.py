@@ -467,6 +467,142 @@ class HostRunnerProtocolTests(RunnerCase):
             self.assertEqual(host.local_path(host.FARMHAND_DATA), Path("/mnt/c/Users/Matt/AppData/Local/FS25Farmhand"))
 
 
+class HostRunnerSingleInstanceTests(RunnerCase):
+    """Live 2026-10-18: a second runner on the checkout answered half the requests with
+    BAD_TOKEN, and could have taken a hitch request the real runner also acted on."""
+
+    def other_runner(self):
+        return host.Runner(self.repo, self.targets, self.system, say=lambda *a, **k: None)
+
+    def runner_json(self):
+        return json.loads((self.runner.host / "runner.json").read_text())
+
+    def test_a_second_runner_on_the_checkout_refuses_to_start_and_removes_nothing(self):
+        self.runner.take_instance()
+        second = self.other_runner()
+        with self.assertRaises(host.Refused) as raised:
+            second.serve()
+        self.assertEqual(raised.exception.code, "ANOTHER_RUNNER")
+        self.assertEqual(self.runner_json()["token"], self.runner.token)
+        self.assertEqual(self.send("status")["code"], "STATUS")
+
+    def test_a_live_heartbeat_of_another_runner_refuses_start_and_a_stale_one_does_not(self):
+        # An older runner, or one across WSL where the OS lock does not reach: no lock,
+        # only its heartbeat in runner.json.
+        second = self.other_runner()
+        with self.assertRaises(host.Refused) as raised:
+            second.take_instance()
+        self.assertEqual(raised.exception.code, "ANOTHER_RUNNER")
+        state = self.runner_json()
+        state["beat"] = time.time() - host.RUNNER_FRESH_S - 1
+        (self.runner.host / "runner.json").write_text(json.dumps(state))
+        second.take_instance()
+        second.beat()
+        self.assertEqual(self.runner_json()["token"], second.token)
+
+    def test_a_runner_whose_heartbeat_another_took_over_stops_serving(self):
+        self.runner.beat()
+        state = self.runner_json()
+        state["token"] = "f" * 32
+        (self.runner.host / "runner.json").write_text(json.dumps(state))
+        with self.assertRaises(host.Refused) as raised:
+            self.runner.beat()
+        self.assertEqual(raised.exception.code, "SUPERSEDED")
+        with unittest.mock.patch.object(host, "BEAT_S", 0.01):
+            threading.Thread(target=self.runner._beat_loop, daemon=True).start()
+            wait_for(self.runner._stop.is_set)
+        self.assertEqual(self.runner_json()["token"], "f" * 32)          # never written back
+
+    def test_a_request_is_taken_by_exactly_one_runner(self):
+        other = self.other_runner()
+        ident = str(time.time_ns())
+        (self.runner.requests / f"request-{ident}.json").write_text(json.dumps({
+            "version": 1, "id": ident, "token": self.runner.token, "op": "status", "args": {},
+            "created": time.time()}))
+        read = other.tree.read
+
+        def racing_read(*args):           # the real runner polls while the other one reads
+            self.runner.poll_once()
+            return read(*args)
+        with unittest.mock.patch.object(other.tree, "read", racing_read):
+            other.poll_once()
+        answers = list(self.runner.responses.iterdir())
+        self.assertEqual(len(answers), 1)
+        answer = json.loads(answers[0].read_text())
+        self.assertEqual((answer["code"], answer["runner"]), ("BAD_TOKEN", host.fingerprint(other.token)))
+        self.assertEqual(list(self.runner.requests.iterdir()), [])
+
+    def test_every_answer_names_its_runner(self):
+        self.assertEqual(self.send("status")["runner"], host.fingerprint(self.runner.token))
+        self.assertEqual(self.send("status", token="0" * 32)["runner"], host.fingerprint(self.runner.token))
+        self.assertEqual(host.fingerprint("abc"), client.fingerprint("abc"))
+        self.assertEqual(host.RUNNER_FRESH_S, client.RUNNER_STALE_S)
+
+
+class ClientAnswerIdentityTests(unittest.TestCase):
+    """The client takes only the answer of the runner whose token it sent, to its request."""
+
+    def setUp(self):
+        self.host = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.host, True)
+        for folder in ("requests", "responses"):
+            (self.host / folder).mkdir()
+        self.token = "a" * 32
+        (self.host / "runner.json").write_text(json.dumps({"token": self.token, "beat": time.time() + 3600}))
+
+    def answer_with(self, change):
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+        thread = threading.Thread(target=lambda: responder(), daemon=True)
+
+        def responder():
+            while not stop.is_set():
+                for path in (self.host / "requests").glob("request-*.json"):
+                    request = json.loads(path.read_text())
+                    path.unlink()
+                    response = {"version": 1, "id": request["id"], "runner": client.fingerprint(self.token),
+                                "op": request["op"], "ok": True, "code": "STATUS", "result": {}}
+                    change(response)
+                    target = self.host / "responses" / f"response-{request['id']}.json"
+                    (self.host / "responses" / ".tmp").write_text(json.dumps(response))
+                    (self.host / "responses" / ".tmp").replace(target)
+                time.sleep(0.01)
+        thread.start()
+        return stop, thread
+
+    def call(self):
+        return client.call("status", host=self.host, timeout=5)
+
+    def test_its_runners_answer_is_taken(self):
+        self.answer_with(lambda r: None)
+        self.assertEqual(self.call()["code"], "STATUS")
+
+    def test_another_writers_answer_is_never_the_outcome(self):
+        cases = [
+            ("ANOTHER_RUNNER_ANSWERED", lambda r: r.pop("runner")),                         # an older runner
+            ("ANOTHER_RUNNER_ANSWERED", lambda r: r.update(runner=client.fingerprint("b" * 32))),
+            ("ANOTHER_RUNNER_ANSWERED", lambda r: r.update(runner=None, ok=False, code="BAD_TOKEN")),
+            ("HOST_ANSWER_MISMATCH", lambda r: r.update(id="1")),
+            ("HOST_ANSWER_MISMATCH", lambda r: r.update(op="run-hitch-test")),
+            ("HOST_ANSWER_MISMATCH", lambda r: r.update(op=None)),                          # ok needs its op
+            ("HOST_ANSWER_MISMATCH", lambda r: r.update(ok="yes")),
+            ("HOST_ANSWER_MISMATCH", lambda r: r.update(version=2)),
+            ("HOST_ANSWER_MISMATCH", lambda r: r.update(result=[])),
+        ]
+        for code, change in cases:
+            with self.subTest(code=code):
+                stop, thread = self.answer_with(change)
+                with self.assertRaises(client.Unavailable) as raised:
+                    self.call()
+                stop.set()
+                thread.join()
+                self.assertEqual(raised.exception.code, code)
+
+    def test_a_refusal_before_the_op_is_read_is_its_runners_answer(self):
+        self.answer_with(lambda r: r.update(op=None, ok=False, code="MALFORMED"))
+        self.assertEqual(self.call()["code"], "MALFORMED")
+
+
 class HostRunnerLifecycleTests(RunnerCase):
     def test_install_copies_exactly_the_checked_build_and_starts_the_live_companion(self):
         self.build()

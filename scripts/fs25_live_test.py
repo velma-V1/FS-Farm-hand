@@ -21,6 +21,7 @@ runner, companion or game could not do what was asked (the "code" says why).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -38,6 +39,11 @@ TIMEOUT_S = {"status": 40.0, "install-current-build": 180.0, "launch-fs25": 90.0
 HITCH_WAIT_S = 2400.0          # beyond the longest job: TRAVEL_NEAR alone may take 20 min
 EXIT = {"COMPLETE": 0, "FAILED": 1, "BLOCKED": 3, "UNVERIFIED": 4, "CANCELLED": 5}
 INFRASTRUCTURE = 10
+
+
+def fingerprint(token: str) -> str:
+    """= scripts/fs25_host_runner.py fingerprint: which runner wrote an answer."""
+    return hashlib.sha256(token.encode("ascii")).hexdigest()[:16]
 
 
 class Unavailable(Exception):
@@ -87,12 +93,26 @@ def call(op: str, args: dict | None = None, host: Path | None = None, timeout: f
                 time.sleep(0.1)
                 continue
             answer.unlink(missing_ok=True)
-            if response.get("id") != str(request_id):
-                raise Unavailable("HOST_ANSWER_MISMATCH")
-            return response
+            return checked(response, op, str(request_id), state["token"])
         time.sleep(0.2)
     (folder / f"request-{request_id}.json").unlink(missing_ok=True)
     raise Unavailable("HOST_NO_ANSWER", op=op)
+
+
+def checked(response, op: str, request_id: str, token: str) -> dict:
+    """The answer of the runner this request was sent to, for this request, or
+    Unavailable. Any other writer's answer is never taken as the outcome: the request
+    may have been taken (and, by an older runner, acted on) elsewhere."""
+    if not isinstance(response, dict) or response.get("runner") != fingerprint(token):
+        raise Unavailable("ANOTHER_RUNNER_ANSWERED", op=op,
+                          hint="a process other than the runner in runner.json answered; stop every other "
+                               "runner, then check 'status' (and 'collect' after a hitch)")
+    if (response.get("version") != 1 or response.get("id") != request_id
+            or response.get("op") not in (op, None) or type(response.get("ok")) is not bool
+            or not isinstance(response.get("code"), str) or not isinstance(response.get("result"), dict)
+            or (response["ok"] and response["op"] != op)):
+        raise Unavailable("HOST_ANSWER_MISMATCH", op=op)
+    return response
 
 
 def save_evidence(result: dict) -> Path | None:

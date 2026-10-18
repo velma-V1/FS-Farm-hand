@@ -318,7 +318,11 @@ Executable mapping (`python scripts/check.py`):
   the host runner refuses every op outside its allowlist, every argument naming a
   path or program, links out of the checkout, and any build not exactly the
   checkout's; the sandbox client → runner → companion → executor path ends with the
-  test's status, reason, states, joints and attach lines.
+  test's status, reason, states, joints and attach lines. One runner per checkout:
+  a second refuses to start (lock or live heartbeat) and removes nothing, a
+  superseded runner stops, a request racing two runners is answered once, and the
+  client takes no answer that is not its runner's for its request and op
+  (`HostRunnerSingleInstanceTests`, `ClientAnswerIdentityTests`).
 
 Synthetic movement sets coordinates and coupling sets relations. The simulator
 has no physics, terrain, route graph, collision, trigger, animation, network or

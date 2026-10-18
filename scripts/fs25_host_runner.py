@@ -19,7 +19,9 @@ Two bridges, never one:
   Claude -> runner:   atomic JSON files in <repo>/.fs25-dev/host/{requests,responses}
                       (the only folder both sides can write); every request names this
                       runner's per-start token, a fresh increasing id and one op of the
-                      allowlist with validated arguments;
+                      allowlist with validated arguments; one runner per checkout
+                      (runner.lock plus the heartbeat), each request claimed by one
+                      atomic rename, each answer naming its runner (a token hash);
   runner -> companion: companion/livetest.py's files in <profile>/modSettings/
                       FS25_Farmhand/livetest; the companion runs the production
                       coordinator and executor (FIND ... LOCAL_MANEUVER, ALIGN_REVERSE,
@@ -85,6 +87,7 @@ REQUEST_MAX_BYTES = 4096
 REQUEST_MAX_AGE_S = 60.0
 POLL_S = 0.2
 BEAT_S = 1.0
+RUNNER_FRESH_S = 5.0           # = scripts/fs25_live_test.py RUNNER_STALE_S
 COMPANION_ANSWER_S = 10.0
 COMPANION_QUIT_S = 45.0
 COMPANION_START_S = 30.0
@@ -94,6 +97,7 @@ MAX_LOG_LINES, MAX_LINE_CHARS = 2000, 400
 _ID = re.compile(r"[0-9]{1,20}")
 _TOKEN = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 _REQUEST = re.compile(r"request-([0-9]{1,20})\.json")
+_CLAIMED = re.compile(r"\.claimed-([0-9]{1,20})\.json")
 _LOG_TIME = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
 
@@ -270,6 +274,26 @@ NOFOLLOW, DIRECTORY = getattr(os, "O_NOFOLLOW", 0), getattr(os, "O_DIRECTORY", 0
 FD_SAFE = bool(NOFOLLOW and DIRECTORY and os.open in os.supports_dir_fd)
 
 
+def fingerprint(token: str) -> str:
+    """Names the runner in each answer (= scripts/fs25_live_test.py fingerprint), so the
+    client accepts only the answer of the runner whose token it used."""
+    return hashlib.sha256(token.encode("ascii")).hexdigest()[:16]
+
+
+def _lock_exclusive(fd: int) -> bool:
+    """A non-blocking exclusive OS lock, held until the process ends."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
 class SharedTree:
     """The checkout's .fs25-dev, the one folder the sandbox can also write. Every
     path is opened component by component from the checkout without following links
@@ -356,6 +380,36 @@ class SharedTree:
                 if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                     raise Refused("NOT_A_FILE", path=name)
                 return stream.read(limit + 1)
+        finally:
+            os.close(fd)
+
+    def claim(self, parts, name: str, claimed: str) -> bool:
+        """Rename ``name`` to ``claimed`` (a link is renamed, never followed). Only one
+        process can win the rename, so two runners never both take a request."""
+        try:
+            if not FD_SAFE:
+                os.rename(self._path(parts) / name, self._path(parts) / claimed)
+                return True
+            fd = self._open(parts)
+            try:
+                os.rename(name, claimed, src_dir_fd=fd, dst_dir_fd=fd)
+            finally:
+                os.close(fd)
+            return True
+        except FileNotFoundError:
+            return False
+
+    def open_lock(self, parts, name: str) -> int:
+        """The open lock file (created if missing, a link refused)."""
+        if not FD_SAFE:
+            return os.open(_no_link(self._path(parts) / name), os.O_RDWR | os.O_CREAT, 0o600)
+        fd = self._open(parts)
+        try:
+            return os.open(name, os.O_RDWR | os.O_CREAT | NOFOLLOW, 0o600, dir_fd=fd)
+        except OSError as error:
+            if isinstance(error, FileNotFoundError):
+                raise
+            raise Refused("SYMLINK_REFUSED", path=name) from None
         finally:
             os.close(fd)
 
@@ -549,6 +603,8 @@ class Runner:
         self._last_id = 0
         self._lifecycle = threading.Lock()
         self._stop = threading.Event()
+        self._lock_fd: int | None = None
+        self._beaten = False
 
     # ------------------------------------------------------------ the shared folder
     def _check_folders(self) -> None:
@@ -556,8 +612,45 @@ class Runner:
         for parts in (self.REQUESTS, self.RESPONSES):
             self.tree.ensure(parts)
 
+    def _runner_json(self) -> dict | None:
+        try:
+            state = strict_json(self.tree.read(self.HOST, "runner.json", REQUEST_MAX_BYTES))
+        except Refused as error:
+            if error.code in ("NOT_FOUND", "MALFORMED", "DUPLICATE_KEY", "NON_FINITE_NUMBER"):
+                return None
+            raise
+        except OSError:
+            return None
+        return state if isinstance(state, dict) else None
+
+    def take_instance(self) -> None:
+        """One runner per checkout, or none. An OS lock refuses a second runner of this
+        version; a fresh heartbeat of another token (an older runner, or one on the
+        other side of WSL, where the lock does not reach) refuses it too."""
+        self._check_folders()
+        fd = self.tree.open_lock(self.HOST, "runner.lock")
+        if not _lock_exclusive(fd):
+            os.close(fd)
+            raise Refused("ANOTHER_RUNNER", hint="another runner serves this checkout; stop it first")
+        other = self._runner_json()
+        if (other is not None and other.get("token") != self.token
+                and isinstance(other.get("beat"), (int, float))
+                and self.clock() - other["beat"] <= RUNNER_FRESH_S):
+            os.close(fd)
+            raise Refused("ANOTHER_RUNNER", pid=other.get("pid"),
+                          hint="runner.json has a live heartbeat of another runner; stop it first")
+        self._lock_fd = fd
+        for name in self.tree.names(self.REQUESTS):       # claimed by a runner that died mid-read
+            if _CLAIMED.fullmatch(name):
+                self.tree.unlink(self.REQUESTS, name)
+
     def beat(self) -> None:
         self._check_folders()
+        if self._beaten:
+            other = self._runner_json()
+            if other is not None and other.get("token") != self.token:
+                raise Refused("SUPERSEDED", pid=other.get("pid"))
+        self._beaten = True
         self.tree.write_json(self.HOST, "runner.json", {"version": VERSION, "token": self.token, "pid": os.getpid(),
                                                         "started": self.started, "beat": self.clock(),
                                                         "ops": sorted(OPS), "targets": self.targets.describe()})
@@ -567,10 +660,17 @@ class Runner:
         while not self._stop.wait(BEAT_S):
             try:
                 self.beat()
-            except (OSError, Refused) as error:
-                self.say(f"heartbeat refused: {getattr(error, 'code', error)}", flush=True)
+            except Refused as error:
+                if error.code == "SUPERSEDED":                 # runner.json is no longer ours
+                    self.say("another runner took over runner.json: this runner stops", flush=True)
+                    self._stop.set()
+                    return
+                self.say(f"heartbeat refused: {error.code}", flush=True)
+            except OSError as error:
+                self.say(f"heartbeat refused: {error}", flush=True)
 
     def serve(self) -> None:
+        self.take_instance()                 # before the try: a refused runner removes nothing
         self.beat()
         self.say(f"FS25 host runner serving {self.host} (token in runner.json); Ctrl+C to stop", flush=True)
         threading.Thread(target=self._beat_loop, daemon=True, name="runner-beat").start()
@@ -583,22 +683,31 @@ class Runner:
                 self._stop.wait(POLL_S)
         finally:
             self._stop.set()
-            self.tree.unlink(self.HOST, "runner.json")
+            try:
+                ours = (self._runner_json() or {}).get("token") == self.token
+            except (OSError, Refused):
+                ours = False
+            if ours:
+                self.tree.unlink(self.HOST, "runner.json")
 
     def poll_once(self) -> None:
         self._check_folders()
         named = [(int(m.group(1)), n) for n in self.tree.names(self.REQUESTS) if (m := _REQUEST.fullmatch(n))]
         for _, name in sorted(named):
             file_id = _REQUEST.fullmatch(name).group(1)
+            claimed = f".claimed-{file_id}.json"
             try:
-                raw = self.tree.read(self.REQUESTS, name, REQUEST_MAX_BYTES)
-                self.tree.unlink(self.REQUESTS, name)
+                if not self.tree.claim(self.REQUESTS, name, claimed):
+                    continue                                   # another process took it first
+                raw = self.tree.read(self.REQUESTS, claimed, REQUEST_MAX_BYTES)
             except Refused as error:
-                self.tree.unlink(self.REQUESTS, name)
+                self.tree.unlink(self.REQUESTS, claimed)
                 self._answer(file_id, None, False, error.code)
                 continue
             except OSError:
+                self.tree.unlink(self.REQUESTS, claimed)
                 continue
+            self.tree.unlink(self.REQUESTS, claimed)
             try:
                 request = parse_request(raw, file_id, self.token, self._last_id, self.clock())
             except Refused as error:
@@ -615,7 +724,8 @@ class Runner:
 
     def _answer(self, request_id, op, ok, code, **result) -> None:
         self.tree.write_json(self.RESPONSES, f"response-{request_id}.json", {
-            "version": VERSION, "id": request_id, "op": op, "ok": ok, "code": code, "result": result})
+            "version": VERSION, "id": request_id, "runner": fingerprint(self.token), "op": op, "ok": ok,
+            "code": code, "result": result})
         self.say(f"{op or '?'} {request_id}: {code}", flush=True)
 
     def _lifecycle_op(self, request) -> None:
@@ -850,7 +960,11 @@ def main(argv=None) -> int:
         return install_runner()
     if not (args.repo / ".git").exists():
         parser.error(f"not a checkout: {args.repo}")
-    Runner(args.repo, Targets(args.exe, args.profile, args.data, args.savegame)).serve()
+    try:
+        Runner(args.repo, Targets(args.exe, args.profile, args.data, args.savegame)).serve()
+    except Refused as error:
+        print(f"refused: {error.code} {json.dumps(error.detail)}", file=sys.stderr)
+        return 2
     return 0
 
 
