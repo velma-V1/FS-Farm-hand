@@ -72,7 +72,9 @@ Executable mapping (`python scripts/check.py`):
   rotatedTime before/after each driveToPoint, target rot time and limits, wheel
   angles, articulated axis, node yaws) change no drive command, show a command
   the wheels do not follow and another writer resetting the steering, and log
-  unreadable state as nil; lateral offset (forward correction), steering to either side and
+  unreadable state as nil; the stub steers only an active tractor (GIANTS'
+  WheelPhysics rule), and both motions hold `forceIsActive` while driving and
+  release it on every end, never clearing one someone else held; lateral offset (forward correction), steering to either side and
   60 random starts all end LINED_UP inside the reverse's envelope or are refused
   unmoved, never leaving the 25 m radius or entering the wagon's box; refusals
   (unknown or out-of-range turning radius, outside the area, beside the wagon,

@@ -283,9 +283,36 @@ end
 -- speed limit (82), so the session speed is passed rather than 0, and switches
 -- cruise control on (83-84), so that is switched off again exactly as AutoDrive
 -- (Specialization.lua:1213) and Courseplay (CpAIWorker.lua:481) do when they stop.
+-- GIANTS steers the wheels only of an active vehicle: WheelPhysics:serverUpdate
+-- (799-819) calls updateSteeringAngle only `if self.vehicle.isActive`, and
+-- Vehicle:update sets isActive = getIsActive() each frame (1975), which is false
+-- for an unentered vehicle without an AI job unless forceIsActive is set
+-- (Vehicle:getIsActive 2626-2636; AIJobVehicle:getIsActive 383-387 makes it true
+-- for GIANTS' own jobs). Live 2026-10-18 the local maneuver drove with isActive
+-- false: rotatedTime followed driveToPoint, the wheels stayed straight. AutoDrive
+-- sets forceIsActive while it drives (Specialization.lua:1295, DrivePathModule.lua
+-- :758) and clears it when it stops (Specialization.lua:1374). Farmhand does the
+-- same for its own two motions: held from the first frame that drives, only if
+-- nothing else already holds it, and released on the first halt (braking does not
+-- need it: live, the inactive tractor braked to rest).
+function Hitch.holdActive(s)
+    if s.heldActive == nil then
+        s.heldActive = s.tractor.forceIsActive ~= true
+        if s.heldActive then s.tractor.forceIsActive = true end
+    end
+end
+
+function Hitch.releaseActive(s)
+    if s.heldActive then
+        s.heldActive = false
+        if s.tractor.forceIsActive == true then s.tractor.forceIsActive = false end
+    end
+end
+
 function Hitch.halt(env, s, dt)
     pcall(env.AIVehicleUtil.driveToPoint, s.tractor, dt, 0, false, false, 0, 1, s.maxSpeedKmh)
     pcall(function() s.tractor:setCruiseControlState(env.Drivable.CRUISECONTROL_STATE_OFF) end)
+    pcall(Hitch.releaseActive, s)
 end
 
 -- The tractor's heading off the wagon's, in degrees (diagnostics only: GIANTS'
@@ -357,11 +384,13 @@ local function checkAndDrive(env, s, dt)
         if s.sinceProgress > Hitch.DEFAULTS.stallMs then return "STALLED" end
     end
 
-    -- Keep the vehicle running and active as AutoDrive does (DrivePathModule 380-381).
+    -- Keep the vehicle running and active as AutoDrive does (DrivePathModule 380-381),
+    -- and active for GIANTS' wheel steering (Hitch.holdActive).
     if not tractor:getIsMotorStarted() then
         if not tractor:getCanMotorRun() then return "MOTOR_UNAVAILABLE" end
         tractor:startMotor()
     end
+    Hitch.holdActive(s)
     tractor:raiseActive()
     -- Steer at a point on the wagon axis, lookaheadM nearer the wagon than the
     -- joint's projection (at most lookaheadM past the wagon's joint), at the joint's
@@ -905,6 +934,7 @@ local function maneuverDrive(env, s, dt)
         if not tractor:getCanMotorRun() then return "MOTOR_UNAVAILABLE" end
         tractor:startMotor()
     end
+    Hitch.holdActive(s)          -- active, or GIANTS never turns the wheels
     tractor:raiseActive()
     -- Steer at the curve point LOOKAHEAD further on, in the steering node's frame
     -- (forward: CP CpAIWorker.lua:396-409 uses the steering node), at the wagon

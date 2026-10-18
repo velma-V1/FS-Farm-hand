@@ -464,6 +464,16 @@ class HostRunnerProtocolTests(RunnerCase):
         self.assertEqual(self.send("install-current-build")["code"], "WINDOWS_UNREACHABLE")
         self.assertFalse(self.targets.mod.exists())
 
+    def test_log_lines_keep_a_whole_maneuver_steer_line_and_stay_bounded(self):
+        # Live 2026-10-18: a 400-character cut dropped every field after steeredWheels.
+        steer = ("2026-10-18 16:35:05.628 [Farmhand] maneuver LOCAL_APPROACH STEER t=583ms "
+                 + " ".join(f"field{i}=0.1234" for i in range(50)) + " speedKmh=3.1215")
+        self.assertGreater(len(steer), 700)
+        lines = host._bounded([steer] * 3 + ["x" * 5000] * (host.MAX_LOG_LINES + 10))
+        self.assertEqual(len(lines), host.MAX_LOG_LINES)
+        self.assertTrue(all(len(line) <= host.MAX_LINE_CHARS for line in lines))
+        self.assertEqual(host._bounded([steer]), [steer])
+
     def test_wsl_paths_map_the_fixed_targets(self):
         with unittest.mock.patch.object(sys, "platform", "linux"):
             self.assertEqual(host.local_path(host.FARMHAND_DATA), Path("/mnt/c/Users/Matt/AppData/Local/FS25Farmhand"))

@@ -133,7 +133,9 @@ function W.new(o)
             local rate = dt * v:getAISteeringSpeed()
             v.rotatedTime = v.rotatedTime + math.max(-rate, math.min(rate, target - v.rotatedTime))
         end
-        if w.noSteer then want = 0 end
+        -- GIANTS turns the wheels only of an active vehicle (WheelPhysics:serverUpdate
+        -- 799-819): unentered and without an AI job that needs forceIsActive.
+        if w.noSteer or v.forceIsActive ~= true then want = 0 end
         local cap = 1 / w.minRadius
         want = math.max(-cap, math.min(cap, want))
         local step = w.steerRate * dt / 1000
@@ -511,6 +513,45 @@ class LuaManeuverTests(unittest.TestCase):
         self.assertTrue(samples)
         self.assertEqual({samples[0][f] for f in ("rotatedTime", "targetRotTime", "aiSteeringSpeed", "wheels")},
                          {"nil"})
+
+    def test_the_tractor_is_active_while_it_drives_and_released_on_every_end(self):
+        # Live 2026-10-18: without forceIsActive GIANTS never turned the wheels.
+        for end in ("lined_up", "abort", "failure"):
+            with self.subTest(end=end):
+                w = self.world(**CASE_A)
+                session, _ = self.start(w)
+                if end == "abort":
+                    self.run_to_end(w, session, steps=40)
+                    self.assertIs(w.tractor.forceIsActive, True)
+                    self.hitch.abort(w.env, session, "STOPPED")
+                elif end == "failure":
+                    self.assertEqual(self.run_to_end(w, session, hook=lambda i: i == 60 and w.wagonRoot.__setitem__(
+                        "x", w.wagonRoot.x + 5))[0], "WAGON_MOVED")
+                else:
+                    self.assertEqual(self.run_to_end(w, session)[0], "LINED_UP")
+                self.assertIs(w.tractor.forceIsActive, False)
+                samples, _ = self.steers(w)
+                self.assertTrue(any(int(s["steeredWheels"]) > 0 for s in samples))
+
+    def test_without_being_active_the_wheels_never_turn(self):
+        # The live defect, reproduced: hold nothing and the curve diverges.
+        w = self.world(**CASE_A)
+        session, _ = self.start(w)
+        original = self.hitch.holdActive
+        self.hitch.holdActive = self.lua.eval("function() end")
+        try:
+            self.assertEqual(self.run_to_end(w, session)[0], "DIVERGED")
+        finally:
+            self.hitch.holdActive = original
+        samples, _ = self.steers(w)
+        self.assertTrue(all(s["steeredWheels"] == "0" for s in samples))
+
+    def test_an_activity_flag_someone_else_holds_is_left_alone(self):
+        w = self.world(**CASE_A)
+        w.tractor.forceIsActive = True
+        session, _ = self.start(w)
+        self.assertEqual(self.run_to_end(w, session)[0], "LINED_UP")
+        self.assertIs(w.tractor.forceIsActive, True)
 
     def test_divergence_when_the_tractor_does_not_turn(self):
         w = self.world(**CASE_A)

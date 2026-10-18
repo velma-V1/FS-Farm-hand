@@ -122,7 +122,7 @@ function W.new(opts)
     env.AIVehicleUtil = {}
     function env.AIVehicleUtil.driveToPoint(v, dt, acc, allowed, forwards, lx, lz, maxSpeed)
         table.insert(w.drives, { dt = dt, acc = acc, allowed = allowed, forwards = forwards,
-                                 lx = lx, lz = lz, maxSpeed = maxSpeed })
+                                 lx = lx, lz = lz, maxSpeed = maxSpeed, active = v.forceIsActive == true })
         table.insert(w.events, allowed and "drive" or "brake")
         if allowed and acc > 0 and not w.stuck then
             local step = maxSpeed / 3.6 * dt / 1000
@@ -278,7 +278,10 @@ class LuaHitchTests(unittest.TestCase):
         # Always reverse, never above the session speed, steering left to GIANTS.
         self.assertTrue(all(not d["forwards"] and d["maxSpeed"] == 3 and d["acc"] == 1 for d in driving))
         self.assertEqual(drives[-1], {"dt": 100, "acc": 0, "allowed": False, "forwards": False,
-                                      "lx": 0, "lz": 1, "maxSpeed": 3})
+                                      "lx": 0, "lz": 1, "maxSpeed": 3, "active": True})
+        # Active while it drove (GIANTS steers only active vehicles), released by the brake.
+        self.assertTrue(all(d["active"] for d in driving))
+        self.assertIs(w.tractor.forceIsActive, False)
         # Terminal: further steps only brake, never drive.
         count = len(drives)
         self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CANDIDATE")
@@ -398,6 +401,28 @@ class LuaHitchTests(unittest.TestCase):
         for _ in range(5):
             self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CANDIDATE")
         self.assert_braked_only_after(w, count - 1)
+
+    def test_the_reverse_is_active_while_it_drives_and_released_on_every_end(self):
+        cases = [("CANDIDATE", dict(gap=4), None),
+                 ("RESERVATION_LOST", dict(gap=4), lambda i: setattr(w, "reserved", i < 3)),
+                 ("STOPPED", dict(gap=8), "abort")]
+        for code, opts, hook in cases:
+            with self.subTest(code=code):
+                w = self.world(**opts)
+                session, _ = self.align(w)
+                if hook == "abort":
+                    self.assertEqual(self.W.run(w, session, 100, 5)[0], "CONTINUE")
+                    self.assertIs(w.tractor.forceIsActive, True)
+                    self.hitch.abort(w.env, session, "STOPPED")
+                else:
+                    self.assertEqual(self.W.run(w, session, 100, 1000, hook)[0], code)
+                self.assertIs(w.tractor.forceIsActive, False)
+        # Held by someone else before the reverse: never cleared by it.
+        w = self.world(gap=4)
+        w.tractor.forceIsActive = True
+        session, _ = self.align(w)
+        self.assertEqual(self.W.run(w, session, 100, 1000)[0], "CANDIDATE")
+        self.assertIs(w.tractor.forceIsActive, True)
 
     def test_reverse_distance_is_bounded(self):
         # The joint passes beside the drawbar (never a candidate): it must stop
