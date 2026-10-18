@@ -152,7 +152,7 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
     coordinator = Coordinator(world, Executor(world, field_entrances=field_entrances), replies,
                               farm=lambda: linked_farm(link), session=lambda: link.session)
     if live is not None:
-        live.attach(coordinator)
+        live.attach(coordinator, rules.interpret)
     voice = VoiceInput(microphone or _no_voice, transcriber or _no_voice,
                        on_text=lambda text: link.inject({"text": text, "spoken": True}),
                        notify=lambda code: replies(code, code != "LISTENING"),

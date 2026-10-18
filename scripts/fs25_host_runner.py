@@ -13,6 +13,8 @@ operations for it and nothing else:
     restart-fs25           stop only FS25, start it again, wait for Farmhand READY
     stop-fs25              close FS25 (its own image name only; refused under a running job)
     run-hitch-test         ask the companion for the production hitch_pair (livetest)
+    run-request-test       the player's own typed words (text: letters, digits, spaces and
+                           . , ' ? ! - only, at most 160) through the production rules
     stop-test              the companion's production STOP
     collect                the latest test record plus bounded game/companion log lines
 
@@ -82,7 +84,7 @@ MAX_BUILD_FILE_BYTES = 2_000_000
 
 # The allowlist: each op and the only arguments it takes (validated in parse_request).
 OPS = {"status": (), "install-current-build": (), "launch-fs25": (), "restart-fs25": (), "stop-fs25": (),
-       "run-hitch-test": (), "stop-test": (), "collect": ("test_id",)}
+       "run-hitch-test": (), "run-request-test": ("text",), "stop-test": (), "collect": ("test_id",)}
 LIFECYCLE = frozenset({"install-current-build", "launch-fs25", "restart-fs25", "stop-fs25"})
 REQUEST_MAX_BYTES = 4096
 REQUEST_MAX_AGE_S = 60.0
@@ -98,6 +100,8 @@ MAX_LOG_LINES, MAX_LINE_CHARS = 2000, 1200    # a full maneuver STEER line is ~7
 _ID = re.compile(r"[0-9]{1,20}")
 _TOKEN = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 _REQUEST = re.compile(r"request-([0-9]{1,20})\.json")
+# = companion/livetest.py _TEXT: words as a player types them, never code or a path.
+_TEXT = re.compile(r"[A-Za-z0-9 .,'?!-]{1,160}")
 _CLAIMED = re.compile(r"\.claimed-([0-9]{1,20})\.json")
 _LOG_TIME = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
@@ -150,6 +154,9 @@ def parse_request(raw: bytes, file_id: str, token: str, last_id: int, now: float
     if not isinstance(args, dict) or not set(args) <= set(OPS[request["op"]]):
         raise Refused("BAD_ARGUMENTS")
     if "test_id" in args and (not isinstance(args["test_id"], str) or not _TOKEN.fullmatch(args["test_id"])):
+        raise Refused("BAD_ARGUMENTS")
+    if request["op"] == "run-request-test" and (set(args) != {"text"} or not isinstance(args["text"], str)
+                                                or not _TEXT.fullmatch(args["text"])):
         raise Refused("BAD_ARGUMENTS")
     created = request["created"]
     if type(created) not in (int, float) or not math.isfinite(created):
@@ -489,8 +496,8 @@ class Companion:
             return None
         return value if isinstance(value, dict) else None
 
-    def ask(self, command: str, timeout: float = COMPANION_ANSWER_S) -> dict:
-        if command not in ("status", "hitch", "stop"):
+    def ask(self, command: str, timeout: float = COMPANION_ANSWER_S, text: str | None = None) -> dict:
+        if command not in ("status", "hitch", "request", "stop") or (text is not None) != (command == "request"):
             raise Refused("UNKNOWN_COMMAND")
         if self.enabled() is None:
             raise Refused("LIVE_TEST_NOT_ENABLED")
@@ -499,8 +506,10 @@ class Companion:
             raise Refused("COMPANION_SESSION_UNKNOWN")
         self._last = request_id = max(time.time_ns(), self._last + 1)
         folder = _no_link(self.targets.live)
-        _write_json(folder, f"request-{request_id}.json", {"version": 1, "id": str(request_id), "session": session,
-                                                           "command": command, "created": self.clock()})
+        body = {"version": 1, "id": str(request_id), "session": session, "command": command, "created": self.clock()}
+        if text is not None:
+            body["text"] = text
+        _write_json(folder, f"request-{request_id}.json", body)
         answer = folder / f"response-{request_id}.json"
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -932,6 +941,14 @@ class Runner:
             raise Refused("LIFECYCLE_BUSY")
         self._lifecycle.release()
         answer = self.companion.ask("hitch")
+        return bool(answer.get("ok")), answer.get("code", "UNKNOWN"), dict(answer.get("result") or {})
+
+    def op_run_request_test(self, text: str):
+        """The player's own typed words, through the production rules and coordinator."""
+        if not self._lifecycle.acquire(blocking=False):
+            raise Refused("LIFECYCLE_BUSY")
+        self._lifecycle.release()
+        answer = self.companion.ask("request", text=text)
         return bool(answer.get("ok")), answer.get("code", "UNKNOWN"), dict(answer.get("result") or {})
 
     def op_stop_test(self):

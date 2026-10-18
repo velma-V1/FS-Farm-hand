@@ -5,8 +5,12 @@ Read this file and BUILD_SPEC.md before editing. The user's current instructions
 have precedence; report conflicts instead of silently changing the scope.
 
 ## Mission and boundaries
-- Build the smallest FS25 autonomous farmhand. Current task ONLY: find an available
-  compatible tractor and forage wagon, attach them, and deliver to the requester.
+- Product scope (user-authorized 2026-10-18, replacing the earlier "forage wagon
+  only" task): a local autonomous farmhand/dispatcher. From a plain-language goal it
+  determines the required capabilities, equipment and materials, finds or buys
+  them through the game's own mechanisms, assembles, loads, travels, works, verifies
+  from game state, recovers within bounds and finishes. Grow it capability by
+  capability; each one qualified in the real game (tests/ACCEPTANCE.md matrix).
 - The production farmhand is LOCAL-FIRST. It runs on the user's Windows PC alongside
   Farming Simulator 25. GitHub, hosted CI, and remote coding environments are
   development tools only and must never become runtime dependencies.
@@ -17,9 +21,12 @@ have precedence; report conflicts instead of silently changing the scope.
   arbitrary commands, vehicle IDs to bypass selection, or physical control loops.
 - Deterministic executor: FIND → RESERVE → MOVE → ATTACH → VERIFY → DELIVER.
   Completion requires observed attachment, arrival, and stopped equipment.
-- FS25 and existing mods perform physical work. No navigation, pathfinding,
-  driving, Courseplay, or AutoDrive replacements. No generalized agent platform,
-  autonomous purchasing, fieldwork, or unrelated features in the current task.
+- FS25 and existing mods perform physical work: GIANTS' own jobs (GOTO, field
+  work helpers), AutoDrive, and other installed mods where evidenced. No navigation,
+  pathfinding, driving, field-work, Courseplay, or AutoDrive replacements, and no
+  store-UI automation where a game API exists. Purchasing and field work are in
+  scope only through the game's own APIs, only for the requested job, and only
+  after the requirement, the item's fit and the farm's funds are checked.
 - User-authorized exceptions, both in mod/FarmhandHitch.lua, both steered by GIANTS'
   AIVehicleUtil.driveToPoint and both hard-capped; never extend them into navigation:
   1. HITCH's ALIGN_REVERSE, a bounded reverse of the last few metres that stops as
@@ -56,9 +63,11 @@ have precedence; report conflicts instead of silently changing the scope.
   hosted service being required for ordinary operation.
 - Development-only live tests (user-authorized 2026-10-18): the host runner
   `scripts/fs25_host_runner.py`, started by the user outside the agent's sandbox,
-  performs only its fixed allowlist (status, install the checkout's build, launch or
-  restart FS25, the production hitch_pair, STOP, collect). Never widen it into a
-  shell, file or program interface, and never ship it or `--live-test` as release.
+  performs only its fixed allowlist (status, install the checkout's build, launch,
+  restart or stop FS25 — that image only —, the production hitch_pair, the player's
+  own typed words through the production rules (letters, digits, spaces, light
+  punctuation; 160 at most), STOP, collect). Never widen it into a shell, file or
+  program interface, and never ship it or `--live-test` as release.
 - Live FS25 behavior, Windows service behavior, local IPC, local model execution,
   speech, and game/mod integration must eventually be verified on the user's PC.
 

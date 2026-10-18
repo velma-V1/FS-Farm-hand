@@ -77,11 +77,13 @@ class CompanionCase(unittest.TestCase):
         self.live, self.game = live, game
         return game, live
 
-    def request(self, command, session=None, ident=None, created=None, raw=None):
+    def request(self, command, session=None, ident=None, created=None, raw=None, text=None):
         ident = ident or str(time.time_ns())
-        body = raw if raw is not None else json.dumps({"version": 1, "id": ident, "command": command,
-                                                       "session": session or self.game.link.session,
-                                                       "created": time.time() if created is None else created})
+        value = {"version": 1, "id": ident, "command": command, "session": session or self.game.link.session,
+                 "created": time.time() if created is None else created}
+        if text is not None:
+            value["text"] = text
+        body = raw if raw is not None else json.dumps(value)
         answer = self.folder / f"response-{ident}.json"
         answer.unlink(missing_ok=True)                # a replayed id must not read the earlier answer
         (self.folder / f"request-{ident}.json").write_bytes(body.encode() if isinstance(body, str) else body)
@@ -121,6 +123,45 @@ class CompanionLiveTestTests(CompanionCase):
             answer = self.request("hitch")
             self.record(answer["result"]["test_id"])
         submit.assert_called_once_with({"version": 1, "command": "hitch_pair"})
+
+    def test_typed_words_run_through_the_production_rules_and_coordinator(self):
+        game, live = self.start(autodrive=False, faults={"stage_end": (3.44, -12.40, 85.9)})
+        with unittest.mock.patch.object(live.coordinator, "submit", wraps=live.coordinator.submit) as submit:
+            answer = self.request("request", text="hitch the forage wagon")
+            self.assertEqual((answer["ok"], answer["code"]), (True, "STARTED"), answer)
+            record = self.record(answer["result"]["test_id"])
+        submit.assert_called_once_with({"version": 1, "command": "hitch_pair"})
+        self.assertEqual((record["status"], record["text"]), ("COMPLETE", "hitch the forage wagon"))
+        self.assertEqual(record["proposal"], {"version": 1, "command": "hitch_pair"})
+        self.assertEqual([c["op"] for c in game.commands], LIVE_HITCH)
+
+    def test_typed_words_that_are_not_a_job_or_not_understood_start_nothing(self):
+        game, live = self.start(autodrive=False)
+        with unittest.mock.patch.object(live.coordinator, "submit", wraps=live.coordinator.submit) as submit:
+            for text, code in (("stop", "NOT_A_JOB"), ("what are you doing", "NOT_A_JOB"),
+                               ("open the settings", "NOT_A_JOB"), ("sing me a song", "NOT_UNDERSTOOD")):
+                with self.subTest(text=text):
+                    answer = self.request("request", text=text)
+                    self.assertEqual((answer["ok"], answer["code"]), (False, code), answer)
+        submit.assert_not_called()
+        self.assertEqual(game.commands, [])
+
+    def test_typed_words_are_only_words(self):
+        game, _ = self.start(autodrive=False)
+        session = game.link.session
+        cases = [("BAD_TEXT", "print(os.system('x'))"), ("BAD_TEXT", "C:\\Windows"), ("BAD_TEXT", "a;b"),
+                 ("BAD_TEXT", "x" * 161), ("BAD_TEXT", ""), ("BAD_TEXT", "line\nbreak"), ("BAD_TEXT", 7)]
+        for code, text in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.request("request", text=text)["code"], code)
+        for command, text in (("request", None), ("hitch", "hitch the forage wagon"), ("status", "x")):
+            with self.subTest(command=command):
+                ident = str(time.time_ns())
+                value = {"version": 1, "id": ident, "command": command, "session": session, "created": time.time()}
+                if text is not None:
+                    value["text"] = text
+                self.assertEqual(self.request(None, ident=ident, raw=json.dumps(value))["code"], "SCHEMA_VIOLATION")
+        self.assertEqual(game.commands, [])
 
     def test_stop_is_the_production_stop_and_cancels_the_running_test(self):
         game, _ = self.start(autodrive=False, faults={"align": "hold"})
@@ -366,6 +407,12 @@ class HostRunnerProtocolTests(RunnerCase):
             ("BAD_ARGUMENTS", {"op": "collect", "args": {"test_id": "C:\\Windows"}}),
             ("BAD_ARGUMENTS", {"op": "collect", "args": {"test_id": 5}}),
             ("BAD_ARGUMENTS", {"op": "status", "args": []}),
+            ("BAD_ARGUMENTS", {"op": "run-request-test", "args": {}}),
+            ("BAD_ARGUMENTS", {"op": "run-request-test", "args": {"text": "a; rm -rf /"}}),
+            ("BAD_ARGUMENTS", {"op": "run-request-test", "args": {"text": "x" * 161}}),
+            ("BAD_ARGUMENTS", {"op": "run-request-test", "args": {"text": 5}}),
+            ("BAD_ARGUMENTS", {"op": "run-request-test", "args": {"text": "ok", "test_id": "a"}}),
+            ("BAD_ARGUMENTS", {"op": "run-hitch-test", "args": {"text": "hitch"}}),
         ]
         for code, change in cases:
             with self.subTest(code=code, change=change):
@@ -800,6 +847,15 @@ class EndToEndTests(CompanionCase):
         self.assertTrue((evidence / "summary.json").is_file())
         self.assertTrue((evidence / "companion-log.txt").read_text())
         self.assertEqual(client.main(["collect"]), 0)
+
+    def test_claude_runs_the_players_typed_words_and_reads_the_result(self):
+        game = self.wire(faults={"stage_end": (5.52, -17.97, 162.9)})
+        self.assertEqual(client.main(["request", "hitch the forage wagon"]), 0, self.out)
+        self.assertEqual((self.out[0]["event"], self.out[-1]["status"]), ("started", "COMPLETE"))
+        self.assertEqual([c["op"] for c in game.commands], LIVE_HITCH)
+        self.out.clear()
+        self.assertEqual(client.main(["request", "sing me a song"]), client.INFRASTRUCTURE)
+        self.assertEqual(self.out[-1]["code"], "NOT_UNDERSTOOD")
 
     def test_a_failed_test_exits_nonzero_with_its_reason(self):
         game = self.wire(faults={"stage_end": (3.44, -12.40, 85.9), "maneuver": "FAILED:LOCAL_PATH_HITS_WAGON"})

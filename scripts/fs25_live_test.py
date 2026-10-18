@@ -11,6 +11,8 @@ which alone reaches FS25 and the Farmhand companion.
     python scripts/fs25_live_test.py restart    stop FS25, start it, wait for Farmhand READY
     python scripts/fs25_live_test.py stop-fs25  close FS25 (refused while a job runs)
     python scripts/fs25_live_test.py hitch      one production hitch_pair; waits for its end
+    python scripts/fs25_live_test.py request "bring the forage wagon here"
+                                                the player's typed words; waits for the job's end
     python scripts/fs25_live_test.py stop       the production STOP
     python scripts/fs25_live_test.py collect [--test ID]
 
@@ -36,7 +38,7 @@ BUILD = ROOT / ".fs25-dev" / "build"
 RUNNER_STALE_S = 5.0
 # How long each op may take on the host (its own bounds plus a margin).
 TIMEOUT_S = {"status": 40.0, "install-current-build": 180.0, "launch-fs25": 90.0, "restart-fs25": 1100.0,
-             "stop-fs25": 90.0, "run-hitch-test": 30.0, "stop-test": 30.0, "collect": 30.0}
+             "stop-fs25": 90.0, "run-hitch-test": 30.0, "run-request-test": 30.0, "stop-test": 30.0, "collect": 30.0}
 HITCH_WAIT_S = 2400.0          # beyond the longest job: TRAVEL_NEAR alone may take 20 min
 EXIT = {"COMPLETE": 0, "FAILED": 1, "BLOCKED": 3, "UNVERIFIED": 4, "CANCELLED": 5}
 INFRASTRUCTURE = 10
@@ -140,8 +142,8 @@ def finish_test(response: dict) -> int:
     return EXIT.get(summary.get("status"), INFRASTRUCTURE)
 
 
-def command_hitch(wait: float = HITCH_WAIT_S, poll: float = 3.0) -> int:
-    started = call("run-hitch-test")
+def command_hitch(wait: float = HITCH_WAIT_S, poll: float = 3.0, text: str | None = None) -> int:
+    started = call("run-hitch-test") if text is None else call("run-request-test", {"text": text})
     if not started.get("ok"):
         emit(event="refused", code=started.get("code"), result=started.get("result"))
         return INFRASTRUCTURE
@@ -169,12 +171,16 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("status", "install", "launch", "restart", "stop-fs25", "hitch", "stop"):
         sub.add_parser(name)
+    words = sub.add_parser("request")
+    words.add_argument("text", help="the words, as a player would type them")
     collect = sub.add_parser("collect")
     collect.add_argument("--test", help="a test id (default: the latest)")
     args = parser.parse_args(argv)
     try:
         if args.command == "hitch":
             return command_hitch()
+        if args.command == "request":
+            return command_hitch(text=args.text)
         if args.command == "collect":
             response = call("collect", {"test_id": args.test} if args.test else {})
             if not response.get("ok"):

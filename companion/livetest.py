@@ -6,14 +6,19 @@ actuator and a reader, nothing more:
 - ``hitch`` asks the coordinator for exactly what the player gets from "hitch the
   forage wagon" (the proposal {"command": "hitch_pair"}); the executor selects,
   reserves, maneuvers, attaches and verifies as always;
+- ``request`` runs the player's own typed words: the production rules
+  (companion/language.py, as for typed text) turn them into a proposal and the
+  coordinator validates and runs it; only job proposals are accepted (no stop,
+  status, settings or report), and words the rules do not understand are refused;
 - ``stop`` is the player's STOP key;
 - ``status`` reads what the companion already observes.
 It never moves, attaches, reserves or changes an observation itself.
 
 Transport: files in modSettings/FS25_Farmhand/livetest (local only; no listener):
   request-<id>.json   {"version": 1, "id": "<digits>", "session": "<this companion's
-                       session>", "command": "status"|"hitch"|"stop",
-                       "created": <unix seconds>}, renamed into place atomically;
+                       session>", "command": "status"|"hitch"|"request"|"stop",
+                       "created": <unix seconds>[, "text": "<words>" for request only]},
+                       renamed into place atomically;
   response-<id>.json  the answer to exactly that request;
   test-<test id>.json the record of one hitch test, rewritten as it progresses;
   enabled.json        present while this hook runs.
@@ -40,7 +45,11 @@ log = logging.getLogger("farmhand")
 
 FOLDER = "livetest"
 VERSION = 1
-COMMANDS = ("status", "hitch", "stop")
+COMMANDS = ("status", "hitch", "request", "stop")
+# Proposals that are not jobs: never started through a live test.
+NOT_JOBS = frozenset({"stop", "status", "settings", "report", "unsupported"})
+# Typed words, as a player could type them: letters, digits, spaces, light punctuation.
+_TEXT = re.compile(r"[A-Za-z0-9 .,'?!-]{1,160}")
 # The proposal the words "hitch the forage wagon" produce (companion/language.py).
 HITCH = {"version": 1, "command": "hitch_pair"}
 STOP = {"version": 1, "command": "stop"}
@@ -86,7 +95,8 @@ def parse_request(raw: bytes, file_id: str, session: str, last_id: int, now: flo
         raise
     except (UnicodeDecodeError, ValueError, RecursionError):
         raise Refused("MALFORMED") from None
-    if not isinstance(request, dict) or set(request) != {"version", "id", "session", "command", "created"}:
+    base = {"version", "id", "session", "command", "created"}
+    if not isinstance(request, dict) or set(request) not in (base, base | {"text"}):
         raise Refused("SCHEMA_VIOLATION")
     if type(request["version"]) is not int or request["version"] != VERSION:
         raise Refused("VERSION_MISMATCH")
@@ -94,6 +104,10 @@ def parse_request(raw: bytes, file_id: str, session: str, last_id: int, now: flo
         raise Refused("BAD_ID")
     if request["command"] not in COMMANDS:
         raise Refused("UNKNOWN_COMMAND")
+    if ("text" in request) != (request["command"] == "request"):
+        raise Refused("SCHEMA_VIOLATION")
+    if "text" in request and (not isinstance(request["text"], str) or not _TEXT.fullmatch(request["text"])):
+        raise Refused("BAD_TEXT")
     created = request["created"]
     if type(created) not in (int, float) or not math.isfinite(created):
         raise Refused("SCHEMA_VIOLATION")
@@ -156,8 +170,9 @@ class LiveTest:
         except OSError:
             pass
 
-    def attach(self, coordinator) -> None:
-        self.coordinator = coordinator
+    def attach(self, coordinator, interpret=None) -> None:
+        """``interpret``: the production rules' text interpreter (companion/service.py)."""
+        self.coordinator, self.interpret = coordinator, interpret
 
     # ---------------------------------------------------------------- files
     def _write(self, name: str, value: dict) -> None:
@@ -236,16 +251,27 @@ class LiveTest:
             if self.active is not None:
                 self.respond(request, False, "TEST_ACTIVE", test_id=self.active["test_id"])
                 return
+        if request["command"] == "request":
+            proposal = self.interpret(request["text"]) if self.interpret is not None else None
+            log.info("live test request %s text %r -> %s", request["id"], request["text"], json.dumps(proposal))
+            if proposal is None:
+                self.respond(request, False, "NOT_UNDERSTOOD")
+                return
+            if proposal.get("command") in NOT_JOBS:
+                self.respond(request, False, "NOT_A_JOB", proposal=proposal)
+                return
+        else:
+            proposal = dict(HITCH)
         capture = _Capture()
         log.addHandler(capture)
-        job = coordinator.submit(dict(HITCH))
+        job = coordinator.submit(dict(proposal))
         if job is None:                            # BUSY with a player's job, or not understood
             log.removeHandler(capture)
             self.respond(request, False, "BUSY")
             return
         at = self.clock()
         record = {"version": VERSION, "test_id": job.owner, "job": job.number, "request": request["id"],
-                  "proposal": HITCH, "companion_build": BUILD, "mod_build": self.mod_build(),
+                  "proposal": proposal, "text": request.get("text"), "companion_build": BUILD, "mod_build": self.mod_build(),
                   "started": _local(at), "started_unix": at, "ended": None, "ended_unix": None,
                   "status": "WORKING", "reason": None, "steps": [], "states": [], "equipment": [],
                   "final_observation": None, "companion_log": []}

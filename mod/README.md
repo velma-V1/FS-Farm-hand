@@ -32,8 +32,9 @@ programs, so two narrow bridges carry a live test:
 1. Claude → host runner: `python scripts/fs25_live_test.py <command>` (in the
    sandbox) writes one request at a time to `.fs25-dev/host/requests` in this
    checkout; `scripts/fs25_host_runner.py`, started once by the user outside the
-   sandbox, answers in `.fs25-dev/host/responses`. Only eight ops exist (`status`,
+   sandbox, answers in `.fs25-dev/host/responses`. Only nine ops exist (`status`,
    `install-current-build`, `launch-fs25`, `restart-fs25`, `stop-fs25`, `run-hitch-test`,
+   `run-request-test` (the player's own typed words through the production rules),
    `stop-test`, `collect`); none takes a path, program or command text, and every
    request names the runner's per-start token and a fresh, increasing id. One
    runner per checkout: a second one refuses to start (OS lock on
