@@ -1003,7 +1003,10 @@ end
 -- handling is not touched.
 Hitch.PULL_LIMITS = { maxDistanceM = 8, maxSpeedKmh = 3, timeoutMs = 30000, maxClearM = 6 }
 Hitch.PULL = {
-    clearM = 4,               -- provisional: joint separation that ends it (CLEAR)
+    -- Joint separation that ends it (CLEAR): the companion's verified 4 m plus 0.5 m, as
+    -- the two measures of a three-point joint differ (live 8d1f4ada61c14239-3: 4.01 m
+    -- here from the joint's post-detach point, 3.70 m from GIANTS' load-time offsets).
+    clearM = 4.5,
     timeoutMs = 20000,        -- 8 m at 3 km/h is 9.6 s
     lookaheadM = 3,
     divergeM = 0.5,           -- farther than this off the starting line: DIVERGED
@@ -1046,7 +1049,11 @@ local function observePull(env, s)
     local ix, _, iz = world(env, s.inputJoint.node)
     local rx, _, rz = world(env, s.wagon.rootNode)
     local x, y = inFrame(s, sx, sz)
-    return { x = x, y = y, separation = distance(tx, tz, ix, iz), ix = ix, iz = iz, rx = rx, rz = rz }
+    -- away: from where the implement stood at the start, so only the tractor's own
+    -- motion counts (live 8d1f4ada61c14239-9: the seeder settled 6 cm towards it after
+    -- the detach; its own motion is bounded by IMPLEMENT_MOVED).
+    local away = s.implementX and distance(tx, tz, s.implementX, s.implementZ) or nil
+    return { x = x, y = y, separation = distance(tx, tz, ix, iz), away = away, ix = ix, iz = iz, rx = rx, rz = rz }
 end
 
 -- Prepare the pull-clear. `args`: tractor, wagon (the implement just unhitched),
@@ -1089,7 +1096,7 @@ function Hitch.newPullClear(env, args)
         s.jointAhead = (jx - sx) * fx + (jz - sz) * fz
         local o = observePull(env, s)
         s.implementX, s.implementZ, s.rootX, s.rootZ = o.ix, o.iz, o.rx, o.rz
-        s.bestSeparation, s.startSeparation = o.separation, o.separation
+        s.bestSeparation, s.startSeparation = o.separation, o.separation      -- away == separation here
         local ix = inFrame(s, o.ix, o.iz)
         if ix >= 0 then return nil, "PULL_CLEAR_NOT_BEHIND" end     -- forward would drive into it
         local okAround, others, player = pcall(surroundings, env, s)
@@ -1126,7 +1133,7 @@ local function pullDrive(env, s, dt)
         return "IMPLEMENT_MOVED"
     end
     if o.separation >= s.clearM then return "CLEAR" end
-    if o.separation < s.bestSeparation - P.separationSlackM then return "SEPARATION_LOST" end
+    if o.away < s.bestSeparation - P.separationSlackM then return "SEPARATION_LOST" end
     if s.elapsed > s.timeoutMs then return "TIMEOUT" end
     if o.x > s.maxDistanceM then return "DISTANCE_LIMIT" end
     if math.abs(o.y) > P.divergeM then return "DIVERGED" end
@@ -1139,8 +1146,8 @@ local function pullDrive(env, s, dt)
     local bad = pullConflict(s, pullPoints(o.x), D.vehicleStopM, D.playerStopM)
     if bad ~= nil then return bad end
     -- Progress is separation gained: a collision with anything unobserved stalls it.
-    if o.separation > s.bestSeparation + D.stallProgressM then
-        s.bestSeparation, s.sinceProgress = o.separation, 0
+    if o.away > s.bestSeparation + D.stallProgressM then
+        s.bestSeparation, s.sinceProgress = o.away, 0
     else
         s.sinceProgress = s.sinceProgress + dt
         if s.sinceProgress > D.stallMs then return "STALLED" end

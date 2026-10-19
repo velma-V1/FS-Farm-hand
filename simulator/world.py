@@ -14,7 +14,7 @@ MOCK_POSE_TOLERANCE_M = 0.5
 MOCK_TRAILER_OFFSET_M = 7.0
 MOCK_REVERSE_REACH_M = 10.0      # the mod's reverse cap (Hitch.LIMITS.maxDistanceM)
 MOCK_LOCAL_RADIUS_M = 25.0       # the mod's local work radius (Hitch.LOCAL_LIMITS.workRadiusM)
-MOCK_PULL_CLEAR_M = 4.0          # the mod's pull-clear separation (Hitch.PULL.clearM)
+MOCK_PULL_CLEAR_M = 4.5          # the mod's pull-clear separation (Hitch.PULL.clearM)
 MOCK_PULL_MAX_M = 8.0            # and its cap (Hitch.PULL_LIMITS.maxDistanceM)
 
 

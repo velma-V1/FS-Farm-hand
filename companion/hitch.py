@@ -40,7 +40,10 @@ APPROACH_CLEARANCE_M = 10.0         # an aim this close to other equipment is tr
 # detach Farmhand pulls the tractor forward until the joints are PULL_CLEAR_M apart
 # (= mod/FarmhandHitch.lua Hitch.PULL.clearM); a hitch from such a stand is refused.
 PULL_CLEAR_JOINT_M = 1.5
-PULL_CLEAR_M = 4.0
+PULL_CLEAR_M = 4.0                  # verified on GIANTS' joint offsets
+# The mod drives this much further (= mod/FarmhandHitch.lua Hitch.PULL.clearM - PULL_CLEAR_M): its
+# measure of a three-point joint differs from GIANTS' offsets (live 0.31 m).
+PULL_CLEAR_MARGIN_M = 0.5
 
 # The envelope from which the bounded reverse (mod/FarmhandHitch.lua) can bring the
 # planned tractor joint to the wagon's input joint, measured on the observed joints

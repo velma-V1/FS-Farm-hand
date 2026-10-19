@@ -232,7 +232,7 @@ Executable mapping (`python scripts/check.py`):
   only straight after that pair's own detach (no op in between, within 30 s, once) on
   the joints it freed, a failure is FAILED and a stop aborts it. `test_lua_pullclear`
   (the real Hitch.newPullClear / pullClearStep on the kinematic stub): straight
-  forward only at 3 km/h, ends CLEAR braked as soon as the joints are 4 m apart; caps
+  forward only at 3 km/h, ends CLEAR braked as soon as the joints are 4.5 m apart (from the joint's start point fixed to the tractor's body, so settling three-point arms do not count); caps
   (8 m, 3 km/h, 30 s, clearance 6 m) refuse larger limits; refused unmoved when
   seated, moving, under AI, unreserved, the implement ahead, a vehicle or the player
   on the line, or already clear; stops on takeover, seating, lost reservation, AI,

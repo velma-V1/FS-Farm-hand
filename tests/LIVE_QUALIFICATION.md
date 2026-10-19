@@ -54,6 +54,10 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 | Seeder GL 860 163 in open ground (new save 3 layout; class: sowing machine, three-point) | 4e9c443e19bd4de1-9 | ba5752c | PASS | TRAVEL_NEAR, LOCAL_MANEUVER, ALIGN_REVERSE, ATTACH, VERIFY |
 | Unhitch the seeder | 4e9c443e19bd4de1-10 / -12 | ba5752c | FAIL (fixed) | DETACH and VERIFY passed; PULL_CLEAR stopped itself SEPARATION_LOST within 0.2-0.4 s (separation 0.19 -> 0.14 m, tractor 0.01-0.07 m forward): GIANTS' lower links carried the jointTransform back towards the seeder after the detach. Separation now measured from the joint's start point fixed to the tractor's body |
 | Re-hitch the seeder | 4e9c443e19bd4de1-11 | ba5752c | PASS | joints 0.17 m apart: look-only align, ATTACH, VERIFY |
+| Sprayer Vantage 4300 161, open ground, asked by the player in game (Farmhand key) | 8d1f4ada61c14239-1 | 20d7c16 | PASS | production request from the player: TRAVEL_NEAR, LOCAL_MANEUVER, ALIGN_REVERSE, ATTACH, VERIFY (class: sprayer, drawbar) |
+| Unhitch the sprayer (x2) | 8d1f4ada61c14239-3 / -5 | 20d7c16 | UNVERIFIED (fixed) | PULL_CLEAR 3.90 m straight, CLEAR at 4.01 m by the mod; the fresh snapshot (GIANTS' joint offsets) saw 3.70 / 3.69 m, under the verified 3.75 m. The mod now pulls to 4.5 m; the companion still verifies 3.75 m |
+| Re-hitch the sprayer after the pull | 8d1f4ada61c14239-4 | 20d7c16 | PASS | straight ALIGN_REVERSE from ~3.7 m, ATTACH, VERIFY |
+| Seeder again (hitch, unhitch, re-hitch, unhitch) | 8d1f4ada61c14239-6..-9 | 20d7c16 | PASS / FAIL (fixed) / PASS / FAIL (fixed) | the body-fixed joint point holds, but the seeder itself settled 6 cm towards the tractor after GIANTS' detach (separation 0.19 -> 0.14 m, tractor +0.01 m): SEPARATION_LOST. Growth is now judged from the implement's start position; its own movement stays bounded by IMPLEMENT_MOVED (25 cm) |
 | STOP mid-maneuver | — | — | OPEN | |
 | Player takeover | — | — | OPEN | |
 | Stall / failure | — | — | OPEN | |

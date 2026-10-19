@@ -59,7 +59,7 @@ class LuaPullClearTests(unittest.TestCase):
         self.assertNotEqual(w.tractor.forceIsActive, True)
 
     def test_mirrors_the_companion(self):
-        self.assertEqual(self.hitch.PULL.clearM, companion_hitch.PULL_CLEAR_M)
+        self.assertEqual(self.hitch.PULL.clearM, companion_hitch.PULL_CLEAR_M + companion_hitch.PULL_CLEAR_MARGIN_M)
 
     def test_pulls_straight_forward_until_clear_then_brakes(self):
         w = self.world()
@@ -71,8 +71,8 @@ class LuaPullClearTests(unittest.TestCase):
         moving = [d for d in self.drives(w) if d["allowed"]]
         self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == 3 for d in moving))
         travelled = math.dist((w.steer.x, w.steer.z), (x0, z0))
-        self.assertLess(travelled, 4.2)                       # stops as soon as it is clear
-        self.assertGreaterEqual(self.separation(w), 4.0)
+        self.assertLess(travelled, 4.7)                       # stops as soon as it is clear
+        self.assertGreaterEqual(self.separation(w), 4.5)
         self.assertAlmostEqual(w.steer.yaw, yaw0, places=6)   # straight
         self.assert_ended_braked_and_restored(w)
         self.assertEqual(self.hitch.pullClearStep(w.env, session, 50), "CLEAR")   # latched: brakes only
@@ -92,7 +92,25 @@ class LuaPullClearTests(unittest.TestCase):
         code, _ = self.pull(w, session, hook=arms_settle)
         self.assertEqual(code, "CLEAR")
         w.sync()
-        self.assertGreaterEqual(self.separation(w), 4.0)
+        self.assertGreaterEqual(self.separation(w), 4.5)
+
+    def test_the_implement_settling_a_little_after_the_detach_does_not_stop_it(self):
+        # Live 8d1f4ada61c14239-9 (seeder): it settled 6 cm towards the tractor after
+        # GIANTS' detach. The tractor's own motion away is what must keep growing; the
+        # implement's own movement stays bounded (IMPLEMENT_MOVED, 25 cm).
+        w = self.world(ahead=0.19)
+        session, why = self.start(w)
+        self.assertIsNotNone(session, why)
+        fx, fz = math.sin(w.eye.yaw), math.cos(w.eye.yaw)
+        start = (w.eye.x, w.eye.z)
+
+        def settle(i):
+            if i <= 6:
+                w.eye.x, w.eye.z = start[0] + 0.01 * i * fx, start[1] + 0.01 * i * fz
+
+        code, _ = self.pull(w, session, hook=settle)
+        self.assertEqual(code, "CLEAR")
+        self.assertGreaterEqual(self.separation(w), 4.5)
 
     def test_limits_are_hard_capped(self):
         for overrides in ({"maxDistanceM": 8.5}, {"maxSpeedKmh": 3.5}, {"maxSpeedKmh": 0.5},
@@ -113,7 +131,7 @@ class LuaPullClearTests(unittest.TestCase):
             (dict(), lambda w: w.addVehicle(0.0, 12.0), "PULL_CLEAR_BLOCKED"),
             (dict(), lambda w: setattr(w.player, "x", w.eye.x + 1.0) or setattr(w.player, "z", w.eye.z + 14.0),
              "PULL_CLEAR_PERSON"),
-            (dict(ahead=4.5), lambda w: None, "ALREADY_CLEAR"),
+            (dict(ahead=4.6), lambda w: None, "ALREADY_CLEAR"),
         ]
         for geometry, setup, reason in cases:
             with self.subTest(reason=reason):
