@@ -1146,3 +1146,10 @@ class ServiceTests(unittest.TestCase):
         link.heartbeat()
         link.notice("COMPLETE")
         self.assertNotIn("session.xml", link.files.files)
+
+
+class OpContractTests(unittest.TestCase):
+    def test_every_command_op_has_a_wait_bound(self):
+        # Live 8f95c84618a14e92-1: "buy" had none, a KeyError before anything was sent.
+        from protocol.ipc import COMMAND_ARGS
+        self.assertEqual(set(COMMAND_ARGS) - set(bridge.DONE_TIMEOUT_S), set())

@@ -143,6 +143,86 @@ def finish_test(response: dict) -> int:
     return EXIT.get(summary.get("status"), INFRASTRUCTURE)
 
 
+# The game log as this sandbox reads it (read only): the runner's fixed profile.
+GAME_LOG = Path("/mnt/c/Users/Matt/AppData/Local/Packages/GIANTSSoftware.FarmingSimulator25PC_fa8jxm5fj0esw"
+                "/LocalCache/Local/log.txt")
+MENU_S, LOAD_S, LINK_S = 300.0, 900.0, 180.0
+_game_pid: int | None = None        # only this game's log counts (launch rewrites it)
+
+
+def _log_text() -> str:
+    try:
+        text = GAME_LOG.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    head = text[:2000].replace("\r", "")
+    return text if _game_pid is None or f"PID: {_game_pid}\n" in head else ""
+
+
+def _wait_log(pattern: str, seconds: float, also=lambda: True) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if pattern in _log_text() and also():
+            return True
+        time.sleep(2.0)
+    return False
+
+
+def _stable_log(quiet: float = 10.0, seconds: float = LOAD_S) -> bool:
+    """The log stopped growing for ``quiet`` seconds (the map finished loading)."""
+    deadline, last, since = time.monotonic() + seconds, -1, time.monotonic()
+    while time.monotonic() < deadline:
+        size = GAME_LOG.stat().st_size if GAME_LOG.exists() else -1
+        if size != last:
+            last, since = size, time.monotonic()
+        elif time.monotonic() - since >= quiet:
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def _linked(build: str | None) -> bool:
+    response = call("status")
+    game = ((response.get("result") or {}).get("live") or {}).get("game") or {}
+    return bool(game.get("linked")) and (build is None or str(game.get("mod_build", "")).startswith(build[:7]))
+
+
+def load_save(build: str | None = None, pid: int | None = None) -> int:
+    """The game's own menu, by its own keys (the Xbox build's -autoStartSavegameId never
+    finds the cloud save): Enter on the save list (the last save is selected), Enter on
+    the mod list (START), wait for the map, Enter on START; each step confirmed from the
+    game log (of process ``pid``), the end by the companion's link on ``build``."""
+    global _game_pid
+    _game_pid = pid
+    if not _wait_log("Savegame not found", MENU_S) and "Starting singleplayer game" not in _log_text():
+        emit(event="load-save", ok=False, code="MENU_NOT_SEEN")
+        return INFRASTRUCTURE
+    if "Starting singleplayer game" not in _log_text():
+        _wait_log("COMPLETE async syncProfileFiles", 60.0)
+        time.sleep(5.0)
+        for _ in range(4):                          # save list, then the mod list's START
+            call("key", {"name": "enter"})
+            if _wait_log("Starting singleplayer game", 8.0):
+                break
+        else:
+            emit(event="load-save", ok=False, code="SAVE_NOT_STARTED")
+            return INFRASTRUCTURE
+    emit(event="load-save", step="loading")
+    if not _wait_log("[Farmhand] bridge ready", LOAD_S) or not _stable_log():
+        emit(event="load-save", ok=False, code="MAP_NOT_LOADED")
+        return INFRASTRUCTURE
+    for _ in range(4):                              # the loading screen's START
+        call("key", {"name": "enter"})
+        deadline = time.monotonic() + LINK_S / 4
+        while time.monotonic() < deadline:
+            if _linked(build):
+                emit(event="load-save", ok=True, code="LOADED")
+                return 0
+            time.sleep(3.0)
+    emit(event="load-save", ok=False, code="NOT_LINKED")
+    return INFRASTRUCTURE
+
+
 def command_hitch(wait: float = HITCH_WAIT_S, poll: float = 3.0, text: str | None = None) -> int:
     started = call("run-hitch-test") if text is None else call("run-request-test", {"text": text})
     if not started.get("ok"):
@@ -173,6 +253,7 @@ def main(argv=None) -> int:
     for name in ("status", "install", "launch", "restart", "stop-fs25", "hitch", "stop"):
         sub.add_parser(name)
     sub.add_parser("screen")
+    sub.add_parser("load-save")
     click = sub.add_parser("click")
     click.add_argument("x", type=float, help="0..1 across the FS25 window")
     click.add_argument("y", type=float, help="0..1 down the FS25 window")
@@ -188,6 +269,8 @@ def main(argv=None) -> int:
             return command_hitch()
         if args.command == "request":
             return command_hitch(text=args.text)
+        if args.command == "load-save":
+            return load_save()
         if args.command in ("screen", "click", "key"):
             payload = ({"x": args.x, "y": args.y} if args.command == "click"
                        else {"name": args.name} if args.command == "key" else None)
@@ -207,6 +290,10 @@ def main(argv=None) -> int:
               "restart": "restart-fs25", "stop-fs25": "stop-fs25", "stop": "stop-test"}[args.command]
         response = call(op)
         emit(event=op, ok=response.get("ok"), code=response.get("code"), result=response.get("result"))
+        if op == "launch-fs25" and response.get("ok"):
+            installed = (call("status").get("result") or {}).get("installed") or {}
+            pids = response["result"].get("fs25_pids") or [None]
+            return load_save(installed.get("mod"), pids[0])
         if op == "status":
             return 0 if response.get("ok") and response["result"].get("farmhand_ready") else INFRASTRUCTURE
         return 0 if response.get("ok") else INFRASTRUCTURE

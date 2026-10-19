@@ -43,7 +43,7 @@ HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
 ALIGN_MAX_DISTANCE_M = 10.0      # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
-DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "fieldwork": 7300.0,
+DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "fieldwork": 7300.0, "buy": 60.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
