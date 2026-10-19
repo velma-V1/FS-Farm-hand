@@ -594,6 +594,31 @@ class GiantsNavigationTests(unittest.TestCase):
         tractor, wagon = (world.items[x] for x in result.equipment_ids)
         assert_goto_delivery(self, tractor, wagon, plan.target)
 
+    def test_goto_travel_to_a_blocked_approach_aims_at_the_other_once(self):
+        # Live 27539c7115a44b86-1: NOT_REACHABLE at once, 1248 m off, unmoved.
+        for reachable, outcome in ((True, "COMPLETE"), (False, "FAILED")):
+            with self.subTest(second_reachable=reachable):
+                calls = []
+
+                class Blocked(MockWorld):
+                    def navigate(self, tractor_id, pose, owner):
+                        calls.append(pose)
+                        if len(calls) == 1 or (len(calls) == 2 and not reachable):
+                            return None                     # GOTO ended where it started
+                        return super().navigate(tractor_id, pose, owner)
+
+                world = self.world(GOTO_TRACTOR, far=True, cls=Blocked)
+                tractor, wagon = world.snapshot()
+                aims = approach_poses(plan_hitch(tractor, wagon), tractor.position, ())
+                result = Executor(world).execute(intent())
+                self.assertEqual(result.status, outcome, result)
+                self.assertEqual(calls[:2], list(aims))
+                if not reachable:
+                    self.assertEqual(result.reason, "TRAVEL_ENDED_TOO_FAR")
+                    self.assertEqual(len(calls), 2)          # each approach once; no STAGE
+                    self.assertNotIn("STAGE", result.states)
+                    self.assertEqual(result.states.count("TRAVEL_NEAR"), 2)
+
     def test_far_tractor_without_marker_travels_by_goto_to_staging(self):
         for capabilities in (GOTO_TRACTOR, AUTODRIVE_TRACTOR):     # AD, but no marker near the wagon
             with self.subTest(capabilities=sorted(capabilities)):

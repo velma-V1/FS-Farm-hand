@@ -565,17 +565,23 @@ class Executor:
                 # unmoved, to start from where the tractor stands (REAPPROACH_CODES).
                 physical_attempted = True
                 aimed = 0
-                if travel is not None:
+                while travel is not None:
+                    # GOTO travel to an approach that ends far off (live: NOT_REACHABLE
+                    # at once for a blocked aim) aims at the next one, each once.
                     tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
                     enter("TRAVEL_NEAR")
                     self._move(tractor.id, travel, owner)
-                    aimed = 1 if travel == aims[0] else 0
+                    if isinstance(travel, Pose):
+                        aimed += 1
                     tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
-                    left = math.dist(tractor.position, (aims[0].x, aims[0].z))
-                    log.info("TRAVEL_NEAR end: root %s heading %s, %.1f m from the approach",
+                    left = min(math.dist(tractor.position, (aim.x, aim.z)) for aim in aims)
+                    log.info("TRAVEL_NEAR end: root %s heading %s, %.1f m from the approaches",
                              tractor.position, tractor.heading, left)
-                    if left > NEAR_RADIUS_M + TRACTOR_ARRIVAL_TOLERANCE_M:
+                    if left <= NEAR_RADIUS_M + TRACTOR_ARRIVAL_TOLERANCE_M:
+                        break
+                    if not isinstance(travel, Pose) or aimed >= len(aims):
                         raise StepFailed("TRAVEL_ENDED_TOO_FAR")
+                    travel = aims[aimed]
                 tractor, wagon, error = self._joints("HITCH start", ids, farm_id, owner, plan)
                 restage = False
                 while True:
