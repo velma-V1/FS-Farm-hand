@@ -936,9 +936,10 @@ class Runner:
         status = None
         while time.monotonic() < deadline:
             _, _, status = self.op_status()
-            # Ready from the new game only: its snapshot is newer than the launch.
+            # Ready from the new game only: its snapshot is no older than the launch
+            # (<=: Windows' monotonic clock ticks every ~16 ms, so both may read 0).
             age = ((status.get("live") or {}).get("game") or {}).get("last_frame_age_s")
-            if status["farmhand_ready"] and age is not None and age < time.monotonic() - launched:
+            if status["farmhand_ready"] and age is not None and age <= time.monotonic() - launched:
                 return True, "READY", {"fs25_pids": pids, "status": status}
             time.sleep(5.0)
         raise Refused("NOT_READY", status=status)
