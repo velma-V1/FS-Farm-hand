@@ -566,6 +566,91 @@ end
 
 aborts.fieldwork = abortGoto
 
+-- -------------------------------------------------------------------- buy
+-- A store purchase through GIANTS' own BuyVehicleData (75/608): new, setStoreItem,
+-- setConfigurations (the item's defaultConfigurationIds, StoreManager 1018),
+-- setOwnerFarmId, then buy(storeSpawnPlaces, usedStorePlaces, ...) (201-212), which
+-- spawns at the store's spawn place (and where Store Deliveries moved it: it hooks
+-- this very call). Price economyManager:getBuyPrice (127), funds the farm's balance
+-- (getBalance, AIJob 175-177), slots slotSystem:hasEnoughSlots (VehicleSystem 571).
+-- BuyVehicleEvent is undocumented, so the charge is checked, not assumed: once the
+-- new vehicle is seen, the balance is read again; if GIANTS has not charged the
+-- price, addMoney(-price, farm, MoneyType.SHOP_VEHICLE_BUY) charges it once.
+-- DONE BOUGHT only with a new vehicle of the item's name owned by the farm.
+Bridge.BUY_TIMEOUT_MS = 30000
+
+local function ownedVehicles(env, farmId)
+    local out = {}
+    local vehicles = env.g_currentMission.vehicleSystem and env.g_currentMission.vehicleSystem.vehicles
+        or env.g_currentMission.vehicles
+    for _, v in pairs(vehicles or {}) do
+        if v.ownerFarmId == farmId then out[v] = true end
+    end
+    return out
+end
+
+local function balance(env, farmId)
+    local ok, money = pcall(function() return env.g_farmManager:getFarmById(farmId):getBalance() end)
+    return ok and finite(money) and money or nil
+end
+
+function starters.buy(env, spec)
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local ok, task, reason = pcall(function()
+        local item = env.g_storeManager:getItems()[spec.item]
+        if item == nil or item.id ~= spec.item or env.StoreItemUtil.getIsVehicle(item) ~= true then
+            return nil, "UNKNOWN_STORE_ITEM"
+        end
+        local configs = {}
+        for name, id in pairs(item.defaultConfigurationIds or {}) do configs[name] = id end
+        local price = env.g_currentMission.economyManager:getBuyPrice(item, configs, nil)
+        local before = balance(env, spec.farmId)
+        if not finite(price) or price <= 0 then return nil, "PRICE_UNKNOWN" end
+        if before == nil then return nil, "BALANCE_UNKNOWN" end
+        if before < price then return nil, "NOT_ENOUGH_MONEY" end
+        local slots = env.g_currentMission.slotSystem
+        if slots ~= nil and slots:hasEnoughSlots(item) ~= true then return nil, "NO_SLOTS" end
+        local data = env.BuyVehicleData.new()
+        data:setStoreItem(item)
+        data:setConfigurations(configs)
+        data:setOwnerFarmId(spec.farmId)
+        data:setPrice(price)
+        local t = { item = item, price = price, before = before, known = ownedVehicles(env, spec.farmId) }
+        log("buy %s (%s) for %.0f: balance %.0f", tostring(item.name), tostring(item.xmlFilename), price, before)
+        data:buy(env.g_currentMission.storeSpawnPlaces, env.g_currentMission.usedStorePlaces,
+            function(_, vehicles, state) t.loaded, t.state = vehicles, state end, nil, nil)
+        return t
+    end)
+    if not ok then log("buy failed: %s", tostring(task)); return nil, "BUY_ERROR" end
+    return task, reason
+end
+
+function steppers.buy(env, task)
+    if task.vehicle == nil then
+        for v in pairs(ownedVehicles(env, task.spec.farmId)) do
+            if not task.known[v] and v.configFileName ~= nil and task.item.xmlFilename ~= nil
+                    and v.configFileName:lower() == task.item.xmlFilename:lower() then
+                task.vehicle = v
+            end
+        end
+        if task.vehicle == nil then
+            if task.elapsed > Bridge.BUY_TIMEOUT_MS then return "UNVERIFIED", "BUY_NOT_OBSERVED" end
+            return nil
+        end
+    end
+    -- Charged by GIANTS already? Otherwise once, here.
+    local now = balance(env, task.spec.farmId)
+    if now == nil then return "UNVERIFIED", "BALANCE_UNKNOWN" end
+    if task.before - now < task.price * 0.99 then
+        env.g_currentMission:addMoney(-task.price, task.spec.farmId, env.MoneyType.SHOP_VEHICLE_BUY, true)
+        log("buy: charged %.0f (balance was %.0f, now %.0f)", task.price, task.before, now)
+    end
+    log("buy: vehicle %s spawned", tostring(env.NetworkUtil.getObjectId(task.vehicle)))
+    return "DONE", "BOUGHT"
+end
+
+function aborts.buy() end         -- a purchase is not undone
+
 -- ------------------------------------------------------------------- stop
 -- spec.target: the running task on this tractor, if any; it is aborted first.
 function starters.stop(env, spec)
@@ -602,6 +687,7 @@ function aborts.stop() end
 -- --------------------------------------------------------------- runner
 
 Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true }
+Bridge.NO_VEHICLE = { buy = true }       -- ops that act on no vehicle
 
 function Bridge.start(env, spec)
     local starter = starters[spec.op]
@@ -662,6 +748,8 @@ function Bridge:openPipe()
     if not ok or handle == nil then return end
     self.pipe = handle
     self:writeLine(self.Observe.hello(self.env))
+    local catalog = self.Observe.catalogFrame and self.Observe.catalogFrame()
+    if catalog ~= nil then self:writeLine(catalog) end
 end
 
 function Bridge:result(session, id, op, status, code)
@@ -740,7 +828,7 @@ function Bridge:checkSession()
 end
 
 local ATTRS = { tractor = "tractor", wagon = "wagon", marker = "marker", x = "x", z = "z", yaw = "yaw",
-                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area" }
+                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", item = "item" }
 
 function Bridge:pollCommand()
     local env, path = self.env, self.dir .. Bridge.COMMAND_FILE
@@ -778,7 +866,7 @@ function Bridge:handle(cmd)
         if key ~= "tractor" and key ~= "wagon" then spec[key] = cmd[key] end
     end
     if Bridge.NEEDS_WAGON[cmd.op] then spec.wagon = object(cmd.wagon) end
-    if spec.tractor == nil or (Bridge.NEEDS_WAGON[cmd.op] and spec.wagon == nil) then
+    if (spec.tractor == nil and not Bridge.NO_VEHICLE[cmd.op]) or (Bridge.NEEDS_WAGON[cmd.op] and spec.wagon == nil) then
         return self:result(cmd.session, cmd.id, cmd.op, "REJECTED", "UNKNOWN_VEHICLE")
     end
     local owner = "companion:" .. self.session
@@ -836,6 +924,8 @@ function Bridge:update(dt)
         self.seq = self.seq + 1
         local line = self.Observe.snapshot(self.env, self.seq, self.session, elapsed)
         if line ~= nil then self:writeLine(line) end
+        local catalog = self.Observe.tickCatalog and self.Observe.tickCatalog(self.env)
+        if catalog ~= nil then self:writeLine(catalog) end
     end
 end
 
@@ -852,6 +942,8 @@ Bridge.NOTICES = {
     ACCEPTED_DETACH = "Farmhand: unhitching the implement",
     COMPLETE_DETACH = "Farmhand: implement unhitched",
     ACCEPTED_FIELD_WORK = "Farmhand: on it - working the field",
+    ACCEPTED_BUY = "Farmhand: going shopping",
+    COMPLETE_BUY = "Farmhand: bought it; it is waiting at the store",
     COMPLETE_FIELD_WORK = "Farmhand: field work done and checked on the field",
     COMPLETE_DETACH_NOT_CLEAR = "Farmhand: implement unhitched; the tractor could not pull clear of it, so drive it away before the next job",
     UNSUPPORTED_TRACTOR_ONLY = "Farmhand: moving a tractor on its own is not supported yet; ask for a tractor with an implement, such as the forage wagon",
@@ -964,6 +1056,16 @@ Bridge.REASONS = {
     DISTANCE_LIMIT = "the tractor did not get clear of the implement within its limit",
     BLOCKED_BY_PERSON = "you are standing in the tractor's way; step aside and ask again",
     NO_OWNED_FIELD = "the farm owns no field",
+    CATALOG_NOT_READY = "the store list is still loading; ask again in a minute",
+    NOT_IN_STORE = "the store does not sell that",
+    NO_PLOW_FOR_OUR_TRACTORS = "no plow in the store that our tractors can pull",
+    NOT_ENOUGH_MONEY = "the farm cannot afford it",
+    NO_SLOTS = "the farm has no free vehicle slots",
+    UNKNOWN_STORE_ITEM = "that store item is gone",
+    BUY_ERROR = "the store refused the purchase",
+    BUY_NOT_OBSERVED = "the purchase did not appear; check the store",
+    PURCHASE_NOT_OBSERVED = "the purchase did not appear; check the store",
+    PAYMENT_NOT_OBSERVED = "the purchase appeared but the payment was not seen; check the finances",
     FIELD_NOT_OWNED = "the farm does not own that field",
     NO_FIELD_FOUND = "the helper found no field there",
     FIELD_NOT_READY = "the field needs nothing from this implement",

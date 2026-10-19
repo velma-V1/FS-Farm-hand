@@ -2,7 +2,7 @@
 
 Game -> companion: the FS25 Lua sandbox has no sockets, so the mod opens the
 Windows named pipe the companion hosts with ``io.open(PIPE_PATH, "w")`` and
-writes one JSON object per line (``hello``, ``snapshot``, ``result``).
+writes one JSON object per line (``hello``, ``snapshot``, ``result``, ``catalog``).
 Companion -> game: the sandbox reads files only through the engine XML API, so
 one command at a time is an XML file renamed into place (``encode_command``).
 This module is the transport-independent part: untrusted-frame decoding and
@@ -112,6 +112,7 @@ COMMAND_ARGS = {
     "stage": ("tractor", "x", "z", "yaw"),
     "navigate": ("tractor", "x", "z", "yaw"),
     "fieldwork": ("tractor", "field", "x", "z", "yaw", "area"),
+    "buy": ("item",),
     "maneuver": ("tractor", "wagon", "tractorJoint", "wagonJoint"),
     "align": ("tractor", "wagon", "tractorJoint", "wagonJoint", "maxDistanceM"),
     "attach": ("tractor", "wagon", "tractorJoint", "wagonJoint"),
@@ -120,8 +121,8 @@ COMMAND_ARGS = {
     "stop": ("tractor",),
 }
 _ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "x", "z": "z",
-              "yaw": "yaw", "tractorJoint": "tj", "wagonJoint": "wj", "maxDistanceM": "dist", "field": "field", "area": "area"}
-_INTEGER = {"tractor", "wagon", "marker", "tractorJoint", "wagonJoint", "field"}
+              "yaw": "yaw", "tractorJoint": "tj", "wagonJoint": "wj", "maxDistanceM": "dist", "field": "field", "area": "area", "item": "item"}
+_INTEGER = {"tractor", "wagon", "marker", "tractorJoint", "wagonJoint", "field", "item"}
 _TOKEN = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 MAX_COMMAND_ID = 2147483647
 

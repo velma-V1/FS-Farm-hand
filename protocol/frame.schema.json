@@ -6,7 +6,8 @@
     {"$ref": "#/$defs/hello"},
     {"$ref": "#/$defs/snapshot"},
     {"$ref": "#/$defs/result"},
-    {"$ref": "#/$defs/request"}
+    {"$ref": "#/$defs/request"},
+    {"$ref": "#/$defs/catalog"}
   ],
   "$defs": {
     "coordinate": {"type": "number", "minimum": -100000, "maximum": 100000},
@@ -152,6 +153,35 @@
       }
     },
     "fraction": {"type": "number", "minimum": 0, "maximum": 1.0001},
+    "storeItem": {
+      "description": "A store vehicle item (mod/FarmhandObserve.lua Observe.storeItem).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "brand", "categories", "price", "mod", "width", "needed_power", "power"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "name": {"oneOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
+        "brand": {"oneOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
+        "categories": {"type": "array", "maxItems": 4, "items": {"$ref": "#/$defs/token"}},
+        "price": {"type": "number", "minimum": 0, "maximum": 1000000000},
+        "mod": {"type": "boolean"},
+        "width": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 1000}, {"type": "null"}]},
+        "needed_power": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 100000}, {"type": "null"}]},
+        "power": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 100000}, {"type": "null"}]}
+      }
+    },
+    "catalog": {
+      "description": "The store's vehicle items, sent once built and on every new link.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "protocol", "items", "truncated"],
+      "properties": {
+        "event": {"const": "catalog"},
+        "protocol": {"const": 3},
+        "items": {"type": "array", "maxItems": 1500, "items": {"$ref": "#/$defs/storeItem"}},
+        "truncated": {"type": "boolean"}
+      }
+    },
     "coverage": {
       "description": "mod/FarmhandObserve.lua Observe.fieldCoverage: share of the field's area per GIANTS FieldGroundType name and per spray level, the field's m2, and FieldState crop samples.",
       "type": "object",

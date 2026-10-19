@@ -45,7 +45,8 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "move_pair": ("move_pair", "ACCEPTED_MOVE", "COMPLETE_MOVE"),
         "hitch_pair": ("hitch_pair", "ACCEPTED_HITCH", "COMPLETE_HITCH"),
         "detach_pair": ("detach_pair", "ACCEPTED_DETACH", "COMPLETE_DETACH"),
-        "field_work": ("field_work", "ACCEPTED_FIELD_WORK", "COMPLETE_FIELD_WORK")}
+        "field_work": ("field_work", "ACCEPTED_FIELD_WORK", "COMPLETE_FIELD_WORK"),
+        "buy": ("buy", "ACCEPTED_BUY", "COMPLETE_BUY")}
 
 
 def result_notice(status: str, reason: str, complete: str = "COMPLETE") -> str:
@@ -153,7 +154,8 @@ class Coordinator:
             self.notify(token(f"UNSUPPORTED_{proposal['reason'].upper()}"), spoken)
         else:
             work = ({"field": proposal["field"], "operations": proposal["operations"],
-                     "area_m2": proposal.get("area_m2")} if command == "field_work" else None)
+                     "area_m2": proposal.get("area_m2")} if command == "field_work"
+                    else {"wants": proposal["wants"]} if command == "buy" else None)
             return self.start(command, proposal.get("target", "here"), spoken, proposal.get("implement"), work)
         return None
 
@@ -236,6 +238,8 @@ class Coordinator:
             self.world.cancel = cancel           # the link refuses steps once it is set
             if command == "field_work":
                 result = self._field_work(job, cancel, entered, work)
+            elif command == "buy":
+                result = self._buy(job, cancel, entered, work)
             else:
                 intent = {"version": 1, "request_id": job.owner, "task": task,
                           "farm_id": self.farm(), "target": "player_at_acceptance" if target == "here" else target}
@@ -258,6 +262,21 @@ class Coordinator:
             with self._lock:
                 self.current, self.last = None, job
             self.notify(result_notice(job.state, job.reason or "", complete), job.spoken)
+
+    def _buy(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
+        """Each want in turn, one executor purchase each; the first not COMPLETE ends it."""
+        states, bought = [], []
+        for n, want in enumerate(work["wants"], 1):
+            intent = {"version": 1, "request_id": f"{job.owner}-{n}", "farm_id": self.farm(),
+                      "target": "player_at_acceptance", "task": "buy", "want": want}
+            log.info("job %d buy %d intent %s", job.number, n, json.dumps(intent))
+            result = self.executor.execute(intent, cancel=cancel, on_state=entered)
+            states += [f"buy:{s}" for s in result.states]
+            bought += list(result.equipment_ids)
+            log.info("job %d buy %d result %s %s %s", job.number, n, result.status, result.reason, result.equipment_ids)
+            if result.status != "COMPLETE":
+                return Result(result.status, result.reason, tuple(bought), tuple(states))
+        return Result("COMPLETE", "BOUGHT", tuple(bought), tuple(states))
 
     def _field_work(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """Each operation in turn on the same field (resolved once): the planner's next

@@ -722,6 +722,74 @@ function Observe.refreshField(env, id)
     return false
 end
 
+-- ----------------------------------------------------------------- store
+-- The store's vehicle items for procurement (adapters/research/store.md):
+-- g_storeManager:getItems() (StoreManager 676-678), StoreItemUtil.getIsVehicle
+-- (17-19), item fields name/brandNameRaw/categoryNames/price/showInStore/isMod
+-- (StoreManager 933-1035); specs loaded lazily by StoreItemUtil.loadSpecsFromXML
+-- (215-230): workingWidth {width, minWidth} (Vehicle 4552-4560), neededPower
+-- {base, ...} (PowerConsumer 500-520), power (Motorized 3724-3726). Built a few items
+-- per snapshot so the game never stalls; sent once complete as one catalog frame.
+Observe.MAX_CATALOG = 1500
+Observe.CATALOG_PER_TICK = 25
+Observe.catalog = nil            -- { cursor, items = array, done }
+
+local function specNumber(v, key)
+    if type(v) == "number" then return finite(v) and v or nil end
+    if type(v) == "table" then
+        local n = v[key] or v[1]
+        if type(n) == "number" and finite(n) then return n end
+    end
+    return nil
+end
+
+function Observe.storeItem(env, item)
+    local ok, vehicle = pcall(env.StoreItemUtil.getIsVehicle, item)
+    if not ok or vehicle ~= true or item.showInStore == false or not integer(item.id) then return nil end
+    if not finite(item.price) or item.price <= 0 then return nil end
+    pcall(env.StoreItemUtil.loadSpecsFromXML, item)
+    local specs = type(item.specs) == "table" and item.specs or {}
+    local categories = Observe.array()
+    for _, name in ipairs(type(item.categoryNames) == "table" and item.categoryNames or {}) do
+        if #categories < 4 and token(name) then categories[#categories + 1] = name end
+    end
+    return { id = item.id, name = text(item.name) or Observe.NULL, brand = text(item.brandNameRaw) or Observe.NULL,
+             categories = categories, price = item.price, mod = item.isMod == true,
+             width = nullable(specNumber(specs.workingWidth, "width")),
+             needed_power = nullable(specNumber(specs.neededPower, "base")),
+             power = nullable(specNumber(specs.power, "power")) }
+end
+
+-- One step of building the catalog; returns the finished frame once, else nil.
+function Observe.tickCatalog(env)
+    local c = Observe.catalog
+    if c == nil then
+        local items = try(function() return env.g_storeManager:getItems() end)
+        if type(items) ~= "table" then return nil end
+        c = { cursor = 0, source = items, items = Observe.array(), done = false, sent = false }
+        Observe.catalog = c
+    end
+    if c.done then return nil end
+    for _ = 1, Observe.CATALOG_PER_TICK do
+        c.cursor = c.cursor + 1
+        local item = c.source[c.cursor]
+        if item == nil or #c.items >= Observe.MAX_CATALOG then
+            c.done, c.truncated = true, item ~= nil
+            return Observe.catalogFrame()
+        end
+        local ok, record = pcall(Observe.storeItem, env, item)
+        if ok and record ~= nil then c.items[#c.items + 1] = record end
+    end
+    return nil
+end
+
+-- The finished catalog frame again (a new companion session needs it too).
+function Observe.catalogFrame()
+    local c = Observe.catalog
+    if c == nil or not c.done then return nil end
+    return encode({ event = "catalog", protocol = Observe.PROTOCOL, items = c.items, truncated = c.truncated })
+end
+
 -- Money and GIANTS' helper purchase settings (missionInfo helperBuy*, Motorized
 -- 2212, SowingMachine 510/1070, Sprayer 478-480): read only, never changed.
 local function farmInfo(env, farmId)

@@ -163,6 +163,41 @@ _FIELD_WORK = re.compile(
 TEST_AREA_M2 = 400        # "a small area of field 7": about a minute of work for one implement
 
 
+# Buying: "buy a large plow, the gmc truck and a gooseneck".
+_BUY = re.compile(r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?:buy|purchase|get us|order)\s+(?P<items>.+?)"
+                  r"(?:\s+from\s+the\s+(?:store|shop|dealer))?$")
+_BUY_ITEM = re.compile(
+    r"\s*(?:(?:and|plus|also)\s+)?(?:(?:a|an|the|one|new)\s+)?(?:new\s+)?(?P<size>large|big|biggest|largest)?\s*"
+    r"(?:(?P<plow>plows?|ploughs?)|(?P<goose>gooseneck)(?:\s+trailer)?"
+    r"|(?P<name>[a-z0-9][a-z0-9-]{0,20}(?:\s+[a-z0-9][a-z0-9-]{0,20})?)\s+(?:truck|pickup))\b")
+
+
+def buy(words: str) -> dict | None:
+    match = _BUY.match(words)
+    if match is None:
+        return None
+    text, wants, at = match["items"], [], 0
+    while at < len(text):
+        item = _BUY_ITEM.match(text, at)
+        if item is None or item.end() == at:
+            return None                               # not something Farmhand knows how to choose
+        if item["plow"]:
+            want = {"kind": "plow"}
+        elif item["goose"]:
+            want = {"kind": "trailer", "name": "gooseneck"}
+        else:
+            if re.search(r"\b(?:a|an|the|and|plus)\b", item["name"]):
+                return None
+            want = {"kind": "truck", "name": item["name"]}
+        if item["size"]:
+            want["size"] = "large"
+        wants.append(want)
+        at = item.end()
+    if not wants or len(wants) > 4:
+        return None
+    return {"version": 1, "command": "buy", "wants": wants}
+
+
 def field_work(words: str) -> dict | None:
     match = _FIELD_WORK.match(words)
     if match is None:
@@ -207,7 +242,7 @@ class RuleInterpreter:
             return None                               # never an order to move
         if _COME.match(words):
             return {"version": 1, "command": "move_pair"}
-        work = field_work(words)
+        work = field_work(words) or buy(words)
         if work is not None:
             return work
         kind = implement_kind(words)

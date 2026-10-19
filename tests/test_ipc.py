@@ -309,8 +309,10 @@ class MappingTests(unittest.TestCase):
                  ({"self_propelled": None}, "unknown"),            # unreadable
                  ({"motor": None}, "unknown"),
                  ({"output_joints": []}, "unknown"),
-                 ({"output_joints": no_pto}, "unknown"),           # no PTO output: not a tractor
-                 ({"output_joints": unknown_pto}, "unknown"),
+                 # A pickup or truck with a trailer hitch tows (the GMC and its gooseneck);
+                 # PTO power and joint types are decided per joint pair.
+                 ({"output_joints": no_pto}, "tractor"),
+                 ({"output_joints": unknown_pto}, "tractor"),
                  ({"category": None}, "unknown"),                  # loader exclusion needs the category
                  ({"category": "TELELOADERVEHICLES"}, "unknown"),
                  ({"category": "skidSteerVehicles"}, "unknown"),

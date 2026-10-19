@@ -121,6 +121,20 @@ class Field:
 
 
 @dataclass(frozen=True)
+class StoreItem:
+    """A store vehicle item (GIANTS StoreManager item): what Farmhand may buy."""
+    id: int
+    name: str | None
+    brand: str | None
+    categories: tuple[str, ...]
+    price: float
+    mod: bool
+    width: float | None
+    needed_power: float | None
+    power: float | None
+
+
+@dataclass(frozen=True)
 class FarmInfo:
     money: float | None
     helper_buy_seeds: bool | None

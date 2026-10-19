@@ -24,7 +24,8 @@
         "settings",
         "report",
         "unsupported",
-        "field_work"
+        "field_work",
+        "buy"
       ]
     },
     "reason": {
@@ -104,6 +105,20 @@
     "field": {
       "description": "field_work: an owned field's number, or the smallest owned field.",
       "oneOf": [{"type": "integer", "minimum": 1, "maximum": 100000}, {"const": "smallest"}]
+    },
+    "wants": {
+      "description": "buy: what to buy, in order.",
+      "type": "array", "minItems": 1, "maxItems": 4, "items": {
+        "description": "buy: what to buy. kind: plow (a store plow our tractors can pull), truck or trailer (by the name the player gave); size large: the widest that fits.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind"],
+        "properties": {
+          "kind": {"enum": ["plow", "truck", "trailer"]},
+          "size": {"enum": ["large"]},
+          "name": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[A-Za-z0-9 -]+$"}
+        }
+      }
     },
     "area_m2": {
       "description": "field_work: work only this much of the field (a test area, m2).",
@@ -207,6 +222,11 @@
           ]
         }
       }
+    },
+    {
+      "if": {"properties": {"command": {"const": "buy"}}},
+      "then": {"required": ["wants"]},
+      "else": {"not": {"required": ["wants"]}}
     },
     {
       "if": {"properties": {"command": {"const": "field_work"}}},

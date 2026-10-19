@@ -83,16 +83,17 @@ def _attached_to(vehicle, links: set[int]) -> str | None:
 
 
 def _towing_vehicle(vehicle) -> bool:
-    """A tractor without configuration: self-propelled (Motorized, not Attachable),
-    with a loaded motor and a PTO output on some attacher joint, and a readable
-    store category that is not a loader's. No tractor store category name is
-    proven (adapters/EVIDENCE.md), so the rule rests on GIANTS' own data; whether
-    the pair can actually hitch and be powered is still decided per joint pair."""
+    """A towing vehicle (category "tractor") without configuration: self-propelled
+    (Motorized, not Attachable), with a loaded motor and at least one attacher joint,
+    and a readable store category that is not a loader's. A pickup or truck with a
+    trailer hitch tows too (the GMC and its gooseneck): PTO power and joint types are
+    decided per joint pair, so it can never take an implement it cannot hitch or power.
+    No tractor store category name is proven (adapters/EVIDENCE.md)."""
     category = vehicle["category"]
     return (vehicle["self_propelled"] is True and vehicle["motor"] is not None
             and category is not None and category.upper() not in LOADER_STORE_CATEGORIES
             and not WORK_KINDS & set(vehicle["kinds"])
-            and any(joint["pto_names"] for joint in vehicle["output_joints"]))
+            and bool(vehicle["output_joints"]))
 
 
 def _category(vehicle, categories) -> str | None:

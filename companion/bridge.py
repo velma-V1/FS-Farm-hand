@@ -31,7 +31,7 @@ from adapters.fs25 import Observation, observation_from_snapshot
 from adapters.world import StepFailed, StepUnverified
 from companion.hitch import STAGING_DISTANCE_M
 from protocol.ipc import MAX_NOTICES, PIPE_PATH, FrameError, FrameReader, encode_command, encode_session
-from protocol.model import Destination, Equipment, FarmInfo, Field, HitchPlan, Pose, Position
+from protocol.model import Destination, Equipment, FarmInfo, Field, HitchPlan, Pose, Position, StoreItem
 
 log = logging.getLogger("farmhand")
 
@@ -147,6 +147,10 @@ class CommandLink:
             elif event == "snapshot":
                 self._snapshot, self._snapshots = frame, self._snapshots + 1
                 self._last_session = frame["session"]
+            elif event == "catalog":
+                self.catalog = tuple(StoreItem(i["id"], i["name"], i["brand"], tuple(i["categories"]), i["price"],
+                                               i["mod"], i["width"], i["needed_power"], i["power"])
+                                     for i in frame["items"])
             elif event == "result" and frame["session"] == self.session:
                 self._results.setdefault(frame["id"], []).append((frame["status"], frame["code"]))
             elif event == "request" and frame["session"] == self.session and frame["id"] > self._last_request:
@@ -349,6 +353,15 @@ class FS25World:
         if status == "UNVERIFIED":
             raise StepUnverified(code)
         return code
+
+    def catalog(self) -> tuple[StoreItem, ...]:
+        """The store's vehicle items (the game sends them once built)."""
+        return getattr(self.link, "catalog", ()) or ()
+
+    def buy(self, item_id: int) -> str:
+        """BUY: GIANTS' own BuyVehicleData for the store item (mod/FarmhandBridge.lua
+        starters.buy). DONE BOUGHT names no vehicle: the executor finds it."""
+        return self._run("buy", item=int(item_id))
 
     def fieldwork(self, tractor_id: str, field_id: int, pose: Pose, owner: str, area_m2: float = 0.0) -> str:
         self._reserved(tractor_id, owner)

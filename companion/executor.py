@@ -15,7 +15,7 @@ from companion.hitch import (ALIGN_MAX_HEADING_RAD, IMPLEMENT_CATEGORIES, LOCAL_
                              against_loose_implement, approach_poses, hitch_problem, joint_error,
                              joint_separation, plan_hitch, PULL_CLEAR_M)
 from protocol.model import (Destination, Equipment, FarmInfo, Field, FieldCoverage, HitchPlan, Pose, Position,
-                            Result)
+                            Result, StoreItem)
 
 log = logging.getLogger("farmhand")
 SCHEMA = json.loads((Path(__file__).resolve().parents[1] / "protocol/intent.schema.json").read_text())
@@ -378,6 +378,47 @@ def describe(coverage: FieldCoverage | None) -> str:
     return f"ground[{ground}] spray[{spray}] fruit[{fruit}]/{coverage.sampled} m2={coverage.total_m2}"
 
 
+# ------------------------------------------------------------------ procurement
+# What to buy for a want, from the store's own catalog (mod/FarmhandObserve.lua
+# Observe.storeItem). A want is {"kind": "plow" | "truck" | "trailer", "size":
+# "large" | None, "name": words the player named | None}; the purchase itself and its
+# verification are the executor's (task "buy").
+STORE_KINDS = {"plow": ("PLOW",), "truck": ("CAR", "TRUCK", "PICKUP"), "trailer": ("TRAILER",)}
+BUY_MONEY_TOLERANCE = 0.99        # the money must fall by at least this share of the price
+
+
+def _matches(item: StoreItem, want: dict) -> bool:
+    words = [w for w in (want.get("name") or "").upper().split() if w]
+    text = f"{item.name or ''} {item.brand or ''}".upper()
+    if words and not all(w in text for w in words):
+        return False
+    kinds = STORE_KINDS.get(want["kind"], ())
+    if want.get("name") and want["kind"] in ("truck", "trailer"):
+        return True                           # a named vehicle: its name decides
+    return any(k in c for c in item.categories for k in kinds)
+
+
+def choose_store_item(catalog, want: dict, money: float | None, tractor_power: float | None):
+    """(item, None) or (None, why). Large: the widest the farm's strongest tractor can
+    power (needed power known and within it); else the cheapest that matches."""
+    candidates = [i for i in catalog if _matches(i, want)]
+    if not candidates:
+        return None, "NOT_IN_STORE"
+    if want["kind"] == "plow":
+        candidates = [i for i in candidates if i.needed_power is not None and tractor_power is not None
+                      and i.needed_power <= tractor_power]
+        if not candidates:
+            return None, "NO_PLOW_FOR_OUR_TRACTORS"
+    if money is not None:
+        affordable = [i for i in candidates if i.price <= money]
+        if not affordable:
+            return None, "NOT_ENOUGH_MONEY"
+        candidates = affordable
+    if want.get("size") == "large":
+        return max(candidates, key=lambda i: ((i.width or 0), -i.price, -i.id)), None
+    return min(candidates, key=lambda i: (i.price, i.id)), None
+
+
 def workable(tractor: Equipment, implement: Equipment, kinds: tuple[str, ...] = ()) -> bool:
     """field_work: a tractor GIANTS' field-work helper can run (AIFieldWorker) with an
     AI-usable implement (AIImplement) of one of ``kinds`` hitched to it."""
@@ -558,6 +599,50 @@ class Executor:
             return "BLOCKED_BY_PERSON"
         return "NAVIGATE_STALLED"
 
+    def _buy(self, command, enter, states) -> Result:
+        """FIND (the store's catalog) -> BUY (GIANTS' BuyVehicleData) -> VERIFY: a new
+        vehicle of the item's name owned by the farm, and the money gone."""
+        farm_id, want = command["farm_id"], command["want"]
+        try:
+            enter("FIND")
+            catalog = self.world.catalog()
+            if not catalog:
+                return Result("BLOCKED", "CATALOG_NOT_READY", states=tuple(states))
+            before = {i.id: i for i in self.world.snapshot()}
+            farm = self.world.farm()
+            money = farm.money if farm is not None else None
+            names = {i.name for i in catalog if i.power}
+            power = max((c.power for c in catalog for e in before.values()
+                         if e.category == "tractor" and e.name and e.name == c.name and c.power), default=None)
+            item, failure = choose_store_item(catalog, want, money, power)
+            if item is None:
+                log.info("buy %s: %s (tractor power %s, money %s, %d named items)", want, failure, power, money,
+                         len(names))
+                return Result("BLOCKED", failure, states=tuple(states))
+            log.info("buy %s: %s %r (%s) for %.0f, width %s, needs %s of %s", want, item.id, item.name, item.brand,
+                     item.price, item.width, item.needed_power, power)
+            enter("BUY")
+            self.world.buy(item.id)
+            enter("VERIFY")
+            after = {i.id: i for i in self.world.snapshot()}
+            new = [i for i in after.values() if i.id not in before and i.name == item.name]
+            farm_after = self.world.farm()
+            spent = (money - farm_after.money) if (money is not None and farm_after is not None
+                                                    and farm_after.money is not None) else None
+            log.info("buy: new %s at %s; money %s -> %s", [i.id for i in new], [i.position for i in new], money,
+                     farm_after and farm_after.money)
+            if len(new) != 1:
+                return Result("UNVERIFIED", "PURCHASE_NOT_OBSERVED", states=tuple(states))
+            if spent is None or spent < item.price * BUY_MONEY_TOLERANCE:
+                return Result("UNVERIFIED", "PAYMENT_NOT_OBSERVED", (new[0].id,), tuple(states))
+            return Result("COMPLETE", "BOUGHT", (new[0].id,), tuple(states))
+        except Cancelled:
+            return Result("CANCELLED", "CANCELLED_BY_REQUESTER", states=tuple(states))
+        except StepUnverified as error:
+            return Result("UNVERIFIED", error.code, states=tuple(states))
+        except (RuntimeError, ValueError, KeyError) as error:
+            return Result("FAILED", getattr(error, "code", None) or type(error).__name__, states=tuple(states))
+
     def _field(self, field_id):
         """The field's latest measured state (the mod measures it again at the start
         and the end of every field-work job)."""
@@ -652,6 +737,9 @@ class Executor:
             states.append(state)
             if on_state is not None:
                 on_state(state)
+
+        if command["task"] == "buy":
+            return self._buy(command, enter, states)
 
         reserved = physical_attempted = False
         status, reason = "BLOCKED", "NO_ELIGIBLE_PAIR"

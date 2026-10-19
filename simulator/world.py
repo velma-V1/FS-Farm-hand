@@ -55,6 +55,24 @@ class MockWorld:
         with self._lock:
             return tuple(self.field_map.values())
 
+    store_items = ()              # StoreItems the mock store sells
+    mock_bought = None            # Equipment template the mock purchase spawns (name from the item)
+
+    def catalog(self):
+        return tuple(self.store_items)
+
+    def buy(self, item_id):
+        # Mock-only: spawns a copy of mock_bought named as the item, and charges it.
+        with self._lock:
+            item = next((i for i in self.store_items if i.id == item_id), None)
+            if item is None or self.mock_bought is None:
+                raise RuntimeError("UNKNOWN_STORE_ITEM")
+            n = len(self.items) + 1
+            self.items[f"new-{n}"] = replace(self.mock_bought, id=f"new-{n}", name=item.name)
+            if self.farm_info is not None and self.farm_info.money is not None:
+                self.farm_info = replace(self.farm_info, money=self.farm_info.money - item.price)
+            return "BOUGHT"
+
     def farm(self):
         with self._lock:
             return self.farm_info

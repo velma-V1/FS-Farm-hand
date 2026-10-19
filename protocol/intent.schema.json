@@ -29,7 +29,8 @@
         "move_pair",
         "hitch_pair",
         "detach_pair",
-        "field_work"
+        "field_work",
+        "buy"
       ],
       "description": "field_work: GIANTS' field-work helper works an owned field with the hitched implement that does the operation; complete only on the field's measured state; target is player_at_acceptance. deliver_tractor_and_forage_wagon: select, hitch and deliver an available pair. move_pair: move the hitched tractor and forage wagon nearest the requester. hitch_pair: select and hitch an available pair where the wagon stands, no delivery. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to nearest the requester, where it stands; target is player_at_acceptance."
     },
@@ -133,6 +134,17 @@
       "description": "field_work: an owned field's GIANTS id, or the smallest owned field.",
       "oneOf": [{"type": "integer", "minimum": 1, "maximum": 100000}, {"const": "smallest"}]
     },
+    "want": {
+      "description": "buy: what to buy. kind: plow (a store plow our tractors can pull), truck or trailer (by the name the player gave); size large: the widest that fits.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["plow", "truck", "trailer"]},
+        "size": {"enum": ["large"]},
+        "name": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[A-Za-z0-9 -]+$"}
+      }
+    },
     "area_m2": {
       "description": "field_work: work only this much of the field (a bounded test area, m2); the whole field when absent.",
       "type": "number", "minimum": 50, "maximum": 20000
@@ -191,6 +203,11 @@
           ]
         }
       }
+    },
+    {
+      "if": {"properties": {"task": {"const": "buy"}}},
+      "then": {"required": ["want"], "properties": {"target": {"const": "player_at_acceptance"}}},
+      "else": {"not": {"required": ["want"]}}
     },
     {
       "if": {"properties": {"task": {"const": "field_work"}}},
