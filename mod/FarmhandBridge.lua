@@ -371,11 +371,11 @@ function steppers.detach(_env, task)
     if status ~= nil then return status, code end
     local v, implement = task.spec.tractor, task.spec.wagon
     if v:getImplementByObject(implement) == nil and implement:getAttacherVehicle() == nil then
-        local status, code = settle(task, "DETACHED")
-        if status == "DONE" then
+        local ended, endCode = settle(task, "DETACHED")
+        if ended == "DONE" then
             Bridge.lastDetach = { tractor = v, implement = implement, joints = task.joints, age = 0 }
         end
-        return status, code
+        return ended, endCode
     end
     if task.elapsed > Bridge.DETACH_TIMEOUT_MS then return "UNVERIFIED", "DETACH_TIMEOUT" end
     return nil
