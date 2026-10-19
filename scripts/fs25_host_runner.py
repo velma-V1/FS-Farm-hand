@@ -94,7 +94,9 @@ RUNNER_FRESH_S = 5.0           # = scripts/fs25_live_test.py RUNNER_STALE_S
 COMPANION_ANSWER_S = 10.0
 COMPANION_QUIT_S = 45.0
 COMPANION_START_S = 30.0
-GAME_CLOSE_S, GAME_KILL_S, GAME_APPEAR_S = 20.0, 15.0, 60.0
+# The Xbox (GDK) launcher may take over a minute before the game process appears
+# (live 2026-10-18: FS25_DID_NOT_START at 60 s, then the game loaded).
+GAME_CLOSE_S, GAME_KILL_S, GAME_APPEAR_S = 20.0, 15.0, 180.0
 READY_S = 900.0
 MAX_LOG_LINES, MAX_LINE_CHARS = 2000, 1200    # a full maneuver STEER line is ~700 characters
 _ID = re.compile(r"[0-9]{1,20}")

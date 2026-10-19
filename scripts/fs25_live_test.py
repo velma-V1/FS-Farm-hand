@@ -37,7 +37,7 @@ EVIDENCE = ROOT / ".fs25-dev" / "evidence"
 BUILD = ROOT / ".fs25-dev" / "build"
 RUNNER_STALE_S = 5.0
 # How long each op may take on the host (its own bounds plus a margin).
-TIMEOUT_S = {"status": 40.0, "install-current-build": 180.0, "launch-fs25": 90.0, "restart-fs25": 1100.0,
+TIMEOUT_S = {"status": 40.0, "install-current-build": 180.0, "launch-fs25": 210.0, "restart-fs25": 1200.0,
              "stop-fs25": 90.0, "run-hitch-test": 30.0, "run-request-test": 30.0, "stop-test": 30.0, "collect": 30.0}
 HITCH_WAIT_S = 2400.0          # beyond the longest job: TRAVEL_NEAR alone may take 20 min
 EXIT = {"COMPLETE": 0, "FAILED": 1, "BLOCKED": 3, "UNVERIFIED": 4, "CANCELLED": 5}

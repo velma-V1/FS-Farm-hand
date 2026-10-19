@@ -26,6 +26,9 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 | Other implement class: trailer, staging | 3da28a3f24dd450b-2 | 702e468 | FAIL (aim changed) | "hitch the trailer": HALFPIPE 159, joints 4/1; STAGE ended NOT_REACHABLE 50 ms after start, 41.7 m off, unmoved. GOTO now aims beside the implement (adapters/EVIDENCE.md) |
 | Trailer, approach aim, 1.2 km away | 27539c7115a44b86-1 | 8dae29e | FAIL (fixed) | GOTO to the first approach (804.5, 312.1, west of HALFPIPE 159) ended NOT_REACHABLE 50 ms after start, 1248 m off, unmoved: a blocked aim. The other side was never tried; GOTO travel now aims at the next approach once |
 | Trailer, other approach | 27539c7115a44b86-2 | 6be7e0b | FAIL (fixed) | the second approach (830.5, 312.3, east of HALFPIPE 159) was refused by GIANTS' validate: NAVIGATE_GOTO_INVALID (blocked ground). Aims are now three families per side; refused ones are skipped unmoved |
+| Trailer, stalled approach | 4167b7fd4e8143db-1 | c6d4496 | FAIL (fixed) | GOTO 1.2 km to the first approach beside HALFPIPE 159, then no progress 12 m short: NAVIGATE_STALLED ended the job. A stalled approach drive is now judged by the observation |
+| Trailer, from the stall | 2ded907e5cb34b6c-1 | 004cd54 | REFUSED-OK | stalled again at (795.6, 313.3), facing away (177 deg, 22 m aside); LOCAL refused LOCAL_PATH_HITS_WAGON (offline: only a 63 m curve exists in an empty yard; parked vehicles north); both re-approach STAGEs NOT_REACHABLE at once; stopped after 3 drives |
+| Water trailer, from that spot | 2ded907e5cb34b6c-2 | 004cd54 | REFUSED-OK | MKS 8 171, joints 3/1: all three aims NOT_REACHABLE at once from (795.6, 313.3): GIANTS' agent cannot start from where the stall left the tractor; capped at 3 drives, nothing moved |
 | Moderate offset | — | — | OPEN | |
 | ~45° heading | — | — | OPEN | |
 | Large heading error | — | — | OPEN | |
