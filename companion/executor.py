@@ -347,6 +347,18 @@ OPERATIONS = {
 }
 
 
+def already_done(operation: Operation, field: Field, area_m2=None) -> bool:
+    """The field already shows the operation's result over COVERAGE_REQUIRED of its
+    area, or (for a test area) less than that area is left undone."""
+    c = field.coverage
+    if c is None:
+        return False
+    done = operation.done(c)
+    if area_m2:
+        return (1.0 - done) * (c.total_m2 or 0.0) < area_m2
+    return done >= COVERAGE_REQUIRED
+
+
 def resolve_field(wanted, fields: tuple[Field, ...]) -> tuple[Field | None, str | None]:
     """An owned field by its GIANTS id, or "smallest": the smallest owned field."""
     if not fields:
@@ -680,6 +692,10 @@ class Executor:
                 target = field.center
                 log.info("field %s: %.2f ha at %s, before: %s", field.id, field.area_ha, field.center,
                          describe(field.coverage))
+                if already_done(operation, field, command.get("area_m2")):
+                    # Nothing to do (live: every owned field was already 100 % CULTIVATED):
+                    # said so, nothing moved.
+                    return Result("COMPLETE", "ALREADY_DONE", states=tuple(states))
             elif command["target"] == "player_at_acceptance":
                 enter("FIND")
                 target = requester

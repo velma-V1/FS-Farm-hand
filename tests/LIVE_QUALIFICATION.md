@@ -71,6 +71,13 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 | --- | --- | --- | --- | --- |
 | Detached wagon after an AutoDrive tractor | status, 2026-10-18 15:58 | eb1c00a | PASS | wagon 173 no longer AI_STATE_UNKNOWN (AutoDrive scratch table) |
 
+## Field work (gate: one owned small test plot, cultivate/plow -> seed -> fertilize, small test areas)
+
+| Case | Test id | Build | Result | Observed |
+| --- | --- | --- | --- | --- |
+| Owned fields and their state observed | status, 2026-10-19 13:48 | 6c74538 | PASS (observation) | 8 owned fields; smallest field 3, 0.54 ha (21,907 m2) at (715, 882); every field 100 % CULTIVATED, no crop (9/9 samples NONE), no spray. GIANTS helper buys seeds, fertilizer and fuel (all three missionInfo settings on); money 999,808 |
+| "cultivate a small area of the smallest field" | 1600bdcae60f4499-1 | 5117813 | FAILED (cause found) | field 3 chosen; step 1 hitch cultivator 165 by tractor 170: GOTO stalled, `agent state blocked`, 4.7 m from the player standing on the yard road (825, 344). Now reported BLOCKED_BY_PERSON. Also: cultivating an already 100 % cultivated field changes nothing measurable; such an operation is now ALREADY_DONE with nothing moved |
+
 ## Navigation, procurement, supplies, jobs
 
 All OPEN; rows are added as each capability lands.

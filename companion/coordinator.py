@@ -22,7 +22,7 @@ import threading
 from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified
-from companion.executor import OPERATIONS, of_kind, resolve_field, usable
+from companion.executor import OPERATIONS, already_done, of_kind, resolve_field, usable
 from protocol.model import Equipment, Result
 
 log = logging.getLogger("farmhand")
@@ -269,6 +269,11 @@ class Coordinator:
         log.info("job %d field work %s on field %s (%.2f ha)", job.number, work["operations"], field.id, field.area_ha)
         states, equipment, n = [], [], 0
         for operation in work["operations"]:
+            field = next((f for f in self.world.fields() if f.id == field.id), field)     # fresh state
+            if already_done(OPERATIONS[operation], field, work.get("area_m2")):
+                log.info("job %d %s: field %s already done; skipped", job.number, operation, field.id)
+                states.append(f"{operation}:ALREADY_DONE")
+                continue
             steps, note = field_steps(tuple(self.world.snapshot()), operation, field.id, self.farm(),
                                       work.get("area_m2"))
             if steps is None:

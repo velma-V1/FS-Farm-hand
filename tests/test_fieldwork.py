@@ -240,3 +240,20 @@ class TestAreaTests(unittest.TestCase):
                           "operations": ["plow", "sow", "fertilize"], "area_m2": TEST_AREA_M2})
         self.assertEqual(rules.interpret("cultivate 500 square meters of field 7")["area_m2"], 500)
         self.assertIsNone(rules.interpret("seed 10 m2 of field 2"))                   # below the schema's 50 m2
+
+
+class AlreadyDoneTests(unittest.TestCase):
+    """Live (6c74538): every owned field was already 100 % CULTIVATED."""
+
+    def test_an_operation_the_field_already_shows_moves_nothing(self):
+        cultivated = FieldCoverage((("CULTIVATED", 1.0),), (), 21907.0, (("NONE", 9),), 9)
+        world = MockWorld(rig("cultivator"), PLAYERS, fields=(field(3, 0.54, cultivated),), farm=FARM)
+        before = {i.id: i.position for i in world.snapshot()}
+        for extra in ({}, {"area_m2": 400}):
+            result = Executor(world).execute(work("cultivate", fid=3, request_id=f"done-{len(extra)}", **extra))
+            self.assertEqual((result.status, result.reason), ("COMPLETE", "ALREADY_DONE"), result)
+            self.assertNotIn("RESERVE", result.states)
+        self.assertEqual({i.id: i.position for i in world.snapshot()}, before)
+        # Not done: sowing that same field still has work.
+        from companion.executor import already_done
+        self.assertFalse(already_done(OPERATIONS["sow"], field(3, 0.54, cultivated), 400))
