@@ -13,11 +13,12 @@
       "const": 1
     },
     "command": {
-      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. unsupported: understood, but not something Farmhand does yet (reason). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop.",
+      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to, the pair nearest the requester, where it stands. unsupported: understood, but not something Farmhand does yet (reason). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop.",
       "enum": [
         "fetch_pair",
         "move_pair",
         "hitch_pair",
+        "detach_pair",
         "stop",
         "status",
         "settings",
@@ -100,7 +101,7 @@
       ]
     },
     "implement": {
-      "description": "The implement to hitch (a GIANTS specialization kind; default forage_wagon). Only for fetch_pair, hitch_pair.",
+      "description": "The implement to hitch or unhitch (a GIANTS specialization kind; default forage_wagon to hitch, any to unhitch). Only for fetch_pair, hitch_pair, detach_pair.",
       "enum": [
         "forage_wagon",
         "plow",
@@ -136,6 +137,7 @@
               "settings",
               "report",
               "hitch_pair",
+              "detach_pair",
               "unsupported"
             ]
           }
@@ -177,7 +179,8 @@
             "not": {
               "enum": [
                 "fetch_pair",
-                "hitch_pair"
+                "hitch_pair",
+                "detach_pair"
               ]
             }
           }

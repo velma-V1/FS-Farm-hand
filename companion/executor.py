@@ -89,7 +89,7 @@ MAX_APPROACH_DRIVES = 3
 GOTO_STALL_CODES = frozenset({"NAVIGATE_STALLED"})
 
 CANCELLABLE_STEPS = frozenset({"RESERVE", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
-                               "DELIVER"})
+                               "DETACH", "DELIVER"})
 
 
 def valid_position(position: Position) -> bool:
@@ -280,6 +280,12 @@ def movable(tractor: Equipment, wagon: Equipment) -> bool:
             and {"move", "stop"} <= tractor.capabilities)
 
 
+def detachable(tractor: Equipment, implement: Equipment, kind: str | None = None) -> bool:
+    """detach_pair: a tractor with its implement (of ``kind`` when named)."""
+    return (tractor.category == "tractor" and implement.category in IMPLEMENT_CATEGORIES
+            and (kind is None or of_kind(implement, kind)) and {"attach", "stop"} <= tractor.capabilities)
+
+
 def _angle(a: float, b: float) -> float:
     """Absolute difference of two yaws, wrapped to [0, pi]."""
     return abs((a - b + math.pi) % (2 * math.pi) - math.pi)
@@ -421,6 +427,21 @@ class Executor:
             return None, None, failure
         return (tractor, wagon), route, None
 
+    def _choose_attached(self, items, farm_id, requester):
+        """detach_pair: the tractor with its implement (of the job's kind, if named)
+        nearest the requester, ties by opaque ID; decided before reservation."""
+        observed = {item.id: item for item in items}
+        pairs = []
+        for tractor in items:
+            implement = observed.get(tractor.attached_to)
+            if (implement is not None and implement.attached_to == tractor.id and self._compatible(tractor, implement)
+                    and all(usable(x, farm_id) and x.stopped for x in (tractor, implement))):
+                pairs.append((math.dist(implement.position, requester), tractor.id, tractor, implement))
+        if not pairs:
+            return None, "NO_ATTACHED_IMPLEMENT"
+        _, _, tractor, implement = min(pairs, key=lambda p: (p[0], p[1]))
+        return (tractor, implement), None
+
     def _move(self, tractor_id, route, owner, deliver=False):
         """One travel step by the route's provider: AutoDrive to a marker, or GIANTS
         GOTO to a pose."""
@@ -491,17 +512,23 @@ class Executor:
         reserved = physical_attempted = False
         status, reason = "BLOCKED", "NO_ELIGIBLE_PAIR"
         moving = command["task"] == "move_pair"
+        detaching = command["task"] == "detach_pair"
         hitch_only = command["task"] == "hitch_pair"
-        # One implement kind per job; every pair check of this job uses it.
-        self._kind = command.get("implement", "forage_wagon")
-        self._compatible = functools.partial(compatible, kind=self._kind)
+        # One implement kind per job; every pair check of this job uses it. A detach
+        # without a named kind takes any implement.
+        if detaching:
+            self._kind = command.get("implement")
+            self._compatible = functools.partial(detachable, kind=self._kind)
+        else:
+            self._kind = command.get("implement", "forage_wagon")
+            self._compatible = functools.partial(compatible, kind=self._kind)
         check = movable if moving else self._compatible
         delivery = None
         try:
             # Every destination is resolved and validated before any reservation.
             requester = None
-            if command["target"] == "player_at_acceptance" or moving:
-                # move_pair always needs the requester: "this" is the pair nearest them.
+            if command["target"] == "player_at_acceptance" or moving or detaching:
+                # move_pair and detach_pair always need the requester: "this" is the pair nearest them.
                 requester = self.world.player_position(farm_id)
                 if not valid_position(requester):
                     return Result("BLOCKED", "INVALID_REQUESTER_POSITION")
@@ -534,6 +561,10 @@ class Executor:
                                                                self.world.destinations())
                 plan = travel = None
                 aims = ()
+            elif detaching:
+                pair, failure = self._choose_attached(items, farm_id, requester)
+                plan = travel = None
+                aims = ()
             else:
                 free = [item for item in items if usable(item, farm_id)
                         and item.attached_to is None and item.stopped]
@@ -548,6 +579,8 @@ class Executor:
             ids = tuple(item.id for item in pair)
             if moving:
                 log.info("moving hitched tractor %s wagon %s to %s", *ids, delivery)
+            elif detaching:
+                log.info("detaching implement %s from tractor %s", ids[1], ids[0])
             else:
                 log.info("selected tractor %s wagon %s joints %d/%d approaches %s travel %s delivery %s", *ids,
                          plan.tractor_joint, plan.wagon_joint, list(aims), travel, delivery)
@@ -563,6 +596,20 @@ class Executor:
                 enter("DELIVER")
                 self._move(tractor.id, delivery, owner, deliver=True)
                 self._arrival(ids, farm_id, owner, delivery, check=movable)
+            elif detaching:
+                # DETACH -> VERIFY: GIANTS' own detach where it allows it; complete only
+                # when a fresh snapshot shows neither end attached and both at rest.
+                tractor, _ = self._pair(ids, farm_id, owner, attached=True)
+                if not tractor.stopped:
+                    raise ObservationMismatch("EQUIPMENT_MOVING")
+                physical_attempted = True
+                enter("DETACH")
+                self.world.detach(ids[0], ids[1], owner)
+                enter("VERIFY")
+                tractor, implement = self._pair(ids, farm_id, owner, attached=False)
+                if not (tractor.stopped and implement.stopped):
+                    raise ObservationMismatch("EQUIPMENT_MOVING")
+                status, reason = "COMPLETE", "DETACH_OBSERVED"
             else:
                 # HITCH: VALIDATE -> [TRAVEL_NEAR] -> [STAGE] -> [LOCAL_MANEUVER] -> ALIGN_REVERSE
                 # -> ATTACH -> VERIFY. Every step is followed by a fresh-snapshot check;
@@ -688,7 +735,7 @@ class Executor:
                     enter("DELIVER")
                     self._move(tractor.id, delivery, owner, deliver=True)
                     self._arrival(ids, farm_id, owner, delivery)
-            if not hitch_only:
+            if not (hitch_only or detaching):
                 status, reason = "COMPLETE", "DELIVERY_OBSERVED"
         except Cancelled:
             status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
@@ -733,6 +780,10 @@ class Executor:
                     if status == "COMPLETE" and hitch_only:
                         tractor, _ = self._pair(ids, farm_id, owner, attached=True)
                         if not tractor.stopped:
+                            raise ObservationMismatch("EQUIPMENT_MOVING")
+                    elif status == "COMPLETE" and detaching:
+                        tractor, implement = self._pair(ids, farm_id, owner, attached=False)
+                        if not (tractor.stopped and implement.stopped):
                             raise ObservationMismatch("EQUIPMENT_MOVING")
                     elif status == "COMPLETE":
                         self._arrival(ids, farm_id, owner, delivery, check=check)

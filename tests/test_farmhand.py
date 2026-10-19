@@ -1512,3 +1512,71 @@ class HitchOnlyTests(unittest.TestCase):
         world = FaultWorld("false_attach")
         result = Executor(world).execute({**intent(), "task": "hitch_pair"})
         self.assertEqual((result.status, result.reason), ("UNVERIFIED", "ATTACHMENT_MISMATCH"))
+
+
+def detach(implement=None, request_id="detach-001"):
+    command = {**intent(request_id), "task": "detach_pair"}
+    return {**command, "implement": implement} if implement else command
+
+
+class DetachTests(unittest.TestCase):
+    """"unhitch the cultivator": the hitched pair nearest the requester (of the named
+    kind) is detached where it stands, verified from fresh state and released."""
+
+    def test_detach_unhitches_the_nearest_pair_of_the_kind_and_moves_nothing(self):
+        for seed in range(6):
+            with self.subTest(seed=seed):
+                rng = random.Random(seed)
+                near = hitched_pair(f"t-{rng.randrange(10**6)}", f"w-{rng.randrange(10**6)}", (130.0, 260.0))
+                far = hitched_pair(f"t-{rng.randrange(10**6)}", f"w-{rng.randrange(10**6)}", (-600.0, 900.0))
+                items = [*near, *far]
+                rng.shuffle(items)
+                world = MockWorld(items, PLAYERS, ())
+                before = {i.id: i.position for i in world.snapshot()}
+                result = Executor(world).execute(detach())
+                self.assertEqual((result.status, result.reason), ("COMPLETE", "DETACH_OBSERVED"), result)
+                self.assertEqual(result.states, ("FIND", "RESERVE", "DETACH", "VERIFY", "STOP", "RELEASE"))
+                self.assertEqual(set(result.equipment_ids), {near[0].id, near[1].id})
+                after = {i.id: i for i in world.snapshot()}
+                self.assertEqual((after[near[0].id].attached_to, after[near[1].id].attached_to), (None, None))
+                self.assertEqual(after[far[0].id].attached_to, far[1].id)          # the other pair untouched
+                self.assertEqual({i: a.position for i, a in after.items()}, before)
+                self.assertTrue(all(a.reserved_by is None for a in after.values()))
+
+    def test_a_named_kind_picks_that_implement_or_blocks(self):
+        tractor, wagon = hitched_pair("t-1", "w-1", (130.0, 260.0))
+        cultivator = replace(wagon, category="implement", kinds=frozenset({"cultivator"}))
+        for implement, items, outcome in (("cultivator", [tractor, cultivator], ("COMPLETE", "DETACH_OBSERVED")),
+                                          ("sprayer", [tractor, cultivator], ("BLOCKED", "NO_ATTACHED_IMPLEMENT")),
+                                          ("forage_wagon", [tractor, wagon], ("COMPLETE", "DETACH_OBSERVED")),
+                                          (None, [tractor, cultivator], ("COMPLETE", "DETACH_OBSERVED"))):
+            with self.subTest(implement=implement):
+                world = MockWorld(items, PLAYERS, ())
+                result = Executor(world).execute(detach(implement))
+                self.assertEqual((result.status, result.reason), outcome, result)
+                if outcome[0] == "BLOCKED":
+                    self.assertNotIn("RESERVE", result.states)
+
+    def test_nothing_hitched_blocks_before_reserving(self):
+        world = simple_world()
+        result = Executor(world).execute(detach())
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "NO_ATTACHED_IMPLEMENT"))
+        self.assertNotIn("RESERVE", result.states)
+
+    def test_a_refused_or_unobserved_detach_is_never_complete(self):
+        class Refusing(MockWorld):
+            def detach(self, tractor_id, wagon_id, owner):
+                raise StepFailed("DETACH_NOT_ALLOWED")          # GIANTS' isDetachAllowed said no
+
+        class Silent(MockWorld):
+            def detach(self, tractor_id, wagon_id, owner):
+                return None                                     # reported done, still attached
+
+        for cls, outcome in ((Refusing, ("FAILED", "DETACH_NOT_ALLOWED")),
+                             (Silent, ("UNVERIFIED", "ATTACHMENT_MISMATCH"))):
+            with self.subTest(world=cls.__name__):
+                world = cls(list(hitched_pair("t-1", "w-1", (130.0, 260.0))), PLAYERS, ())
+                result = Executor(world).execute(detach())
+                self.assertEqual((result.status, result.reason), outcome, result)
+                self.assertEqual(world.items["t-1"].attached_to, "w-1")
+                self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))

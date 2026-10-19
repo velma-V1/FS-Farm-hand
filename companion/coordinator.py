@@ -41,7 +41,8 @@ MILESTONES = frozenset({"TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "DELIVER"})
 # The executor task and the player-facing notices of each job command.
 JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE"),
         "move_pair": ("move_pair", "ACCEPTED_MOVE", "COMPLETE_MOVE"),
-        "hitch_pair": ("hitch_pair", "ACCEPTED_HITCH", "COMPLETE_HITCH")}
+        "hitch_pair": ("hitch_pair", "ACCEPTED_HITCH", "COMPLETE_HITCH"),
+        "detach_pair": ("detach_pair", "ACCEPTED_DETACH", "COMPLETE_DETACH")}
 
 
 def result_notice(status: str, reason: str, complete: str = "COMPLETE") -> str:

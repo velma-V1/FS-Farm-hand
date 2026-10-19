@@ -98,6 +98,11 @@ class Interpreter(Protocol):
 _TYPOS = {"brin": "bring", "brng": "bring", "brign": "bring", "bringg": "bring", "tracter": "tractor",
           "trator": "tractor", "tractr": "tractor", "wagin": "wagon", "waggon": "wagon", "wagn": "wagon"}
 _HITCH_VERB = re.compile(r"\b(?:attach|hook|hitch|couple|connect)\b")
+# Unhitch where it stands: a leading detach verb ("unhitch the cultivator", "unhook
+# the wagon", "detach it"); "drop" only with the implement named ("drop the trailer").
+_DETACH_VERB = re.compile(r"^(?:unhitch|detach|unhook|uncouple|disconnect|unattach)\b")
+_DROP = re.compile(r"^drop(?:\s+off)?\b")
+_IMPLEMENT_WORD = re.compile(r"\b(?:implement|equipment|tool)s?\b")
 # A destination that is equipment, not a place: "take the tractor to the wagon".
 _EQUIPMENT = re.compile(r"^(?:(?:the|a|an|my|that|this)\s+)?(?:(?:forage|loader|silage)\s+)?"
                         r"(?:wagon|tractor|trailer|implement)s?$")
@@ -163,6 +168,8 @@ class RuleInterpreter:
         if _COME.match(words):
             return {"version": 1, "command": "move_pair"}
         kind = implement_kind(words)
+        if _DETACH_VERB.match(words) or _DROP.match(words):
+            return self._detach(text, words, kind)
         if kind is not None:
             return self._implement(text, words, kind)
         tractor, wagon = _TRACTOR.search(words), _WAGON.search(words)
@@ -215,6 +222,18 @@ class RuleInterpreter:
             # supported yet; never guessed.
             return {"version": 1, "command": "unsupported", "reason": "named_vehicle"}
         return None
+
+    def _detach(self, text: str, words: str, kind: str | None) -> dict | None:
+        """Unhitch the named implement (any, when none is named) where it stands.
+        Never somewhere else: "drop the trailer at the barn" is not understood."""
+        if kind is None and _WAGON.search(words):
+            kind = "forage_wagon"
+        if _DROP.match(words) and kind is None and not _IMPLEMENT_WORD.search(words):
+            return None
+        if self._target(text, words) != {}:
+            return None
+        proposal = {"version": 1, "command": "detach_pair"}
+        return {**proposal, "implement": kind} if kind is not None else proposal
 
     def _implement(self, text: str, words: str, kind: str) -> dict | None:
         """A named implement other than the forage wagon: hitch it where it stands

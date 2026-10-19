@@ -114,6 +114,7 @@ COMMAND_ARGS = {
     "maneuver": ("tractor", "wagon", "tractorJoint", "wagonJoint"),
     "align": ("tractor", "wagon", "tractorJoint", "wagonJoint", "maxDistanceM"),
     "attach": ("tractor", "wagon", "tractorJoint", "wagonJoint"),
+    "detach": ("tractor", "wagon"),
     "stop": ("tractor",),
 }
 _ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "x", "z": "z",

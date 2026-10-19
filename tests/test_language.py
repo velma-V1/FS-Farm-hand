@@ -34,6 +34,23 @@ class RuleInterpreterTests(unittest.TestCase):
             ("fetch the forage wagon", FETCH),
         ])
 
+    def test_unhitching_where_it_stands(self):
+        detach = {"version": 1, "command": "detach_pair"}
+        self.check([
+            ("unhitch the cultivator", {**detach, "implement": "cultivator"}),
+            ("detach the trailer", {**detach, "implement": "trailer"}),
+            ("unhook the forage wagon", {**detach, "implement": "forage_wagon"}),
+            ("uncouple the plough", {**detach, "implement": "plow"}),
+            ("disconnect the sprayer", {**detach, "implement": "sprayer"}),
+            ("drop the seeder", {**detach, "implement": "sowing_machine"}),
+            ("unhitch it", detach),
+            ("unhitch the implement", detach),
+            ("drop the trailer at the barn", None),          # somewhere else: not understood
+            ("unhitch the cultivator at field 3", None),
+            ("drop it", None),                               # "drop" needs the thing named
+            ("don't unhitch the cultivator", None),
+        ])
+
     def test_other_implements_by_their_names(self):
         def hitch(kind):
             return {"version": 1, "command": "hitch_pair", "implement": kind}

@@ -10,6 +10,7 @@
 --               centreline                        (Hitch.newManeuver / maneuverStep)
 --      align  bounded ALIGN_REVERSE               (Hitch.newAlign / alignStep)
 --      attach GIANTS attach of the exact candidate (Hitch.attach / attachState)
+--      detach GIANTS detach of one attached implement, where GIANTS allows it
 --      stop   stop the Farmhand-owned motion on a tractor
 --    Bridge.start(env, spec) -> task | nil, code[, status]
 --    Bridge.step(env, task, dt) -> nil while running, else status, code
@@ -43,6 +44,7 @@ Bridge.PIPE_RETRY_MS = 5000
 Bridge.START_TIMEOUT_MS = 5000        -- a job not running by then was refused
 Bridge.SETTLE_TIMEOUT_MS = 5000       -- an ended job must come to rest within this
 Bridge.STAGE_TIMEOUT_MS = 120000
+Bridge.DETACH_TIMEOUT_MS = 10000      -- GIANTS' detach (lowering arms) must end within this
 Bridge.DRIVE_TIMEOUT_MS = 1200000
 -- A navigate whose tractor gains no NAVIGATE_PROGRESS_M for NAVIGATE_STALL_MS is
 -- stopped: GIANTS keeps a BLOCKED agent waiting (AIDrivable:onUpdate 314-316).
@@ -325,8 +327,43 @@ function steppers.attach(env, task, dt)
     return "UNVERIFIED", state       -- GIANTS was asked to attach: outcome unknown
 end
 
--- GIANTS' smooth attach is not undone; Farmhand never detaches.
+-- GIANTS' smooth attach is not undone.
 function aborts.attach() end
+
+-- ----------------------------------------------------------------- detach
+-- GIANTS' own detach behind GIANTS' own permission, for the reserved, idle
+-- tractor: the implement must be its (AttacherJoints:getImplementByObject
+-- 3209-3219) and at rest, and must allow detaching (Attachable:isDetachAllowed
+-- 1398-1434, the check the player's own toggle makes, AttacherJoints:
+-- detachingIsPossible 3039-3051); then AttacherJoints:detachImplementByObject
+-- 2820-2831 (detachImplement 2605-2619 broadcasts VehicleDetachEvent on the
+-- server). DONE once neither end lists the other (Attachable:getAttacherVehicle
+-- 1211-1213) and the tractor is at rest; the executor verifies from a snapshot.
+function starters.detach(env, spec)
+    local denied = idle(env, spec.tractor, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local v, implement = spec.tractor, spec.wagon
+    if v:getImplementByObject(implement) == nil then return nil, "NOT_ATTACHED" end
+    if not stopped(implement) then return nil, "NOT_STOPPED" end
+    if implement:isDetachAllowed() ~= true then return nil, "DETACH_NOT_ALLOWED" end
+    v:detachImplementByObject(implement)
+    return {}
+end
+
+function steppers.detach(env, task)
+    local status, code = stillOurs(task.spec)
+    if status ~= nil then return status, code end
+    local v, implement = task.spec.tractor, task.spec.wagon
+    if v:getImplementByObject(implement) == nil and implement:getAttacherVehicle() == nil then
+        return settle(task, "DETACHED")
+    end
+    if task.elapsed > Bridge.DETACH_TIMEOUT_MS then return "UNVERIFIED", "DETACH_TIMEOUT" end
+    return nil
+end
+
+-- GIANTS' detach is not undone.
+function aborts.detach() end
 
 -- ------------------------------------------------------------------- stop
 -- spec.target: the running task on this tractor, if any; it is aborted first.
@@ -359,7 +396,7 @@ function aborts.stop() end
 
 -- --------------------------------------------------------------- runner
 
-Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true }
+Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true }
 
 function Bridge.start(env, spec)
     local starter = starters[spec.op]
@@ -430,9 +467,9 @@ function Bridge:result(session, id, op, status, code)
                 op = token(op) or O.NULL, status = status, code = token(code) or "UNKNOWN" })
 end
 
--- A pre-empted attach may still complete in GIANTS: its outcome is unknown.
+-- A pre-empted attach or detach may still complete in GIANTS: its outcome is unknown.
 local function preempted(task)
-    return task.op == "attach" and "UNVERIFIED" or "FAILED"
+    return (task.op == "attach" or task.op == "detach") and "UNVERIFIED" or "FAILED"
 end
 
 function Bridge:companionOwner()
@@ -604,6 +641,8 @@ Bridge.NOTICES = {
     ACCEPTED_MOVE = "Farmhand: on my way",
     ACCEPTED_HITCH = "Farmhand: hitching a tractor to the implement",
     COMPLETE_HITCH = "Farmhand: tractor and implement hitched",
+    ACCEPTED_DETACH = "Farmhand: unhitching the implement",
+    COMPLETE_DETACH = "Farmhand: implement unhitched",
     UNSUPPORTED_TRACTOR_ONLY = "Farmhand: moving a tractor on its own is not supported yet; ask for a tractor with an implement, such as the forage wagon",
     UNSUPPORTED_NAMED_VEHICLE = "Farmhand: choosing a vehicle by its name is not supported yet; name the kind of implement, such as the forage wagon or the cultivator",
     COMPLETE_MOVE = "Farmhand: arrived",
@@ -645,6 +684,7 @@ Bridge.STEPS = {
     LOCAL_MANEUVER = "lining up with the implement",
     ALIGN_REVERSE = "reversing to the implement",
     ATTACH = "hitching the implement",
+    DETACH = "unhitching the implement",
     VERIFY = "checking the hitch",
     DELIVER = "driving to the destination",
     STOP = "stopping",
@@ -662,6 +702,10 @@ Bridge.REASONS = {
     NAVIGATE_STALLED = "the tractor got stuck",
     CLEANUP_NOT_CONFIRMED = "the tractor may still be moving; check it",
     NO_HITCHED_PAIR = "no hitched tractor and implement to move",
+    NO_ATTACHED_IMPLEMENT = "no hitched implement to unhitch",
+    DETACH_NOT_ALLOWED = "the game does not allow unhitching it right now",
+    NOT_ATTACHED = "that implement is not hitched",
+    DETACH_TIMEOUT = "unhitching did not finish; check the tractor",
     DESTINATION_NOT_FOUND = "I do not know that place",
     DESTINATION_AMBIGUOUS = "more than one place has that name",
     AUTODRIVE_UNAVAILABLE = "that destination needs AutoDrive",

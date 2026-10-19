@@ -63,8 +63,8 @@ ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snap
   game → companion JSON lines over a Windows named pipe hosted by the companion;
   companion → game one command at a time in `modSettings/FS25_Farmhand/command.xml`
   (atomic rename) plus a `session.xml` heartbeat that also carries player notices.
-  Only seven ops exist: `drive` (AutoDrive), `navigate` (GIANTS GOTO), `stage`,
-  `maneuver`, `align`, `attach`, `stop`. ACCEPTED/DONE is never success; the game stops a
+  Only eight ops exist: `drive` (AutoDrive), `navigate` (GIANTS GOTO), `stage`,
+  `maneuver`, `align`, `attach`, `detach` (GIANTS' own, where it allows it), `stop`. ACCEPTED/DONE is never success; the game stops a
   session's motion if the heartbeat is lost for 10 s. Player key presses arrive as
   `request` frames (a fixed `action` or typed `text`).
 - `companion/language.py` (deterministic rules; a local model may sit behind them)

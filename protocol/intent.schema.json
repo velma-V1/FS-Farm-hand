@@ -27,9 +27,10 @@
       "enum": [
         "deliver_tractor_and_forage_wagon",
         "move_pair",
-        "hitch_pair"
+        "hitch_pair",
+        "detach_pair"
       ],
-      "description": "deliver_tractor_and_forage_wagon: select, hitch and deliver an available pair. move_pair: move the hitched tractor and forage wagon nearest the requester. hitch_pair: select and hitch an available pair where the wagon stands, no delivery."
+      "description": "deliver_tractor_and_forage_wagon: select, hitch and deliver an available pair. move_pair: move the hitched tractor and forage wagon nearest the requester. hitch_pair: select and hitch an available pair where the wagon stands, no delivery. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to nearest the requester, where it stands; target is player_at_acceptance."
     },
     "farm_id": {
       "type": "string",
@@ -128,7 +129,7 @@
       ]
     },
     "implement": {
-      "description": "The implement to hitch (a GIANTS specialization kind; default forage_wagon). Only for deliver_tractor_and_forage_wagon, hitch_pair.",
+      "description": "The implement to hitch or unhitch (a GIANTS specialization kind; default forage_wagon to hitch, any to unhitch). Only for deliver_tractor_and_forage_wagon, hitch_pair, detach_pair.",
       "enum": [
         "forage_wagon",
         "plow",
@@ -162,7 +163,8 @@
             "not": {
               "enum": [
                 "deliver_tractor_and_forage_wagon",
-                "hitch_pair"
+                "hitch_pair",
+                "detach_pair"
               ]
             }
           }
@@ -173,6 +175,22 @@
           "required": [
             "implement"
           ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "task": {
+            "const": "detach_pair"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "target": {
+            "const": "player_at_acceptance"
+          }
         }
       }
     }

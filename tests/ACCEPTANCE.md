@@ -207,6 +207,16 @@ Executable mapping (`python scripts/check.py`):
   partial-word or AutoDrive-only places block; fetch can deliver to a building;
   an unobserved arrival is UNVERIFIED and a cancel before travel moves nothing;
   reservations accept only unattached units or a pair hitched to each other.
+- `DetachTests` ("unhitch the cultivator"): the hitched pair nearest the requester,
+  of the named kind (any when none is named), is detached where it stands, nothing
+  moves, another pair is untouched; none of that kind blocks before reservation;
+  GIANTS refusing (DETACH_NOT_ALLOWED) is FAILED and a detach not observed in fresh
+  state is UNVERIFIED, both still attached and released. Mod side
+  (`test_lua_bridge` detach tests): GIANTS' isDetachAllowed is asked before
+  detachImplementByObject, which is never called for a refused, moving or
+  AI-controlled pair; a detach that never completes is UNVERIFIED. Wording
+  (`test_language`): unhitch/detach/unhook/uncouple/disconnect, "drop" only with the
+  implement named, never "at" another place.
 - Hitch travel and local alignment (5304adc live): `AlignEnvelopeTests` (joint error in the
   wagon frame for any heading; the staging aim inside the envelope; each reason),
   `test_goto_travel_or_delivery_not_observed_stops_and_fails_closed` (coarse travel 4 m off

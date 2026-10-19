@@ -207,6 +207,17 @@ class MockWorld:
             self.items[tractor.id] = replace(tractor, attached_to=wagon.id, output_joints=joints_after)
             self.items[wagon.id] = replace(wagon, attached_to=tractor.id)
 
+    def detach(self, tractor_id, wagon_id, owner):
+        with self._lock:
+            tractor, wagon = self._reserved_pair(tractor_id, wagon_id, owner)
+            if (tractor.attached_to, wagon.attached_to) != (wagon.id, tractor.id):
+                raise RuntimeError("NOT_ATTACHED")
+            if not tractor.stopped or not wagon.stopped:
+                raise RuntimeError("NOT_STOPPED")
+            joints_after = tuple(replace(j, free=True) if not j.free else j for j in tractor.output_joints)
+            self.items[tractor.id] = replace(tractor, attached_to=None, output_joints=joints_after)
+            self.items[wagon.id] = replace(wagon, attached_to=None)
+
     def stop(self, tractor_id, owner):
         with self._lock:
             reservation = self._reservations.get(owner)

@@ -83,6 +83,11 @@ class World(Protocol):
         ask isAttachAllowed, then attachImplementFromInfo. Not attachment evidence."""
         ...
 
+    def detach(self, tractor_id: str, wagon_id: str, owner: str) -> None:
+        """DETACH: GIANTS' own detach of the implement from the reserved, idle tractor,
+        only where GIANTS allows it (isDetachAllowed). Not detachment evidence."""
+        ...
+
     def deliver(self, tractor_id: str, destination_id: str, owner: str) -> None:
         """Recheck authority/compatibility; delegate bounded AutoDrive travel to a marker."""
         ...

@@ -672,6 +672,70 @@ class LuaBridgeTests(unittest.TestCase):
         self.send(1, "attach", {"tractor": 11, "wagon": 12, "tractorJoint": 1, "wagonJoint": 1})
         self.assertEqual(self.results(1)[-1], (1, "FAILED", "NOT_ALIGNED"))
 
+    # -------------------------------------------------------------- detach
+    def hitched(self, allowed=True, implement_speed=0.0):
+        """Tractor 11 with implement 12 hitched; GIANTS' calls as AttacherJoints and
+        Attachable define them (getImplementByObject 3209-3219, isDetachAllowed
+        1398-1434, detachImplementByObject 2820-2831, getAttacherVehicle 1211-1213)."""
+        return self.lua.execute(r"""
+            local w, allowed, speed = ...
+            local tractor = w.tractor
+            local implement = { attacherVehicle = tractor }
+            function implement:getLastSpeed() return speed end
+            function implement:isDetachAllowed()
+                table.insert(w.calls, "isDetachAllowed")
+                if allowed then return true end
+                return false, "Lower the implement first", true
+            end
+            function implement:getAttacherVehicle() return self.attacherVehicle end
+            function tractor:getImplementByObject(o)
+                if o == implement and implement.attacherVehicle == tractor then return { object = o } end
+                return nil
+            end
+            function tractor:detachImplementByObject(o)
+                table.insert(w.calls, "detachImplementByObject")
+                if w.detachLags then return true end
+                o.attacherVehicle = nil
+                return true
+            end
+            w.env.NetworkUtil.getObject = function(id)
+                if id == 11 then return tractor elseif id == 12 then return implement end
+            end
+            return implement
+        """, self.w, allowed, implement_speed)
+
+    def test_detach_asks_giants_permission_then_detaches_and_reports_the_observed_end(self):
+        self.adopt()
+        implement = self.hitched()
+        self.send(1, "detach", {"tractor": 11, "wagon": 12})
+        self.W.run(self.w, 300)
+        self.assertEqual(self.calls()[-2:], ["isDetachAllowed", "detachImplementByObject"])
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "DETACHED"))
+        self.assertIsNone(implement.attacherVehicle)
+
+    def test_detach_refusals_never_call_giants_detach(self):
+        cases = ((dict(allowed=False), {}, "DETACH_NOT_ALLOWED"),
+                 (dict(implement_speed=3.0), {}, "NOT_STOPPED"),
+                 ({}, {"aiActive": True}, "AI_ACTIVE"))
+        for kwargs, state, code in cases:
+            with self.subTest(code=code):
+                self.w = self.W.new()
+                self.adopt()
+                self.hitched(**kwargs)
+                for key, value in state.items():
+                    self.w[key] = value
+                self.send(1, "detach", {"tractor": 11, "wagon": 12})
+                self.assertEqual(self.results(1)[-1], (1, "FAILED", code))
+                self.assertNotIn("detachImplementByObject", self.calls())
+
+    def test_a_detach_that_never_completes_is_unverified(self):
+        self.adopt()
+        self.hitched()
+        self.w.detachLags = True
+        self.send(1, "detach", {"tractor": 11, "wagon": 12})
+        self.beating(12000)
+        self.assertEqual(self.results(1)[-1], (1, "UNVERIFIED", "DETACH_TIMEOUT"))
+
     # ------------------------------------------------------------ maneuver
     MANEUVER = {"tractor": 11, "wagon": 12, "tractorJoint": 4, "wagonJoint": 1}
 

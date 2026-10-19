@@ -30,6 +30,7 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 | Trailer, stalled approach | 4167b7fd4e8143db-1 | c6d4496 | FAIL (fixed) | GOTO 1.2 km to the first approach beside HALFPIPE 159, then no progress 12 m short: NAVIGATE_STALLED ended the job. A stalled approach drive is now judged by the observation |
 | Trailer, from the stall | 2ded907e5cb34b6c-1 | 004cd54 | REFUSED-OK | stalled again at (795.6, 313.3), facing away (177 deg, 22 m aside); LOCAL refused LOCAL_PATH_HITS_WAGON (offline: only a 63 m curve exists in an empty yard; parked vehicles north); both re-approach STAGEs NOT_REACHABLE at once; stopped after 3 drives |
 | Water trailer, from that spot | 2ded907e5cb34b6c-2 | 004cd54 | REFUSED-OK | MKS 8 171, joints 3/1: all three aims NOT_REACHABLE at once from (795.6, 313.3): GIANTS' agent cannot start from where the stall left the tractor; capped at 3 drives, nothing moved |
+| Sprayer in the yard, different tractor (Series 9 172), 1.2 km | 2ded907e5cb34b6c-4 | 004cd54 | REFUSED-OK (retries wasteful) | Vantage 4300 161, joints 3/1. Aim 1 NOT_REACHABLE at once, aim 2 GOTO_INVALID, aim 3 drove ~560 m then NAVIGATE_STALLED 718 m short; aim 4 from there NOT_REACHABLE at once; capped at 3 drives. A stall far away should end the job, and unmoved attempts should not count as drives |
 | Moderate offset | — | — | OPEN | |
 | ~45° heading | — | — | OPEN | |
 | Large heading error | — | — | OPEN | |
