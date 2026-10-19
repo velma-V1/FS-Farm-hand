@@ -338,6 +338,18 @@ class FakeSystem:
         if force or not getattr(self, "stubborn", False):
             self.fs25 = []
 
+    def screen(self, pid, path):
+        self.calls.append(("screen", pid, path))
+        return {"window": [1920, 1080]}
+
+    def click(self, pid, x, y):
+        self.calls.append(("click", pid, x, y))
+        return {"window": [1920, 1080]}
+
+    def key(self, pid, name):
+        self.calls.append(("key", pid, name))
+        return {"window": [1920, 1080]}
+
     def start(self, program, arguments, folder):
         self.calls.append(("start", program, tuple(arguments), folder))
         if getattr(self, "start_fails", None):
@@ -423,6 +435,15 @@ class HostRunnerProtocolTests(RunnerCase):
             ("BAD_ARGUMENTS", {"op": "run-request-test", "args": {"text": 5}}),
             ("BAD_ARGUMENTS", {"op": "run-request-test", "args": {"text": "ok", "test_id": "a"}}),
             ("BAD_ARGUMENTS", {"op": "run-hitch-test", "args": {"text": "hitch"}}),
+            # Game controls: positions inside the window and a fixed key list only.
+            ("BAD_ARGUMENTS", {"op": "click", "args": {"x": 1.5, "y": 0.5}}),
+            ("BAD_ARGUMENTS", {"op": "click", "args": {"x": -0.1, "y": 0.5}}),
+            ("BAD_ARGUMENTS", {"op": "click", "args": {"x": "0.5", "y": 0.5}}),
+            ("BAD_ARGUMENTS", {"op": "click", "args": {"x": 0.5}}),
+            ("BAD_ARGUMENTS", {"op": "key", "args": {"name": "alt+f4"}}),
+            ("BAD_ARGUMENTS", {"op": "key", "args": {"name": "f12"}}),
+            ("BAD_ARGUMENTS", {"op": "key", "args": {}}),
+            ("BAD_ARGUMENTS", {"op": "screen", "args": {"path": "C:\\x.png"}}),
         ]
         for code, change in cases:
             with self.subTest(code=code, change=change):
@@ -791,6 +812,41 @@ class HostRunnerLifecycleTests(RunnerCase):
             except host.Refused as error:
                 code = error.code
         self.assertEqual(code, "NOT_READY")
+
+    def test_game_controls_act_only_on_the_running_game_and_never_under_a_job(self):
+        self.assertEqual(self.send("screen")["code"], "FS25_NOT_RUNNING")
+        self.system.fs25 = [999]
+        answer = self.send("screen")
+        self.assertEqual(answer["code"], "SCREEN")
+        self.assertTrue(answer["result"]["file"].endswith("host/screen.png"))
+        self.assertEqual(self.send("click", {"x": 0.25, "y": 0.75})["code"], "CLICKED")
+        self.assertEqual(self.send("key", {"name": "enter"})["code"], "PRESSED")
+        self.assertEqual([c[0] for c in self.system.calls], ["screen", "click", "key"])
+        self.assertTrue(all(c[1] == 999 for c in self.system.calls))
+        busy = {"result": {"job": {"running": {"owner": "x"}}}}
+        with unittest.mock.patch.object(self.runner.companion, "ask", return_value=busy):
+            self.assertEqual(self.send("click", {"x": 0.5, "y": 0.5})["code"], "JOB_RUNNING")
+            self.assertEqual(self.send("key", {"name": "escape"})["code"], "JOB_RUNNING")
+            self.assertEqual(self.send("screen")["code"], "SCREEN")          # looking never interferes
+        self.assertEqual(len([c for c in self.system.calls if c[0] in ("click", "key")]), 2)
+
+    def test_window_scripts_take_only_numbers_and_the_fixed_path(self):
+        script = host._WINDOW_PS + host._SCREEN_PS + host._CLICK_PS + host._KEY_PS
+        for placeholder in ("{pid}", "{width}", "{path}", "{x}", "{y}", "{vk}"):
+            self.assertIn(placeholder, script)
+        calls = []
+        system = host.System()
+        system._run = lambda args, timeout=30.0: calls.append(args) or host.subprocess.CompletedProcess(
+            args, 0, stdout="1920 1080\n", stderr="")
+        self.assertEqual(system.click(4242, 0.25, 0.5), {"window": [1920, 1080]})
+        system.key(4242, "enter")
+        system.screen(4242, r"C:\Users\Matt\AppData\Local\FS25Farmhand\host\screen.png")
+        text = "\n".join(c[-1] for c in calls)
+        self.assertIn("Get-Process -Id 4242", text)
+        self.assertIn("$w * 0.25", text)
+        self.assertIn("MapVirtualKey(13, 0)", text)
+        with self.assertRaises(host.Refused):
+            system.screen(4242, "C:\\x'; Remove-Item C:\\ -Recurse; '")
 
     def test_stop_fs25_closes_only_fs25(self):
         self.system.fs25 = [999]

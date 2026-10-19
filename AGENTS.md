@@ -76,7 +76,9 @@ have precedence; report conflicts instead of silently changing the scope.
   performs only its fixed allowlist (status, install the checkout's build, launch
   FS25 by Windows' activation of its installed package (fixed AppUserModelID), else
   its package's own gamelaunchhelper.exe, else its exe — fixed paths —,
-  restart or stop FS25 — that image only —, the production hitch_pair, the player's
+  restart or stop FS25 — that image only —, a screenshot of the FS25 window to a fixed
+  file, one click inside that window or one key of a fixed list (the game's own menu
+  controls; never while a job or test runs), the production hitch_pair, the player's
   own typed words through the production rules (letters, digits, spaces, light
   punctuation; 160 at most), STOP, collect). Never widen it into a shell, file or
   program interface, and never ship it or `--live-test` as release.

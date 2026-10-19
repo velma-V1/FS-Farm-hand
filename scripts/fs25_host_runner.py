@@ -17,6 +17,12 @@ operations for it and nothing else:
                            . , ' ? ! - only, at most 160) through the production rules
     stop-test              the companion's production STOP
     collect                the latest test record plus bounded game/companion log lines
+    screen                 a screenshot of the FS25 window only, to a fixed file
+    click                  one left click inside the FS25 window (x, y: fractions 0..1)
+    key                    one key press in the FS25 window (name: a fixed list)
+                           (click and key: never while a job or test runs; they are
+                           the game's own menu controls, e.g. to load the savegame,
+                           which the Xbox build's -autoStartSavegameId never finds)
 
 Two bridges, never one:
   Claude -> runner:   atomic JSON files in <repo>/.fs25-dev/host/{requests,responses}
@@ -87,7 +93,13 @@ MAX_BUILD_FILE_BYTES = 2_000_000
 
 # The allowlist: each op and the only arguments it takes (validated in parse_request).
 OPS = {"status": (), "install-current-build": (), "launch-fs25": (), "restart-fs25": (), "stop-fs25": (),
-       "run-hitch-test": (), "run-request-test": ("text",), "stop-test": (), "collect": ("test_id",)}
+       "run-hitch-test": (), "run-request-test": ("text",), "stop-test": (), "collect": ("test_id",),
+       "screen": (), "click": ("x", "y"), "key": ("name",)}
+# Game controls: the only keys the runner ever presses (virtual-key codes).
+KEYS = {"enter": 0x0D, "escape": 0x1B, "space": 0x20, "tab": 0x09, "up": 0x26, "down": 0x28,
+        "left": 0x25, "right": 0x27}
+SCREEN_FILE = "screen.png"           # in <data>/host, the only file `screen` writes
+SCREEN_WIDTH = 1280                  # the screenshot is scaled to this width
 LIFECYCLE = frozenset({"install-current-build", "launch-fs25", "restart-fs25", "stop-fs25"})
 REQUEST_MAX_BYTES = 4096
 REQUEST_MAX_AGE_S = 60.0
@@ -164,6 +176,11 @@ def parse_request(raw: bytes, file_id: str, token: str, last_id: int, now: float
     if request["op"] == "run-request-test" and (set(args) != {"text"} or not isinstance(args["text"], str)
                                                 or not _TEXT.fullmatch(args["text"])):
         raise Refused("BAD_ARGUMENTS")
+    if request["op"] == "click" and (set(args) != {"x", "y"} or any(
+            type(args[k]) not in (int, float) or not math.isfinite(args[k]) or not 0 <= args[k] <= 1 for k in args)):
+        raise Refused("BAD_ARGUMENTS")
+    if request["op"] == "key" and (set(args) != {"name"} or args["name"] not in KEYS):
+        raise Refused("BAD_ARGUMENTS")
     created = request["created"]
     if type(created) not in (int, float) or not math.isfinite(created):
         raise Refused("SCHEMA_VIOLATION")
@@ -219,6 +236,26 @@ class System:
         """taskkill of FS25's own image name, the only process the runner ever ends."""
         self._run(["taskkill.exe", *(["/F"] if force else []), "/IM", FS25_IMAGE])
 
+    def window(self, pid: int, script: str) -> dict:
+        """Run the fixed window script for FS25's process ``pid`` plus one fixed action."""
+        done = self._run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                          _WINDOW_PS.replace("{pid}", str(int(pid))) + script], timeout=30.0)
+        out = (done.stdout or "").strip().splitlines()
+        if done.returncode != 0 or not out:
+            raise Refused("NO_WINDOW" if out and out[-1] == "NO_WINDOW" else "WINDOW_ACTION_FAILED",
+                          stderr=(done.stderr or "")[-300:])
+        width, height = (int(v) for v in out[-1].split())
+        return {"window": [width, height]}
+
+    def screen(self, pid: int, path: str) -> dict:
+        return self.window(pid, _SCREEN_PS.replace("{width}", str(SCREEN_WIDTH)).replace("{path}", _plain(path)))
+
+    def click(self, pid: int, x: float, y: float) -> dict:
+        return self.window(pid, _CLICK_PS.replace("{x}", repr(float(x))).replace("{y}", repr(float(y))))
+
+    def key(self, pid: int, name: str) -> dict:
+        return self.window(pid, _KEY_PS.replace("{vk}", str(int(KEYS[name]))))
+
     def start(self, program: str, arguments: list[str], folder: str) -> dict:
         """Detached, so it outlives this runner. Every value is fixed or validated.
         Returns what the starter said (for a launch that never appears), bounded."""
@@ -240,6 +277,63 @@ class System:
             command += f" -ArgumentList '{quoted}'"
         done = self._run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command])
         return {"exit": done.returncode, "stderr": (done.stderr or "")[-600:], "stdout": (done.stdout or "")[-300:]}
+
+
+# The fixed PowerShell for the game window: DPI-aware, finds FS25's main window by its
+# process id, brings it to the front, and works in its client area. {pid} and every
+# other value are numbers or a _plain fixed path, never request text.
+_WINDOW_PS = r"""
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class FH {
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, UIntPtr e);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte sc, uint f, UIntPtr e);
+  [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint c, uint t);
+  public struct RECT { public int L, T, R, B; }
+  public struct POINT { public int X, Y; }
+}
+'@
+[FH]::SetProcessDPIAware() | Out-Null
+$h = (Get-Process -Id {pid}).MainWindowHandle
+if ($h -eq [IntPtr]::Zero) { Write-Output 'NO_WINDOW'; exit 3 }
+[FH]::ShowWindow($h, 9) | Out-Null
+[FH]::SetForegroundWindow($h) | Out-Null
+Start-Sleep -Milliseconds 400
+$r = New-Object FH+RECT; [FH]::GetClientRect($h, [ref]$r) | Out-Null
+$o = New-Object FH+POINT; [FH]::ClientToScreen($h, [ref]$o) | Out-Null
+$w = $r.R - $r.L; $hh = $r.B - $r.T
+if ($w -le 0 -or $hh -le 0) { Write-Output 'NO_WINDOW'; exit 3 }
+"""
+_SCREEN_PS = r"""
+Add-Type -AssemblyName System.Drawing
+$bmp = New-Object System.Drawing.Bitmap $w, $hh
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($o.X, $o.Y, 0, 0, $bmp.Size)
+$sw = {width}; $sh = [int]($hh * $sw / $w)
+$small = New-Object System.Drawing.Bitmap $bmp, $sw, $sh
+$small.Save('{path}', [System.Drawing.Imaging.ImageFormat]::Png)
+Write-Output "$w $hh"
+"""
+_CLICK_PS = r"""
+[FH]::SetCursorPos($o.X + [int]($w * {x}), $o.Y + [int]($hh * {y})) | Out-Null
+Start-Sleep -Milliseconds 120
+[FH]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 80
+[FH]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+Write-Output "$w $hh"
+"""
+_KEY_PS = r"""
+$sc = [byte][FH]::MapVirtualKey({vk}, 0)
+[FH]::keybd_event({vk}, $sc, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 80
+[FH]::keybd_event({vk}, $sc, 2, [UIntPtr]::Zero)
+Write-Output "$w $hh"
+"""
 
 
 class Targets:
@@ -995,6 +1089,39 @@ class Runner:
     def op_stop_test(self):
         answer = self.companion.ask("stop")
         return bool(answer.get("ok")), answer.get("code", "UNKNOWN"), dict(answer.get("result") or {})
+
+    # ------------------------------------------------- the game's own controls
+    def _game_pid(self) -> int:
+        pids = self.system.processes(FS25_IMAGE)
+        if not pids:
+            raise Refused("FS25_NOT_RUNNING")
+        return pids[0]
+
+    def _no_job(self) -> None:
+        """Input is never sent while Farmhand works (the companion's own answer decides)."""
+        try:
+            live = self.companion.ask("status")
+        except Refused:
+            live = {}
+        result = live.get("result") or {}
+        if result.get("test_active") or (result.get("job") or {}).get("running"):
+            raise Refused("JOB_RUNNING", hint="stop-test first")
+
+    def op_screen(self):
+        folder = self.targets.local_data / "host"
+        folder.mkdir(parents=True, exist_ok=True)
+        _no_link(folder)
+        windows = str(PureWindowsPath(self.targets.data) / "host" / SCREEN_FILE)
+        result = self.system.screen(self._game_pid(), windows)
+        return True, "SCREEN", {**result, "file": str(folder / SCREEN_FILE)}
+
+    def op_click(self, x: float, y: float):
+        self._no_job()
+        return True, "CLICKED", {**self.system.click(self._game_pid(), x, y), "x": x, "y": y}
+
+    def op_key(self, name: str):
+        self._no_job()
+        return True, "PRESSED", {**self.system.key(self._game_pid(), name), "key": name}
 
     def op_collect(self, test_id: str | None = None):
         record = self.companion.test(test_id)

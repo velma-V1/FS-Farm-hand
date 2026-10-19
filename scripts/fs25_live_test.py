@@ -38,7 +38,8 @@ BUILD = ROOT / ".fs25-dev" / "build"
 RUNNER_STALE_S = 5.0
 # How long each op may take on the host (its own bounds plus a margin).
 TIMEOUT_S = {"status": 40.0, "install-current-build": 180.0, "launch-fs25": 660.0, "restart-fs25": 1800.0,
-             "stop-fs25": 90.0, "run-hitch-test": 30.0, "run-request-test": 30.0, "stop-test": 30.0, "collect": 30.0}
+             "stop-fs25": 90.0, "run-hitch-test": 30.0, "run-request-test": 30.0, "stop-test": 30.0, "collect": 30.0,
+             "screen": 60.0, "click": 60.0, "key": 60.0}
 HITCH_WAIT_S = 23500.0         # beyond the longest job: a field-work plan of three 2 h jobs
 EXIT = {"COMPLETE": 0, "FAILED": 1, "BLOCKED": 3, "UNVERIFIED": 4, "CANCELLED": 5}
 INFRASTRUCTURE = 10
@@ -171,6 +172,12 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("status", "install", "launch", "restart", "stop-fs25", "hitch", "stop"):
         sub.add_parser(name)
+    sub.add_parser("screen")
+    click = sub.add_parser("click")
+    click.add_argument("x", type=float, help="0..1 across the FS25 window")
+    click.add_argument("y", type=float, help="0..1 down the FS25 window")
+    key = sub.add_parser("key")
+    key.add_argument("name", help="enter, escape, space, tab, up, down, left, right")
     words = sub.add_parser("request")
     words.add_argument("text", help="the words, as a player would type them")
     collect = sub.add_parser("collect")
@@ -181,6 +188,12 @@ def main(argv=None) -> int:
             return command_hitch()
         if args.command == "request":
             return command_hitch(text=args.text)
+        if args.command in ("screen", "click", "key"):
+            payload = ({"x": args.x, "y": args.y} if args.command == "click"
+                       else {"name": args.name} if args.command == "key" else None)
+            response = call(args.command, payload)
+            emit(event=args.command, ok=response.get("ok"), code=response.get("code"), result=response.get("result"))
+            return 0 if response.get("ok") else INFRASTRUCTURE
         if args.command == "collect":
             response = call("collect", {"test_id": args.test} if args.test else {})
             if not response.get("ok"):
