@@ -351,7 +351,7 @@ function starters.detach(env, spec)
     return {}
 end
 
-function steppers.detach(env, task)
+function steppers.detach(_env, task)
     local status, code = stillOurs(task.spec)
     if status ~= nil then return status, code end
     local v, implement = task.spec.tractor, task.spec.wagon
