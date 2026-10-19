@@ -5,6 +5,7 @@ import functools
 import json
 import logging
 import math
+import time
 from pathlib import Path
 from threading import Lock
 
@@ -385,6 +386,7 @@ def describe(coverage: FieldCoverage | None) -> str:
 # verification are the executor's (task "buy").
 STORE_KINDS = {"plow": ("PLOW",), "truck": ("CAR", "TRUCK", "PICKUP"), "trailer": ("TRAILER",)}
 BUY_MONEY_TOLERANCE = 0.99        # the money must fall by at least this share of the price
+CATALOG_WAIT_S = 90.0             # the game builds the catalog after a load (25 items per snapshot)
 
 
 def _matches(item: StoreItem, want: dict) -> bool:
@@ -626,7 +628,11 @@ class Executor:
         farm_id, want = command["farm_id"], command["want"]
         try:
             enter("FIND")
-            catalog = self.world.catalog()
+            catalog, waited = self.world.catalog(), 0.0
+            while not catalog and waited < CATALOG_WAIT_S:
+                time.sleep(3.0)
+                waited += 3.0
+                catalog = self.world.catalog()
             if not catalog:
                 return Result("BLOCKED", "CATALOG_NOT_READY", states=tuple(states))
             before = {i.id: i for i in self.world.snapshot()}

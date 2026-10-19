@@ -231,6 +231,12 @@ def load_save(build: str | None = None, pid: int | None = None) -> int:
         deadline = time.monotonic() + LINK_S / 4
         while time.monotonic() < deadline:
             if _linked(build):
+                # Live 2026-10-19: 12 s after the link the game left the save and quit on
+                # its own (the host's Gaming Services fault); watch briefly for that.
+                if _wait_log("Application restart (soft restart)", 30.0) or "Application quit" in _log_text():
+                    emit(event="load-save", ok=False, code="GAME_LEFT_THE_SAVE",
+                         hint="the game restarted or quit by itself after loading (host Xbox fault)")
+                    return SIGN_IN
                 emit(event="load-save", ok=True, code="LOADED")
                 return 0
             time.sleep(3.0)

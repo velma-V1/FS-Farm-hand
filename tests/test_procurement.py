@@ -2,6 +2,7 @@
 and a purchase verified on the farm (a new vehicle of that name, the money gone)."""
 from dataclasses import replace
 import unittest
+import unittest.mock
 
 from companion.executor import Executor, choose_store_item
 from companion.language import RuleInterpreter
@@ -94,7 +95,8 @@ class PurchaseTests(unittest.TestCase):
     def test_nothing_is_bought_without_the_catalog_or_the_money(self):
         world = self.world()
         world.store_items = ()
-        self.assertEqual(Executor(world).execute(buy({"kind": "plow"})).reason, "CATALOG_NOT_READY")
+        with unittest.mock.patch("companion.executor.CATALOG_WAIT_S", 0.0):
+            self.assertEqual(Executor(world).execute(buy({"kind": "plow"})).reason, "CATALOG_NOT_READY")
         world = self.world(money=100)
         result = Executor(world).execute(buy({"kind": "plow"}))
         self.assertEqual((result.status, result.reason), ("BLOCKED", "NOT_ENOUGH_MONEY"))
