@@ -38,6 +38,9 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 | Cultivator in open ground, repeated from save 3 | ec4422f2a4484f9e-1 | 01d0eae | PASS | same chain and numbers as 2ded907e5cb34b6c-3 (LINED_UP 7.26 m / -0.14 m / -3.7 deg, gap 0.55 m, ATTACHED, VERIFY) |
 | Detach ("unhitch the cultivator") | ec4422f2a4484f9e-2 | 01d0eae | PASS | FIND, RESERVE, DETACH (GIANTS isDetachAllowed, detachImplementByObject), VERIFY: both ends unattached and stopped; nothing moved |
 | Reattach right after the detach | ec4422f2a4484f9e-3 | 01d0eae | FAIL (fixed) | joints 0.12 m apart, tractor joint 0.11 m on the far side: ALIGN_WRONG_SIDE sent it to LOCAL_MANEUVER (refused), then a re-approach STAGE hung (STAGE_TIMEOUT, nothing moved). Joints within 0.5 m now take a look-only ALIGN_REVERSE (GIANTS' candidate, never a drive), then ATTACH |
+| Cultivator from save 3, third run | d7889a7a8879421b-1 | 84f55ee | PASS | FIND, RESERVE, TRAVEL_NEAR, LOCAL_MANEUVER, ALIGN_REVERSE, ATTACH, VERIFY again (69 s) |
+| Detach, second run | d7889a7a8879421b-2 | 84f55ee | PASS | DETACH_OBSERVED; both ends free and stopped |
+| Reattach right after the detach | d7889a7a8879421b-3 | 84f55ee | PASS | the same geometry that failed in ec4422f2a4484f9e-3 (gap 0.12 m, ahead -0.11 m, lateral -0.05 m, -0.8 deg): look-only align (maxDistanceM 0) returned CANDIDATE, joints identical before and after (no motion), ATTACHED, VERIFY in 7 s |
 | STOP mid-maneuver | — | — | OPEN | |
 | Player takeover | — | — | OPEN | |
 | Stall / failure | — | — | OPEN | |
