@@ -773,6 +773,15 @@ class Executor:
 
         if command["task"] == "buy":
             return self._buy(command, enter, states)
+        if command["task"] == "save_game":
+            try:
+                enter("SAVE")
+                self.world.save_game()            # DONE only on a changed save stamp
+                return Result("COMPLETE", "SAVED", states=tuple(states))
+            except StepUnverified as error:
+                return Result("UNVERIFIED", error.code, states=tuple(states))
+            except (RuntimeError, ValueError) as error:
+                return Result("FAILED", getattr(error, "code", None) or type(error).__name__, states=tuple(states))
 
         reserved = physical_attempted = False
         status, reason = "BLOCKED", "NO_ELIGIBLE_PAIR"

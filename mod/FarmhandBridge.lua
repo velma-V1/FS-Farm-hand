@@ -566,6 +566,43 @@ end
 
 aborts.fieldwork = abortGoto
 
+-- ------------------------------------------------------------------- save
+-- The game's own save of the running career: g_currentMission:saveSavegame(true), as
+-- the installed FS25 mod EasyDevControls saves (EasyDevControls.lua 2462-2473; GIANTS
+-- SavegameController 888 -> FSBaseMission:saveSavegame 3006 in the game's own stack).
+-- DONE SAVED only once missionInfo's save date changed (FSCareerMissionInfo
+-- saveToXMLFile writes it), else UNVERIFIED.
+Bridge.SAVE_TIMEOUT_MS = 60000
+
+local function saveStamp(env)
+    local ok, stamp = pcall(function()
+        local info = env.g_currentMission.missionInfo
+        return tostring(info.saveDateFormatted or info.saveDate) .. "|" .. tostring(info.playTime)
+    end)
+    return ok and stamp or nil
+end
+
+function starters.save(env, spec)
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local before = saveStamp(env)
+    local ok = pcall(function() env.g_currentMission:saveSavegame(true) end)
+    if not ok then return nil, "SAVE_ERROR" end
+    log("save requested (stamp %s)", tostring(before))
+    return { before = before }
+end
+
+function steppers.save(env, task)
+    local now = saveStamp(env)
+    if now ~= nil and task.before ~= nil and now ~= task.before then
+        log("save done (stamp %s)", now)
+        return "DONE", "SAVED"
+    end
+    if task.elapsed > Bridge.SAVE_TIMEOUT_MS then return "UNVERIFIED", "SAVE_NOT_OBSERVED" end
+    return nil
+end
+
+function aborts.save() end
+
 -- -------------------------------------------------------------------- buy
 -- A store purchase through GIANTS' own BuyVehicleData (75/608): new, setStoreItem,
 -- setConfigurations (the item's defaultConfigurationIds, StoreManager 1018),
@@ -687,7 +724,7 @@ function aborts.stop() end
 -- --------------------------------------------------------------- runner
 
 Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true }
-Bridge.NO_VEHICLE = { buy = true }       -- ops that act on no vehicle
+Bridge.NO_VEHICLE = { buy = true, save = true }   -- ops that act on no vehicle
 
 function Bridge.start(env, spec)
     local starter = starters[spec.op]
@@ -943,6 +980,8 @@ Bridge.NOTICES = {
     COMPLETE_DETACH = "Farmhand: implement unhitched",
     ACCEPTED_FIELD_WORK = "Farmhand: on it - working the field",
     ACCEPTED_BUY = "Farmhand: going shopping",
+    ACCEPTED_SAVE = "Farmhand: saving the game",
+    COMPLETE_SAVE = "Farmhand: game saved",
     COMPLETE_BUY = "Farmhand: bought it; it is waiting at the store",
     COMPLETE_FIELD_WORK = "Farmhand: field work done and checked on the field",
     COMPLETE_DETACH_NOT_CLEAR = "Farmhand: implement unhitched; the tractor could not pull clear of it, so drive it away before the next job",
@@ -1056,6 +1095,8 @@ Bridge.REASONS = {
     DISTANCE_LIMIT = "the tractor did not get clear of the implement within its limit",
     BLOCKED_BY_PERSON = "you are standing in the tractor's way; step aside and ask again",
     NO_OWNED_FIELD = "the farm owns no field",
+    SAVE_NOT_OBSERVED = "the save did not finish; save from the menu",
+    SAVE_ERROR = "the game refused to save",
     CATALOG_NOT_READY = "the store list is still loading; ask again in a minute",
     NOT_IN_STORE = "the store does not sell that",
     NO_PLOW_FOR_OUR_TRACTORS = "no plow in the store that our tractors can pull",

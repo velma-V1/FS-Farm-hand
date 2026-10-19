@@ -43,7 +43,7 @@ HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
 ALIGN_MAX_DISTANCE_M = 10.0      # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
-DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "fieldwork": 7300.0, "buy": 60.0,
+DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -357,6 +357,11 @@ class FS25World:
     def catalog(self) -> tuple[StoreItem, ...]:
         """The store's vehicle items (the game sends them once built)."""
         return getattr(self.link, "catalog", ()) or ()
+
+    def save_game(self) -> str:
+        """SAVE: the game's own save (mod/FarmhandBridge.lua starters.save); DONE only
+        once the game's save stamp changed."""
+        return self._run("save")
 
     def buy(self, item_id: int) -> str:
         """BUY: GIANTS' own BuyVehicleData for the store item (mod/FarmhandBridge.lua

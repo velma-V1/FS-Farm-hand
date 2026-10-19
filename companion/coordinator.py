@@ -46,7 +46,8 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "hitch_pair": ("hitch_pair", "ACCEPTED_HITCH", "COMPLETE_HITCH"),
         "detach_pair": ("detach_pair", "ACCEPTED_DETACH", "COMPLETE_DETACH"),
         "field_work": ("field_work", "ACCEPTED_FIELD_WORK", "COMPLETE_FIELD_WORK"),
-        "buy": ("buy", "ACCEPTED_BUY", "COMPLETE_BUY")}
+        "buy": ("buy", "ACCEPTED_BUY", "COMPLETE_BUY"),
+        "save_game": ("save_game", "ACCEPTED_SAVE", "COMPLETE_SAVE")}
 
 
 def result_notice(status: str, reason: str, complete: str = "COMPLETE") -> str:

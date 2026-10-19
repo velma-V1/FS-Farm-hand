@@ -25,7 +25,8 @@
         "report",
         "unsupported",
         "field_work",
-        "buy"
+        "buy",
+        "save_game"
       ]
     },
     "reason": {

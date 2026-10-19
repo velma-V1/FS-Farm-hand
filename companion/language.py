@@ -246,6 +246,8 @@ class RuleInterpreter:
             return None                               # never an order to move
         if _COME.match(words):
             return {"version": 1, "command": "move_pair"}
+        if re.fullmatch(r"(?:please\s+)?save(?:\s+the)?(?:\s+(?:game|farm|progress))?(?:\s+now)?", words):
+            return {"version": 1, "command": "save_game"}
         work = field_work(words) or buy(words)
         if work is not None:
             return work

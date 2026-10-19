@@ -113,6 +113,7 @@ COMMAND_ARGS = {
     "navigate": ("tractor", "x", "z", "yaw"),
     "fieldwork": ("tractor", "field", "x", "z", "yaw", "area"),
     "buy": ("item",),
+    "save": (),
     "maneuver": ("tractor", "wagon", "tractorJoint", "wagonJoint"),
     "align": ("tractor", "wagon", "tractorJoint", "wagonJoint", "maxDistanceM"),
     "attach": ("tractor", "wagon", "tractorJoint", "wagonJoint"),

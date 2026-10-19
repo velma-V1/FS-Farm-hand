@@ -61,6 +61,12 @@ class MockWorld:
     def catalog(self):
         return tuple(self.store_items)
 
+    saved = 0
+
+    def save_game(self):
+        self.saved += 1
+        return "SAVED"
+
     def buy(self, item_id):
         # Mock-only: spawns a copy of mock_bought named as the item, and charges it.
         with self._lock:

@@ -30,7 +30,8 @@
         "hitch_pair",
         "detach_pair",
         "field_work",
-        "buy"
+        "buy",
+        "save_game"
       ],
       "description": "field_work: GIANTS' field-work helper works an owned field with the hitched implement that does the operation; complete only on the field's measured state; target is player_at_acceptance. deliver_tractor_and_forage_wagon: select, hitch and deliver an available pair. move_pair: move the hitched tractor and forage wagon nearest the requester. hitch_pair: select and hitch an available pair where the wagon stands, no delivery. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to nearest the requester, where it stands; target is player_at_acceptance."
     },
