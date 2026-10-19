@@ -58,6 +58,8 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 | Unhitch the sprayer (x2) | 8d1f4ada61c14239-3 / -5 | 20d7c16 | UNVERIFIED (fixed) | PULL_CLEAR 3.90 m straight, CLEAR at 4.01 m by the mod; the fresh snapshot (GIANTS' joint offsets) saw 3.70 / 3.69 m, under the verified 3.75 m. The mod now pulls to 4.5 m; the companion still verifies 3.75 m |
 | Re-hitch the sprayer after the pull | 8d1f4ada61c14239-4 | 20d7c16 | PASS | straight ALIGN_REVERSE from ~3.7 m, ATTACH, VERIFY |
 | Seeder again (hitch, unhitch, re-hitch, unhitch) | 8d1f4ada61c14239-6..-9 | 20d7c16 | PASS / FAIL (fixed) / PASS / FAIL (fixed) | the body-fixed joint point holds, but the seeder itself settled 6 cm towards the tractor after GIANTS' detach (separation 0.19 -> 0.14 m, tractor +0.01 m): SEPARATION_LOST. Growth is now judged from the implement's start position; its own movement stays bounded by IMPLEMENT_MOVED (25 cm) |
+| Seeder: hitch, unhitch, re-hitch, unhitch (save 3 reloaded) | 4137e562059b4e84-1..-4 | 8b5ce5e | PASS x4 | hitch by TRAVEL_NEAR, LOCAL_MANEUVER, ALIGN_REVERSE; both unhitches PULL_CLEAR 4.55 / 4.56 m straight (lateral -0.02 m, 5.6-5.9 s), CLEAR at 4.50 m, snapshot 4.32 / 4.36 m; re-hitch a straight reverse |
+| Sprayer: hitch, unhitch, re-hitch, unhitch | 4137e562059b4e84-5..-8 | 8b5ce5e | PASS x4 | hitch by STAGE, LOCAL_MANEUVER, ALIGN_REVERSE; PULL_CLEAR 4.40 m (lateral 0.00 / 0.01 m), CLEAR at 4.51 m, snapshot 4.20 / 4.21 m; re-hitch a straight reverse |
 | STOP mid-maneuver | — | — | OPEN | |
 | Player takeover | — | — | OPEN | |
 | Stall / failure | — | — | OPEN | |
