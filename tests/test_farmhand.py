@@ -596,29 +596,50 @@ class GiantsNavigationTests(unittest.TestCase):
         assert_goto_delivery(self, tractor, wagon, plan.target)
 
     def test_goto_travel_that_ends_far_aims_at_the_next_approach_up_to_the_drive_cap(self):
-        # Live 27539c7115a44b86-1: NOT_REACHABLE at once, 1248 m off, unmoved.
-        for stuck, outcome in ((1, "COMPLETE"), (MAX_APPROACH_DRIVES, "FAILED")):
-            with self.subTest(stuck=stuck):
+        # Each drive moves the tractor but ends far off (NOT_REACHABLE on the way).
+        for short, outcome in ((1, "COMPLETE"), (MAX_APPROACH_DRIVES, "FAILED")):
+            with self.subTest(short=short):
                 calls = []
 
-                class Stuck(MockWorld):
+                class Short(MockWorld):
                     def navigate(self, tractor_id, pose, owner):
                         calls.append(pose)
-                        if len(calls) <= stuck:
-                            return None                     # GOTO ended where it started
+                        if len(calls) <= short:
+                            x, z = self.items[tractor_id].position
+                            return super().navigate(tractor_id, Pose(x - 20, z, pose.yaw), owner)
                         return super().navigate(tractor_id, pose, owner)
 
-                world = self.world(GOTO_TRACTOR, far=True, cls=Stuck)
+                world = self.world(GOTO_TRACTOR, far=True, cls=Short)
                 tractor, wagon = world.snapshot()
                 aims = approach_poses(plan_hitch(tractor, wagon), tractor.position, ())
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, outcome, result)
-                self.assertEqual(calls[:min(stuck + 1, MAX_APPROACH_DRIVES)],
-                                 list(aims[:min(stuck + 1, MAX_APPROACH_DRIVES)]))
+                self.assertEqual(calls[:min(short + 1, MAX_APPROACH_DRIVES)],
+                                 list(aims[:min(short + 1, MAX_APPROACH_DRIVES)]))
                 if outcome == "FAILED":
                     self.assertEqual(result.reason, "TRAVEL_ENDED_TOO_FAR")
                     self.assertEqual(len(calls), MAX_APPROACH_DRIVES)    # never more drives
                     self.assertNotIn("STAGE", result.states)
+
+    def test_aims_that_leave_the_tractor_where_it_stood_cost_no_drive(self):
+        # Live 27539c7115a44b86-1: NOT_REACHABLE at once, 1248 m off, unmoved.
+        for unmoved, outcome in ((5, ("COMPLETE", "DELIVERY_OBSERVED")), (6, ("BLOCKED", "NO_SAFE_APPROACH"))):
+            with self.subTest(unmoved=unmoved):
+                calls = []
+
+                class Unmoved(MockWorld):
+                    def navigate(self, tractor_id, pose, owner):
+                        calls.append(pose)
+                        if len(calls) <= unmoved:
+                            return None                     # GOTO ended where it started
+                        return super().navigate(tractor_id, pose, owner)
+
+                world = self.world(GOTO_TRACTOR, far=True, cls=Unmoved)
+                result = Executor(world).execute(intent())
+                self.assertEqual((result.status, result.reason), outcome, result)
+                if outcome[0] == "BLOCKED":
+                    self.assertEqual(len(calls), 6)                 # each aim once
+                    self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
 
     def test_a_goto_stopped_as_stalled_is_judged_by_the_observation(self):
         # Live 4167b7fd4e8143db-1: 1.2 km, then NAVIGATE_STALLED 12 m short of the aim.
@@ -641,13 +662,54 @@ class GiantsNavigationTests(unittest.TestCase):
                 if near:
                     self.assertEqual(result.states.count("TRAVEL_NEAR"), 1)
                     self.assertIn("LOCAL_MANEUVER", result.states)
-                else:                                            # stuck where it stood, each time
-                    self.assertEqual(result.reason, "TRAVEL_ENDED_TOO_FAR")
-                    self.assertEqual(len(calls), MAX_APPROACH_DRIVES)
+                else:                    # stuck where it stood, then nothing moves it
+                    self.assertEqual(result.reason, "TRAPPED")
+                    self.assertEqual(len(calls), 2)
+
+    def test_a_stall_far_from_the_implement_ends_the_job_at_once(self):
+        # Live 2ded907e5cb34b6c-4: ~560 m driven, stuck 718 m short; retrying other
+        # aims beside the same implement from there was pointless.
+        calls = []
+
+        class FarStall(MockWorld):
+            def navigate(self, tractor_id, pose, owner):
+                calls.append(pose)
+                x, z = self.items[tractor_id].position
+                super().navigate(tractor_id, Pose(x - 200, z - 200, pose.yaw), owner)
+                raise StepFailed("NAVIGATE_STALLED")
+
+        world = self.world(GOTO_TRACTOR, far=True, cls=FarStall)
+        result = Executor(world).execute(intent())
+        self.assertEqual((result.status, result.reason), ("FAILED", "NAVIGATE_STALLED"))
+        self.assertEqual(len(calls), 1)
+
+    def test_stuck_beside_the_implement_then_unable_to_move_is_trapped(self):
+        # Live 2ded907e5cb34b6c-1 (a building beside the trailer): GOTO stalled 7 m
+        # from the approach, the maneuver refused, and no GOTO could move the tractor.
+        calls = []
+
+        class Trapped(MockWorld):
+            def navigate(self, tractor_id, pose, owner):
+                calls.append(("navigate", pose))
+                super().navigate(tractor_id, Pose(pose.x + 5, pose.z, pose.yaw), owner)
+                raise StepFailed("NAVIGATE_STALLED")
+
+            def stage(self, tractor_id, wagon_id, pose, owner):
+                calls.append(("stage", pose))                 # ends where it stands
+
+            def maneuver(self, *args):
+                calls.append(("maneuver",))
+                raise StepFailed("LOCAL_PATH_HITS_WAGON")
+
+        world = self.world(GOTO_TRACTOR, far=True, cls=Trapped)
+        result = Executor(world).execute(intent())
+        self.assertEqual((result.status, result.reason), ("FAILED", "TRAPPED"))
+        self.assertEqual([c[0] for c in calls], ["navigate", "maneuver", "stage"])     # no wasted retries
+        self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
 
     def test_aims_giants_refuses_as_blocked_are_skipped_without_moving(self):
         # AIParameterPosition:validate 83-90: a target on blocked ground is refused.
-        for refused, outcome in ((5, "COMPLETE"), (6, "FAILED")):
+        for refused, outcome in ((5, "COMPLETE"), (6, "BLOCKED")):
             with self.subTest(refused=refused):
                 calls = []
 
@@ -665,8 +727,8 @@ class GiantsNavigationTests(unittest.TestCase):
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, outcome, result)
                 self.assertEqual(calls[:len(aims)], list(aims[:len(calls)]))
-                if outcome == "FAILED":
-                    self.assertEqual(result.reason, "NAVIGATE_GOTO_INVALID")
+                if outcome == "BLOCKED":
+                    self.assertEqual(result.reason, "NO_SAFE_APPROACH")
                     self.assertEqual(len(calls), len(aims))          # each aim once
                     self.assertEqual([i.position for i in world.snapshot()], [i.position for i in before])
 

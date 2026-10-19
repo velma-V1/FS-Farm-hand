@@ -60,6 +60,9 @@ Executable mapping (`python scripts/check.py`):
   (`ApproachTests` in test_hitch: beside the implement, a clear side first), only
   beyond the work radius or after a maneuver refused unmoved, each approach once,
   refused (blocked) aims skipped unmoved, at most MAX_APPROACH_DRIVES drives;
+  only a GOTO that moves the tractor counts as a drive; no aim moving it is
+  BLOCKED NO_SAFE_APPROACH, a stall far from the implement ends at once
+  (NAVIGATE_STALLED), and a stuck tractor no GOTO can move is TRAPPED;
   STAGE ends beyond it on both fail TRAVEL_ENDED_TOO_FAR with no local motion, one outside the reverse's envelope is lined up by LOCAL_MANEUVER,
   a maneuver failure or a maneuver end outside the envelope never reverses;
   unplannable pairs block

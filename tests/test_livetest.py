@@ -888,8 +888,9 @@ class EndToEndTests(CompanionCase):
         game = self.wire(faults={"stage_end": (3.44, -12.40, 85.9), "maneuver": "FAILED:LOCAL_PATH_HITS_WAGON"})
         self.assertEqual(client.command_hitch(poll=0.05), client.EXIT["FAILED"])
         self.assertEqual(self.out[-1]["reason"], "LOCAL_PATH_HITS_WAGON")
-        # Refused unmoved: up to three approaches are driven to, then it stops; never reversed.
-        self.assertEqual([c["op"] for c in game.commands], ["stage", "maneuver"] * 3 + ["stop"])
+        # Refused unmoved; the fake game's STAGE ends where the first did, so no further
+        # aim moves the tractor and the maneuver is not repeated; never reversed.
+        self.assertEqual([c["op"] for c in game.commands], ["stage", "maneuver"] + ["stage"] * 5 + ["stop"])
 
     def test_without_a_runner_the_client_says_so(self):
         with unittest.mock.patch.object(client, "HOST", self.tmp / "nowhere"):

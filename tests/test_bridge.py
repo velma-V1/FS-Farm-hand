@@ -928,7 +928,8 @@ class ServiceTests(unittest.TestCase):
         # bounded forward LOCAL_MANEUVER lines up, unless the joints already lie in the
         # reverse's envelope. GOTO aims at each approach beside the implement at most
         # once: a STAGE ending beyond the radius, or a maneuver refused unmoved for
-        # where the tractor stands, aims at the other approach; then nothing more moves.
+        # where the tractor stands, aims at the next; an aim that leaves the tractor
+        # where it stood costs no drive and is not followed by the same maneuver.
         reverse = ["stage", "align", "attach", "stop"]
         local = ["stage", "maneuver", "align", "attach", "stop"]
         cases = [
@@ -940,11 +941,11 @@ class ServiceTests(unittest.TestCase):
             ((6.0, 3.0, 0.0), {}, "COMPLETE_HITCH", local),                # beside the axis
             ((5.0, 1.5, 15.0), {}, "COMPLETE_HITCH", reverse),             # inside the envelope
             ((8.5, -1.9, -28.0), {}, "COMPLETE_HITCH", reverse),           # edge of the envelope
-            ((20.0, -18.0, 90.0), {}, "FAILED_TRAVEL_ENDED_TOO_FAR", ["stage"] * 3 + ["stop"]),  # beyond 25 m
+            ((20.0, -18.0, 90.0), {}, "FAILED_TRAVEL_ENDED_TOO_FAR", ["stage"] * 6 + ["stop"]),  # beyond 25 m: one drive, then no aim moves it
             # The game refuses the geometry before moving, or the maneuver's end is not
             # in the envelope when observed: never reversed.
             ((5.52, -17.97, 162.9), {"maneuver": "FAILED:LOCAL_PATH_HITS_WAGON"},
-             "FAILED_LOCAL_PATH_HITS_WAGON", ["stage", "maneuver"] * 3 + ["stop"]),
+             "FAILED_LOCAL_PATH_HITS_WAGON", ["stage", "maneuver"] + ["stage"] * 5 + ["stop"]),
             ((3.44, -12.40, 85.9), {"maneuver_end": (6.0, 3.0, 0.0)},
              "FAILED_ALIGN_LATERAL_OUT_OF_RANGE", ["stage", "maneuver", "stop"]),
             ((3.44, -12.40, 85.9), {"maneuver": "FAILED:DIVERGED"}, "FAILED_DIVERGED",

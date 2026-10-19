@@ -65,6 +65,14 @@ class _CleanupFailed(Exception):
     """Cleanup could not prove the pair is idle; the reason says what remained."""
 
 
+class _Blocked(Exception):
+    """No safe way to start the step: nothing moved (BLOCKED, with its reason)."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
 class Cancelled(Exception):
     """The requester cancelled; raised before the next physical step starts."""
 
@@ -87,6 +95,8 @@ MAX_APPROACH_DRIVES = 3
 # NAVIGATE_STALL_MS; live 4167b7fd4e8143db-1: 1.2 km, then stuck 12 m short): the tractor is
 # stopped, and like an ended GOTO what follows is decided by the observed joints.
 GOTO_STALL_CODES = frozenset({"NAVIGATE_STALLED"})
+# A GOTO that left the tractor within this of where it stood did not drive.
+GOTO_MOVED_M = 1.0
 
 CANCELLABLE_STEPS = frozenset({"RESERVE", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
                                "DETACH", "DELIVER"})
@@ -622,48 +632,65 @@ class Executor:
                 # LOCAL_MANEUVER refused unmoved for where the tractor stands
                 # (REAPPROACH_CODES).
                 physical_attempted = True
-                aim = {"next": 0, "drives": 0, "refused": None}
+                aim = {"next": 0, "drives": 0, "stuck": False}
 
                 def more():
                     return aim["next"] < len(aims) and aim["drives"] < MAX_APPROACH_DRIVES
 
                 def goto(step):
-                    """Drive GOTO to the next aim GIANTS accepts; False when none is left."""
+                    """GOTO to the next aim that moves the tractor: "ended" or "stalled"
+                    once it has driven, None when no aim is left. An aim GIANTS refuses
+                    (GOTO_INVALID) or that leaves the tractor where it stood (live: at
+                    once NOT_REACHABLE) costs no drive; one after the tractor got stuck
+                    that cannot move it is TRAPPED."""
                     while more():
                         pose = aims[aim["next"]]
                         aim["next"] += 1
+                        before = self._hitch_state(ids, farm_id, owner, plan)[0].position
                         enter(step)
+                        stalled = False
                         try:
                             if step == "TRAVEL_NEAR":
                                 self.world.navigate(ids[0], pose, owner)
                             else:
                                 self.world.stage(ids[0], ids[1], pose, owner)
                         except StepFailed as failure:
-                            if failure.code in GOTO_STALL_CODES:
-                                # Stopped by the game's no-progress watchdog: an ended
-                                # drive like any other; the fresh observation decides.
-                                log.info("%s to aim %s stalled (%s); observing", step, pose, failure.code)
-                                aim["drives"] += 1
-                                return True
-                            if not failure.code.endswith("GOTO_INVALID"):
+                            if failure.code.endswith("GOTO_INVALID"):
+                                log.info("%s aim %s refused by GIANTS (%s)", step, pose, failure.code)
+                                continue
+                            if failure.code not in GOTO_STALL_CODES:
                                 raise
-                            log.info("%s aim %s refused by GIANTS (%s)", step, pose, failure.code)
-                            aim["refused"] = failure.code
+                            # Stopped by the game's no-progress watchdog: an ended drive
+                            # like any other; the fresh observation decides.
+                            stalled = True
+                        after = self._hitch_state(ids, farm_id, owner, plan)[0].position
+                        if math.dist(before, after) < GOTO_MOVED_M:
+                            log.info("%s aim %s: the tractor did not move%s", step, pose,
+                                     " (stalled)" if stalled else "")
+                            if aim["stuck"]:
+                                raise StepFailed("TRAPPED")
+                            aim["stuck"] = stalled
                             continue
                         aim["drives"] += 1
-                        return True
-                    return False
+                        aim["stuck"] = stalled
+                        if stalled:
+                            log.info("%s to aim %s stalled after driving; observing", step, pose)
+                        return "stalled" if stalled else "ended"
+                    return None
 
                 def unreached():
-                    # Every aim refused before any drive: GIANTS' reason; else too far.
-                    return StepFailed(aim["refused"] if aim["drives"] == 0 and aim["refused"]
-                                      else "TRAVEL_ENDED_TOO_FAR")
+                    # No aim moved the tractor: there is no way in from here.
+                    if aim["drives"] == 0:
+                        return _Blocked("NO_SAFE_APPROACH")
+                    return StepFailed("TRAVEL_ENDED_TOO_FAR")
 
                 if travel is not None:
                     tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
                     while True:
+                        outcome = None
                         if isinstance(travel, Pose):
-                            if not goto("TRAVEL_NEAR"):
+                            outcome = goto("TRAVEL_NEAR")
+                            if outcome is None:
                                 raise unreached()
                         else:
                             enter("TRAVEL_NEAR")
@@ -674,6 +701,10 @@ class Executor:
                                  tractor.position, tractor.heading, left)
                         if left <= NEAR_RADIUS_M + TRACTOR_ARRIVAL_TOLERANCE_M:
                             break
+                        if outcome == "stalled":
+                            # Stuck on the way, far from the implement: the other aims lie
+                            # beside the same implement, so none is tried from here.
+                            raise StepFailed("NAVIGATE_STALLED")
                         if not isinstance(travel, Pose):
                             raise StepFailed("TRAVEL_ENDED_TOO_FAR")
                 tractor, wagon, error = self._joints("HITCH start", ids, farm_id, owner, plan)
@@ -748,6 +779,8 @@ class Executor:
                 # unknown): CANCELLED, but only if the cleanup below confirms the
                 # pair stopped; otherwise it becomes CLEANUP_NOT_CONFIRMED.
                 status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
+        except _Blocked as error:
+            status, reason = "BLOCKED", error.code
         except (RuntimeError, TimeoutError, ValueError, KeyError) as error:
             # Adapter codes (StepFailed, ObservationError) are kept as the reason.
             status, reason = "FAILED", getattr(error, "code", None) or type(error).__name__
