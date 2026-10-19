@@ -25,6 +25,7 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 | Other implement class: cultivator, 1.2 km away | 3da28a3f24dd450b-1 | 702e468 | REFUSED-OK (reason fixed) | "hitch the cultivator": tractor 170 and PROLANDER 7500 165 selected, joints 1/1; GOTO travel 4.5 min, ended NOT_REACHABLE 15.6 m from staging, facing the implement (-165.5 deg, gap 20.6 m); LOCAL refused unmoved. Logged LOCAL_PATH_LEAVES_AREA; the real planner replayed offline shows a header and trolley parked 6 m beside the cultivator block every short curve: LOCAL_PATH_BLOCKED (reason fixed in c12fc52) |
 | Other implement class: trailer, staging | 3da28a3f24dd450b-2 | 702e468 | FAIL (aim changed) | "hitch the trailer": HALFPIPE 159, joints 4/1; STAGE ended NOT_REACHABLE 50 ms after start, 41.7 m off, unmoved. GOTO now aims beside the implement (adapters/EVIDENCE.md) |
 | Trailer, approach aim, 1.2 km away | 27539c7115a44b86-1 | 8dae29e | FAIL (fixed) | GOTO to the first approach (804.5, 312.1, west of HALFPIPE 159) ended NOT_REACHABLE 50 ms after start, 1248 m off, unmoved: a blocked aim. The other side was never tried; GOTO travel now aims at the next approach once |
+| Trailer, other approach | 27539c7115a44b86-2 | 6be7e0b | FAIL (fixed) | the second approach (830.5, 312.3, east of HALFPIPE 159) was refused by GIANTS' validate: NAVIGATE_GOTO_INVALID (blocked ground). Aims are now three families per side; refused ones are skipped unmoved |
 | Moderate offset | — | — | OPEN | |
 | ~45° heading | — | — | OPEN | |
 | Large heading error | — | — | OPEN | |

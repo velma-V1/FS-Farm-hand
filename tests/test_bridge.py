@@ -449,10 +449,10 @@ class ProductionSequenceTests(unittest.TestCase):
             # and bounded failures stop, release, and never reverse or attach.
             ({"maneuver": "FAILED:SEATED_DURING_MANEUVER"}, NEAR, "FAILED", "SEATED_DURING_MANEUVER",
              ["maneuver", "stop"]),
-            # Refused unmoved for where the tractor stands: GOTO aims at each approach
-            # beside the implement once, the maneuver is tried from each, then it stops.
+            # Refused unmoved for where the tractor stands: GOTO drives to up to three
+            # approaches beside the implement, the maneuver is tried from each, then it stops.
             ({"maneuver": "FAILED:LOCAL_PATH_LEAVES_AREA"}, NEAR, "FAILED", "LOCAL_PATH_LEAVES_AREA",
-             ["maneuver", "stage", "maneuver", "stage", "maneuver", "stop"]),
+             ["maneuver"] + ["stage", "maneuver"] * 3 + ["stop"]),
             ({"maneuver": "FAILED:TURN_RADIUS_UNKNOWN"}, NEAR, "FAILED", "TURN_RADIUS_UNKNOWN", ["maneuver", "stop"]),
             ({"maneuver": "FAILED:STALLED"}, NEAR, "FAILED", "STALLED", ["maneuver", "stop"]),
             ({"maneuver": "FAILED:DIVERGED"}, NEAR, "FAILED", "DIVERGED", ["maneuver", "stop"]),
@@ -940,11 +940,11 @@ class ServiceTests(unittest.TestCase):
             ((6.0, 3.0, 0.0), {}, "COMPLETE_HITCH", local),                # beside the axis
             ((5.0, 1.5, 15.0), {}, "COMPLETE_HITCH", reverse),             # inside the envelope
             ((8.5, -1.9, -28.0), {}, "COMPLETE_HITCH", reverse),           # edge of the envelope
-            ((20.0, -18.0, 90.0), {}, "FAILED_TRAVEL_ENDED_TOO_FAR", ["stage", "stage", "stop"]),  # beyond 25 m
+            ((20.0, -18.0, 90.0), {}, "FAILED_TRAVEL_ENDED_TOO_FAR", ["stage"] * 3 + ["stop"]),  # beyond 25 m
             # The game refuses the geometry before moving, or the maneuver's end is not
             # in the envelope when observed: never reversed.
             ((5.52, -17.97, 162.9), {"maneuver": "FAILED:LOCAL_PATH_HITS_WAGON"},
-             "FAILED_LOCAL_PATH_HITS_WAGON", ["stage", "maneuver", "stage", "maneuver", "stop"]),
+             "FAILED_LOCAL_PATH_HITS_WAGON", ["stage", "maneuver"] * 3 + ["stop"]),
             ((3.44, -12.40, 85.9), {"maneuver_end": (6.0, 3.0, 0.0)},
              "FAILED_ALIGN_LATERAL_OUT_OF_RANGE", ["stage", "maneuver", "stop"]),
             ((3.44, -12.40, 85.9), {"maneuver": "FAILED:DIVERGED"}, "FAILED_DIVERGED",

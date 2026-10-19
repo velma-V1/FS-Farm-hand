@@ -10,8 +10,8 @@ import random
 import unittest
 from dataclasses import replace
 
-from companion.hitch import (ALIGN_MAX_HEADING_RAD, ALIGN_MAX_LATERAL_M, ALIGN_REACH_M, APPROACH_BEHIND_M,
-                            APPROACH_CLEARANCE_M, APPROACH_SIDE_M, LOCAL_WORK_RADIUS_M, STAGING_DISTANCE_M,
+from companion.hitch import (ALIGN_MAX_HEADING_RAD, ALIGN_MAX_LATERAL_M, ALIGN_REACH_M, APPROACH_CLEARANCE_M,
+                            APPROACHES, LOCAL_WORK_RADIUS_M, STAGING_DISTANCE_M,
                             align_problem, approach_poses, joint_error, plan_hitch)
 from protocol.model import Equipment, InputJoint, OutputJoint, Pose
 
@@ -145,35 +145,39 @@ class ApproachTests(unittest.TestCase):
     """GOTO's aims beside the implement (live: the staging pose ahead of the drawbar
     was NOT_REACHABLE for GIANTS' agent)."""
 
-    def test_each_approach_puts_the_planned_joint_beside_the_implement_facing_its_heading(self):
+    def test_each_approach_puts_the_planned_joint_beside_the_implement_turned_to_its_axis(self):
         rng = random.Random(11)
         for _ in range(100):
             heading = rng.uniform(-math.pi, math.pi)
+            joint = OutputJoint(2, "TRAILER", rng.uniform(-0.3, 0.3), rng.uniform(-4.0, -0.5), True)
             w = wagon((rng.uniform(-500, 500), rng.uniform(-500, 500)), heading)
-            t = tractor(Pose(rng.uniform(-500, 500), rng.uniform(-500, 500), rng.uniform(-math.pi, math.pi)))
+            t = tractor(Pose(rng.uniform(-500, 500), rng.uniform(-500, 500), rng.uniform(-math.pi, math.pi)),
+                        (joint,))
             plan = plan_hitch(t, w)
-            sides = []
-            for pose in approach_poses(plan, t.position, ()):
-                self.assertAlmostEqual(pose.yaw, heading)
+            aims = approach_poses(plan, t.position, ())
+            self.assertEqual(len(aims), 2 * len(APPROACHES))
+            seen = set()
+            for pose in aims:
                 error = joint_error(replace(t, ai_root=pose), w, plan)
-                self.assertAlmostEqual(error.ahead, -APPROACH_BEHIND_M)
-                self.assertAlmostEqual(abs(error.lateral), APPROACH_SIDE_M)
-                self.assertAlmostEqual(error.heading, 0.0)
+                side = math.copysign(1, error.lateral)
+                key = (round(error.ahead, 6), round(abs(error.lateral), 6), round(-side * math.degrees(error.heading), 6))
+                self.assertIn(key, {(a, s, h) for a, s, h in APPROACHES})
                 self.assertLess(error.gap, LOCAL_WORK_RADIUS_M)       # LOCAL_MANEUVER takes over
-                sides.append(math.copysign(1, error.lateral))
-            self.assertEqual(sorted(sides), [-1, 1])                  # one on each side
+                seen.add((key, side))
+            self.assertEqual(len(seen), 2 * len(APPROACHES))          # each family on each side
 
-    def test_a_clear_side_comes_first_then_the_nearer_one(self):
+    def test_order_clear_aims_then_the_family_then_the_nearer_side(self):
         t, w = tractor(Pose(0.0, 0.0, 0.0)), wagon((10.0, 20.0), 0.0)
         plan = plan_hitch(t, w)
-        # Heading 0 (+z): lateral +x is the +x side.
-        plus, minus = sorted(approach_poses(plan, t.position, ()), key=lambda p: -p.x)
-        self.assertEqual(approach_poses(plan, (100.0, 0.0), ())[0], plus)     # nearer
-        self.assertEqual(approach_poses(plan, (-100.0, 0.0), ())[0], minus)
-        parked = (plus.x + APPROACH_CLEARANCE_M - 1, plus.z)
-        self.assertEqual(approach_poses(plan, (100.0, 0.0), (parked,))[0], minus)  # crowded side second
-        far = (plus.x + APPROACH_CLEARANCE_M + 1, plus.z)
-        self.assertEqual(approach_poses(plan, (100.0, 0.0), (far,))[0], plus)
+        # Heading 0 (+z): the lateral +x side is the +x side.
+        first = approach_poses(plan, (100.0, 0.0), ())
+        self.assertGreater(first[0].x, 10.0)                                   # nearer side
+        self.assertLess(first[1].x, 10.0)                                      # same family, other side
+        self.assertLess(approach_poses(plan, (-100.0, 0.0), ())[0].x, 10.0)
+        parked = (first[0].x + APPROACH_CLEARANCE_M - 1, first[0].z)
+        crowded = approach_poses(plan, (100.0, 0.0), (parked,))
+        self.assertNotEqual(crowded[0], first[0])
+        self.assertIn(first[0], crowded[1:])                                   # tried later, not dropped
 
 
 class PtoTests(unittest.TestCase):

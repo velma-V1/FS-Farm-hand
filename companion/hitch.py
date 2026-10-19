@@ -23,13 +23,15 @@ MAX_STAGING_DISTANCE_M = 10.0
 # Where GIANTS' GOTO is aimed (TRAVEL_NEAR, STAGE): beside the implement, never in
 # front of it. Live the agent reported NOT_REACHABLE for the staging pose (8ffafcc
 # twice; 3da28a3f24dd450b-1 after 1.2 km, -2 at once): arriving there facing away
-# from the implement takes a path across it. Beside its body, facing its heading,
-# the way in is a straight run past it, and LOCAL_MANEUVER lines up from there in a
-# short S (mod/FarmhandHitch.lua Hitch.chooseCurve, empty yard, 5.5 m radius: 14-23 m
-# from joint 4-8 m behind, 12-16 m aside, 0-60 deg towards the axis). Aims only.
-APPROACH_BEHIND_M = 6.0             # the planned tractor joint this far behind the implement's joint
-APPROACH_SIDE_M = 13.0              # and this far to one side of its axis
-APPROACH_CLEARANCE_M = 10.0         # a side this close to other equipment is tried second
+# from the implement takes a path across it. GIANTS also refuses a target on
+# blocked ground (AIParameterPosition:validate 83-90, aiSystem:getIsPositionReachable;
+# live 27539c7115a44b86: both sides of a trailer in a yard), so there are several
+# aims. Each puts the planned tractor joint (ahead, aside) of the implement's joint,
+# turned this many degrees from its heading towards its axis; from each the bounded
+# LOCAL_MANEUVER lines up (mod/FarmhandHitch.lua Hitch.chooseCurve, empty yard:
+# 13-22 m at a 4.8 m planning radius; the first also at 6.6 m). Aims only.
+APPROACHES = ((-2.0, 10.0, 45.0), (2.0, 12.0, 90.0), (-6.0, 15.0, 0.0))
+APPROACH_CLEARANCE_M = 10.0         # an aim this close to other equipment is tried after the clear ones
 
 # The envelope from which the bounded reverse (mod/FarmhandHitch.lua) can bring the
 # planned tractor joint to the wagon's input joint, measured on the observed joints
@@ -94,24 +96,28 @@ def plan_hitch(tractor: Equipment, wagon: Equipment,
     return HitchPlan(joint.index, inp.index, joint.joint_type, target, final, staging)
 
 
-def approach_poses(plan: HitchPlan, origin, others) -> tuple[Pose, Pose]:
-    """The two GOTO aims for ``plan``: the AI root pose putting the planned joint
-    APPROACH_BEHIND_M behind and APPROACH_SIDE_M to either side of the implement's
-    joint, facing its heading. A side clear of every position in ``others`` (other
-    equipment) by APPROACH_CLEARANCE_M comes first, then the one nearer ``origin``."""
-    yaw = plan.final.yaw
-    fx, fz = math.sin(yaw), math.cos(yaw)
-    poses = [Pose(plan.final.x - APPROACH_BEHIND_M * fx + side * APPROACH_SIDE_M * fz,
-                  plan.final.z - APPROACH_BEHIND_M * fz - side * APPROACH_SIDE_M * fx, yaw)
-             for side in (1, -1)]
+def approach_poses(plan: HitchPlan, origin, others) -> tuple[Pose, ...]:
+    """GOTO's aims for ``plan``: the AI root pose for each APPROACHES entry on each
+    side of the implement. Aims clear of every position in ``others`` (other
+    equipment) by APPROACH_CLEARANCE_M come first, then by APPROACHES order, then
+    the side nearer ``origin``."""
+    heading = plan.final.yaw
+    # The planned joint's offset in the AI root frame (plan.final puts it on target).
+    back = Pose(0.0, 0.0, -heading).to_world(plan.target[0] - plan.final.x, plan.target[1] - plan.final.z)
+    fx, fz = math.sin(heading), math.cos(heading)
     others = [tuple(p) for p in others]
-
-    def key(pose):
-        point = (pose.x, pose.z)
-        crowded = any(math.dist(point, other) < APPROACH_CLEARANCE_M for other in others)
-        return crowded, math.dist(point, tuple(origin))
-    first, second = sorted(poses, key=key)
-    return first, second
+    ranked = []
+    for rank, (ahead, aside, turn) in enumerate(APPROACHES):
+        for side in (1, -1):
+            jx = plan.target[0] + ahead * fx + side * aside * fz
+            jz = plan.target[1] + ahead * fz - side * aside * fx
+            yaw = heading - side * math.radians(turn)       # turned towards the axis
+            ox, oz = Pose(0.0, 0.0, yaw).to_world(*back)
+            pose = Pose(jx - ox, jz - oz, yaw)
+            crowded = any(math.dist((pose.x, pose.z), other) < APPROACH_CLEARANCE_M for other in others)
+            ranked.append(((crowded, rank, math.dist((pose.x, pose.z), tuple(origin))), pose))
+    ranked.sort(key=lambda entry: entry[0])
+    return tuple(pose for _, pose in ranked)
 
 
 def hitch_problem(tractor: Equipment, wagon: Equipment) -> str:

@@ -80,6 +80,10 @@ REAPPROACH_CODES = frozenset({"LOCAL_PATH_HITS_WAGON", "LOCAL_PATH_LEAVES_AREA",
                               "LOCAL_PATH_BLOCKED", "LOCAL_NO_PATH", "LOCAL_START_AT_WAGON",
                               "OUTSIDE_LOCAL_AREA"})
 
+# GOTO drives to approaches per hitch (TRAVEL_NEAR and STAGE together); aims
+# GIANTS refuses outright (GOTO_INVALID) move nothing and do not count.
+MAX_APPROACH_DRIVES = 3
+
 CANCELLABLE_STEPS = frozenset({"RESERVE", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
                                "DELIVER"})
 
@@ -559,39 +563,69 @@ class Executor:
                 # HITCH: VALIDATE -> [TRAVEL_NEAR] -> [STAGE] -> [LOCAL_MANEUVER] -> ALIGN_REVERSE
                 # -> ATTACH -> VERIFY. Every step is followed by a fresh-snapshot check;
                 # returns are not evidence, and each next step is chosen from it.
-                # GOTO aims at the approaches beside the implement, each at most once
-                # (TRAVEL_NEAR to a pose counts as the first); STAGE runs while the planned
-                # joint is outside LOCAL_WORK_RADIUS_M or after LOCAL_MANEUVER refused,
-                # unmoved, to start from where the tractor stands (REAPPROACH_CODES).
+                # GOTO aims at the approaches beside the implement (companion/hitch.py
+                # approach_poses), each at most once: one GIANTS refuses as blocked ground
+                # (GOTO_INVALID, nothing moved) is skipped, and at most
+                # MAX_APPROACH_DRIVES are driven. TRAVEL_NEAR by GOTO aims while far;
+                # STAGE while the planned joint is outside LOCAL_WORK_RADIUS_M, or after
+                # LOCAL_MANEUVER refused unmoved for where the tractor stands
+                # (REAPPROACH_CODES).
                 physical_attempted = True
-                aimed = 0
-                while travel is not None:
-                    # GOTO travel to an approach that ends far off (live: NOT_REACHABLE
-                    # at once for a blocked aim) aims at the next one, each once.
+                aim = {"next": 0, "drives": 0, "refused": None}
+
+                def more():
+                    return aim["next"] < len(aims) and aim["drives"] < MAX_APPROACH_DRIVES
+
+                def goto(step):
+                    """Drive GOTO to the next aim GIANTS accepts; False when none is left."""
+                    while more():
+                        pose = aims[aim["next"]]
+                        aim["next"] += 1
+                        enter(step)
+                        try:
+                            if step == "TRAVEL_NEAR":
+                                self.world.navigate(ids[0], pose, owner)
+                            else:
+                                self.world.stage(ids[0], ids[1], pose, owner)
+                        except StepFailed as failure:
+                            if not failure.code.endswith("GOTO_INVALID"):
+                                raise
+                            log.info("%s aim %s refused by GIANTS (%s)", step, pose, failure.code)
+                            aim["refused"] = failure.code
+                            continue
+                        aim["drives"] += 1
+                        return True
+                    return False
+
+                def unreached():
+                    # Every aim refused before any drive: GIANTS' reason; else too far.
+                    return StepFailed(aim["refused"] if aim["drives"] == 0 and aim["refused"]
+                                      else "TRAVEL_ENDED_TOO_FAR")
+
+                if travel is not None:
                     tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
-                    enter("TRAVEL_NEAR")
-                    self._move(tractor.id, travel, owner)
-                    if isinstance(travel, Pose):
-                        aimed += 1
-                    tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
-                    left = min(math.dist(tractor.position, (aim.x, aim.z)) for aim in aims)
-                    log.info("TRAVEL_NEAR end: root %s heading %s, %.1f m from the approaches",
-                             tractor.position, tractor.heading, left)
-                    if left <= NEAR_RADIUS_M + TRACTOR_ARRIVAL_TOLERANCE_M:
-                        break
-                    if not isinstance(travel, Pose) or aimed >= len(aims):
-                        raise StepFailed("TRAVEL_ENDED_TOO_FAR")
-                    travel = aims[aimed]
-                tractor, wagon, error = self._joints("HITCH start", ids, farm_id, owner, plan)
-                restage = False
-                while True:
-                    if error.gap > LOCAL_WORK_RADIUS_M or restage:
-                        if aimed >= len(aims):
+                    while True:
+                        if isinstance(travel, Pose):
+                            if not goto("TRAVEL_NEAR"):
+                                raise unreached()
+                        else:
+                            enter("TRAVEL_NEAR")
+                            self._move(tractor.id, travel, owner)
+                        tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
+                        left = min(math.dist(tractor.position, (a.x, a.z)) for a in aims)
+                        log.info("TRAVEL_NEAR end: root %s heading %s, %.1f m from the approaches",
+                                 tractor.position, tractor.heading, left)
+                        if left <= NEAR_RADIUS_M + TRACTOR_ARRIVAL_TOLERANCE_M:
+                            break
+                        if not isinstance(travel, Pose):
                             raise StepFailed("TRAVEL_ENDED_TOO_FAR")
-                        enter("STAGE")
-                        self.world.stage(tractor.id, wagon.id, aims[aimed], owner)
-                        aimed += 1
-                        restage = False
+                tractor, wagon, error = self._joints("HITCH start", ids, farm_id, owner, plan)
+                refused = None
+                while True:
+                    if error.gap > LOCAL_WORK_RADIUS_M or refused is not None:
+                        if not goto("STAGE"):
+                            raise StepFailed(refused) if refused is not None else unreached()
+                        refused = None
                         tractor, wagon, error = self._joints("STAGE end", ids, farm_id, owner, plan,
                                                              beyond="TRAVEL_ENDED_TOO_FAR")
                         if error.gap > LOCAL_WORK_RADIUS_M:
@@ -603,11 +637,10 @@ class Executor:
                         self.world.maneuver(tractor.id, wagon.id, plan, owner)
                     except StepFailed as failure:
                         self._log_joints("LOCAL_MANEUVER failed", ids, plan)
-                        if failure.code not in REAPPROACH_CODES or aimed >= len(aims):
+                        if failure.code not in REAPPROACH_CODES or not more():
                             raise
-                        log.info("LOCAL_MANEUVER refused unmoved (%s): re-approach %d of %d",
-                                 failure.code, aimed + 1, len(aims))
-                        restage = True
+                        log.info("LOCAL_MANEUVER refused unmoved (%s): re-approach", failure.code)
+                        refused = failure.code
                         tractor, wagon, error = self._joints("re-approach start", ids, farm_id, owner, plan)
                         continue
                     except Exception:
