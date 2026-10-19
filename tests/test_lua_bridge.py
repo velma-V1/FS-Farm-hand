@@ -697,7 +697,9 @@ class LuaBridgeTests(unittest.TestCase):
             end
             function implement:getAttacherVehicle() return self.attacherVehicle end
             function tractor:getImplementByObject(o)
-                if o == implement and implement.attacherVehicle == tractor then return { object = o } end
+                if o == implement and implement.attacherVehicle == tractor then
+                    return { object = o, jointDescIndex = 4, inputJointDescIndex = 1 }
+                end
                 return nil
             end
             function tractor:detachImplementByObject(o)
@@ -743,6 +745,86 @@ class LuaBridgeTests(unittest.TestCase):
         self.send(1, "detach", {"tractor": 11, "wagon": 12})
         self.beating(12000)
         self.assertEqual(self.results(1)[-1], (1, "UNVERIFIED", "DETACH_TIMEOUT"))
+
+    # ---------------------------------------------------------- pull_clear
+    PAIR = {"tractor": 11, "wagon": 12}
+
+    def scripted_pull(self, codes):
+        """Bridge.Hitch with a scripted PULL_CLEAR (FarmhandHitch's own is covered by
+        tests/test_lua_pullclear.py): each step returns the next of `codes`."""
+        fake = self.lua.execute(r"""
+            local Hitch, codes, calls = ...
+            local F = setmetatable({}, { __index = Hitch })
+            function F.newPullClear(env, args)
+                table.insert(calls, "newPullClear:" .. tostring(args.tractorJoint) .. "/" .. tostring(args.wagonJoint))
+                return { tractor = args.tractor, wagon = args.wagon, n = 0 }
+            end
+            function F.pullClearStep(env, s, dt)
+                if s.result then table.insert(calls, "brake"); return s.result end
+                s.n = s.n + 1
+                local code = codes[math.min(s.n, #codes)]
+                if code ~= "CONTINUE" then s.result = code; table.insert(calls, "brake") end
+                return code
+            end
+            function F.abort(env, s, code)
+                if s.result == nil then s.result = code end
+                table.insert(calls, "abort:" .. code)
+            end
+            return F
+        """, self.hitch, self.lua.table(*codes), self.w.calls)
+        self.bridge.Hitch = fake
+        return fake
+
+    def detached(self):
+        self.adopt()
+        self.hitched()
+        self.send(1, "detach", self.PAIR)
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "DETACHED"))
+
+    def test_pull_clear_straight_after_the_detach_on_the_joints_it_freed(self):
+        self.detached()
+        self.scripted_pull(["CONTINUE", "CONTINUE", "CLEAR"])
+        self.send(2, "pull_clear", self.PAIR)
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(2)[-1], (2, "DONE", "CLEAR"))
+        self.assertIn("newPullClear:4/1", self.calls())
+
+    def test_pull_clear_only_straight_after_a_detach_of_that_pair(self):
+        cases = {
+            "no detach": lambda: self.adopt() or self.hitched(),
+            "another op in between": lambda: self.detached() or self.send(5, "stop", {"tractor": 11})
+            or self.W.run(self.w, 300),
+            "too late": lambda: self.detached() or self.beating(31000),
+            "a second pull": lambda: self.detached() or self.send(5, "pull_clear", self.PAIR)
+            or self.W.run(self.w, 300),
+        }
+        for name, setup in cases.items():
+            with self.subTest(name):
+                self.w = self.W.new()
+                self.bridge.Hitch = self.hitch
+                setup()
+                self.scripted_pull(["CLEAR"])
+                self.send(9, "pull_clear", self.PAIR)
+                self.assertEqual(self.results(9)[-1], (9, "FAILED", "NOT_JUST_DETACHED"))
+                self.assertNotIn("newPullClear:4/1", self.calls())      # the fake never ran
+
+    def test_a_failed_pull_clear_is_failed_and_a_stop_aborts_it(self):
+        self.detached()
+        self.scripted_pull(["CONTINUE", "STALLED"])
+        self.send(2, "pull_clear", self.PAIR)
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(2)[-1], (2, "FAILED", "STALLED"))
+        self.w = self.W.new()
+        self.bridge.Hitch = self.hitch
+        self.detached()
+        self.scripted_pull(["CONTINUE"])
+        self.send(2, "pull_clear", self.PAIR)
+        self.W.run(self.w, 100)
+        self.send(3, "stop", {"tractor": 11})
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(2)[-1], (2, "FAILED", "STOPPED"))
+        self.assertIn("abort:STOPPED", self.calls())
 
     # ------------------------------------------------------------ maneuver
     MANEUVER = {"tractor": 11, "wagon": 12, "tractorJoint": 4, "wagonJoint": 1}

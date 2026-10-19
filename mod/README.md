@@ -9,8 +9,8 @@
   bounded ALIGN_REVERSE (both steered by `AIVehicleUtil.driveToPoint`; Farmhand-local
   attach-assist distance, vertical guard, brake + cruise off on every stop) and
   GIANTS' normal attach with exact-candidate and exact-joint checks.
-- `FarmhandBridge.lua`: the AC-001 command bridge. Runs only the eight operations
-  the companion asks for (`drive`, `navigate`, `stage`, `maneuver`, `align`, `attach`, `detach`, `stop`)
+- `FarmhandBridge.lua`: the AC-001 command bridge. Runs only the nine operations
+  the companion asks for (`drive`, `navigate`, `stage`, `maneuver`, `align`, `attach`, `detach`, `pull_clear`, `stop`)
   for its live session, and reports each one's observed end. Server only. It also
   owns the player's key (`FARMHAND_FETCH_HERE`, a `request` frame) and shows the
   companion's notices as in-game notifications.

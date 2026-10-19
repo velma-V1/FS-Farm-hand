@@ -11,6 +11,8 @@
 --      align  bounded ALIGN_REVERSE               (Hitch.newAlign / alignStep)
 --      attach GIANTS attach of the exact candidate (Hitch.attach / attachState)
 --      detach GIANTS detach of one attached implement, where GIANTS allows it
+--      pull_clear Farmhand's bounded straight pull forward, only straight after
+--               that detach                       (Hitch.newPullClear / pullClearStep)
 --      stop   stop the Farmhand-owned motion on a tractor
 --    Bridge.start(env, spec) -> task | nil, code[, status]
 --    Bridge.step(env, task, dt) -> nil while running, else status, code
@@ -45,6 +47,7 @@ Bridge.START_TIMEOUT_MS = 5000        -- a job not running by then was refused
 Bridge.SETTLE_TIMEOUT_MS = 5000       -- an ended job must come to rest within this
 Bridge.STAGE_TIMEOUT_MS = 120000
 Bridge.DETACH_TIMEOUT_MS = 10000      -- GIANTS' detach (lowering arms) must end within this
+Bridge.PULL_AFTER_DETACH_MS = 30000   -- a pull-clear only this soon after its detach
 Bridge.DRIVE_TIMEOUT_MS = 1200000
 -- A navigate whose tractor gains no NAVIGATE_PROGRESS_M for NAVIGATE_STALL_MS is
 -- stopped: GIANTS keeps a BLOCKED agent waiting (AIDrivable:onUpdate 314-316).
@@ -356,8 +359,11 @@ function starters.detach(env, spec)
     if v:getImplementByObject(implement) == nil then return nil, "NOT_ATTACHED" end
     if not stopped(implement) then return nil, "NOT_STOPPED" end
     if implement:isDetachAllowed() ~= true then return nil, "DETACH_NOT_ALLOWED" end
+    -- The joints it was on (AttacherJoints:createAttachmentJoint 2279-2280), for PULL_CLEAR.
+    local entry = v:getImplementByObject(implement)
+    local joints = { entry.jointDescIndex, entry.inputJointDescIndex }
     v:detachImplementByObject(implement)
-    return {}
+    return { joints = joints }
 end
 
 function steppers.detach(_env, task)
@@ -365,7 +371,11 @@ function steppers.detach(_env, task)
     if status ~= nil then return status, code end
     local v, implement = task.spec.tractor, task.spec.wagon
     if v:getImplementByObject(implement) == nil and implement:getAttacherVehicle() == nil then
-        return settle(task, "DETACHED")
+        local status, code = settle(task, "DETACHED")
+        if status == "DONE" then
+            Bridge.lastDetach = { tractor = v, implement = implement, joints = task.joints, age = 0 }
+        end
+        return status, code
     end
     if task.elapsed > Bridge.DETACH_TIMEOUT_MS then return "UNVERIFIED", "DETACH_TIMEOUT" end
     return nil
@@ -373,6 +383,41 @@ end
 
 -- GIANTS' detach is not undone.
 function aborts.detach() end
+
+-- ------------------------------------------------------------- pull_clear
+-- Only for the tractor and implement of the detach that ended DONE just before,
+-- with no other operation in between (Bridge.start clears it) and within
+-- PULL_AFTER_DETACH_MS; on the joints that detach freed.
+function starters.pull_clear(env, spec)
+    local last = Bridge.lastDetach
+    Bridge.lastDetach = nil                      -- one pull-clear per detach
+    if last == nil or last.tractor ~= spec.tractor or last.implement ~= spec.wagon
+            or last.age > Bridge.PULL_AFTER_DETACH_MS then
+        return nil, "NOT_JUST_DETACHED"
+    end
+    local denied = idle(env, spec.tractor, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local session, reason = Bridge.Hitch.newPullClear(env, {
+        tractor = spec.tractor, wagon = spec.wagon, tractorJoint = last.joints[1], wagonJoint = last.joints[2],
+        farmId = spec.farmId, isReserved = spec.owned,
+    })
+    if session == nil then return nil, reason end
+    Bridge.lastPull = session
+    return { session = session }
+end
+
+function steppers.pull_clear(env, task, dt)
+    local code = Bridge.Hitch.pullClearStep(env, task.session, dt)
+    if code == "CONTINUE" then return nil end
+    log("pull_clear end %s %s", code, Bridge.Hitch.describePull(task.session))
+    if code ~= "CLEAR" then return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code end
+    return settle(task, code)       -- braked by the latch; DONE once observed at rest
+end
+
+function aborts.pull_clear(env, task)
+    Bridge.Hitch.abort(env, task.session, "STOPPED")
+end
 
 -- ------------------------------------------------------------------- stop
 -- spec.target: the running task on this tractor, if any; it is aborted first.
@@ -390,6 +435,9 @@ function steppers.stop(env, task)
     if Bridge.lastManeuver ~= nil and Bridge.lastManeuver.tractor == v then
         Bridge.Hitch.abort(env, Bridge.lastManeuver, "STOPPED")  -- latched: brake + cruise off
     end
+    if Bridge.lastPull ~= nil and Bridge.lastPull.tractor == v then
+        Bridge.Hitch.abort(env, Bridge.lastPull, "STOPPED")      -- latched: brake + cruise off
+    end
     local ownMotion = Bridge.pendingGoto[v] ~= nil or (target ~= nil
         and ((target.op == "drive" and v.ad.stateModule:isActive() ~= false)
         or ((target.op == "stage" or target.op == "navigate") and target.seen and v:getIsAIActive() ~= false)))
@@ -405,11 +453,12 @@ function aborts.stop() end
 
 -- --------------------------------------------------------------- runner
 
-Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true }
+Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true }
 
 function Bridge.start(env, spec)
     local starter = starters[spec.op]
     if starter == nil then return nil, "UNKNOWN_OP" end
+    if spec.op ~= "pull_clear" then Bridge.lastDetach = nil end   -- "straight after" only
     local ok, task, code, status = pcall(starter, env, spec)
     if not ok then return nil, "UNKNOWN_OBSERVATION", "UNVERIFIED" end
     if task == nil then return nil, code, status or "FAILED" end
@@ -496,7 +545,7 @@ function Bridge:dropSession(code)
         self.active = nil
     end
     if self:companionOwner() then Bridge.owner = nil end
-    Bridge.lastAlign, Bridge.lastManeuver = nil, nil
+    Bridge.lastAlign, Bridge.lastManeuver, Bridge.lastDetach, Bridge.lastPull = nil, nil, nil, nil
     log("bridge session %s dropped: %s", tostring(self.session), code)
     self.dropped[self.session] = true      -- a dropped session is never re-adopted
     self.session = nil
@@ -613,6 +662,7 @@ function Bridge:update(dt)
     if self.env == nil then return end
     self.clock = self.clock + dt
     Bridge.watchGoto(self.env, dt)
+    if Bridge.lastDetach ~= nil then Bridge.lastDetach.age = Bridge.lastDetach.age + dt end
     if self.pipe == nil and self.session ~= nil then
         self.pipeTimer = self.pipeTimer + dt
         if self.pipeTimer >= Bridge.PIPE_RETRY_MS then self.pipeTimer = 0; self:openPipe() end
@@ -652,6 +702,7 @@ Bridge.NOTICES = {
     COMPLETE_HITCH = "Farmhand: tractor and implement hitched",
     ACCEPTED_DETACH = "Farmhand: unhitching the implement",
     COMPLETE_DETACH = "Farmhand: implement unhitched",
+    COMPLETE_DETACH_NOT_CLEAR = "Farmhand: implement unhitched; the tractor could not pull clear of it, so drive it away before the next job",
     UNSUPPORTED_TRACTOR_ONLY = "Farmhand: moving a tractor on its own is not supported yet; ask for a tractor with an implement, such as the forage wagon",
     UNSUPPORTED_NAMED_VEHICLE = "Farmhand: choosing a vehicle by its name is not supported yet; name the kind of implement, such as the forage wagon or the cultivator",
     COMPLETE_MOVE = "Farmhand: arrived",
@@ -688,13 +739,13 @@ Bridge.CRITICAL = {
 Bridge.STEPS = {
     FIND = "looking for a tractor and the implement",
     RESERVE = "reserving the equipment",
-    PULL_CLEAR = "pulling away from the unhitched implement",
     TRAVEL_NEAR = "driving to the implement",
     STAGE = "driving to the implement",
     LOCAL_MANEUVER = "lining up with the implement",
     ALIGN_REVERSE = "reversing to the implement",
     ATTACH = "hitching the implement",
     DETACH = "unhitching the implement",
+    PULL_CLEAR = "pulling clear of the unhitched implement",
     VERIFY = "checking the hitch",
     DELIVER = "driving to the destination",
     STOP = "stopping",
@@ -753,6 +804,12 @@ Bridge.REASONS = {
     STALLED = "the tractor got stuck at the implement",
     DIVERGED = "the tractor could not follow its line to the implement",
     WAGON_MOVED = "the implement moved",
+    AGAINST_IMPLEMENT = "the tractor stands against an unhitched implement; drive it clear first",
+    IMPLEMENT_MOVED = "the unhitched implement moved, so Farmhand stopped",
+    SEPARATION_LOST = "the tractor did not pull away from the implement, so Farmhand stopped",
+    SEATED_DURING_PULL_CLEAR = "you sat in the tractor, so Farmhand stopped pulling clear",
+    NOT_JUST_DETACHED = "the tractor can only pull clear straight after unhitching",
+    DISTANCE_LIMIT = "the tractor did not get clear of the implement within its limit",
 }
 
 -- Text and whether it is critical, for a companion notice token.

@@ -63,10 +63,10 @@ Executable mapping (`python scripts/check.py`):
   only a GOTO that moves the tractor counts as a drive; no aim moving it is
   BLOCKED NO_SAFE_APPROACH, a stall far from the implement ends at once
   (NAVIGATE_STALLED), and a stuck tractor no GOTO can move is TRAPPED;
-  a tractor standing on another loose implement's joint (just unhitched) first
-  pulls PULL_CLEAR_M straight ahead by GIANTS' GOTO, TRAPPED if even that stalls
-  unmoved, never for the implement being hitched (`test_a_tractor_on_an_unhitched_implement_pulls_clear_ahead_first`,
-  `test_a_tractor_that_cannot_even_pull_clear_is_trapped`, `test_no_pull_clear_without_a_loose_implement_on_a_joint`);
+  a tractor standing on another loose implement's joint is BLOCKED AGAINST_IMPLEMENT
+  before any motion, never for the implement being hitched
+  (`test_a_tractor_against_an_unhitched_implement_is_refused_before_any_motion`,
+  `test_against_a_loose_implement_only_for_another_unattached_implement_on_a_joint`);
   joints already within ATTACH_READY_M take a look-only ALIGN_REVERSE (GIANTS'
   candidate, no motion; `test_lua_hitch` look-only test) and ATTACH, never a
   maneuver, GOTO or reverse from the far side;
@@ -218,13 +218,27 @@ Executable mapping (`python scripts/check.py`):
   an unobserved arrival is UNVERIFIED and a cancel before travel moves nothing;
   reservations accept only unattached units or a pair hitched to each other.
 - `DetachTests` ("unhitch the cultivator"): the hitched pair nearest the requester,
-  of the named kind (any when none is named), is detached where it stands, nothing
-  moves, another pair is untouched; none of that kind blocks before reservation;
+  of the named kind (any when none is named), is detached where it stands, then
+  PULL_CLEAR takes only the tractor straight ahead until the joints are PULL_CLEAR_M
+  apart (verified from fresh state), another pair is untouched; a pull-clear refused
+  before moving leaves the detach COMPLETE DETACHED_NOT_CLEAR with nothing moved, one
+  that fails is FAILED and one not observed clear is UNVERIFIED; none of that kind
+  blocks before reservation;
   GIANTS refusing (DETACH_NOT_ALLOWED) is FAILED and a detach not observed in fresh
   state is UNVERIFIED, both still attached and released. Mod side
   (`test_lua_bridge` detach tests): GIANTS' isDetachAllowed is asked before
   detachImplementByObject, which is never called for a refused, moving or
-  AI-controlled pair; a detach that never completes is UNVERIFIED. Wording
+  AI-controlled pair; a detach that never completes is UNVERIFIED; `pull_clear` runs
+  only straight after that pair's own detach (no op in between, within 30 s, once) on
+  the joints it freed, a failure is FAILED and a stop aborts it. `test_lua_pullclear`
+  (the real Hitch.newPullClear / pullClearStep on the kinematic stub): straight
+  forward only at 3 km/h, ends CLEAR braked as soon as the joints are 4 m apart; caps
+  (8 m, 3 km/h, 30 s, clearance 6 m) refuse larger limits; refused unmoved when
+  seated, moving, under AI, unreserved, the implement ahead, a vehicle or the player
+  on the line, or already clear; stops on takeover, seating, lost reservation, AI,
+  the player near, the implement moving, a stall, shrinking separation, drifting off
+  the line, another vehicle moving, timeout and distance; every end brakes, switches
+  cruise control off and releases forceIsActive. Wording
   (`test_language`): unhitch/detach/unhook/uncouple/disconnect, "drop" only with the
   implement named, never "at" another place.
 - Hitch travel and local alignment (5304adc live): `AlignEnvelopeTests` (joint error in the

@@ -12,7 +12,8 @@ from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified, World
 from companion.hitch import (ALIGN_MAX_HEADING_RAD, IMPLEMENT_CATEGORIES, LOCAL_WORK_RADIUS_M, align_problem,
-                             approach_poses, hitch_problem, joint_error, plan_hitch, pull_clear_pose)
+                             against_loose_implement, approach_poses, hitch_problem, joint_error,
+                             joint_separation, plan_hitch, PULL_CLEAR_M)
 from protocol.model import Destination, Equipment, HitchPlan, Pose, Position, Result
 
 log = logging.getLogger("farmhand")
@@ -99,6 +100,13 @@ GOTO_STALL_CODES = frozenset({"NAVIGATE_STALLED"})
 ATTACH_READY_M = 0.5
 # A GOTO that left the tractor within this of where it stood did not drive.
 GOTO_MOVED_M = 1.0
+# PULL_CLEAR's refusals before any motion (mod/FarmhandHitch.lua Hitch.newPullClear):
+# the detach stands (DETACHED_NOT_CLEAR). Every other failure moved or may have.
+PULL_CLEAR_REFUSALS = frozenset({"PULL_CLEAR_BLOCKED", "PULL_CLEAR_PERSON", "PULL_CLEAR_NOT_BEHIND",
+                                 "SEATED_DURING_PULL_CLEAR", "LOCAL_AREA_UNKNOWN", "NOT_STOPPED"})
+# The observed joint separation after CLEAR may be this much under PULL_CLEAR_M
+# (one snapshot after the brake; the mod stops the instant it reaches it).
+PULL_CLEAR_TOLERANCE_M = 0.25
 
 CANCELLABLE_STEPS = frozenset({"RESERVE", "PULL_CLEAR", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
                                "DETACH", "DELIVER"})
@@ -622,6 +630,28 @@ class Executor:
                 if not (tractor.stopped and implement.stopped):
                     raise ObservationMismatch("EQUIPMENT_MOVING")
                 status, reason = "COMPLETE", "DETACH_OBSERVED"
+                # PULL_CLEAR (user-authorized 2026-10-19): GIANTS' agent cannot start
+                # next to the implement just unhitched, so Farmhand's bounded straight
+                # pull takes the tractor clear; refused unmoved, the detach still stands.
+                if against_loose_implement(tractor, [implement]):
+                    enter("PULL_CLEAR")
+                    try:
+                        self.world.pull_clear(ids[0], ids[1], owner)
+                    except StepFailed as failure:
+                        if failure.code != "ALREADY_CLEAR":
+                            if failure.code not in PULL_CLEAR_REFUSALS:
+                                raise
+                            log.info("PULL_CLEAR refused unmoved (%s)", failure.code)
+                            reason = "DETACHED_NOT_CLEAR"
+                    enter("VERIFY")
+                    tractor, implement = self._pair(ids, farm_id, owner, attached=False)
+                    gap = joint_separation(tractor, implement)
+                    log.info("PULL_CLEAR end: root %s, joints %s m apart", tractor.position,
+                             "?" if gap is None else f"{gap:.2f}")
+                    if not (tractor.stopped and implement.stopped):
+                        raise ObservationMismatch("EQUIPMENT_MOVING")
+                    if reason == "DETACH_OBSERVED" and (gap is None or gap < PULL_CLEAR_M - PULL_CLEAR_TOLERANCE_M):
+                        raise ObservationMismatch("PULL_CLEAR_NOT_OBSERVED")
             else:
                 # HITCH: VALIDATE -> [TRAVEL_NEAR] -> [STAGE] -> [LOCAL_MANEUVER] -> ALIGN_REVERSE
                 # -> ATTACH -> VERIFY. Every step is followed by a fresh-snapshot check;
@@ -686,29 +716,13 @@ class Executor:
                         return _Blocked("NO_SAFE_APPROACH")
                     return StepFailed("TRAVEL_ENDED_TOO_FAR")
 
-                # PULL_CLEAR: a tractor standing on another loose implement's joint
-                # (just unhitched) first drives straight ahead by GIANTS' GOTO; if even
-                # that leaves it where it stood after GIANTS' no-progress stop, it is
-                # TRAPPED. Never for the implement being hitched (its joints meet).
+                # A tractor standing on another loose implement's joint cannot be
+                # moved by GIANTS' agent (live: BLOCKED in every direction), and only
+                # straight after Farmhand's own detach may Farmhand pull it clear:
+                # refused before any motion, never a GOTO that cannot start.
                 tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
-                clear = pull_clear_pose(tractor, [i for i in self.world.snapshot() if i.id != ids[1]])
-                if clear is not None:
-                    enter("PULL_CLEAR")
-                    stalled = False
-                    try:
-                        self.world.navigate(ids[0], clear, owner)
-                    except StepFailed as failure:
-                        if failure.code.endswith("GOTO_INVALID"):
-                            log.info("PULL_CLEAR to %s refused by GIANTS (%s)", clear, failure.code)
-                        elif failure.code in GOTO_STALL_CODES:
-                            stalled = True
-                        else:
-                            raise
-                    after, _ = self._hitch_state(ids, farm_id, owner, plan)
-                    log.info("PULL_CLEAR end: root %s, %.1f m from where it stood%s", after.position,
-                             math.dist(tractor.position, after.position), " (stalled)" if stalled else "")
-                    if stalled and math.dist(tractor.position, after.position) < GOTO_MOVED_M:
-                        raise StepFailed("TRAPPED")
+                if against_loose_implement(tractor, [i for i in self.world.snapshot() if i.id != ids[1]]):
+                    raise _Blocked("AGAINST_IMPLEMENT")
                 if travel is not None:
                     tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
                     while True:

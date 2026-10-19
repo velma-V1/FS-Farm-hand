@@ -47,7 +47,8 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
 
 def result_notice(status: str, reason: str, complete: str = "COMPLETE") -> str:
     if status == "COMPLETE":
-        return complete
+        # Unhitched, but the tractor could not pull clear (nothing moved): say so.
+        return complete + "_NOT_CLEAR" if reason == "DETACHED_NOT_CLEAR" else complete
     if status == "CANCELLED":
         return status
     return token(f"{status}_{reason}")

@@ -7,7 +7,7 @@ import unittest
 
 from adapters.world import StepFailed
 from companion.executor import DELIVERY_STANDOFF_M, MAX_APPROACH_DRIVES, PLACE_STANDOFF_M, Executor
-from companion.hitch import PULL_CLEAR_M, approach_poses, plan_hitch, pull_clear_pose
+from companion.hitch import PULL_CLEAR_M, against_loose_implement, approach_poses, joint_separation, plan_hitch
 from protocol.model import Destination, Equipment, InputJoint, OutputJoint, Pose
 from simulator.world import MockWorld
 
@@ -717,50 +717,35 @@ class GiantsNavigationTests(unittest.TestCase):
                           heading=0.0, input_joints=(InputJoint(1, rear.joint_type, joint, True),))
         return cls([tractor, wagon, loose], PLAYERS, DESTINATIONS), tractor
 
-    def test_a_tractor_on_an_unhitched_implement_pulls_clear_ahead_first(self):
-        # Live 5cdd589ebdce4f01-3: just unhitched, GIANTS' agent stayed BLOCKED for a
-        # target behind the tractor. GIANTS' GOTO first drives it straight ahead.
+    def test_a_tractor_against_an_unhitched_implement_is_refused_before_any_motion(self):
+        # Live 23a8b1d881c7489b-4: GIANTS' agent stays BLOCKED in every direction next
+        # to a loose implement; no GOTO is started that cannot move it.
         calls = []
 
         class Recording(MockWorld):
-            def navigate(self, tractor_id, pose, owner):
-                calls.append(pose)
-                return super().navigate(tractor_id, pose, owner)
+            def navigate(self, *args):
+                calls.append("navigate")
 
-        world, tractor = self.loose_world(Recording)
+            stage = maneuver = align = navigate
+
+        world, _ = self.loose_world(Recording)
+        before = {i.id: i.position for i in world.snapshot()}
         result = Executor(world).execute(intent())
-        self.assertEqual(result.status, "COMPLETE", result)
-        self.assertEqual(result.states[:3], ("FIND", "RESERVE", "PULL_CLEAR"))
-        ahead = tractor.ai_root.to_world(0.0, PULL_CLEAR_M)
-        self.assertAlmostEqual(calls[0].x, ahead[0])
-        self.assertAlmostEqual(calls[0].z, ahead[1])
-        self.assertAlmostEqual(calls[0].yaw, tractor.ai_root.yaw)
-
-    def test_a_tractor_that_cannot_even_pull_clear_is_trapped(self):
-        calls = []
-
-        class Blocked(MockWorld):
-            def navigate(self, tractor_id, pose, owner):
-                calls.append(pose)
-                raise StepFailed("NAVIGATE_STALLED")              # GIANTS' agent BLOCKED, unmoved
-
-        world, _ = self.loose_world(Blocked)
-        result = Executor(world).execute(intent())
-        self.assertEqual((result.status, result.reason), ("FAILED", "TRAPPED"))
-        self.assertEqual(result.states, ("FIND", "RESERVE", "PULL_CLEAR", "STOP", "RELEASE"))
-        self.assertEqual(len(calls), 1)                          # no approach is tried
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "AGAINST_IMPLEMENT"), result)
+        self.assertEqual(calls, [])
+        self.assertEqual({i.id: i.position for i in world.snapshot()}, before)
         self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
 
-    def test_no_pull_clear_without_a_loose_implement_on_a_joint(self):
-        _, tractor = self.loose_world(MockWorld)
-        _, wagon = self.world(far=True).snapshot()
-        self.assertIsNone(pull_clear_pose(tractor, [wagon]))       # the implement being hitched is excluded
-        attached = replace(self.loose_world(MockWorld)[0].snapshot()[2], attached_to="someone")
-        self.assertIsNone(pull_clear_pose(tractor, [attached]))
-        far = replace(attached, attached_to=None,
-                      input_joints=tuple(replace(i, position=(i.position[0], i.position[1] - 2.0))
-                                         for i in attached.input_joints))
-        self.assertIsNone(pull_clear_pose(tractor, [far]))
+    def test_against_a_loose_implement_only_for_another_unattached_implement_on_a_joint(self):
+        world, tractor = self.loose_world(MockWorld)
+        _, wagon, loose = world.snapshot()
+        self.assertTrue(against_loose_implement(tractor, [loose]))
+        self.assertAlmostEqual(joint_separation(tractor, loose), 0.12)
+        self.assertFalse(against_loose_implement(tractor, [wagon]))       # far away
+        self.assertFalse(against_loose_implement(tractor, [replace(loose, attached_to="someone")]))
+        moved = replace(loose, input_joints=tuple(replace(i, position=(i.position[0], i.position[1] - 2.0))
+                                                  for i in loose.input_joints))
+        self.assertFalse(against_loose_implement(tractor, [moved]))
 
     def test_aims_giants_refuses_as_blocked_are_skipped_without_moving(self):
         # AIParameterPosition:validate 83-90: a target on blocked ground is refused.
@@ -1679,12 +1664,19 @@ class DetachTests(unittest.TestCase):
                 before = {i.id: i.position for i in world.snapshot()}
                 result = Executor(world).execute(detach())
                 self.assertEqual((result.status, result.reason), ("COMPLETE", "DETACH_OBSERVED"), result)
-                self.assertEqual(result.states, ("FIND", "RESERVE", "DETACH", "VERIFY", "STOP", "RELEASE"))
+                self.assertEqual(result.states, ("FIND", "RESERVE", "DETACH", "VERIFY", "PULL_CLEAR", "VERIFY",
+                                                 "STOP", "RELEASE"))
                 self.assertEqual(set(result.equipment_ids), {near[0].id, near[1].id})
                 after = {i.id: i for i in world.snapshot()}
                 self.assertEqual((after[near[0].id].attached_to, after[near[1].id].attached_to), (None, None))
                 self.assertEqual(after[far[0].id].attached_to, far[1].id)          # the other pair untouched
-                self.assertEqual({i: a.position for i, a in after.items()}, before)
+                # Only the detached tractor moved: straight ahead, until clear.
+                self.assertEqual({i: a.position for i, a in after.items() if i != near[0].id},
+                                 {i: p for i, p in before.items() if i != near[0].id})
+                tractor = after[near[0].id]
+                self.assertAlmostEqual(tractor.position[0], before[near[0].id][0])
+                self.assertGreater(tractor.position[1], before[near[0].id][1])
+                self.assertGreaterEqual(joint_separation(tractor, after[near[1].id]), PULL_CLEAR_M)
                 self.assertTrue(all(a.reserved_by is None for a in after.values()))
 
     def test_a_named_kind_picks_that_implement_or_blocks(self):
@@ -1706,6 +1698,38 @@ class DetachTests(unittest.TestCase):
         result = Executor(world).execute(detach())
         self.assertEqual((result.status, result.reason), ("BLOCKED", "NO_ATTACHED_IMPLEMENT"))
         self.assertNotIn("RESERVE", result.states)
+
+    def test_a_pull_clear_refused_before_moving_leaves_the_detach_standing(self):
+        for code in ("PULL_CLEAR_BLOCKED", "PULL_CLEAR_PERSON", "SEATED_DURING_PULL_CLEAR"):
+            with self.subTest(code=code):
+                class Refusing(MockWorld):
+                    def pull_clear(self, *args):
+                        raise StepFailed(code)
+
+                world = Refusing(list(hitched_pair("t-1", "w-1", (130.0, 260.0))), PLAYERS, ())
+                before = {i.id: i.position for i in world.snapshot()}
+                result = Executor(world).execute(detach())
+                self.assertEqual((result.status, result.reason), ("COMPLETE", "DETACHED_NOT_CLEAR"), result)
+                self.assertEqual({i.id: i.position for i in world.snapshot()}, before)
+                self.assertEqual(world.items["t-1"].attached_to, None)
+                self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
+
+    def test_a_pull_clear_that_fails_or_is_not_observed_is_never_complete(self):
+        class Stalled(MockWorld):
+            def pull_clear(self, *args):
+                raise StepFailed("STALLED")
+
+        class Silent(MockWorld):
+            def pull_clear(self, *args):
+                return None                                     # reported clear, never moved
+
+        for cls, outcome in ((Stalled, ("FAILED", "STALLED")), (Silent, ("UNVERIFIED", "PULL_CLEAR_NOT_OBSERVED"))):
+            with self.subTest(world=cls.__name__):
+                world = cls(list(hitched_pair("t-1", "w-1", (130.0, 260.0))), PLAYERS, ())
+                result = Executor(world).execute(detach())
+                self.assertEqual((result.status, result.reason), outcome, result)
+                self.assertIn("STOP", result.states)
+                self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
 
     def test_a_refused_or_unobserved_detach_is_never_complete(self):
         class Refusing(MockWorld):

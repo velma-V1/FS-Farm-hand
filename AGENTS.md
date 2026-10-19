@@ -27,8 +27,8 @@ have precedence; report conflicts instead of silently changing the scope.
   store-UI automation where a game API exists. Purchasing and field work are in
   scope only through the game's own APIs, only for the requested job, and only
   after the requirement, the item's fit and the farm's funds are checked.
-- User-authorized exceptions, both in mod/FarmhandHitch.lua, both steered by GIANTS'
-  AIVehicleUtil.driveToPoint and both hard-capped; never extend them into navigation:
+- User-authorized exceptions, all in mod/FarmhandHitch.lua, all steered by GIANTS'
+  AIVehicleUtil.driveToPoint and all hard-capped; never extend them into navigation:
   1. HITCH's ALIGN_REVERSE, a bounded reverse of the last few metres that stops as
      soon as GIANTS reports the exact planned joints attachable.
   2. HITCH's LOCAL_MANEUVER (authorized 2026-10-18 after GIANTS' GOTO ended
@@ -36,6 +36,16 @@ have precedence; report conflicts instead of silently changing the scope.
      radius of the wagon's joint, from the observed joints onto the wagon's
      centreline so ALIGN_REVERSE can take over. One closed-form curve, no search,
      no retry; GOTO stays the provider for anything farther.
+  3. DETACH's PULL_CLEAR (authorized 2026-10-19 after GIANTS' agent stayed BLOCKED in
+     every direction next to a just-unhitched implement, live 23a8b1d881c7489b-4):
+     forward and straight only, at most 8 m, at most 3 km/h, only straight after
+     Farmhand's own successful detach while the joints are still within the close
+     separation threshold; stops on player takeover, person or vehicle conflict,
+     obstacle (no progress), stall, timeout or loss of reservation; the separation
+     from the detached implement must keep growing, and it stops as soon as it is
+     clear for normal navigation; every exit restores the temporary vehicle-control
+     state. The implement is never made passable and GIANTS' collision handling is
+     never weakened.
 - Keep Python orchestration in companion/, pure contracts in protocol/ and
   adapters/, game-side Lua in mod/, synthetic state in simulator/, tests in tests/.
   Never import simulator into companion or mod. No simulated success in real adapters.

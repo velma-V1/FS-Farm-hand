@@ -3,6 +3,7 @@ from dataclasses import replace
 import math
 from threading import RLock
 
+from adapters.world import StepFailed
 from protocol.model import Destination, Equipment, Pose
 
 # Mock-only stand-ins for GIANTS' attach-range decision and AIJobGoTo accuracy.
@@ -13,6 +14,8 @@ MOCK_POSE_TOLERANCE_M = 0.5
 MOCK_TRAILER_OFFSET_M = 7.0
 MOCK_REVERSE_REACH_M = 10.0      # the mod's reverse cap (Hitch.LIMITS.maxDistanceM)
 MOCK_LOCAL_RADIUS_M = 25.0       # the mod's local work radius (Hitch.LOCAL_LIMITS.workRadiusM)
+MOCK_PULL_CLEAR_M = 4.0          # the mod's pull-clear separation (Hitch.PULL.clearM)
+MOCK_PULL_MAX_M = 8.0            # and its cap (Hitch.PULL_LIMITS.maxDistanceM)
 
 
 class MockWorld:
@@ -223,6 +226,24 @@ class MockWorld:
             joints_after = tuple(replace(j, free=True) if not j.free else j for j in tractor.output_joints)
             self.items[tractor.id] = replace(tractor, attached_to=None, output_joints=joints_after)
             self.items[wagon.id] = replace(wagon, attached_to=None)
+
+    def pull_clear(self, tractor_id, wagon_id, owner):
+        # Mock-only teleport straight ahead, standing in for the bounded pull-clear;
+        # like the real step, only for an unattached pair, forward, within its cap.
+        with self._lock:
+            tractor, implement = self._unattached_pair(tractor_id, wagon_id, owner)
+            root = tractor.ai_root
+            gaps = [math.dist(root.to_world(j.x, j.z), i.position)
+                    for j in tractor.output_joints for i in implement.input_joints]
+            if not gaps:
+                raise RuntimeError("UNKNOWN_JOINT")
+            if min(gaps) >= MOCK_PULL_CLEAR_M:
+                raise StepFailed("ALREADY_CLEAR")
+            ahead = MOCK_PULL_CLEAR_M + 0.1 - min(gaps)
+            if ahead > MOCK_PULL_MAX_M:
+                raise StepFailed("DISTANCE_LIMIT")
+            x, z = root.to_world(0.0, ahead)
+            self._place(tractor, Pose(x, z, root.yaw))
 
     def stop(self, tractor_id, owner):
         with self._lock:

@@ -115,6 +115,7 @@ COMMAND_ARGS = {
     "align": ("tractor", "wagon", "tractorJoint", "wagonJoint", "maxDistanceM"),
     "attach": ("tractor", "wagon", "tractorJoint", "wagonJoint"),
     "detach": ("tractor", "wagon"),
+    "pull_clear": ("tractor", "wagon"),
     "stop": ("tractor",),
 }
 _ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "x", "z": "z",

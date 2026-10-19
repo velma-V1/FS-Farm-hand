@@ -89,6 +89,12 @@ class World(Protocol):
         only where GIANTS allows it (isDetachAllowed). Not detachment evidence."""
         ...
 
+    def pull_clear(self, tractor_id: str, wagon_id: str, owner: str) -> None:
+        """PULL_CLEAR: straight after that detach only, Farmhand's bounded straight
+        forward pull (mod/FarmhandHitch.lua Hitch.newPullClear) until the joints are
+        clear. Not evidence of the separation: the executor observes it."""
+        ...
+
     def deliver(self, tractor_id: str, destination_id: str, owner: str) -> None:
         """Recheck authority/compatibility; delegate bounded AutoDrive travel to a marker."""
         ...

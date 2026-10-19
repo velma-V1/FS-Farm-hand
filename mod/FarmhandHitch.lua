@@ -991,6 +991,193 @@ function Hitch.maneuverStep(env, s, dt)
     return code
 end
 
+-- ------------------------------------------------------------- PULL_CLEAR
+-- Live 23a8b1d881c7489b-4: next to an implement it has just unhitched, the tractor
+-- cannot be moved by any GIANTS job: the loose implement is a navigation obstacle
+-- touching it (AISystem:addObstacle; the agent collects only attached implements,
+-- AIDrivable:createAgent 353-397), so GIANTS' agent stays BLOCKED even for a target
+-- straight ahead. Authorized by the user 2026-10-19: straight after Farmhand's own
+-- successful detach, Farmhand drives the tractor straight forward, with the same
+-- GIANTS driveToPoint and the same safety model as LOCAL_MANEUVER, until the joints
+-- are clearM apart. The implement is never made passable; GIANTS' collision
+-- handling is not touched.
+Hitch.PULL_LIMITS = { maxDistanceM = 8, maxSpeedKmh = 3, timeoutMs = 30000, maxClearM = 6 }
+Hitch.PULL = {
+    clearM = 4,               -- provisional: joint separation that ends it (CLEAR)
+    timeoutMs = 20000,        -- 8 m at 3 km/h is 9.6 s
+    lookaheadM = 3,
+    divergeM = 0.5,           -- farther than this off the starting line: DIVERGED
+    separationSlackM = 0.05,  -- the separation may never shrink more than this: SEPARATION_LOST
+}
+
+-- The tractor's checked points at `along` metres on its starting line (x ahead,
+-- y lateral, in the start frame): its steering node and frontM ahead of it.
+local function pullPoints(along)
+    return { { along, 0 }, { along + Hitch.LOCAL.frontM, 0 } }
+end
+
+-- nil, "OTHER_VEHICLE_NEAR" or "PERSON_TOO_CLOSE" for the tractor's points
+-- `points` (start frame) against s.others / s.player.
+local function pullConflict(s, points, vehicleM, playerM)
+    for _, pt in ipairs(points) do
+        for _, other in ipairs(s.others) do
+            if math.sqrt((pt[1] - other.x) ^ 2 + (pt[2] - other.y) ^ 2) < vehicleM then return "OTHER_VEHICLE_NEAR" end
+        end
+        if s.player ~= nil and math.sqrt((pt[1] - s.player.x) ^ 2 + (pt[2] - s.player.y) ^ 2) < playerM then
+            return "PERSON_TOO_CLOSE"
+        end
+    end
+    return nil
+end
+
+-- The steering node's position in the start frame, and the joints' separation.
+local function observePull(env, s)
+    local sx, _, sz = world(env, s.tractor:getAISteeringNode())
+    local tx, _, tz = world(env, s.tractorJoint.jointTransform)
+    local ix, _, iz = world(env, s.inputJoint.node)
+    local rx, _, rz = world(env, s.wagon.rootNode)
+    local x, y = inFrame(s, sx, sz)
+    return { x = x, y = y, separation = distance(tx, tz, ix, iz), ix = ix, iz = iz, rx = rx, rz = rz }
+end
+
+-- Prepare the pull-clear. `args`: tractor, wagon (the implement just unhitched),
+-- tractorJoint and wagonJoint (the joints it was on), farmId, isReserved; optional
+-- maxDistanceM, maxSpeedKmh, timeoutMs, clearM (each capped by PULL_LIMITS). The
+-- tractor must be stopped, empty and free of any AI job, the implement unattached
+-- and behind it, and the straight line ahead clear of vehicles and the player.
+-- Returns a session, or nil and a reason (nothing has moved).
+function Hitch.newPullClear(env, args)
+    local P, L = Hitch.PULL, Hitch.PULL_LIMITS
+    local maxDistance = capped(args.maxDistanceM, L.maxDistanceM, L.maxDistanceM)
+    local speed = capped(args.maxSpeedKmh, L.maxSpeedKmh, L.maxSpeedKmh)
+    local timeout = capped(args.timeoutMs, P.timeoutMs, L.timeoutMs)
+    local clear = capped(args.clearM, P.clearM, L.maxClearM)
+    if maxDistance == nil or speed == nil or speed < Hitch.LIMITS.minSpeedKmh or timeout == nil or clear == nil
+            or type(args.isReserved) ~= "function" then
+        return nil, "INVALID_LIMITS"
+    end
+    local ok, session, reason = pcall(function()
+        local tractor, wagon = args.tractor, args.wagon
+        local tractorJoint = tractor:getAttacherJoints()[args.tractorJoint]
+        local inputJoint = wagon:getInputAttacherJoints()[args.wagonJoint]
+        if tractorJoint == nil or inputJoint == nil then return nil, "UNKNOWN_JOINT" end
+        if tractor:getIsEntered() == true then return nil, "SEATED_DURING_PULL_CLEAR" end
+        local v = tractor:getLastSpeed()
+        if not finite(v) or math.abs(v) >= 1 then return nil, "NOT_STOPPED" end
+        local node = tractor:getAISteeringNode()
+        local sx, _, sz = world(env, node)
+        local fx, _, fz = env.localDirectionToWorld(node, 0, 0, 1)
+        assert(finite(fx) and finite(fz))
+        local s = {
+            tractor = tractor, wagon = wagon, farmId = args.farmId, isReserved = args.isReserved,
+            tractorJoint = tractorJoint, inputJoint = inputJoint, dirX = fx, dirZ = fz,
+            maxDistanceM = maxDistance, maxSpeedKmh = speed, timeoutMs = timeout, clearM = clear,
+            elapsed = 0, sinceProgress = 0, result = nil, others = {},
+            last = { wx = sx, wz = sz },        -- the start frame (inFrame): x ahead, y lateral
+        }
+        local o = observePull(env, s)
+        s.implementX, s.implementZ, s.rootX, s.rootZ = o.ix, o.iz, o.rx, o.rz
+        s.bestSeparation, s.startSeparation = o.separation, o.separation
+        local ix = inFrame(s, o.ix, o.iz)
+        if ix >= 0 then return nil, "PULL_CLEAR_NOT_BEHIND" end     -- forward would drive into it
+        local okAround, others, player = pcall(surroundings, env, s)
+        if not okAround then return nil, "LOCAL_AREA_UNKNOWN" end
+        s.others, s.player = others, player
+        Hitch.watchDriver(env, tractor)
+        local denied = authority(s)
+        if denied ~= nil then return nil, denied end
+        -- The whole straight line, with the maneuver's planning clearances.
+        local along = 0
+        while along <= maxDistance do
+            local bad = pullConflict(s, pullPoints(along), Hitch.LOCAL.vehicleClearanceM,
+                                     Hitch.LOCAL.playerClearanceM)
+            if bad == "OTHER_VEHICLE_NEAR" then return nil, "PULL_CLEAR_BLOCKED" end
+            if bad == "PERSON_TOO_CLOSE" then return nil, "PULL_CLEAR_PERSON" end
+            along = along + Hitch.LOCAL.sampleM
+        end
+        if o.separation >= clear then return nil, "ALREADY_CLEAR" end
+        return s
+    end)
+    if not ok then return nil, "UNKNOWN_OBSERVATION" end
+    return session, reason
+end
+
+local function pullDrive(env, s, dt)
+    local P, D = Hitch.PULL, Hitch.LOCAL
+    local denied = authority(s)
+    if denied ~= nil then return denied end
+    if s.tractor:getIsEntered() ~= false then return "SEATED_DURING_PULL_CLEAR" end
+    local o = observePull(env, s)
+    s.lastSeparation, s.lastX, s.lastY = o.separation, o.x, o.y
+    if distance(o.ix, o.iz, s.implementX, s.implementZ) > Hitch.DEFAULTS.wagonToleranceM
+            or distance(o.rx, o.rz, s.rootX, s.rootZ) > Hitch.DEFAULTS.wagonToleranceM then
+        return "IMPLEMENT_MOVED"
+    end
+    if o.separation >= s.clearM then return "CLEAR" end
+    if o.separation < s.bestSeparation - P.separationSlackM then return "SEPARATION_LOST" end
+    if s.elapsed > s.timeoutMs then return "TIMEOUT" end
+    if o.x > s.maxDistanceM then return "DISTANCE_LIMIT" end
+    if math.abs(o.y) > P.divergeM then return "DIVERGED" end
+    for _, other in ipairs(s.others) do
+        local vx, _, vz = world(env, other.vehicle.rootNode)
+        if distance(vx, vz, other.wx, other.wz) > D.movedM then return "OTHER_VEHICLE_MOVED" end
+    end
+    local others, player = surroundings(env, s)
+    s.others, s.player = others, player
+    local bad = pullConflict(s, pullPoints(o.x), D.vehicleStopM, D.playerStopM)
+    if bad ~= nil then return bad end
+    -- Progress is separation gained: a collision with anything unobserved stalls it.
+    if o.separation > s.bestSeparation + D.stallProgressM then
+        s.bestSeparation, s.sinceProgress = o.separation, 0
+    else
+        s.sinceProgress = s.sinceProgress + dt
+        if s.sinceProgress > D.stallMs then return "STALLED" end
+    end
+    local tractor = s.tractor
+    if not tractor:getIsMotorStarted() then
+        if not tractor:getCanMotorRun() then return "MOTOR_UNAVAILABLE" end
+        tractor:startMotor()
+    end
+    Hitch.holdActive(s)
+    tractor:raiseActive()
+    -- Steer at the starting line lookaheadM ahead (GIANTS driveToPoint, forward).
+    local node = tractor:getAISteeringNode()
+    local _, wy = env.getWorldTranslation(node)
+    local ahead = o.x + P.lookaheadM
+    local lx, _, lz = env.worldToLocal(node, s.last.wx + s.dirX * ahead, wy, s.last.wz + s.dirZ * ahead)
+    env.AIVehicleUtil.driveToPoint(tractor, dt, 1, true, true, lx, lz, s.maxSpeedKmh)
+    return "CONTINUE"
+end
+
+-- One update of the pull-clear: "CONTINUE", "CLEAR" (braked: the joints are clearM
+-- apart) or a failure: RESERVATION_LOST, DRIVER_TOOK_OVER, SEATED_DURING_PULL_CLEAR,
+-- AI_ACTIVE, WAGON_ATTACHED, IMPLEMENT_MOVED, SEPARATION_LOST, TIMEOUT, DISTANCE_LIMIT,
+-- DIVERGED, OTHER_VEHICLE_MOVED, OTHER_VEHICLE_NEAR, PERSON_TOO_CLOSE, STALLED,
+-- MOTOR_UNAVAILABLE, UNKNOWN_OBSERVATION. Any result other than CONTINUE is final
+-- (latched): later calls only brake, and every end restores cruise control and
+-- forceIsActive (Hitch.halt).
+function Hitch.pullClearStep(env, s, dt)
+    if s.result ~= nil then
+        Hitch.halt(env, s, dt)
+        return s.result
+    end
+    s.elapsed = s.elapsed + dt
+    local ok, code = pcall(pullDrive, env, s, dt)
+    if not ok then code = "UNKNOWN_OBSERVATION" end
+    if code ~= "CONTINUE" then
+        s.result = code
+        Hitch.halt(env, s, dt)
+    end
+    return code
+end
+
+function Hitch.describePull(s)
+    return string.format("separation=%.2f (start %.2f, clear %.1f) along=%s lateral=%s t=%dms",
+        s.lastSeparation or s.startSeparation or -1, s.startSeparation or -1, s.clearM or -1,
+        s.lastX and string.format("%.2f", s.lastX) or "?", s.lastY and string.format("%.2f", s.lastY) or "?",
+        s.elapsed or 0)
+end
+
 -- ------------------------------------------------------------------ ATTACH
 
 -- Attach only if GIANTS' fresh candidate is exactly the planned pair and GIANTS
