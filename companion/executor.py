@@ -393,6 +393,8 @@ def _matches(item: StoreItem, want: dict) -> bool:
     if words and not all(w in text for w in words):
         return False
     kinds = STORE_KINDS.get(want["kind"], ())
+    if want["kind"] == "truck" and item.power is None:
+        return False                          # a truck drives itself (live: a GMC truck bed was bought)
     if want.get("name") and want["kind"] in ("truck", "trailer"):
         return True                           # a named vehicle: its name decides
     return any(k in c for c in item.categories for k in kinds)
@@ -416,7 +418,18 @@ def choose_store_item(catalog, want: dict, money: float | None, tractor_power: f
         candidates = affordable
     if want.get("size") == "large":
         return max(candidates, key=lambda i: ((i.width or 0), -i.price, -i.id)), None
-    return min(candidates, key=lambda i: (i.price, i.id)), None
+    return min(candidates, key=lambda i: (-_name_fit(i, want), i.price, i.id)), None
+
+
+def _name_fit(item: StoreItem, want: dict) -> int:
+    """For a named want: 2 when the item's own name has the words and the kind word
+    ("Gooseneck Trailer" over "Gooseneck Forestry", live), 1 when its name has the
+    words (over a brand-only match), else 0."""
+    words = (want.get("name") or "").upper().split()
+    name = (item.name or "").upper()
+    if not words or not all(w in name for w in words):
+        return 0
+    return 2 if want["kind"].upper() in name else 1
 
 
 def named(item: Equipment, name: str | None) -> bool:

@@ -17,8 +17,12 @@ CATALOG = (
     item(1, "Small Plow", ["PLOWS"], 9000, width=2.0, needed=60),
     item(2, "Big Plow", ["PLOWS"], 41000, width=6.5, needed=280),
     item(3, "Huge Plow", ["PLOWS"], 90000, width=9.0, needed=500),
-    item(4, "2024 GMC Sierra Denali 2500 - 3500HD", ["CARS"], 72000, brand="GMC"),
-    item(5, "Gooseneck Trailer", ["LOWLOADERS"], 18000),
+    item(4, "2024 GMC Sierra Denali 2500 - 3500HD", ["CARS"], 90000, brand="GMC", power=401),
+    item(5, "Gooseneck Trailer", ["LOWLOADERS"], 35000),
+    # Live 2026-10-19 the first rules bought these two instead:
+    item(8, "Removable GMC SRW Box", ["MISC"], 2000, brand="GMC"),            # a truck bed: no motor
+    item(9, "Gooseneck Forestry", ["TRAILERS"], 12000, brand="LIZARD"),
+    item(10, "1988-93 K-Series", ["CARS"], 20000, brand="GMC", power=210),
     item(6, "Series 9", ["TRACTORSL"], 300000, power=340),
     item(7, "MF 5700 S", ["TRACTORSM"], 90000, power=105),
 )
