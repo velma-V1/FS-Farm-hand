@@ -962,6 +962,7 @@ Bridge.REASONS = {
     SEATED_DURING_PULL_CLEAR = "you sat in the tractor, so Farmhand stopped pulling clear",
     NOT_JUST_DETACHED = "the tractor can only pull clear straight after unhitching",
     DISTANCE_LIMIT = "the tractor did not get clear of the implement within its limit",
+    BLOCKED_BY_PERSON = "you are standing in the tractor's way; step aside and ask again",
     NO_OWNED_FIELD = "the farm owns no field",
     FIELD_NOT_OWNED = "the farm does not own that field",
     NO_FIELD_FOUND = "the helper found no field there",

@@ -349,7 +349,7 @@ class LiveTest:
         try:
             frame = link.fresh_snapshot()
             farm = {"farm_id": str(frame["farm_id"]), "map_id": frame.get("map_id"),
-                    "player": frame.get("player")}
+                    "player": frame.get("player"), "info": frame.get("farm"), "fields": frame.get("fields")}
             candidates = self.candidates(farm["farm_id"])
         except StepUnverified as error:
             problems.append("GAME_" + error.code)

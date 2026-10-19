@@ -683,6 +683,18 @@ class GiantsNavigationTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("FAILED", "NAVIGATE_STALLED"))
         self.assertEqual(len(calls), 1)
 
+    def test_a_stall_beside_the_player_says_they_are_in_the_way(self):
+        # Live 1600bdcae60f4499-1: GIANTS' agent BLOCKED 4.7 m from the player on foot.
+        class PersonInTheWay(MockWorld):
+            def navigate(self, tractor_id, pose, owner):
+                x, z = self.items[tractor_id].position
+                super().navigate(tractor_id, Pose(x - 200, z - 200, pose.yaw), owner)
+                self.players = {"farm-a": (x - 196.0, z - 197.0)}            # 5 m away
+                raise StepFailed("NAVIGATE_STALLED")
+
+        result = Executor(self.world(GOTO_TRACTOR, far=True, cls=PersonInTheWay)).execute(intent())
+        self.assertEqual((result.status, result.reason), ("FAILED", "BLOCKED_BY_PERSON"))
+
     def test_stuck_beside_the_implement_then_unable_to_move_is_trapped(self):
         # Live 2ded907e5cb34b6c-1 (a building beside the trailer): GOTO stalled 7 m
         # from the approach, the maneuver refused, and no GOTO could move the tractor.

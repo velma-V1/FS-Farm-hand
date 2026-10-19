@@ -99,6 +99,8 @@ GOTO_STALL_CODES = frozenset({"NAVIGATE_STALLED"})
 # Joints at most this far apart already meet: GIANTS' candidate is asked without
 # any motion (look-only ALIGN_REVERSE); never a reverse from the far side.
 ATTACH_READY_M = 0.5
+# A GOTO stopped for good with the player this close to the tractor stopped for them.
+PERSON_BLOCK_M = 12.0
 # A GOTO that left the tractor within this of where it stood did not drive.
 GOTO_MOVED_M = 1.0
 # PULL_CLEAR's refusals before any motion (mod/FarmhandHitch.lua Hitch.newPullClear):
@@ -532,6 +534,18 @@ class Executor:
         _, _, tractor, implement = min(pairs, key=lambda p: (p[0], p[1]))
         return (tractor, implement), None
 
+    def _stall_reason(self, farm_id, tractor) -> str:
+        """Why GIANTS' agent stopped for good on the way: the player standing within
+        PERSON_BLOCK_M of the tractor (live 1600bdcae60f4499-1: agent BLOCKED 4.7 m from
+        them), else stalled."""
+        try:
+            player = self.world.player_position(farm_id)
+        except Exception:                      # diagnostics only
+            player = None
+        if valid_position(player) and math.dist(tuple(player), tractor.position) <= PERSON_BLOCK_M:
+            return "BLOCKED_BY_PERSON"
+        return "NAVIGATE_STALLED"
+
     def _field(self, field_id):
         """The field's latest measured state (the mod measures it again at the start
         and the end of every field-work job)."""
@@ -908,7 +922,7 @@ class Executor:
                         if outcome == "stalled":
                             # Stuck on the way, far from the implement: the other aims lie
                             # beside the same implement, so none is tried from here.
-                            raise StepFailed("NAVIGATE_STALLED")
+                            raise StepFailed(self._stall_reason(farm_id, tractor))
                         if not isinstance(travel, Pose):
                             raise StepFailed("TRAVEL_ENDED_TOO_FAR")
                 tractor, wagon, error = self._joints("HITCH start", ids, farm_id, owner, plan)
