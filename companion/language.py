@@ -68,7 +68,7 @@ _IMPLEMENT_NOUNS = [(re.compile(p), kind) for p, kind in (
     (r"\btedders?\b", "tedder"),
     (r"\b(?:windrowers?|rakes?|swathers?)\b", "windrower"),
     (r"\bbalers?\b", "baler"),
-    (r"\b(?:trailers?|tippers?|grain carts?|grain trailers?)\b", "trailer"),
+    (r"\b(?:trailers?|tippers?|grain carts?|grain trailers?|goosenecks?)\b", "trailer"),
     (r"\brollers?\b", "roller"),
     (r"\bweeders?\b", "weeder"),
     (r"\bmulchers?\b", "mulcher"),
@@ -222,6 +222,10 @@ def field_work(words: str) -> dict | None:
     return work
 
 
+_WITH = re.compile(r"\s+(?:with|using)\s+(?:the|my|our)\s+([a-z0-9][a-z0-9-]{0,20}(?:\s+[a-z0-9][a-z0-9-]{0,20})?)$")
+_GOOSENECK = re.compile(r"\bgoosenecks?\b")
+
+
 class RuleInterpreter:
     """Deterministic wording rules for the supported commands."""
 
@@ -245,6 +249,26 @@ class RuleInterpreter:
         work = field_work(words) or buy(words)
         if work is not None:
             return work
+        # "... with the gmc": the towing vehicle by its name.
+        towing = _WITH.search(words)
+        if towing is not None and (_KNOWN_THING.search(towing.group(1)) or implement_kind(towing.group(1))):
+            towing = None                             # "the tractor with the loader wagon": equipment, not a name
+        if towing is not None:
+            words = words[:towing.start()].strip()
+            text = re.sub(r"\s+(?:with|using)\s+(?:the|my|our)\s+\S+(?:\s+\S+)?\s*[.!?]*$", "", text.strip(),
+                          flags=re.IGNORECASE)
+        proposal = self._interpret_rest(text, words)
+        if proposal is None or (towing is None and not _GOOSENECK.search(words)):
+            return proposal
+        if proposal.get("command") not in ("fetch_pair", "hitch_pair"):
+            return None                               # a name only where a pair is chosen
+        if towing is not None:
+            proposal["tractor_name"] = towing.group(1)
+        if _GOOSENECK.search(words):
+            proposal["implement_name"] = "gooseneck"
+        return proposal
+
+    def _interpret_rest(self, text: str, words: str) -> dict | None:
         kind = implement_kind(words)
         if _DETACH_VERB.match(words) or _DROP.match(words):
             return self._detach(text, words, kind)

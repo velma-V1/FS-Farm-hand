@@ -419,6 +419,14 @@ def choose_store_item(catalog, want: dict, money: float | None, tractor_power: f
     return min(candidates, key=lambda i: (i.price, i.id)), None
 
 
+def named(item: Equipment, name: str | None) -> bool:
+    """The player named it ("with the gmc"): every word in its store name."""
+    if not name:
+        return True
+    return item.name is not None and all(w in item.name.casefold().split() or w in item.name.casefold()
+                                         for w in name.split())
+
+
 def workable(tractor: Equipment, implement: Equipment, kinds: tuple[str, ...] = ()) -> bool:
     """field_work: a tractor GIANTS' field-work helper can run (AIFieldWorker) with an
     AI-usable implement (AIImplement) of one of ``kinds`` hitched to it."""
@@ -821,7 +829,9 @@ class Executor:
                         return Result("BLOCKED", failure, tuple(i.id for i in pair), tuple(states))
             else:
                 free = [item for item in items if usable(item, farm_id)
-                        and item.attached_to is None and item.stopped]
+                        and item.attached_to is None and item.stopped
+                        and named(item, command.get("tractor_name") if item.category == "tractor"
+                                  else command.get("implement_name"))]
                 for item in items:
                     if item not in free and (item.category == "tractor" or of_kind(item, self._kind)):
                         log.info("candidate %s %s rejected: %s", item.id, item.category,

@@ -99,3 +99,26 @@ class PurchaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NamedPairTests(unittest.TestCase):
+    """"bring the gooseneck to the farmhouse with the gmc": the towing vehicle and the
+    implement by their names."""
+
+    def test_the_words(self):
+        rules = RuleInterpreter()
+        self.assertEqual(rules.interpret("bring the gooseneck to the farmhouse with the gmc"),
+                         {"version": 1, "command": "fetch_pair", "implement": "trailer",
+                          "target": {"type": "place", "name": "farmhouse"},
+                          "tractor_name": "gmc", "implement_name": "gooseneck"})
+        self.assertNotIn("tractor_name", rules.interpret("bring the plow to the farmhouse"))
+        self.assertIsNone(rules.interpret("bring the tractor with the gmc"))
+
+    def test_only_the_named_vehicles_are_chosen(self):
+        from companion.executor import named
+        gmc = Equipment("g", "tractor", "farm-a", (0, 0), name="2024 GMC Sierra Denali 2500 - 3500HD")
+        self.assertTrue(named(gmc, "gmc"))
+        self.assertTrue(named(gmc, "gmc sierra"))
+        self.assertFalse(named(gmc, "series 9"))
+        self.assertTrue(named(gmc, None))
+        self.assertFalse(named(replace(gmc, name=None), "gmc"))

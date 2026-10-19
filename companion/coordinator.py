@@ -156,6 +156,9 @@ class Coordinator:
             work = ({"field": proposal["field"], "operations": proposal["operations"],
                      "area_m2": proposal.get("area_m2")} if command == "field_work"
                     else {"wants": proposal["wants"]} if command == "buy" else None)
+            if command in ("fetch_pair", "hitch_pair"):
+                names = {k: proposal[k] for k in ("tractor_name", "implement_name") if k in proposal}
+                work = names or None
             return self.start(command, proposal.get("target", "here"), spoken, proposal.get("implement"), work)
         return None
 
@@ -245,6 +248,7 @@ class Coordinator:
                           "farm_id": self.farm(), "target": "player_at_acceptance" if target == "here" else target}
                 if implement is not None:
                     intent["implement"] = implement
+                intent.update(work or {})            # tractor_name / implement_name
                 log.info("job %d intent %s", job.number, json.dumps(intent))
                 result = self.executor.execute(intent, cancel=cancel, on_state=entered)
             job.states, job.equipment = tuple(result.states), tuple(result.equipment_ids)

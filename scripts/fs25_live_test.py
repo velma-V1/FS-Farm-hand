@@ -43,6 +43,7 @@ TIMEOUT_S = {"status": 40.0, "install-current-build": 180.0, "launch-fs25": 660.
 HITCH_WAIT_S = 23500.0         # beyond the longest job: a field-work plan of three 2 h jobs
 EXIT = {"COMPLETE": 0, "FAILED": 1, "BLOCKED": 3, "UNVERIFIED": 4, "CANCELLED": 5}
 INFRASTRUCTURE = 10
+SIGN_IN = 11                   # load_save: the host's Xbox sign-in failed for this launch
 
 
 def fingerprint(token: str) -> str:
@@ -147,6 +148,10 @@ def finish_test(response: dict) -> int:
 GAME_LOG = Path("/mnt/c/Users/Matt/AppData/Local/Packages/GIANTSSoftware.FarmingSimulator25PC_fa8jxm5fj0esw"
                 "/LocalCache/Local/log.txt")
 MENU_S, LOAD_S, LINK_S = 300.0, 900.0, 180.0
+# A host Xbox fault, not Farmhand's: GamingServicesUI crashes and the game logs this
+# (2026-10-19); the save system is then unavailable for that launch.
+SIGN_IN_FAILED = "XGameSaveInitializeProvider) => E_GS_USER_CANCELED"
+LAUNCH_ATTEMPTS, RELAUNCH_WAIT_S = 3, 120.0
 _game_pid: int | None = None        # only this game's log counts (launch rewrites it)
 
 
@@ -194,7 +199,17 @@ def load_save(build: str | None = None, pid: int | None = None) -> int:
     game log (of process ``pid``), the end by the companion's link on ``build``."""
     global _game_pid
     _game_pid = pid
-    if not _wait_log("Savegame not found", MENU_S) and "Starting singleplayer game" not in _log_text():
+    deadline = time.monotonic() + MENU_S
+    while time.monotonic() < deadline:
+        text = _log_text()
+        if SIGN_IN_FAILED in text:
+            emit(event="load-save", ok=False, code="XBOX_SIGN_IN_FAILED",
+                 hint="host Xbox/Gaming Services fault (GamingServicesUI); the save system is unavailable")
+            return SIGN_IN
+        if "Savegame not found" in text or "Starting singleplayer game" in text:
+            break
+        time.sleep(2.0)
+    else:
         emit(event="load-save", ok=False, code="MENU_NOT_SEEN")
         return INFRASTRUCTURE
     if "Starting singleplayer game" not in _log_text():
@@ -220,6 +235,26 @@ def load_save(build: str | None = None, pid: int | None = None) -> int:
                 return 0
             time.sleep(3.0)
     emit(event="load-save", ok=False, code="NOT_LINKED")
+    return INFRASTRUCTURE
+
+
+def launch_and_load(response: dict) -> int:
+    """Launch, then load the save by the menu; a launch whose Xbox sign-in failed is
+    closed (FS25's own process only) and relaunched after RELAUNCH_WAIT_S, at most
+    LAUNCH_ATTEMPTS times in all."""
+    for attempt in range(1, LAUNCH_ATTEMPTS + 1):
+        if not response.get("ok"):
+            return INFRASTRUCTURE
+        installed = (call("status").get("result") or {}).get("installed") or {}
+        pids = response["result"].get("fs25_pids") or [None]
+        code = load_save(installed.get("mod"), pids[0])
+        if code != SIGN_IN or attempt == LAUNCH_ATTEMPTS:
+            return INFRASTRUCTURE if code == SIGN_IN else code
+        emit(event="relaunch", attempt=attempt + 1, reason="XBOX_SIGN_IN_FAILED")
+        call("stop-fs25")
+        time.sleep(RELAUNCH_WAIT_S)
+        response = call("launch-fs25")
+        emit(event="launch-fs25", ok=response.get("ok"), code=response.get("code"), result=response.get("result"))
     return INFRASTRUCTURE
 
 
@@ -290,10 +325,8 @@ def main(argv=None) -> int:
               "restart": "restart-fs25", "stop-fs25": "stop-fs25", "stop": "stop-test"}[args.command]
         response = call(op)
         emit(event=op, ok=response.get("ok"), code=response.get("code"), result=response.get("result"))
-        if op == "launch-fs25" and response.get("ok"):
-            installed = (call("status").get("result") or {}).get("installed") or {}
-            pids = response["result"].get("fs25_pids") or [None]
-            return load_save(installed.get("mod"), pids[0])
+        if op == "launch-fs25":
+            return launch_and_load(response)
         if op == "status":
             return 0 if response.get("ok") and response["result"].get("farmhand_ready") else INFRASTRUCTURE
         return 0 if response.get("ok") else INFRASTRUCTURE
