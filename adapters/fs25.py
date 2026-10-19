@@ -105,7 +105,11 @@ def _category(vehicle, categories) -> str | None:
     if _towing_vehicle(vehicle):
         return "tractor"
     if (vehicle["self_propelled"] is False and vehicle["input_joint_poses"]
-            and IMPLEMENT_KINDS & set(vehicle["kinds"]) and not LOADER_TOOL_KINDS & set(vehicle["kinds"])):
+            and not LOADER_TOOL_KINDS & set(vehicle["kinds"])
+            and (IMPLEMENT_KINDS & set(vehicle["kinds"]) or vehicle["category"] is not None)):
+        # A towed vehicle with a hitch: an implement even without a known work
+        # specialization (live: the Gooseneck Trailer, only fill_unit); what it can be
+        # used for still comes from its kinds, or the player's own name for it.
         return "implement"
     return None
 

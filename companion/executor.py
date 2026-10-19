@@ -262,10 +262,12 @@ def of_kind(item: Equipment, kind: str) -> bool:
     return item.category in IMPLEMENT_CATEGORIES and kind in item.kinds
 
 
-def compatible(tractor: Equipment, wagon: Equipment, kind: str = "forage_wagon") -> bool:
+def compatible(tractor: Equipment, wagon: Equipment, kind: str = "forage_wagon", name: str | None = None) -> bool:
     """Pair-level checks. Joint type and PTO are checked per planned joint pair in
-    plan_hitch, which every HITCH step re-runs."""
-    return (tractor.category == "tractor" and of_kind(wagon, kind)
+    plan_hitch, which every HITCH step re-runs. With ``name`` (the player named the
+    implement, "the gooseneck") any implement of that name will do, whatever its kind."""
+    fits = (wagon.category in IMPLEMENT_CATEGORIES and named(wagon, name)) if name else of_kind(wagon, kind)
+    return (tractor.category == "tractor" and fits
             and power_sufficient(tractor, wagon)
             and {"move", "attach", "stop"} <= tractor.capabilities)
 
@@ -639,8 +641,12 @@ class Executor:
             farm = self.world.farm()
             money = farm.money if farm is not None else None
             names = {i.name for i in catalog if i.power}
+            # Only tractors with a three-point (implement) hitch can pull a plow (live: a
+            # pickup's 300 hp chose a plow the farm's tractor could not pull).
             power = max((c.power for c in catalog for e in before.values()
-                         if e.category == "tractor" and e.name and e.name == c.name and c.power), default=None)
+                         if e.category == "tractor" and e.name and e.name == c.name and c.power
+                         and any("implement" in (j.joint_type or "").lower() for j in e.output_joints)),
+                        default=None)
             item, failure = choose_store_item(catalog, want, money, power)
             if item is None:
                 log.info("buy %s: %s (tractor power %s, money %s, %d named items)", want, failure, power, money,
@@ -786,7 +792,7 @@ class Executor:
             self._compatible = functools.partial(detachable, kind=self._kind)
         else:
             self._kind = command.get("implement", "forage_wagon")
-            self._compatible = functools.partial(compatible, kind=self._kind)
+            self._compatible = functools.partial(compatible, kind=self._kind, name=command.get("implement_name"))
         check = movable if moving else self._compatible
         delivery = None
         try:

@@ -6,7 +6,7 @@ import unittest.mock
 
 from companion.executor import Executor, choose_store_item
 from companion.language import RuleInterpreter
-from protocol.model import Equipment, FarmInfo, StoreItem
+from protocol.model import Equipment, FarmInfo, OutputJoint, StoreItem
 from simulator.world import MockWorld
 
 
@@ -26,9 +26,14 @@ CATALOG = (
     item(10, "1988-93 K-Series", ["CARS"], 20000, brand="GMC", power=210),
     item(6, "Series 9", ["TRACTORSL"], 300000, power=340),
     item(7, "MF 5700 S", ["TRACTORSM"], 90000, power=105),
+    item(11, "Pickup 2017", ["CARS"], 50000, power=600),
 )
-TRACTORS = (Equipment("t-1", "tractor", "farm-a", (0.0, 0.0), name="Series 9"),
-            Equipment("t-2", "tractor", "farm-a", (5.0, 0.0), name="MF 5700 S"))
+THREE_POINT = (OutputJoint(1, "implement", 0.0, -2.0, True),)
+TRACTORS = (Equipment("t-1", "tractor", "farm-a", (0.0, 0.0), name="Series 9", output_joints=THREE_POINT),
+            Equipment("t-2", "tractor", "farm-a", (5.0, 0.0), name="MF 5700 S", output_joints=THREE_POINT),
+            # Live: a pickup's power must not decide which plow the farm can pull.
+            Equipment("p-1", "tractor", "farm-a", (9.0, 0.0), name="Pickup 2017",
+                      output_joints=(OutputJoint(1, "trailer", 0.0, -2.5, True),)))
 
 
 class ChoiceTests(unittest.TestCase):
@@ -100,7 +105,7 @@ class PurchaseTests(unittest.TestCase):
         world = self.world(money=100)
         result = Executor(world).execute(buy({"kind": "plow"}))
         self.assertEqual((result.status, result.reason), ("BLOCKED", "NOT_ENOUGH_MONEY"))
-        self.assertEqual(len(world.items), 2)
+        self.assertEqual(len(world.items), 3)
 
 
 if __name__ == "__main__":

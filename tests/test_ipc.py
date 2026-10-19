@@ -346,7 +346,10 @@ class MappingTests(unittest.TestCase):
     def test_forage_wagon_is_identified_by_giants_specialization(self):
         cases = [({}, "forage_wagon"),                                   # no store category needed
                  ({"category": None}, "forage_wagon"),
-                 ({"forage_wagon": False, "kinds": []}, "unknown"),       # nothing GIANTS names
+                 # A towed vehicle with a hitch is an implement even without a known work
+                 # kind (live: the Gooseneck Trailer); the player's name for it decides use.
+                 ({"forage_wagon": False, "kinds": []}, "implement"),
+                 ({"forage_wagon": False, "kinds": [], "category": None}, "unknown"),
                  ({"forage_wagon": False, "kinds": ["trailer"]}, "implement"),   # an ordinary trailer
                  ({"forage_wagon": False, "kinds": ["shovel", "leveler"]}, "unknown"),   # a loader tool
                  ({"category": TRACTORS}, "unknown")]                     # contradictory: never guessed

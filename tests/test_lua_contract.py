@@ -374,7 +374,7 @@ class LuaContractTests(unittest.TestCase):
         self.assertEqual(item.category, "implement")
         self.assertEqual(item.kinds, frozenset({"sowing_machine", "sprayer", "fill_unit", "ai_implement"}))
         record, item = self.vehicle_record('{ id = 42, file = "STUB_WAGONS", inputs = { "TRAILER" }, forageWagon = false }')
-        self.assertEqual((record["kinds"], item.category), ([], "unknown"))      # nothing GIANTS names
+        self.assertEqual((record["kinds"], item.category), ([], "implement"))    # a towed vehicle with a hitch
         record, item = self.vehicle_record('{ id = 43, file = "STUB_WAGONS", forageWagon = false, specs = { "spec_pallet" } }')
         self.assertEqual((record["kinds"], item.category), (["pallet"], "unknown"))   # pallets are not implements
 

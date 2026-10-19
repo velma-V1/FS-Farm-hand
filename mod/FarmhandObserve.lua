@@ -474,7 +474,12 @@ function Observe.vehicle(env, v, ptoNames)
     -- Self-propelled: GIANTS' Motorized specialization table (Motorized:onLoad 367;
     -- AutoDrive's motor test, AutoDriveUtilFuncs.lua:162) on a vehicle that is not
     -- itself towed (no Attachable table; AD AutoDriveUtilFuncs.lua:951).
-    local selfPropelled = try(function() return v.spec_motorized ~= nil and v.spec_attachable == nil end)
+    -- Self-propelled: Motorized and Drivable (a seat and controls). Live 2026-10-19 the
+    -- GMC Sierra mod also has Attachable (it can itself be towed), so "not Attachable"
+    -- alone left it out; an implement is never Drivable.
+    local selfPropelled = try(function()
+        return v.spec_motorized ~= nil and (v.spec_drivable ~= nil or v.spec_attachable == nil)
+    end)
 
     -- GIANTS' ForageWagon specialization (ForageWagon:onLoad line 93, as Courseplay
     -- reads it) on a towed implement identifies a forage wagon.
