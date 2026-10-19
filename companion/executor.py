@@ -11,7 +11,8 @@ from threading import Lock
 from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified, World
-from companion.hitch import (IMPLEMENT_CATEGORIES, LOCAL_WORK_RADIUS_M, align_problem, hitch_problem, joint_error,
+from companion.hitch import (IMPLEMENT_CATEGORIES, LOCAL_WORK_RADIUS_M, align_problem, approach_poses, hitch_problem,
+                             joint_error,
                              plan_hitch)
 from protocol.model import Destination, Equipment, HitchPlan, Pose, Position, Result
 
@@ -71,6 +72,14 @@ class Cancelled(Exception):
 
 # Cancellation is honoured before reserving and before each step that starts
 # physical work.
+# LOCAL_MANEUVER refusals made before anything moved (mod/FarmhandHitch.lua
+# Hitch.newManeuver) because of where the tractor stands: GOTO may aim at the
+# other approach and the maneuver is tried again from there. Bounded by the
+# approaches (two GOTO aims per hitch); a person nearby is never driven round.
+REAPPROACH_CODES = frozenset({"LOCAL_PATH_HITS_WAGON", "LOCAL_PATH_LEAVES_AREA", "LOCAL_PATH_TOO_LONG",
+                              "LOCAL_PATH_BLOCKED", "LOCAL_NO_PATH", "LOCAL_START_AT_WAGON",
+                              "OUTSIDE_LOCAL_AREA"})
+
 CANCELLABLE_STEPS = frozenset({"RESERVE", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
                                "DELIVER"})
 
@@ -333,7 +342,7 @@ class Executor:
             raise ObservationMismatch("WAGON_MOVED")
         return tractor, wagon
 
-    def _choose(self, free, destinations, target):
+    def _choose(self, free, destinations, target, items=()):
         """Deterministic first pair (by opaque ID) that is compatible, has a hitch
         plan and a route; all decided before reservation. ``target`` is a resolved
         marker (explicit) or the requester position ("here"). Routes are AutoDrive
@@ -359,12 +368,14 @@ class Executor:
                     log.info("pair %s/%s rejected: %s", tractor.id, wagon.id, failure)
                     reason = failure
                     continue
-                staging = (plan.staging.x, plan.staging.z)
+                aims = approach_poses(plan, tractor.position,
+                                      [i.position for i in items if i.id not in (tractor.id, wagon.id)])
+                aim = (aims[0].x, aims[0].z)
                 travel = None
-                if math.dist(tractor.position, staging) > NEAR_RADIUS_M:
-                    travel = (autodrive and select_destination(destinations, staging, NEAR_RADIUS_M)
-                              or plan.staging)
-                return (tractor, wagon), plan, travel, delivery, None
+                if math.dist(tractor.position, aim) > NEAR_RADIUS_M:
+                    travel = (autodrive and select_destination(destinations, aim, NEAR_RADIUS_M)
+                              or aims[0])
+                return (tractor, wagon), (plan, aims), travel, delivery, None
         return None, None, None, None, reason
 
     @staticmethod
@@ -514,6 +525,7 @@ class Executor:
                 pair, delivery, failure = self._choose_hitched(items, farm_id, requester, target,
                                                                self.world.destinations())
                 plan = travel = None
+                aims = ()
             else:
                 free = [item for item in items if usable(item, farm_id)
                         and item.attached_to is None and item.stopped]
@@ -521,15 +533,16 @@ class Executor:
                     if item not in free and (item.category == "tractor" or of_kind(item, self._kind)):
                         log.info("candidate %s %s rejected: %s", item.id, item.category,
                                  ", ".join(rejections(item, farm_id)) or "UNKNOWN")
-                pair, plan, travel, delivery, failure = self._choose(free, self.world.destinations(), target)
+                pair, plan, travel, delivery, failure = self._choose(free, self.world.destinations(), target, items)
+                plan, aims = plan or (None, ())
             if pair is None:
                 return Result(status, failure, states=tuple(states))
             ids = tuple(item.id for item in pair)
             if moving:
                 log.info("moving hitched tractor %s wagon %s to %s", *ids, delivery)
             else:
-                log.info("selected tractor %s wagon %s joints %d/%d staging %s travel %s delivery %s", *ids,
-                         plan.tractor_joint, plan.wagon_joint, plan.staging, travel, delivery)
+                log.info("selected tractor %s wagon %s joints %d/%d approaches %s travel %s delivery %s", *ids,
+                         plan.tractor_joint, plan.wagon_joint, list(aims), travel, delivery)
             enter("RESERVE")
             if not self.world.reserve(ids, owner):
                 return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
@@ -546,29 +559,51 @@ class Executor:
                 # HITCH: VALIDATE -> [TRAVEL_NEAR] -> [STAGE] -> [LOCAL_MANEUVER] -> ALIGN_REVERSE
                 # -> ATTACH -> VERIFY. Every step is followed by a fresh-snapshot check;
                 # returns are not evidence, and each next step is chosen from it.
+                # GOTO aims at the approaches beside the implement, each at most once
+                # (TRAVEL_NEAR to a pose counts as the first); STAGE runs while the planned
+                # joint is outside LOCAL_WORK_RADIUS_M or after LOCAL_MANEUVER refused,
+                # unmoved, to start from where the tractor stands (REAPPROACH_CODES).
                 physical_attempted = True
+                aimed = 0
                 if travel is not None:
                     tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
                     enter("TRAVEL_NEAR")
                     self._move(tractor.id, travel, owner)
+                    aimed = 1 if travel == aims[0] else 0
                     tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
-                    left = math.dist(tractor.position, (plan.staging.x, plan.staging.z))
-                    log.info("TRAVEL_NEAR end: root %s heading %s, %.1f m from the hitch area",
+                    left = math.dist(tractor.position, (aims[0].x, aims[0].z))
+                    log.info("TRAVEL_NEAR end: root %s heading %s, %.1f m from the approach",
                              tractor.position, tractor.heading, left)
                     if left > NEAR_RADIUS_M + TRACTOR_ARRIVAL_TOLERANCE_M:
                         raise StepFailed("TRAVEL_ENDED_TOO_FAR")
                 tractor, wagon, error = self._joints("HITCH start", ids, farm_id, owner, plan)
-                if error.gap > LOCAL_WORK_RADIUS_M:
-                    enter("STAGE")
-                    self.world.stage(tractor.id, wagon.id, plan.staging, owner)
-                    tractor, wagon, error = self._joints("STAGE end", ids, farm_id, owner, plan,
-                                                         beyond="TRAVEL_ENDED_TOO_FAR")
-                    if error.gap > LOCAL_WORK_RADIUS_M:
-                        raise StepFailed("TRAVEL_ENDED_TOO_FAR")
-                if align_problem(error) is not None:
+                restage = False
+                while True:
+                    if error.gap > LOCAL_WORK_RADIUS_M or restage:
+                        if aimed >= len(aims):
+                            raise StepFailed("TRAVEL_ENDED_TOO_FAR")
+                        enter("STAGE")
+                        self.world.stage(tractor.id, wagon.id, aims[aimed], owner)
+                        aimed += 1
+                        restage = False
+                        tractor, wagon, error = self._joints("STAGE end", ids, farm_id, owner, plan,
+                                                             beyond="TRAVEL_ENDED_TOO_FAR")
+                        if error.gap > LOCAL_WORK_RADIUS_M:
+                            continue
+                    if align_problem(error) is None:
+                        break
                     enter("LOCAL_MANEUVER")
                     try:
                         self.world.maneuver(tractor.id, wagon.id, plan, owner)
+                    except StepFailed as failure:
+                        self._log_joints("LOCAL_MANEUVER failed", ids, plan)
+                        if failure.code not in REAPPROACH_CODES or aimed >= len(aims):
+                            raise
+                        log.info("LOCAL_MANEUVER refused unmoved (%s): re-approach %d of %d",
+                                 failure.code, aimed + 1, len(aims))
+                        restage = True
+                        tractor, wagon, error = self._joints("re-approach start", ids, farm_id, owner, plan)
+                        continue
                     except Exception:
                         self._log_joints("LOCAL_MANEUVER failed", ids, plan)
                         raise
@@ -577,6 +612,7 @@ class Executor:
                     problem = align_problem(error)
                     if problem is not None:
                         raise StepFailed(problem)
+                    break
                 enter("ALIGN_REVERSE")
                 try:
                     self.world.align(tractor.id, wagon.id, plan, owner)

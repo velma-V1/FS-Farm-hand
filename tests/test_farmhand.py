@@ -6,7 +6,7 @@ import random
 import unittest
 
 from companion.executor import DELIVERY_STANDOFF_M, PLACE_STANDOFF_M, Executor
-from companion.hitch import plan_hitch
+from companion.hitch import approach_poses, plan_hitch
 from protocol.model import Destination, Equipment, InputJoint, OutputJoint, Pose
 from simulator.world import MockWorld
 
@@ -192,7 +192,7 @@ class AcceptanceTests(unittest.TestCase):
                 before = {x.id: x for x in world.snapshot()}
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, "COMPLETE", result)
-                self.assertEqual(result.states, ("FIND", "RESERVE", "STAGE", "ALIGN_REVERSE",
+                self.assertEqual(result.states, ("FIND", "RESERVE", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE",
                                                  "ATTACH", "VERIFY", "DELIVER", "STOP", "RELEASE"))
                 tractor, wagon = (world.items[x] for x in result.equipment_ids)
                 self.assertEqual((tractor.category, wagon.category), ("tractor", "forage_wagon"))
@@ -280,7 +280,7 @@ class AcceptanceTests(unittest.TestCase):
                 self.assertEqual(result.status, "FAILED", result)
                 self.assertTrue(all(x.stopped and x.reserved_by is None for x in world.snapshot()))
                 # No physical step runs after the failing one.
-                expected_moves = {"stage": 1, "align": 2, "attach": 2, "delivery": 3}[fault.split("_")[0]]
+                expected_moves = {"stage": 1, "align": 3, "attach": 3, "delivery": 4}[fault.split("_")[0]]
                 self.assertEqual(world.moves, expected_moves)
                 self.assertEqual(len(world.attach_calls), 0 if fault.startswith(("stage", "align")) else 1)
 
@@ -291,7 +291,7 @@ class AcceptanceTests(unittest.TestCase):
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, "UNVERIFIED", result)
                 if fault in ("false_attach", "wrong_attachment"):
-                    self.assertEqual(world.moves, 2)  # stage + align; never delivery
+                    self.assertEqual(world.moves, 3)  # stage, maneuver, align; never delivery
 
     def test_stop_failure_retains_reservation(self):
         world = FaultWorld("stop")
@@ -564,7 +564,7 @@ class GiantsNavigationTests(unittest.TestCase):
                 world.players = {"farm-a": requester}
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, "COMPLETE", result)
-                self.assertEqual(result.states, ("FIND", "RESERVE", "STAGE", "ALIGN_REVERSE",
+                self.assertEqual(result.states, ("FIND", "RESERVE", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE",
                                                  "ATTACH", "VERIFY", "DELIVER", "STOP", "RELEASE"))
                 self.assertEqual(len(calls), 1)
                 tractor, wagon = (world.items[x] for x in result.equipment_ids)
@@ -612,10 +612,11 @@ class GiantsNavigationTests(unittest.TestCase):
                 plan = plan_hitch(tractor, wagon)
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, "COMPLETE", result)
-                # One GOTO, aimed at the staging pose; it ended there, inside the reverse's
-                # envelope, so neither a second GOTO nor a local maneuver follows.
-                self.assertEqual(result.states[:4], ("FIND", "RESERVE", "TRAVEL_NEAR", "ALIGN_REVERSE"))
-                self.assertEqual(calls[0], plan.staging)
+                # One GOTO, aimed at the approach beside the implement; it ended there,
+                # inside the work radius, so no second GOTO: the local maneuver lines up.
+                self.assertEqual(result.states[:5],
+                                 ("FIND", "RESERVE", "TRAVEL_NEAR", "LOCAL_MANEUVER", "ALIGN_REVERSE"))
+                self.assertEqual(calls[0], approach_poses(plan, tractor.position, ())[0])
 
     def test_goto_travel_or_delivery_not_observed_stops_and_fails_closed(self):
         class Short(MockWorld):
@@ -778,7 +779,7 @@ class ExplicitDestinationTests(unittest.TestCase):
 
         class RecordingWorld(MockWorld):
             def __getattribute__(self, name):
-                if name in ("reserve", "travel", "stage", "align", "attach", "deliver", "stop", "release"):
+                if name in ("reserve", "travel", "stage", "maneuver", "align", "attach", "deliver", "stop", "release"):
                     calls.append(name)
                 return super().__getattribute__(name)
 
@@ -787,7 +788,7 @@ class ExplicitDestinationTests(unittest.TestCase):
         result = Executor(world, field_entrances=FIELD_ENTRANCES).execute(
             target_intent({"type": "field_entrance", "field": 12}))
         self.assertEqual(result.status, "COMPLETE")
-        self.assertEqual(calls, ["reserve", "stage", "align", "attach", "deliver", "stop", "release"])
+        self.assertEqual(calls, ["reserve", "stage", "maneuver", "align", "attach", "deliver", "stop", "release"])
 
     def test_schema_rejects_work_coordinates_and_mixed_selectors(self):
         for target in ({"type": "field_entrance", "field": 12, "operation": "harvest"},
@@ -844,6 +845,10 @@ class HitchCompositionTests(unittest.TestCase):
                 calls.append(("stage", tractor_id, wagon_id, pose))
                 return super().stage(tractor_id, wagon_id, pose, owner)
 
+            def maneuver(self, tractor_id, wagon_id, plan, owner):
+                calls.append(("maneuver", tractor_id, wagon_id, plan))
+                return super().maneuver(tractor_id, wagon_id, plan, owner)
+
             def align(self, tractor_id, wagon_id, plan, owner):
                 calls.append(("align", tractor_id, wagon_id, plan))
                 return super().align(tractor_id, wagon_id, plan, owner)
@@ -851,9 +856,12 @@ class HitchCompositionTests(unittest.TestCase):
         world = Recording(None)
         tractor, wagon = world.snapshot()
         plan = plan_hitch(tractor, wagon)
+        aim = approach_poses(plan, tractor.position, ())[0]
         result = Executor(world).execute(intent())
         self.assertEqual(result.status, "COMPLETE", result)
-        self.assertEqual(calls, [("stage", tractor.id, wagon.id, plan.staging),
+        # GOTO aims beside the implement; the bounded maneuver lines up from there.
+        self.assertEqual(calls, [("stage", tractor.id, wagon.id, aim),
+                                 ("maneuver", tractor.id, wagon.id, plan),
                                  ("align", tractor.id, wagon.id, plan)])
         self.assertEqual(world.attach_calls, [(plan.tractor_joint, plan.wagon_joint)])
 
@@ -911,9 +919,9 @@ class HitchCompositionTests(unittest.TestCase):
             # fault: (reason, physical steps run, attach attempted)
             "wagon_moved_after_stage": ("WAGON_MOVED", 1, False),
             "reservation_lost_after_stage": ("CLEANUP_NOT_CONFIRMED", 1, False),
-            "align_no_progress": ("ALIGN_NOT_OBSERVED", 2, False),
-            "false_attach": ("ATTACHMENT_MISMATCH", 2, True),
-            "still_moving_after_attach": ("EQUIPMENT_MOVING", 2, True),
+            "align_no_progress": ("ALIGN_NOT_OBSERVED", 3, False),
+            "false_attach": ("ATTACHMENT_MISMATCH", 3, True),
+            "still_moving_after_attach": ("EQUIPMENT_MOVING", 3, True),
         }
         for fault, (reason, moves, attached) in cases.items():
             with self.subTest(fault=fault):
@@ -952,7 +960,7 @@ class HitchCompositionTests(unittest.TestCase):
     def test_stage_ending_beyond_the_work_radius_stops_before_any_local_motion(self):
         class FarStage(FaultWorld):
             def stage(self, tractor_id, wagon_id, pose, owner):
-                super().stage(tractor_id, wagon_id, Pose(pose.x + 30, pose.z, pose.yaw), owner)
+                super().stage(tractor_id, wagon_id, Pose(pose.x + 60, pose.z, pose.yaw), owner)
 
             def maneuver(self, *args):
                 raise AssertionError("local maneuver beyond the work radius")
@@ -960,7 +968,9 @@ class HitchCompositionTests(unittest.TestCase):
         world = FarStage(None)
         result = Executor(world).execute(intent())
         self.assertEqual((result.status, result.reason), ("FAILED", "TRAVEL_ENDED_TOO_FAR"))
-        self.assertEqual(world.moves, 1)
+        # Each approach is aimed at once, then it stops: no third GOTO.
+        self.assertEqual(world.moves, 2)
+        self.assertEqual(result.states.count("STAGE"), 2)
 
     def test_a_tractor_inside_the_work_radius_never_uses_goto(self):
         base = simple_world()
@@ -1125,7 +1135,7 @@ class CancellationTests(unittest.TestCase):
 
     def test_cancel_between_steps_stops_before_the_next_one(self):
         import threading
-        for step in ("stage", "align", "attach"):
+        for step in ("stage", "maneuver", "align", "attach"):
             with self.subTest(after=step):
                 cancel = threading.Event()
                 calls = []
@@ -1135,6 +1145,12 @@ class CancellationTests(unittest.TestCase):
                         calls.append("stage")
                         super().stage(*args)
                         if step == "stage":
+                            cancel.set()
+
+                    def maneuver(self, *args):
+                        calls.append("maneuver")
+                        super().maneuver(*args)
+                        if step == "maneuver":
                             cancel.set()
 
                     def align(self, *args):
@@ -1384,7 +1400,7 @@ class HitchOnlyTests(unittest.TestCase):
         plan = plan_hitch(tractor, wagon)
         result = Executor(world).execute({**intent(), "task": "hitch_pair"})
         self.assertEqual((result.status, result.reason), ("COMPLETE", "HITCH_OBSERVED"))
-        self.assertEqual(result.states, ("FIND", "RESERVE", "STAGE", "ALIGN_REVERSE", "ATTACH", "VERIFY",
+        self.assertEqual(result.states, ("FIND", "RESERVE", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH", "VERIFY",
                                          "STOP", "RELEASE"))
         tractor, wagon = (world.items[x] for x in result.equipment_ids)
         self.assertEqual((tractor.attached_to, wagon.attached_to), (wagon.id, tractor.id))

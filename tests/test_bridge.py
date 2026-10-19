@@ -357,10 +357,10 @@ class ProductionSequenceTests(unittest.TestCase):
         game, world, result = self.run_ac001()
         self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
         self.assertEqual(result.equipment_ids, ("11", "12"))
-        self.assertEqual(result.states, ("FIND", "RESERVE", "STAGE", "ALIGN_REVERSE", "ATTACH", "VERIFY",
+        self.assertEqual(result.states, ("FIND", "RESERVE", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH", "VERIFY",
                                          "DELIVER", "STOP", "RELEASE"))
-        self.assertEqual(self.ops(game), ["stage", "align", "attach", "drive", "stop"])
-        drive = game.commands[3]
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "drive", "stop"])
+        drive = game.commands[4]
         self.assertEqual(drive["marker"], "3")                      # "here": marker 3 near the player
         self.assertEqual((game.commands[1]["tj"], game.commands[1]["wj"]), ("1", "1"))
         self.assertEqual(world._reservations, {})                   # released only at the very end
@@ -369,20 +369,20 @@ class ProductionSequenceTests(unittest.TestCase):
         # No category map, no AutoDrive: the tractor is recognised from GIANTS data.
         game, world, result = self.run_ac001(categories=None, autodrive=False)
         self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
-        self.assertEqual(self.ops(game), ["stage", "align", "attach", "navigate", "stop"])
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "navigate", "stop"])
 
     def test_far_tractor_uses_autodrive_first(self):
         game, _, result = self.run_ac001(tractor_at=(600.0, 600.0))
         self.assertEqual(result.status, "COMPLETE", result)
-        self.assertEqual(self.ops(game), ["drive", "stage", "align", "attach", "drive", "stop"])
+        self.assertEqual(self.ops(game), ["drive", "stage", "maneuver", "align", "attach", "drive", "stop"])
         self.assertEqual(game.commands[0]["marker"], "4")           # the marker near the wagon
         self.assertEqual(result.states[2], "TRAVEL_NEAR")
 
     def test_without_autodrive_giants_goto_travels_and_delivers_here(self):
         for tractor_at, ops in (((0.0, 20.0), ["maneuver", "align", "attach", "navigate", "stop"]),
-                                ((0.0, 40.0), ["stage", "align", "attach", "navigate", "stop"]),
-                                # GOTO travel aims at the staging pose: no second GOTO, no maneuver.
-                                ((600.0, 600.0), ["navigate", "align", "attach", "navigate", "stop"])):
+                                ((0.0, 40.0), ["stage", "maneuver", "align", "attach", "navigate", "stop"]),
+                                # GOTO travel aims at the approach: no second GOTO; the maneuver lines up.
+                                ((600.0, 600.0), ["navigate", "maneuver", "align", "attach", "navigate", "stop"])):
             with self.subTest(tractor_at=tractor_at):
                 game, world, result = self.run_ac001(tractor_at=tractor_at, autodrive=False)
                 self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
@@ -402,7 +402,7 @@ class ProductionSequenceTests(unittest.TestCase):
             with self.subTest(faults=faults):
                 game, world, result = self.run_ac001(faults=faults, autodrive=False)
                 self.assertEqual((result.status, result.reason), (status, reason), result)
-                self.assertEqual(self.ops(game), ["stage", "align", "attach", "navigate", "stop"])
+                self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "navigate", "stop"])
                 self.assertEqual(world._reservations, {})
 
     def test_explicit_marker_without_autodrive_blocks_before_any_command(self):
@@ -424,33 +424,35 @@ class ProductionSequenceTests(unittest.TestCase):
              ["drive", "stop"]),
             ({"stage": "FAILED:GOTO_NOT_STARTED"}, None, "FAILED", "GOTO_NOT_STARTED", ["stage", "stop"]),
             ({"align": "FAILED:VERTICAL_MISMATCH"}, None, "FAILED", "VERTICAL_MISMATCH",
-             ["stage", "align", "stop"]),
+             ["stage", "maneuver", "align", "stop"]),
             ({"align": "UNVERIFIED:UNKNOWN_OBSERVATION"}, None, "UNVERIFIED", "UNKNOWN_OBSERVATION",
-             ["stage", "align", "stop"]),
+             ["stage", "maneuver", "align", "stop"]),
             # A rider still in the cab when the last metres begin: the reverse is never
             # started under their controls; stop, release, and say why.
             ({"align": "REJECTED:SEATED_DURING_REVERSE"}, None, "FAILED", "REJECTED_SEATED_DURING_REVERSE",
-             ["stage", "align", "stop"]),
+             ["stage", "maneuver", "align", "stop"]),
             # Local alignment's own bounded failures: stalled, the wagon moved, the
             # seated player took the controls, another AI job, diverging.
-            ({"align": "FAILED:STALLED"}, None, "FAILED", "STALLED", ["stage", "align", "stop"]),
-            ({"align": "FAILED:WAGON_MOVED"}, None, "FAILED", "WAGON_MOVED", ["stage", "align", "stop"]),
-            ({"align": "FAILED:DRIVER_TOOK_OVER"}, None, "FAILED", "DRIVER_TOOK_OVER", ["stage", "align", "stop"]),
-            ({"align": "FAILED:AI_ACTIVE"}, None, "FAILED", "AI_ACTIVE", ["stage", "align", "stop"]),
-            ({"align": "FAILED:DIVERGED"}, None, "FAILED", "DIVERGED", ["stage", "align", "stop"]),
+            ({"align": "FAILED:STALLED"}, None, "FAILED", "STALLED", ["stage", "maneuver", "align", "stop"]),
+            ({"align": "FAILED:WAGON_MOVED"}, None, "FAILED", "WAGON_MOVED", ["stage", "maneuver", "align", "stop"]),
+            ({"align": "FAILED:DRIVER_TOOK_OVER"}, None, "FAILED", "DRIVER_TOOK_OVER", ["stage", "maneuver", "align", "stop"]),
+            ({"align": "FAILED:AI_ACTIVE"}, None, "FAILED", "AI_ACTIVE", ["stage", "maneuver", "align", "stop"]),
+            ({"align": "FAILED:DIVERGED"}, None, "FAILED", "DIVERGED", ["stage", "maneuver", "align", "stop"]),
             ({"attach": "UNVERIFIED:ATTACH_TIMEOUT"}, None, "UNVERIFIED", "ATTACH_TIMEOUT",
-             ["stage", "align", "attach", "stop"]),
+             ["stage", "maneuver", "align", "attach", "stop"]),
             ({"attach": "REJECTED:BUSY"}, None, "FAILED", "REJECTED_BUSY",
-             ["stage", "align", "attach", "stop"]),
+             ["stage", "maneuver", "align", "attach", "stop"]),
             ({"stage": "no_terminal"}, None, "UNVERIFIED", "RESULT_TIMEOUT", ["stage", "stop"]),
             ({"attach_other_joint": True}, None, "UNVERIFIED", "ATTACHMENT_MISMATCH",
-             ["stage", "align", "attach", "stop"]),
+             ["stage", "maneuver", "align", "attach", "stop"]),
             # LOCAL_MANEUVER (the tractor starts inside the work radius): its refusals
             # and bounded failures stop, release, and never reverse or attach.
             ({"maneuver": "FAILED:SEATED_DURING_MANEUVER"}, NEAR, "FAILED", "SEATED_DURING_MANEUVER",
              ["maneuver", "stop"]),
+            # Refused unmoved for where the tractor stands: GOTO aims at each approach
+            # beside the implement once, the maneuver is tried from each, then it stops.
             ({"maneuver": "FAILED:LOCAL_PATH_LEAVES_AREA"}, NEAR, "FAILED", "LOCAL_PATH_LEAVES_AREA",
-             ["maneuver", "stop"]),
+             ["maneuver", "stage", "maneuver", "stage", "maneuver", "stop"]),
             ({"maneuver": "FAILED:TURN_RADIUS_UNKNOWN"}, NEAR, "FAILED", "TURN_RADIUS_UNKNOWN", ["maneuver", "stop"]),
             ({"maneuver": "FAILED:STALLED"}, NEAR, "FAILED", "STALLED", ["maneuver", "stop"]),
             ({"maneuver": "FAILED:DIVERGED"}, NEAR, "FAILED", "DIVERGED", ["maneuver", "stop"]),
@@ -485,7 +487,7 @@ class ProductionSequenceTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("UNVERIFIED", "DELIVERY_NOT_OBSERVED"))
         game, world, result = self.run_ac001(faults={"drive": "FAILED:TIMEOUT"})
         self.assertEqual((result.status, result.reason), ("FAILED", "TIMEOUT"))
-        self.assertEqual(self.ops(game), ["stage", "align", "attach", "drive", "stop"])
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "drive", "stop"])
 
     def test_unconfirmed_stop_keeps_the_reservation(self):
         game, world, result = self.run_ac001(faults={"align": "FAILED:STALLED", "stop": "FAILED:NOT_STOPPED"})
@@ -661,9 +663,9 @@ class ServiceTests(unittest.TestCase):
         game.press(1)
         self.wait_for(lambda: len(notices) >= 2)
         self.assertEqual(notices, ["ACCEPTED", "COMPLETE"])
-        self.assertEqual(self.progress, ["WORKING_STAGE", "WORKING_DELIVER"])      # lining up, driving
-        self.assertEqual(self.ops(game), ["stage", "align", "attach", "navigate", "stop"])
-        self.assertEqual(self.session_notice(game), ("COMPLETE", 4))
+        self.assertEqual(self.progress, ["WORKING_STAGE", "WORKING_LOCAL_MANEUVER", "WORKING_DELIVER"])
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "navigate", "stop"])
+        self.assertEqual(self.session_notice(game), ("COMPLETE", 5))
 
     def ops(self, game):
         return [c["op"] for c in game.commands]
@@ -680,7 +682,7 @@ class ServiceTests(unittest.TestCase):
         self.wait_for(lambda: notices[-1:] == ["CANCELLED"])
         self.assertEqual(notices, ["ACCEPTED", "BUSY", "STATUS_WORKING_ALIGN_REVERSE", "STOPPING", "CANCELLED"])
         ops = self.ops(game)
-        self.assertEqual(ops[:2], ["stage", "align"])
+        self.assertEqual(ops[:3], ["stage", "maneuver", "align"])
         self.assertNotIn("attach", ops)                          # nothing after the stop
         self.assertIn("stop", ops)
         self.assertEqual(game.link_world._reservations, {})     # stopped, then released
@@ -778,7 +780,7 @@ class ServiceTests(unittest.TestCase):
             c.wait(10)
         self.assertEqual(notices[-1], "CANCELLED")
         ops = [x["op"] for x in game.commands]
-        self.assertEqual(ops, ["stage", "align", "attach", "stop", "stop"])   # never the drive
+        self.assertEqual(ops, ["stage", "maneuver", "align", "attach", "stop", "stop"])   # never the drive
         self.assertEqual(world._reservations, {})
 
     def test_repeated_stop_presses_keep_the_cancel_confirmed(self):
@@ -916,7 +918,7 @@ class ServiceTests(unittest.TestCase):
         game.vehicles[11]["entered"] = True
         game.say(1, "bring me a tractor and forage wagon")
         self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
-        self.assertEqual(self.ops(game), ["stage", "align", "attach", "navigate", "stop"])
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "navigate", "stop"])
 
     def test_live_case_2_stage_end_is_judged_by_the_joints_not_the_pose(self):
         # Tractor 379 / wagon 400 (STAGE_ENDED 2-4 m off), tractor 170 / wagon 173 at
@@ -924,7 +926,9 @@ class ServiceTests(unittest.TestCase):
         # NOT_REACHABLE twice: A 12.9 m / lateral -12.4 / 85.9 deg, B 18.8 m / -18.0 /
         # 162.9 deg). GOTO is long-range travel only: inside the local work radius the
         # bounded forward LOCAL_MANEUVER lines up, unless the joints already lie in the
-        # reverse's envelope; beyond the radius nothing more moves.
+        # reverse's envelope. GOTO aims at each approach beside the implement at most
+        # once: a STAGE ending beyond the radius, or a maneuver refused unmoved for
+        # where the tractor stands, aims at the other approach; then nothing more moves.
         reverse = ["stage", "align", "attach", "stop"]
         local = ["stage", "maneuver", "align", "attach", "stop"]
         cases = [
@@ -936,11 +940,11 @@ class ServiceTests(unittest.TestCase):
             ((6.0, 3.0, 0.0), {}, "COMPLETE_HITCH", local),                # beside the axis
             ((5.0, 1.5, 15.0), {}, "COMPLETE_HITCH", reverse),             # inside the envelope
             ((8.5, -1.9, -28.0), {}, "COMPLETE_HITCH", reverse),           # edge of the envelope
-            ((20.0, -18.0, 90.0), {}, "FAILED_TRAVEL_ENDED_TOO_FAR", ["stage", "stop"]),   # beyond 25 m
+            ((20.0, -18.0, 90.0), {}, "FAILED_TRAVEL_ENDED_TOO_FAR", ["stage", "stage", "stop"]),  # beyond 25 m
             # The game refuses the geometry before moving, or the maneuver's end is not
             # in the envelope when observed: never reversed.
             ((5.52, -17.97, 162.9), {"maneuver": "FAILED:LOCAL_PATH_HITS_WAGON"},
-             "FAILED_LOCAL_PATH_HITS_WAGON", ["stage", "maneuver", "stop"]),
+             "FAILED_LOCAL_PATH_HITS_WAGON", ["stage", "maneuver", "stage", "maneuver", "stop"]),
             ((3.44, -12.40, 85.9), {"maneuver_end": (6.0, 3.0, 0.0)},
              "FAILED_ALIGN_LATERAL_OUT_OF_RANGE", ["stage", "maneuver", "stop"]),
             ((3.44, -12.40, 85.9), {"maneuver": "FAILED:DIVERGED"}, "FAILED_DIVERGED",
@@ -998,7 +1002,7 @@ class ServiceTests(unittest.TestCase):
         game.say(1, "take the tractor and attach the forage wagon")
         self.wait_for(lambda: notices[-1:] == ["COMPLETE_HITCH"])
         self.assertEqual(notices, ["ACCEPTED_HITCH", "COMPLETE_HITCH"])
-        self.assertEqual(self.ops(game), ["stage", "align", "attach", "stop"])    # no drive anywhere
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "stop"])    # no drive anywhere
         commands = len(game.commands)
         game.say(2, "bring a tractor to me")
         game.say(3, "bring the Boss Hoss to the farm")
@@ -1028,7 +1032,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(game.commands, [])
         game.say(4, "please bring me a tractor and forage wagon")
         self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
-        self.assertEqual(self.ops(game), ["stage", "align", "attach", "navigate", "stop"])
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "navigate", "stop"])
 
     def test_failures_are_reported_with_their_reason(self):
         game, notices = self.start(autodrive=False)

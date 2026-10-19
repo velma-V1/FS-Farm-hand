@@ -20,6 +20,17 @@ IMPLEMENT_CATEGORIES = frozenset({"forage_wagon", "implement"})
 STAGING_DISTANCE_M = 6.0
 MAX_STAGING_DISTANCE_M = 10.0
 
+# Where GIANTS' GOTO is aimed (TRAVEL_NEAR, STAGE): beside the implement, never in
+# front of it. Live the agent reported NOT_REACHABLE for the staging pose (8ffafcc
+# twice; 3da28a3f24dd450b-1 after 1.2 km, -2 at once): arriving there facing away
+# from the implement takes a path across it. Beside its body, facing its heading,
+# the way in is a straight run past it, and LOCAL_MANEUVER lines up from there in a
+# short S (mod/FarmhandHitch.lua Hitch.chooseCurve, empty yard, 5.5 m radius: 14-23 m
+# from joint 4-8 m behind, 12-16 m aside, 0-60 deg towards the axis). Aims only.
+APPROACH_BEHIND_M = 6.0             # the planned tractor joint this far behind the implement's joint
+APPROACH_SIDE_M = 13.0              # and this far to one side of its axis
+APPROACH_CLEARANCE_M = 10.0         # a side this close to other equipment is tried second
+
 # The envelope from which the bounded reverse (mod/FarmhandHitch.lua) can bring the
 # planned tractor joint to the wagon's input joint, measured on the observed joints
 # in the wagon's frame. Provisional: every check logs the numbers.
@@ -81,6 +92,26 @@ def plan_hitch(tractor: Equipment, wagon: Equipment,
     staging = Pose(final.x + staging_distance * math.sin(heading),
                    final.z + staging_distance * math.cos(heading), heading)
     return HitchPlan(joint.index, inp.index, joint.joint_type, target, final, staging)
+
+
+def approach_poses(plan: HitchPlan, origin, others) -> tuple[Pose, Pose]:
+    """The two GOTO aims for ``plan``: the AI root pose putting the planned joint
+    APPROACH_BEHIND_M behind and APPROACH_SIDE_M to either side of the implement's
+    joint, facing its heading. A side clear of every position in ``others`` (other
+    equipment) by APPROACH_CLEARANCE_M comes first, then the one nearer ``origin``."""
+    yaw = plan.final.yaw
+    fx, fz = math.sin(yaw), math.cos(yaw)
+    poses = [Pose(plan.final.x - APPROACH_BEHIND_M * fx + side * APPROACH_SIDE_M * fz,
+                  plan.final.z - APPROACH_BEHIND_M * fz - side * APPROACH_SIDE_M * fx, yaw)
+             for side in (1, -1)]
+    others = [tuple(p) for p in others]
+
+    def key(pose):
+        point = (pose.x, pose.z)
+        crowded = any(math.dist(point, other) < APPROACH_CLEARANCE_M for other in others)
+        return crowded, math.dist(point, tuple(origin))
+    first, second = sorted(poses, key=key)
+    return first, second
 
 
 def hitch_problem(tractor: Equipment, wagon: Equipment) -> str:

@@ -15,7 +15,9 @@ including an available compatible tractor/wagon pair and misleading decoys:
    hitch and PTO. Do not assert specific fixture IDs; inspect selected properties.
 2. RESERVE owns both units atomically; concurrent requests cannot steal either.
 3. MOVE is HITCH: a pure plan picks the joints and the final/staging poses before
-   reservation; STAGE (GIANTS GOTO, only beyond the 25 m local work radius),
+   reservation; STAGE (GIANTS GOTO aimed at an approach beside the implement, each
+   of the two at most once: beyond the 25 m local work radius, or after a
+   LOCAL_MANEUVER refused unmoved for where the tractor stands),
    LOCAL_MANEUVER (bounded, forward, game-side, only outside the reverse's envelope)
    and ALIGN_REVERSE (bounded, game-side) are each followed by a fresh check that the pair is still reserved, the wagon has not
    moved and the step's outcome is observed. ATTACH re-checks GIANTS' exact
@@ -53,9 +55,10 @@ Executable mapping (`python scripts/check.py`):
   insufficient or unknown power, never rejects a wagon needing no PTO power, and
   matches PTO on the planned joint pair (not any joint).
 - `HitchCompositionTests`: steps use the plan exactly; AutoDrive TRAVEL_NEAR only
-  when far (and unobserved arrival stops); GOTO (STAGE) only beyond the work radius
-  and never inside it, a STAGE end beyond it fails TRAVEL_ENDED_TOO_FAR with no
-  local motion, one outside the reverse's envelope is lined up by LOCAL_MANEUVER,
+  when far (and unobserved arrival stops); GOTO (STAGE) aims at the approaches
+  (`ApproachTests` in test_hitch: beside the implement, a clear side first), only
+  beyond the work radius or after a maneuver refused unmoved, each approach once;
+  STAGE ends beyond it on both fail TRAVEL_ENDED_TOO_FAR with no local motion, one outside the reverse's envelope is lined up by LOCAL_MANEUVER,
   a maneuver failure or a maneuver end outside the envelope never reverses;
   unplannable pairs block
   before reservation; staging not observed, wagon moved or rotated, joint occupied,
