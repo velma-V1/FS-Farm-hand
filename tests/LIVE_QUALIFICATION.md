@@ -51,6 +51,9 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 | Unhitch with PULL_CLEAR (first live) | 4e9c443e19bd4de1-5 | ba5752c | PASS | DETACH, VERIFY, PULL_CLEAR: 4.02 m straight forward, lateral 0.00 m, 5.1 s, CLEAR at separation 4.01 m (mod); fresh snapshot 3.82 m apart, both at rest |
 | Re-hitch after PULL_CLEAR | 4e9c443e19bd4de1-6 | ba5752c | PASS | joints 4.18 m apart, on the axis: straight ALIGN_REVERSE, ATTACH, VERIFY |
 | GOTO from a pull-cleared stand | 4e9c443e19bd4de1-7 / -8 | ba5752c | PASS (PULL_CLEAR) / REFUSED-OK (cultivator) | after the second PULL_CLEAR, GIANTS' agent started and drove ~85 m (TRAVEL_NEAR aim 3, ended 13.8 m off): no longer BLOCKED. The cultivator then refused LOCAL_PATH_BLOCKED in the yard as -1 |
+| Seeder GL 860 163 in open ground (new save 3 layout; class: sowing machine, three-point) | 4e9c443e19bd4de1-9 | ba5752c | PASS | TRAVEL_NEAR, LOCAL_MANEUVER, ALIGN_REVERSE, ATTACH, VERIFY |
+| Unhitch the seeder | 4e9c443e19bd4de1-10 / -12 | ba5752c | FAIL (fixed) | DETACH and VERIFY passed; PULL_CLEAR stopped itself SEPARATION_LOST within 0.2-0.4 s (separation 0.19 -> 0.14 m, tractor 0.01-0.07 m forward): GIANTS' lower links carried the jointTransform back towards the seeder after the detach. Separation now measured from the joint's start point fixed to the tractor's body |
+| Re-hitch the seeder | 4e9c443e19bd4de1-11 | ba5752c | PASS | joints 0.17 m apart: look-only align, ATTACH, VERIFY |
 | STOP mid-maneuver | — | — | OPEN | |
 | Player takeover | — | — | OPEN | |
 | Stall / failure | — | — | OPEN | |

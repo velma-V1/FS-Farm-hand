@@ -1030,10 +1030,19 @@ local function pullConflict(s, points, vehicleM, playerM)
     return nil
 end
 
--- The steering node's position in the start frame, and the joints' separation.
+-- The steering node's position in the start frame, and the joints' separation. The
+-- tractor's joint is the point fixed to its body where the joint was at the start
+-- (s.jointRight, s.jointAhead in the steering node's frame): live 4e9c443e19bd4de1-10
+-- a three-point jointTransform rode the lower links back towards the seeder after
+-- the detach (separation 0.19 -> 0.14 m while the tractor moved 0.07 m forward).
 local function observePull(env, s)
-    local sx, _, sz = world(env, s.tractor:getAISteeringNode())
-    local tx, _, tz = world(env, s.tractorJoint.jointTransform)
+    local node = s.tractor:getAISteeringNode()
+    local sx, _, sz = world(env, node)
+    local fx, _, fz = env.localDirectionToWorld(node, 0, 0, 1)
+    assert(finite(fx) and finite(fz))
+    -- local +x is world (fz, -fx) for the forward direction (fx, fz) (MathUtil yaw).
+    local tx = sx + s.jointRight * fz + s.jointAhead * fx
+    local tz = sz - s.jointRight * fx + s.jointAhead * fz
     local ix, _, iz = world(env, s.inputJoint.node)
     local rx, _, rz = world(env, s.wagon.rootNode)
     local x, y = inFrame(s, sx, sz)
@@ -1075,6 +1084,9 @@ function Hitch.newPullClear(env, args)
             elapsed = 0, sinceProgress = 0, result = nil, others = {},
             last = { wx = sx, wz = sz },        -- the start frame (inFrame): x ahead, y lateral
         }
+        local jx, _, jz = world(env, tractorJoint.jointTransform)
+        s.jointRight = (jx - sx) * fz - (jz - sz) * fx
+        s.jointAhead = (jx - sx) * fx + (jz - sz) * fz
         local o = observePull(env, s)
         s.implementX, s.implementZ, s.rootX, s.rootZ = o.ix, o.iz, o.rx, o.rz
         s.bestSeparation, s.startSeparation = o.separation, o.separation

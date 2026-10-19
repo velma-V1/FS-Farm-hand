@@ -78,6 +78,22 @@ class LuaPullClearTests(unittest.TestCase):
         self.assertEqual(self.hitch.pullClearStep(w.env, session, 50), "CLEAR")   # latched: brakes only
         self.assertFalse(self.drives(w)[-1]["allowed"])
 
+    def test_three_point_arms_settling_after_the_detach_do_not_stop_it(self):
+        # Live 4e9c443e19bd4de1-10 (seeder): after GIANTS' detach the lower links moved
+        # the jointTransform back towards the implement (0.19 -> 0.14 m) while the
+        # tractor pulled away. The separation is measured from the tractor's body.
+        w = self.world(ahead=0.19)
+        session, why = self.start(w)
+        self.assertIsNotNone(session, why)
+
+        def arms_settle(i):
+            w.joint.x, w.joint.z = w.eye.x + 0.05 * math.sin(w.eye.yaw), w.eye.z + 0.05 * math.cos(w.eye.yaw)
+
+        code, _ = self.pull(w, session, hook=arms_settle)
+        self.assertEqual(code, "CLEAR")
+        w.sync()
+        self.assertGreaterEqual(self.separation(w), 4.0)
+
     def test_limits_are_hard_capped(self):
         for overrides in ({"maxDistanceM": 8.5}, {"maxSpeedKmh": 3.5}, {"maxSpeedKmh": 0.5},
                           {"timeoutMs": 31000}, {"clearM": 6.5}, {"isReserved": False}):
