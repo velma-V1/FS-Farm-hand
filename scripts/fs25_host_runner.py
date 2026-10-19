@@ -20,9 +20,12 @@ operations for it and nothing else:
     screen                 a screenshot of the FS25 window only, to a fixed file
     click                  one left click inside the FS25 window (x, y: fractions 0..1)
     key                    one key press in the FS25 window (name: a fixed list)
-    dismiss-signin         press OK on the Xbox "Sign In Required" dialog (that exact title,
-                           owned by FS25, its launch helper or Gaming Services' UI only);
-                           the game waits on it before it can load (a host Xbox fault)
+    dismiss-signin         answer the two Xbox fault dialogs the game waits on (a host fault):
+                           "Sign In Required" (owned by FS25, its launch helper or Gaming
+                           Services' UI) and Windows' "GamingServices... has stopped
+                           working" (owned by WerFault, its title naming GamingServices);
+                           their default button only; also names the visible windows of
+                           those processes for diagnosis
                            (click and key: never while a job or test runs; they are
                            the game's own menu controls, e.g. to load the savegame,
                            which the Xbox build's -autoStartSavegameId never finds)
@@ -101,6 +104,7 @@ OPS = {"status": (), "install-current-build": (), "launch-fs25": (), "restart-fs
 # The one foreign dialog the runner may answer, and the processes that may own it.
 SIGNIN_TITLE = "Sign In Required"
 SIGNIN_OWNERS = ("FarmingSimulator2025Game", "gamelaunchhelper", "GamingServicesUI")
+WER_OWNER, WER_TITLE_PART = "WerFault", "GamingServices"      # "GamingServices.exe stopped working"
 # Game controls: the only keys the runner ever presses (virtual-key codes).
 KEYS = {"enter": 0x0D, "escape": 0x1B, "space": 0x20, "tab": 0x09, "up": 0x26, "down": 0x28,
         "left": 0x25, "right": 0x27}
@@ -264,12 +268,13 @@ class System:
 
     def dismiss_signin(self) -> str:
         owners = ", ".join(f"'{_plain(o)}'" for o in SIGNIN_OWNERS)
-        script = _SIGNIN_PS.replace("{title}", _plain(SIGNIN_TITLE)).replace("{owners}", owners)
+        script = (_SIGNIN_PS.replace("{title}", _plain(SIGNIN_TITLE)).replace("{owners}", owners)
+                  .replace("{wer}", _plain(WER_OWNER)).replace("{werpart}", _plain(WER_TITLE_PART)))
         done = self._run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], timeout=30.0)
         out = (done.stdout or "").strip().splitlines()
         if done.returncode != 0 or not out:
             raise Refused("WINDOW_ACTION_FAILED", stderr=(done.stderr or "")[-300:])
-        return out[-1][:80]
+        return out[-1][:400]
 
     def start(self, program: str, arguments: list[str], folder: str) -> dict:
         """Detached, so it outlives this runner. Every value is fixed or validated.
@@ -366,25 +371,34 @@ public static class FHD {
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte sc, uint f, UIntPtr e);
-  public static IntPtr found = IntPtr.Zero; public static uint owner = 0;
-  public static void Find(string title) {
-    EnumWindows((h, l) => {
-      if (!IsWindowVisible(h)) return true;
-      var sb = new StringBuilder(256); GetWindowText(h, sb, 256);
-      if (sb.ToString() == title) { uint p; GetWindowThreadProcessId(h, out p); found = h; owner = p; return false; }
-      return true; }, IntPtr.Zero);
+  public static System.Collections.Generic.List<IntPtr> wins = new System.Collections.Generic.List<IntPtr>();
+  public static void All() {
+    EnumWindows((h, l) => { if (IsWindowVisible(h)) wins.Add(h); return true; }, IntPtr.Zero);
   }
+  public static string Title(IntPtr h) { var sb = new StringBuilder(256); GetWindowText(h, sb, 256); return sb.ToString(); }
+  public static uint Owner(IntPtr h) { uint p; GetWindowThreadProcessId(h, out p); return p; }
 }
 '@
-[FHD]::Find('{title}')
-if ([FHD]::found -eq [IntPtr]::Zero) { Write-Output 'NONE'; exit 0 }
-$name = (Get-Process -Id ([int][FHD]::owner)).ProcessName
-if (@({owners}) -notcontains $name) { Write-Output "FOREIGN $name"; exit 0 }
-[FHD]::SetForegroundWindow([FHD]::found) | Out-Null
+[FHD]::All()
+$owners = @({owners}); $target = [IntPtr]::Zero; $seen = @()
+foreach ($h in [FHD]::wins) {
+  $t = [FHD]::Title($h); if ($t -eq '') { continue }
+  try { $name = (Get-Process -Id ([int][FHD]::Owner($h))).ProcessName } catch { continue }
+  $ours = ($owners -contains $name) -or ($name -eq '{wer}')
+  if (-not $ours) { continue }
+  $seen += "$name=$t"
+  if ($target -eq [IntPtr]::Zero) {
+    if (($t -eq '{title}' -and $owners -contains $name) -or ($name -eq '{wer}' -and $t -like '*{werpart}*')) { $target = $h; $tname = "$name=$t" }
+  }
+}
+$list = ($seen -join '; ')
+if ($list.Length -gt 300) { $list = $list.Substring(0, 300) }
+if ($target -eq [IntPtr]::Zero) { Write-Output "NONE $list"; exit 0 }
+[FHD]::SetForegroundWindow($target) | Out-Null
 Start-Sleep -Milliseconds 300
 [FHD]::keybd_event(13, 28, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 80
 [FHD]::keybd_event(13, 28, 2, [UIntPtr]::Zero)
-Write-Output "DISMISSED $name"
+Write-Output "DISMISSED $tname"
 """
 
 
@@ -1177,11 +1191,10 @@ class Runner:
 
     def op_dismiss_signin(self):
         said = self.system.dismiss_signin()
+        detail = said.split(" ", 1)[1] if " " in said else ""
         if said.startswith("DISMISSED"):
-            return True, "DISMISSED", {"owner": said.split(" ", 1)[1] if " " in said else None}
-        if said.startswith("FOREIGN"):
-            return False, "FOREIGN_DIALOG", {"owner": said.split(" ", 1)[1][:40]}
-        return True, "NONE", {}
+            return True, "DISMISSED", {"owner": detail[:120]}
+        return True, "NONE", {"seen": detail[:300]}
 
     def op_collect(self, test_id: str | None = None):
         record = self.companion.test(test_id)

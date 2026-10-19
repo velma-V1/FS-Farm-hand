@@ -164,11 +164,28 @@ def _log_text() -> str:
     return text if _game_pid is None or f"PID: {_game_pid}\n" in head else ""
 
 
+_last_seen = ""
+
+
+def _dismiss() -> None:
+    """Answer the host's Xbox fault dialogs the game waits on (runner: dismiss-signin)."""
+    global _last_seen
+    answer = call("dismiss-signin")
+    result = answer.get("result") or {}
+    if answer.get("code") == "DISMISSED":
+        emit(event="load-save", step="dialog-dismissed", owner=result.get("owner"))
+    elif result.get("seen"):
+        _last_seen = result["seen"]
+
+
 def _wait_log(pattern: str, seconds: float, also=lambda: True) -> bool:
-    deadline = time.monotonic() + seconds
+    deadline, next_dismiss = time.monotonic() + seconds, 0.0
     while time.monotonic() < deadline:
         if pattern in _log_text() and also():
             return True
+        if time.monotonic() >= next_dismiss:
+            _dismiss()
+            next_dismiss = time.monotonic() + 8.0
         time.sleep(2.0)
     return False
 
@@ -201,10 +218,8 @@ def load_save(build: str | None = None, pid: int | None = None) -> int:
     _game_pid = pid
     deadline = time.monotonic() + MENU_S
     while time.monotonic() < deadline:
-        # The Xbox sign-in dialog must be answered before the game can load (the user).
-        answer = call("dismiss-signin")
-        if answer.get("code") == "DISMISSED":
-            emit(event="load-save", step="signin-dismissed", owner=(answer.get("result") or {}).get("owner"))
+        # The host's Xbox fault dialogs must be answered before the game can load (the user).
+        _dismiss()
         text = _log_text()
         if "Savegame not found" in text or "Starting singleplayer game" in text:
             break
@@ -214,7 +229,7 @@ def load_save(build: str | None = None, pid: int | None = None) -> int:
     text = _log_text()
     if not ("Savegame not found" in text or "Starting singleplayer game" in text):
         if SIGN_IN_FAILED in text or "Application quit" in text:
-            emit(event="load-save", ok=False, code="XBOX_SIGN_IN_FAILED",
+            emit(event="load-save", ok=False, code="XBOX_SIGN_IN_FAILED", seen=_last_seen,
                  hint="host Xbox/Gaming Services fault (GamingServicesUI); the game did not reach its menu")
             return SIGN_IN
         emit(event="load-save", ok=False, code="MENU_NOT_SEEN")
@@ -231,8 +246,10 @@ def load_save(build: str | None = None, pid: int | None = None) -> int:
             return INFRASTRUCTURE
     emit(event="load-save", step="loading")
     if not _wait_log("[Farmhand] bridge ready", LOAD_S) or not _stable_log():
-        emit(event="load-save", ok=False, code="MAP_NOT_LOADED")
-        return INFRASTRUCTURE
+        quit_early = "Application exit request forced" in _log_text() or "Application quit" in _log_text()
+        emit(event="load-save", ok=False, code="GAME_LEFT_THE_SAVE" if quit_early else "MAP_NOT_LOADED",
+             seen=_last_seen)
+        return SIGN_IN if quit_early else INFRASTRUCTURE
     for _ in range(4):                              # the loading screen's START
         call("key", {"name": "enter"})
         deadline = time.monotonic() + LINK_S / 4

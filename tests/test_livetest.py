@@ -836,15 +836,16 @@ class HostRunnerLifecycleTests(RunnerCase):
 
     def test_dismiss_signin_answers_only_that_dialog(self):
         self.assertEqual(self.send("dismiss-signin")["code"], "NONE")
-        self.system.dialog = "DISMISSED GamingServicesUI"
+        self.system.dialog = "DISMISSED WerFault=GamingServices.exe"
         answer = self.send("dismiss-signin")
-        self.assertEqual((answer["code"], answer["result"]["owner"]), ("DISMISSED", "GamingServicesUI"))
-        self.system.dialog = "FOREIGN notepad"
-        self.assertEqual(self.send("dismiss-signin")["code"], "FOREIGN_DIALOG")
+        self.assertEqual((answer["code"], answer["result"]["owner"]), ("DISMISSED", "WerFault=GamingServices.exe"))
+        self.system.dialog = "NONE FarmingSimulator2025Game=Farming Simulator 25"
+        self.assertEqual(self.send("dismiss-signin")["result"]["seen"], "FarmingSimulator2025Game=Farming Simulator 25")
         self.assertEqual(self.send("dismiss-signin", {"title": "Anything"})["code"], "BAD_ARGUMENTS")
         script = host._SIGNIN_PS
         self.assertIn("{title}", script)
-        self.assertIn("-notcontains $name", script)
+        self.assertIn("$owners -contains $name", script)
+        self.assertIn("-like '*{werpart}*'", script)
 
     def test_window_scripts_take_only_numbers_and_the_fixed_path(self):
         script = host._WINDOW_PS + host._SCREEN_PS + host._CLICK_PS + host._KEY_PS
