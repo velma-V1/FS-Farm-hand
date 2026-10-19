@@ -83,6 +83,10 @@ REAPPROACH_CODES = frozenset({"LOCAL_PATH_HITS_WAGON", "LOCAL_PATH_LEAVES_AREA",
 # GOTO drives to approaches per hitch (TRAVEL_NEAR and STAGE together); aims
 # GIANTS refuses outright (GOTO_INVALID) move nothing and do not count.
 MAX_APPROACH_DRIVES = 3
+# A GOTO drive to an approach the game stopped for making no progress (mod/FarmhandBridge.lua
+# NAVIGATE_STALL_MS; live 4167b7fd4e8143db-1: 1.2 km, then stuck 12 m short): the tractor is
+# stopped, and like an ended GOTO what follows is decided by the observed joints.
+GOTO_STALL_CODES = frozenset({"NAVIGATE_STALLED"})
 
 CANCELLABLE_STEPS = frozenset({"RESERVE", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
                                "DELIVER"})
@@ -588,6 +592,12 @@ class Executor:
                             else:
                                 self.world.stage(ids[0], ids[1], pose, owner)
                         except StepFailed as failure:
+                            if failure.code in GOTO_STALL_CODES:
+                                # Stopped by the game's no-progress watchdog: an ended
+                                # drive like any other; the fresh observation decides.
+                                log.info("%s to aim %s stalled (%s); observing", step, pose, failure.code)
+                                aim["drives"] += 1
+                                return True
                             if not failure.code.endswith("GOTO_INVALID"):
                                 raise
                             log.info("%s aim %s refused by GIANTS (%s)", step, pose, failure.code)

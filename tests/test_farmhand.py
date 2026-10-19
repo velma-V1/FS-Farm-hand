@@ -620,6 +620,31 @@ class GiantsNavigationTests(unittest.TestCase):
                     self.assertEqual(len(calls), MAX_APPROACH_DRIVES)    # never more drives
                     self.assertNotIn("STAGE", result.states)
 
+    def test_a_goto_stopped_as_stalled_is_judged_by_the_observation(self):
+        # Live 4167b7fd4e8143db-1: 1.2 km, then NAVIGATE_STALLED 12 m short of the aim.
+        for near, outcome in ((True, "COMPLETE"), (False, "FAILED")):
+            with self.subTest(near=near):
+                calls = []
+
+                class Stalled(MockWorld):
+                    def navigate(self, tractor_id, pose, owner):
+                        calls.append(pose)
+                        if len(calls) > MAX_APPROACH_DRIVES or (near and len(calls) > 1):
+                            return super().navigate(tractor_id, pose, owner)    # the delivery
+                        if near:                                 # stuck 3 m short of the aim
+                            super().navigate(tractor_id, Pose(pose.x + 3, pose.z, pose.yaw), owner)
+                        raise StepFailed("NAVIGATE_STALLED")
+
+                world = self.world(GOTO_TRACTOR, far=True, cls=Stalled)
+                result = Executor(world).execute(intent())
+                self.assertEqual(result.status, outcome, result)
+                if near:
+                    self.assertEqual(result.states.count("TRAVEL_NEAR"), 1)
+                    self.assertIn("LOCAL_MANEUVER", result.states)
+                else:                                            # stuck where it stood, each time
+                    self.assertEqual(result.reason, "TRAVEL_ENDED_TOO_FAR")
+                    self.assertEqual(len(calls), MAX_APPROACH_DRIVES)
+
     def test_aims_giants_refuses_as_blocked_are_skipped_without_moving(self):
         # AIParameterPosition:validate 83-90: a target on blocked ground is refused.
         for refused, outcome in ((5, "COMPLETE"), (6, "FAILED")):
