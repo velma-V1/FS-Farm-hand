@@ -39,7 +39,7 @@ RUNNER_STALE_S = 5.0
 # How long each op may take on the host (its own bounds plus a margin).
 TIMEOUT_S = {"status": 40.0, "install-current-build": 180.0, "launch-fs25": 660.0, "restart-fs25": 1800.0,
              "stop-fs25": 90.0, "run-hitch-test": 30.0, "run-request-test": 30.0, "stop-test": 30.0, "collect": 30.0,
-             "screen": 60.0, "click": 60.0, "key": 60.0}
+             "screen": 60.0, "click": 60.0, "key": 60.0, "dismiss-signin": 60.0}
 HITCH_WAIT_S = 23500.0         # beyond the longest job: a field-work plan of three 2 h jobs
 EXIT = {"COMPLETE": 0, "FAILED": 1, "BLOCKED": 3, "UNVERIFIED": 4, "CANCELLED": 5}
 INFRASTRUCTURE = 10
@@ -151,7 +151,7 @@ MENU_S, LOAD_S, LINK_S = 300.0, 900.0, 180.0
 # A host Xbox fault, not Farmhand's: GamingServicesUI crashes and the game logs this
 # (2026-10-19); the save system is then unavailable for that launch.
 SIGN_IN_FAILED = "XGameSaveInitializeProvider) => E_GS_USER_CANCELED"
-LAUNCH_ATTEMPTS, RELAUNCH_WAIT_S = 3, 120.0
+LAUNCH_ATTEMPTS, RELAUNCH_WAIT_S = 3, 20.0
 _game_pid: int | None = None        # only this game's log counts (launch rewrites it)
 
 
@@ -201,15 +201,22 @@ def load_save(build: str | None = None, pid: int | None = None) -> int:
     _game_pid = pid
     deadline = time.monotonic() + MENU_S
     while time.monotonic() < deadline:
+        # The Xbox sign-in dialog must be answered before the game can load (the user).
+        answer = call("dismiss-signin")
+        if answer.get("code") == "DISMISSED":
+            emit(event="load-save", step="signin-dismissed", owner=(answer.get("result") or {}).get("owner"))
         text = _log_text()
-        if SIGN_IN_FAILED in text:
-            emit(event="load-save", ok=False, code="XBOX_SIGN_IN_FAILED",
-                 hint="host Xbox/Gaming Services fault (GamingServicesUI); the save system is unavailable")
-            return SIGN_IN
         if "Savegame not found" in text or "Starting singleplayer game" in text:
             break
+        if "Application quit" in text:
+            break                                    # the game gave up (judged below)
         time.sleep(2.0)
-    else:
+    text = _log_text()
+    if not ("Savegame not found" in text or "Starting singleplayer game" in text):
+        if SIGN_IN_FAILED in text or "Application quit" in text:
+            emit(event="load-save", ok=False, code="XBOX_SIGN_IN_FAILED",
+                 hint="host Xbox/Gaming Services fault (GamingServicesUI); the game did not reach its menu")
+            return SIGN_IN
         emit(event="load-save", ok=False, code="MENU_NOT_SEEN")
         return INFRASTRUCTURE
     if "Starting singleplayer game" not in _log_text():

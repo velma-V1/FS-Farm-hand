@@ -78,7 +78,8 @@ have precedence; report conflicts instead of silently changing the scope.
   its package's own gamelaunchhelper.exe, else its exe — fixed paths —,
   restart or stop FS25 — that image only —, a screenshot of the FS25 window to a fixed
   file, one click inside that window or one key of a fixed list (the game's own menu
-  controls; never while a job or test runs), the production hitch_pair, the player's
+  controls; never while a job or test runs), OK on the Xbox "Sign In Required" dialog
+  (that title and its fixed owner processes only), the production hitch_pair, the player's
   own typed words through the production rules (letters, digits, spaces, light
   punctuation; 160 at most), STOP, collect). Never widen it into a shell, file or
   program interface, and never ship it or `--live-test` as release.

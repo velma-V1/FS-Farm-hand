@@ -20,6 +20,9 @@ operations for it and nothing else:
     screen                 a screenshot of the FS25 window only, to a fixed file
     click                  one left click inside the FS25 window (x, y: fractions 0..1)
     key                    one key press in the FS25 window (name: a fixed list)
+    dismiss-signin         press OK on the Xbox "Sign In Required" dialog (that exact title,
+                           owned by FS25, its launch helper or Gaming Services' UI only);
+                           the game waits on it before it can load (a host Xbox fault)
                            (click and key: never while a job or test runs; they are
                            the game's own menu controls, e.g. to load the savegame,
                            which the Xbox build's -autoStartSavegameId never finds)
@@ -94,7 +97,10 @@ MAX_BUILD_FILE_BYTES = 2_000_000
 # The allowlist: each op and the only arguments it takes (validated in parse_request).
 OPS = {"status": (), "install-current-build": (), "launch-fs25": (), "restart-fs25": (), "stop-fs25": (),
        "run-hitch-test": (), "run-request-test": ("text",), "stop-test": (), "collect": ("test_id",),
-       "screen": (), "click": ("x", "y"), "key": ("name",)}
+       "screen": (), "click": ("x", "y"), "key": ("name",), "dismiss-signin": ()}
+# The one foreign dialog the runner may answer, and the processes that may own it.
+SIGNIN_TITLE = "Sign In Required"
+SIGNIN_OWNERS = ("FarmingSimulator2025Game", "gamelaunchhelper", "GamingServicesUI")
 # Game controls: the only keys the runner ever presses (virtual-key codes).
 KEYS = {"enter": 0x0D, "escape": 0x1B, "space": 0x20, "tab": 0x09, "up": 0x26, "down": 0x28,
         "left": 0x25, "right": 0x27}
@@ -111,8 +117,8 @@ COMPANION_QUIT_S = 45.0
 COMPANION_START_S = 30.0
 # The Xbox (GDK) launcher may take over a minute before the game process appears
 # (live 2026-10-18: FS25_DID_NOT_START at 60 s, then the game loaded).
-# Live 2026-10-19: after a stop the game process appeared ~4 min after the launch.
-GAME_CLOSE_S, GAME_KILL_S, GAME_APPEAR_S = 20.0, 15.0, 600.0
+# Each of the three starters is given GAME_APPEAR_S / 3 (the user: relaunch within 3 min).
+GAME_CLOSE_S, GAME_KILL_S, GAME_APPEAR_S = 20.0, 15.0, 210.0
 READY_S = 900.0
 MAX_LOG_LINES, MAX_LINE_CHARS = 2000, 1200    # a full maneuver STEER line is ~700 characters
 _ID = re.compile(r"[0-9]{1,20}")
@@ -256,6 +262,15 @@ class System:
     def key(self, pid: int, name: str) -> dict:
         return self.window(pid, _KEY_PS.replace("{vk}", str(int(KEYS[name]))))
 
+    def dismiss_signin(self) -> str:
+        owners = ", ".join(f"'{_plain(o)}'" for o in SIGNIN_OWNERS)
+        script = _SIGNIN_PS.replace("{title}", _plain(SIGNIN_TITLE)).replace("{owners}", owners)
+        done = self._run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], timeout=30.0)
+        out = (done.stdout or "").strip().splitlines()
+        if done.returncode != 0 or not out:
+            raise Refused("WINDOW_ACTION_FAILED", stderr=(done.stderr or "")[-300:])
+        return out[-1][:80]
+
     def start(self, program: str, arguments: list[str], folder: str) -> dict:
         """Detached, so it outlives this runner. Every value is fixed or validated.
         Returns what the starter said (for a launch that never appears), bounded."""
@@ -333,6 +348,43 @@ $sc = [byte][FH]::MapVirtualKey({vk}, 0)
 [FH]::keybd_event({vk}, $sc, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 80
 [FH]::keybd_event({vk}, $sc, 2, [UIntPtr]::Zero)
 Write-Output "$w $hh"
+"""
+
+
+# Press OK on the Xbox sign-in dialog: EnumWindows for that exact title, owner process
+# by name from the fixed list, then the dialog's default button (Enter) after bringing
+# it to the front. Prints DISMISSED or NONE. No value here comes from a request.
+_SIGNIN_PS = r"""
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System; using System.Text; using System.Runtime.InteropServices;
+public static class FHD {
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, IntPtr l);
+  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte sc, uint f, UIntPtr e);
+  public static IntPtr found = IntPtr.Zero; public static uint owner = 0;
+  public static void Find(string title) {
+    EnumWindows((h, l) => {
+      if (!IsWindowVisible(h)) return true;
+      var sb = new StringBuilder(256); GetWindowText(h, sb, 256);
+      if (sb.ToString() == title) { uint p; GetWindowThreadProcessId(h, out p); found = h; owner = p; return false; }
+      return true; }, IntPtr.Zero);
+  }
+}
+'@
+[FHD]::Find('{title}')
+if ([FHD]::found -eq [IntPtr]::Zero) { Write-Output 'NONE'; exit 0 }
+$name = (Get-Process -Id ([int][FHD]::owner)).ProcessName
+if (@({owners}) -notcontains $name) { Write-Output "FOREIGN $name"; exit 0 }
+[FHD]::SetForegroundWindow([FHD]::found) | Out-Null
+Start-Sleep -Milliseconds 300
+[FHD]::keybd_event(13, 28, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 80
+[FHD]::keybd_event(13, 28, 2, [UIntPtr]::Zero)
+Write-Output "DISMISSED $name"
 """
 
 
@@ -1122,6 +1174,14 @@ class Runner:
     def op_key(self, name: str):
         self._no_job()
         return True, "PRESSED", {**self.system.key(self._game_pid(), name), "key": name}
+
+    def op_dismiss_signin(self):
+        said = self.system.dismiss_signin()
+        if said.startswith("DISMISSED"):
+            return True, "DISMISSED", {"owner": said.split(" ", 1)[1] if " " in said else None}
+        if said.startswith("FOREIGN"):
+            return False, "FOREIGN_DIALOG", {"owner": said.split(" ", 1)[1][:40]}
+        return True, "NONE", {}
 
     def op_collect(self, test_id: str | None = None):
         record = self.companion.test(test_id)

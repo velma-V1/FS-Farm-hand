@@ -338,6 +338,10 @@ class FakeSystem:
         if force or not getattr(self, "stubborn", False):
             self.fs25 = []
 
+    def dismiss_signin(self):
+        self.calls.append(("dismiss",))
+        return getattr(self, "dialog", "NONE")
+
     def screen(self, pid, path):
         self.calls.append(("screen", pid, path))
         return {"window": [1920, 1080]}
@@ -829,6 +833,18 @@ class HostRunnerLifecycleTests(RunnerCase):
             self.assertEqual(self.send("key", {"name": "escape"})["code"], "JOB_RUNNING")
             self.assertEqual(self.send("screen")["code"], "SCREEN")          # looking never interferes
         self.assertEqual(len([c for c in self.system.calls if c[0] in ("click", "key")]), 2)
+
+    def test_dismiss_signin_answers_only_that_dialog(self):
+        self.assertEqual(self.send("dismiss-signin")["code"], "NONE")
+        self.system.dialog = "DISMISSED GamingServicesUI"
+        answer = self.send("dismiss-signin")
+        self.assertEqual((answer["code"], answer["result"]["owner"]), ("DISMISSED", "GamingServicesUI"))
+        self.system.dialog = "FOREIGN notepad"
+        self.assertEqual(self.send("dismiss-signin")["code"], "FOREIGN_DIALOG")
+        self.assertEqual(self.send("dismiss-signin", {"title": "Anything"})["code"], "BAD_ARGUMENTS")
+        script = host._SIGNIN_PS
+        self.assertIn("{title}", script)
+        self.assertIn("-notcontains $name", script)
 
     def test_window_scripts_take_only_numbers_and_the_fixed_path(self):
         script = host._WINDOW_PS + host._SCREEN_PS + host._CLICK_PS + host._KEY_PS
