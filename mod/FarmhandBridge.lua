@@ -410,7 +410,10 @@ end
 function steppers.pull_clear(env, task, dt)
     local code = Bridge.Hitch.pullClearStep(env, task.session, dt)
     if code == "CONTINUE" then return nil end
-    log("pull_clear end %s %s", code, Bridge.Hitch.describePull(task.session))
+    if not task.endLogged then          -- once, not every frame while it brakes to rest
+        task.endLogged = true
+        log("pull_clear end %s %s", code, Bridge.Hitch.describePull(task.session))
+    end
     if code ~= "CLEAR" then return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code end
     return settle(task, code)       -- braked by the latch; DONE once observed at rest
 end
