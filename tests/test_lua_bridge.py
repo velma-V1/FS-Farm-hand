@@ -361,8 +361,14 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertEqual(self.results(2)[-1], (2, "DONE", "GOTO_ENDED"))
 
     def test_navigate_without_progress_is_stopped(self):
+        # d7889a7a8879421b-5 live: an active GOTO left the tractor still for 90 s. The
+        # stall logs the agent's state (BLOCKED waits forever, AIDrivable:onUpdate).
+        output = []
+        self.lua.globals().print = lambda *a: output.append(" ".join(map(str, a)))
         self.adopt()
         self.w.gotoStarts = True
+        self.w.tractor.spec_aiDrivable = self.lua.table(lastState=3, distanceToTarget=171.5)
+        self.lua.execute("local w = ...; w.env.AIDrivable = { STATES = { [3] = 'BLOCKED' } }", self.w)
         self.send(1, "navigate", self.POSE)
         for _ in range(8):                                                 # 3 m every 30 s: progress
             self.beating(30000)
@@ -372,6 +378,8 @@ class LuaBridgeTests(unittest.TestCase):
         self.beating(92000)
         self.assertEqual(self.results(1)[-1], (1, "FAILED", "NAVIGATE_STALLED"))
         self.assertIn("stopCurrentAIJob", self.calls())
+        self.assertTrue(any("navigate stalled: agent state BLOCKED, 171.5 m from its target" in line
+                            for line in output), output)
 
     def test_navigate_failures(self):
         cases = [("never_started", "FAILED", "GOTO_NOT_STARTED", False),

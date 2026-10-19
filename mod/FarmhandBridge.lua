@@ -167,6 +167,21 @@ local function startGoto(env, spec, prefix)
     return { seen = false, started = true }
 end
 
+-- Diagnostics only, never a decision: the navigation agent's last state (DRIVING,
+-- PLANNING, BLOCKED, TARGET_REACHED, NOT_REACHABLE) and its distance to the target,
+-- kept in spec_aiDrivable during and after the job (AIDrivable:onUpdate 277, 317-325;
+-- unsetAITarget 496-505 resets neither).
+local function logAgent(env, v, what)
+    pcall(function()
+        local spec = v.spec_aiDrivable
+        local names = env.AIDrivable and env.AIDrivable.STATES
+        local left = spec.distanceToTarget
+        log("%s: agent state %s, %s m from its target", what,
+            tostring(names and names[spec.lastState] or spec.lastState),
+            finite(left) and string.format("%.1f", left) or "?")
+    end)
+end
+
 -- progress: whether a lack of movement ends the job (navigate only; a stage is
 -- short and bounded by its own timeout).
 local function stepGoto(env, task, timeoutMs, timeoutCode, endCode, progress)
@@ -189,6 +204,7 @@ local function stepGoto(env, task, timeoutMs, timeoutCode, endCode, progress)
                     >= Bridge.NAVIGATE_PROGRESS_M then
                 task.fromX, task.fromZ, task.fromAt = x, z, task.elapsed
             elseif task.elapsed - task.fromAt > Bridge.NAVIGATE_STALL_MS then
+                logAgent(env, v, task.op .. " stalled")
                 return "FAILED", "NAVIGATE_STALLED"
             end
         end
@@ -200,14 +216,7 @@ local function stepGoto(env, task, timeoutMs, timeoutCode, endCode, progress)
         -- distance to the target, both left in spec_aiDrivable after the job
         -- (AIDrivable:onUpdate 277, 317-325; unsetAITarget 496-505 resets neither).
         task.endLogged = true
-        pcall(function()
-            local spec = v.spec_aiDrivable
-            local names = env.AIDrivable and env.AIDrivable.STATES
-            local left = spec.distanceToTarget
-            log("%s ended: agent state %s, %s m from its target", task.op,
-                tostring(names and names[spec.lastState] or spec.lastState),
-                finite(left) and string.format("%.1f", left) or "?")
-        end)
+        logAgent(env, v, task.op .. " ended")
     end
     return settle(task, endCode)
 end
