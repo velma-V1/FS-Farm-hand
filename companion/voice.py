@@ -203,8 +203,8 @@ class VoiceInput:
 # ------------------------------------------------------------------ replies
 
 PHRASES = {
-    "ACCEPTED": "Fetching a tractor and forage wagon.", "ACCEPTED_MOVE": "On my way.",
-    "COMPLETE": "Tractor and forage wagon delivered.", "COMPLETE_MOVE": "Arrived.",
+    "ACCEPTED": "Fetching a tractor and the implement.", "ACCEPTED_MOVE": "On my way.",
+    "COMPLETE": "Tractor and implement delivered.", "COMPLETE_MOVE": "Arrived.",
     "CANCELLED": "Stopped.", "STOPPING": "Stopping.", "NOTHING_TO_STOP": "Nothing to stop.",
     "BUSY": "I am already working on something.", "NOT_UNDERSTOOD": "Sorry, I did not understand.",
     "NOT_HEARD": "Sorry, I did not hear that.", "STATUS_IDLE": "Nothing right now.",

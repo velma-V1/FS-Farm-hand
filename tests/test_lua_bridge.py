@@ -506,9 +506,9 @@ class LuaBridgeTests(unittest.TestCase):
         self.W.run(self.w, 1000)
         self.assertEqual(self.notices(), [
             "4:Farmhand: companion connected",
-            "4:Farmhand: tractor and forage wagon delivered",
+            "4:Farmhand: tractor and implement delivered",
             "4:Farmhand: stopping",
-            "1:Farmhand: not delivered - no available tractor and forage wagon",
+            "1:Farmhand: not delivered - no available tractor and implement",
             "1:Farmhand: not delivered - SOMETHING_NEW"])
 
     def test_the_ai_menu_is_shown_and_the_pick_is_sent(self):
@@ -545,7 +545,7 @@ class LuaBridgeTests(unittest.TestCase):
 
     def test_notice_texts_for_progress_status_and_outcomes(self):
         cases = {"WORKING_DELIVER": ("Farmhand: driving to the destination", False),
-                 "STATUS_WORKING_ALIGN_REVERSE": ("Farmhand: working - reversing to the wagon", False),
+                 "STATUS_WORKING_ALIGN_REVERSE": ("Farmhand: working - reversing to the implement", False),
                  "STATUS_LAST_CANCELLED": ("Farmhand: idle; last job stopped", False),
                  "COMPLETE_MOVE": ("Farmhand: arrived", False),
                  "FAILED_NAVIGATE_STALLED": ("Farmhand: not delivered - the tractor got stuck", True)}
@@ -776,13 +776,13 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertIsNone(self.bridge.lastManeuver)
 
     def test_maneuver_notice_texts(self):
-        cases = {"WORKING_LOCAL_MANEUVER": ("Farmhand: lining up with the wagon", False),
-                 "WORKING_STAGE": ("Farmhand: driving to the wagon", False),
+        cases = {"WORKING_LOCAL_MANEUVER": ("Farmhand: lining up with the implement", False),
+                 "WORKING_STAGE": ("Farmhand: driving to the implement", False),
                  "FAILED_SEATED_DURING_MANEUVER": (
                      "Farmhand: not delivered - step out of the tractor for the last metres of the hitch, "
                      "then ask again", True),
                  "FAILED_LOCAL_PATH_HITS_WAGON": (
-                     "Farmhand: not delivered - there is no room to line up with the wagon from here", True)}
+                     "Farmhand: not delivered - there is no room to line up with the implement from here", True)}
         for notice, expected in cases.items():
             with self.subTest(notice=notice):
                 self.assertEqual(tuple(self.bridge.noticeText(notice)), expected)

@@ -734,7 +734,7 @@ class ServiceTests(unittest.TestCase):
         game.key(2, "talk_end")
         self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
         self.assertEqual(notices, ["LISTENING", "ACCEPTED", "COMPLETE"])
-        self.assertEqual(said, ["Fetching a tractor and forage wagon.", "Tractor and forage wagon delivered."])
+        self.assertEqual(said, ["Fetching a tractor and the implement.", "Tractor and implement delivered."])
         game.say(3, "what are you doing")                    # typed: answered on screen only
         self.wait_for(lambda: notices[-1:] == ["STATUS_LAST_COMPLETE"])
         self.assertEqual(len(said), 2)

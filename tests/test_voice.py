@@ -184,7 +184,7 @@ class ReplyTests(unittest.TestCase):
             replies(code, True)
         self.assertEqual(shown, ["COMPLETE", "ACCEPTED", "WORKING_DELIVER", "STATUS_WORKING_ALIGN_REVERSE",
                                  "BLOCKED_NO_ELIGIBLE_PAIR", "CONNECTED_X"])
-        self.assertEqual(said, ["Fetching a tractor and forage wagon.", "Working on it: align reverse.",
+        self.assertEqual(said, ["Fetching a tractor and the implement.", "Working on it: align reverse.",
                                 "I could not do that. The reason is shown on screen."])
         voice.Replies(shown.append, None)("COMPLETE", True)          # no speaker: shown only
 

@@ -582,10 +582,12 @@ end
 local PLAN_REASON = { KEEP_OUT = "LOCAL_PATH_HITS_WAGON", ENVELOPE_EXCEEDED = "LOCAL_PATH_LEAVES_AREA",
                       OTHER_VEHICLE_NEAR = "LOCAL_PATH_BLOCKED", PERSON_TOO_CLOSE = "LOCAL_PATH_PERSON" }
 
--- The shortest candidate that keeps the margin, or nil and why none does.
+-- The shortest candidate that keeps the margin, or nil and why none does: the
+-- reason of the shortest candidate refused (live 3da28a3f24dd450b-1 named the
+-- longest one's, the work radius, when a parked vehicle blocked every short one).
 function Hitch.chooseCurve(s, x, y, p)
     local D = Hitch.LOCAL
-    local best, why = nil, "LOCAL_NO_PATH"
+    local best, why, whyLength = nil, "LOCAL_NO_PATH", math.huge
     for _, ahead in ipairs(D.lineupAheadM) do
         for _, c in ipairs(Hitch.curves(x, y, p, ahead + s.back, s.turnRadius)) do
             if c.length > Hitch.LOCAL_LIMITS.maxPathM then
@@ -606,7 +608,7 @@ function Hitch.chooseCurve(s, x, y, p)
                 best = c
                 break
             end
-            why = PLAN_REASON[bad]
+            if c.length < whyLength then why, whyLength = PLAN_REASON[bad], c.length end
         end
     end
     return best, why

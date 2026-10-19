@@ -224,6 +224,11 @@ return W
 
 CASE_A = dict(ahead=3.44, lateral=-12.40, heading=math.radians(85.9))
 CASE_B = dict(ahead=5.52, lateral=-17.97, heading=math.radians(162.9))
+# 3da28a3f24dd450b-1 (702e468, tractor 170 / cultivator 165, joints 1/1): GOTO ended
+# facing the implement in a yard; a header and its trolley parked 6 m beside it.
+CASE_C = dict(ahead=15.82, lateral=-13.28, heading=math.radians(-165.5), back=1.1, radius=4.36,
+              minRadius=4.36)
+CASE_C_PARKED = ((-2.8, -5.4), (-2.3, -6.1), (8.9, 10.8), (12.9, 18.3), (18.0, 21.1))
 
 
 class LuaManeuverTests(unittest.TestCase):
@@ -616,6 +621,19 @@ class LuaManeuverTests(unittest.TestCase):
         else:
             self.assertEqual(why, "LOCAL_PATH_BLOCKED")
             self.assertEqual(self.drives(w), [])
+
+    def test_live_yard_refusal_names_the_parked_vehicles_not_the_work_radius(self):
+        w = self.world(**CASE_C)
+        session, why = self.start(w)
+        self.assertIsNotNone(session, why)               # the open yard has a curve
+        w = self.world(**CASE_C)
+        fx, fz = math.sin(w.eye.yaw), math.cos(w.eye.yaw)
+        for x, y in CASE_C_PARKED:
+            w.addVehicle(x * fx + y * fz, x * fz - y * fx)
+        session, why = self.start(w)
+        self.assertIsNone(session)
+        self.assertEqual(why, "LOCAL_PATH_BLOCKED")
+        self.assertEqual(self.drives(w), [])
 
     def test_vehicles_attached_to_the_pair_or_far_away_do_not_block(self):
         w = self.world(**CASE_A)
