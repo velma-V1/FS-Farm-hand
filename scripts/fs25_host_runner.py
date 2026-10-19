@@ -243,6 +243,8 @@ class Targets:
             _plain(text)
         self.local_profile, self.local_data = local(profile), local(data)
         self.local_exe = local(exe)
+        # The package's launch helper beside the x64 folder (Content\\gamelaunchhelper.exe).
+        self.launcher = str(PureWindowsPath(exe).parent.parent / "gamelaunchhelper.exe")
         self.mod = self.local_profile / "mods" / MOD_NAME
         self.settings = self.local_profile.joinpath(*MOD_SETTINGS)
         self.live = self.settings / LIVE_FOLDER
@@ -888,15 +890,21 @@ class Runner:
                                    "installed": self._installed_builds()}
 
     def _launch(self):
-        said = self.system.start(self.targets.exe, self.targets.game_arguments(),
-                                 str(PureWindowsPath(self.targets.exe).parent))
-        deadline = time.monotonic() + GAME_APPEAR_S
-        while time.monotonic() < deadline:
-            pids = self.system.processes(FS25_IMAGE)
-            if pids:
-                return pids
-            time.sleep(1.0)
-        raise Refused("FS25_DID_NOT_START", starter=said or {})
+        """The package's own entry point first (Content\\gamelaunchhelper.exe, the
+        appxmanifest Application Executable, which starts the game exe inside the
+        Xbox package; live 2026-10-18 the bare exe started only some of the time),
+        then the game exe itself. Both are fixed paths derived from the target."""
+        said = {}
+        for program in (self.targets.launcher, self.targets.exe):
+            said[PureWindowsPath(program).name] = self.system.start(
+                program, self.targets.game_arguments(), str(PureWindowsPath(program).parent)) or {}
+            deadline = time.monotonic() + GAME_APPEAR_S / 2
+            while time.monotonic() < deadline:
+                pids = self.system.processes(FS25_IMAGE)
+                if pids:
+                    return pids
+                time.sleep(1.0)
+        raise Refused("FS25_DID_NOT_START", starter=said)
 
     def op_launch_fs25(self):
         if self.system.processes(FS25_IMAGE):
