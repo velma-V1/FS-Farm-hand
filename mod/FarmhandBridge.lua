@@ -13,6 +13,8 @@
 --      detach GIANTS detach of one attached implement, where GIANTS allows it
 --      pull_clear Farmhand's bounded straight pull forward, only straight after
 --               that detach                       (Hitch.newPullClear / pullClearStep)
+--      fieldwork GIANTS' own field-work helper (AIJobFieldWork): drives to a point
+--               inside the field, then works the field it finds there
 --      stop   stop the Farmhand-owned motion on a tractor
 --    Bridge.start(env, spec) -> task | nil, code[, status]
 --    Bridge.step(env, task, dt) -> nil while running, else status, code
@@ -48,6 +50,10 @@ Bridge.SETTLE_TIMEOUT_MS = 5000       -- an ended job must come to rest within t
 Bridge.STAGE_TIMEOUT_MS = 120000
 Bridge.DETACH_TIMEOUT_MS = 10000      -- GIANTS' detach (lowering arms) must end within this
 Bridge.PULL_AFTER_DETACH_MS = 30000   -- a pull-clear only this soon after its detach
+Bridge.FIELDWORK_TIMEOUT_MS = 7200000 -- 2 h: a small owned field takes minutes
+Bridge.FIELDWORK_STALL_MS = 300000    -- running but unmoved (< 2 m) for 5 min: stopped
+Bridge.FIELDWORK_CHECK_MS = 3000      -- a bounded test area is re-measured this often
+Bridge.FIELDWORK_MAX_AREA_M2 = 20000  -- the largest bounded test area
 Bridge.DRIVE_TIMEOUT_MS = 1200000
 -- A navigate whose tractor gains no NAVIGATE_PROGRESS_M for NAVIGATE_STALL_MS is
 -- stopped: GIANTS keeps a BLOCKED agent waiting (AIDrivable:onUpdate 314-316).
@@ -422,6 +428,144 @@ function aborts.pull_clear(env, task)
     Bridge.Hitch.abort(env, task.session, "STOPPED")
 end
 
+-- -------------------------------------------------------------- fieldwork
+-- GIANTS' field-work job, started like GOTO (Hitch.startStaging; AutoDrive
+-- Specialization.lua:1518-1527): AIJobTypeManager registers "FIELDWORK" ->
+-- AIJobFieldWork (36); applyCurrentState(vehicle, mission, farmId, false) (134-163),
+-- positionAngle at a point inside the field (setPosition/setAngle, snapped), setValues
+-- (199-211), validate (vehicle only, 215-224), aiSystem:startJob (AISystem 540-559).
+-- Task 1 drives there (AITaskDriveTo), task 2 works the field found from that
+-- position (AIDriveStrategyFieldCourse:setAIVehicle 47-139). The job ends only through
+-- an AI message (AISystem:stopJobInternal publishes AI_JOB_STOPPED (job, aiMessage),
+-- 576-581); its class is the reason. An ended job is never "worked": the companion
+-- measures the field's state.
+Bridge.AI_STOP_CODES = {
+    { "AIMessageSuccessFinishedJob", "FINISHED" },
+    { "AIMessageSuccessStoppedByUser", "STOPPED_BY_USER" },
+    { "AIMessageErrorFieldNotOwned", "FIELD_NOT_OWNED" },
+    { "AIMessageErrorNoFieldFound", "NO_FIELD_FOUND" },
+    { "AIMessageErrorFieldNotReady", "FIELD_NOT_READY" },
+    { "AIMessageErrorOutOfFill", "OUT_OF_FILL" },
+    { "AIMessageErrorOutOfMoney", "OUT_OF_MONEY" },
+    { "AIMessageErrorOutOfFuel", "OUT_OF_FUEL" },
+    { "AIMessageErrorWrongSeason", "WRONG_SEASON" },
+    { "AIMessageErrorNotReachable", "NOT_REACHABLE" },
+    { "AIMessageErrorBlockedByObject", "BLOCKED_BY_OBJECT" },
+    { "AIMessageErrorCouldNotPrepare", "COULD_NOT_PREPARE" },
+    { "AIMessageErrorImplementWrongWay", "IMPLEMENT_WRONG_WAY" },
+    { "AIMessageErrorVehicleBroken", "VEHICLE_BROKEN" },
+}
+Bridge.aiStops = setmetatable({}, { __mode = "k" })   -- vehicle -> code of its last ended job
+
+-- AI_JOB_STOPPED listener: the stopped job's vehicle and why (ClassUtil as
+-- AIMessageManager:getMessageIndex 137-145). Diagnostics and the op's end code only.
+function Bridge.onAIJobStopped(env, job, aiMessage)
+    pcall(function()
+        local vehicle = job.vehicleParameter:getVehicle()
+        local class = env.ClassUtil.getClassObjectByObject(aiMessage)
+        local code = "AI_STOPPED"
+        for _, entry in ipairs(Bridge.AI_STOP_CODES) do
+            if env[entry[1]] ~= nil and class == env[entry[1]] then code = entry[2] end
+        end
+        Bridge.aiStops[vehicle] = code
+        log("AI job ended for vehicle %s: %s", tostring(env.NetworkUtil.getObjectId(vehicle)), code)
+    end)
+end
+
+function starters.fieldwork(env, spec)
+    local v = spec.tractor
+    local denied = idle(env, v, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    if not (finite(spec.x) and finite(spec.z) and finite(spec.yaw)) then return nil, "INVALID_POSE" end
+    if spec.area == 0 then spec.area = nil end              -- 0: the whole field
+    if spec.area ~= nil and not (finite(spec.area) and spec.area > 0 and spec.area <= Bridge.FIELDWORK_MAX_AREA_M2) then
+        return nil, "INVALID_AREA"
+    end
+    local ok, reason = pcall(function()
+        local mission = env.g_currentMission
+        local job = mission.aiJobTypeManager:createJob(env.AIJobType.FIELDWORK)
+        if job == nil then return "NO_FIELDWORK_JOB" end
+        if job:getIsAvailableForVehicle(v) ~= true then return "FIELDWORK_UNAVAILABLE" end
+        job:applyCurrentState(v, mission, spec.farmId, false)
+        job.positionAngleParameter:setPosition(spec.x, spec.z)
+        job.positionAngleParameter:setAngle(spec.yaw)
+        job:setValues()
+        if job:validate(spec.farmId) ~= true then return "FIELDWORK_INVALID" end
+        Bridge.aiStops[v] = nil
+        pcall(Bridge.Observe.refreshField, env, spec.field)   -- the field as it was before
+        mission.aiSystem:startJob(job, spec.farmId)
+        return nil
+    end)
+    if not ok then return nil, "FIELDWORK_ERROR" end
+    if reason ~= nil then return nil, reason end
+    local cache = Bridge.Observe.fieldCache
+    local before = cache and spec.field and cache[spec.field]
+    return { seen = false, started = true, before = before and before.record, sinceCheck = 0 }
+end
+
+-- The m2 of the field whose state changed since `before`: the larger of the
+-- ground-type and the spray-level share that moved (half the summed absolute share
+-- differences), times the field's measured m2. nil if either is unmeasured.
+function Bridge.changedArea(before, after)
+    if type(before) ~= "table" or type(after) ~= "table" or not finite(after.total_m2) then return nil end
+    local function moved(a, b)
+        local names, sum = {}, 0
+        for k in pairs(a or {}) do names[k] = true end
+        for k in pairs(b or {}) do names[k] = true end
+        for k in pairs(names) do sum = sum + math.abs(((b or {})[k] or 0) - ((a or {})[k] or 0)) end
+        return sum / 2
+    end
+    return math.max(moved(before.ground, after.ground), moved(before.spray, after.spray)) * after.total_m2
+end
+
+function steppers.fieldwork(env, task, dt)
+    local status, code = stillOurs(task.spec)
+    if status ~= nil then return status, code end
+    local v = task.spec.tractor
+    local active = v:getIsAIActive()
+    if active == true then task.seen = true end
+    if not task.seen then
+        if task.elapsed > Bridge.START_TIMEOUT_MS then return "FAILED", Bridge.aiStops[v] or "FIELDWORK_NOT_STARTED" end
+        return nil
+    end
+    if active ~= false then
+        if active ~= true then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
+        if task.elapsed > Bridge.FIELDWORK_TIMEOUT_MS then return "FAILED", "TIMEOUT" end
+        local x, _, z = env.getWorldTranslation(v.rootNode)
+        if not (finite(x) and finite(z)) then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
+        if task.fromX == nil or math.sqrt((x - task.fromX) ^ 2 + (z - task.fromZ) ^ 2) >= Bridge.NAVIGATE_PROGRESS_M then
+            task.fromX, task.fromZ, task.fromAt = x, z, task.elapsed
+        elseif task.elapsed - task.fromAt > Bridge.FIELDWORK_STALL_MS then
+            return "FAILED", "FIELDWORK_STALLED"
+        end
+        -- A bounded test area: once that much of the field changed, GIANTS' own stop.
+        if task.spec.area ~= nil and not task.areaReached then
+            task.sinceCheck = task.sinceCheck + (dt or 0)
+            if task.sinceCheck >= Bridge.FIELDWORK_CHECK_MS then
+                task.sinceCheck = 0
+                pcall(Bridge.Observe.refreshField, env, task.spec.field)
+                local now = (Bridge.Observe.fieldCache or {})[task.spec.field]
+                local changed = Bridge.changedArea(task.before, now and now.record)
+                if changed ~= nil and changed >= task.spec.area then
+                    log("fieldwork: %.0f m2 of field %s changed (test area %.0f m2); stopping the helper",
+                        changed, tostring(task.spec.field), task.spec.area)
+                    task.areaReached = true
+                    Bridge.Hitch.cancelStaging(env, v)
+                end
+            end
+        end
+        return nil
+    end
+    -- Ended: DONE with GIANTS' reason once at rest; the companion judges the field,
+    -- measured again now.
+    local ended, endCode = settle(task, task.areaReached and "AREA_REACHED" or Bridge.aiStops[v] or "AI_STOPPED")
+    if ended ~= nil then pcall(Bridge.Observe.refreshField, env, task.spec.field) end
+    return ended, endCode
+end
+
+aborts.fieldwork = abortGoto
+
 -- ------------------------------------------------------------------- stop
 -- spec.target: the running task on this tractor, if any; it is aborted first.
 function starters.stop(env, spec)
@@ -443,7 +587,8 @@ function steppers.stop(env, task)
     end
     local ownMotion = Bridge.pendingGoto[v] ~= nil or (target ~= nil
         and ((target.op == "drive" and v.ad.stateModule:isActive() ~= false)
-        or ((target.op == "stage" or target.op == "navigate") and target.seen and v:getIsAIActive() ~= false)))
+        or ((target.op == "stage" or target.op == "navigate" or target.op == "fieldwork") and target.seen
+            and v:getIsAIActive() ~= false)))
     if not ownMotion and stopped(v) then
         Bridge.Hitch.disarm(v)                    -- the job's motion is over: stop watching
         return "DONE", "STOPPED"
@@ -595,7 +740,7 @@ function Bridge:checkSession()
 end
 
 local ATTRS = { tractor = "tractor", wagon = "wagon", marker = "marker", x = "x", z = "z", yaw = "yaw",
-                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist" }
+                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area" }
 
 function Bridge:pollCommand()
     local env, path = self.env, self.dir .. Bridge.COMMAND_FILE
@@ -686,9 +831,10 @@ function Bridge:update(dt)
     end
     self.snapshotTimer = self.snapshotTimer + dt
     if self.snapshotTimer >= Bridge.SNAPSHOT_MS and self.pipe ~= nil then
+        local elapsed = self.snapshotTimer
         self.snapshotTimer = 0
         self.seq = self.seq + 1
-        local line = self.Observe.snapshot(self.env, self.seq, self.session)
+        local line = self.Observe.snapshot(self.env, self.seq, self.session, elapsed)
         if line ~= nil then self:writeLine(line) end
     end
 end
@@ -705,6 +851,8 @@ Bridge.NOTICES = {
     COMPLETE_HITCH = "Farmhand: tractor and implement hitched",
     ACCEPTED_DETACH = "Farmhand: unhitching the implement",
     COMPLETE_DETACH = "Farmhand: implement unhitched",
+    ACCEPTED_FIELD_WORK = "Farmhand: on it - working the field",
+    COMPLETE_FIELD_WORK = "Farmhand: field work done and checked on the field",
     COMPLETE_DETACH_NOT_CLEAR = "Farmhand: implement unhitched; the tractor could not pull clear of it, so drive it away before the next job",
     UNSUPPORTED_TRACTOR_ONLY = "Farmhand: moving a tractor on its own is not supported yet; ask for a tractor with an implement, such as the forage wagon",
     UNSUPPORTED_NAMED_VEHICLE = "Farmhand: choosing a vehicle by its name is not supported yet; name the kind of implement, such as the forage wagon or the cultivator",
@@ -749,6 +897,7 @@ Bridge.STEPS = {
     ATTACH = "hitching the implement",
     DETACH = "unhitching the implement",
     PULL_CLEAR = "pulling clear of the unhitched implement",
+    FIELD_WORK = "working the field (GIANTS helper)",
     VERIFY = "checking the hitch",
     DELIVER = "driving to the destination",
     STOP = "stopping",
@@ -813,6 +962,25 @@ Bridge.REASONS = {
     SEATED_DURING_PULL_CLEAR = "you sat in the tractor, so Farmhand stopped pulling clear",
     NOT_JUST_DETACHED = "the tractor can only pull clear straight after unhitching",
     DISTANCE_LIMIT = "the tractor did not get clear of the implement within its limit",
+    NO_OWNED_FIELD = "the farm owns no field",
+    FIELD_NOT_OWNED = "the farm does not own that field",
+    NO_FIELD_FOUND = "the helper found no field there",
+    FIELD_NOT_READY = "the field needs nothing from this implement",
+    PARTIAL_COVERAGE = "the helper stopped before the whole field was done",
+    OUT_OF_FILL = "the implement ran empty",
+    OUT_OF_MONEY = "the farm ran out of money",
+    WRONG_SEASON = "it is the wrong season for that crop",
+    NEEDS_SEED = "the seeder is empty and the helper does not buy seed; fill it first",
+    NEEDS_FERTILIZER = "the sprayer is empty and the helper does not buy fertilizer; fill it first",
+    MATERIAL_UNKNOWN = "the implement's fill level could not be read",
+    MATERIAL_USE_NOT_OBSERVED = "the field changed but no material use was seen; check it",
+    FIELD_NOT_OBSERVED = "the field's state could not be read",
+    FIELDWORK_UNAVAILABLE = "the helper cannot work with this tractor and implement",
+    FIELDWORK_STALLED = "the helper got stuck on the field",
+    NO_PLOW_CULTIVATING = "the farm has no plow",
+    NO_IMPLEMENT_FOR_PLOW = "the farm has no plow or cultivator",
+    NO_IMPLEMENT_FOR_SOW = "the farm has no seeder",
+    NO_IMPLEMENT_FOR_FERTILIZE = "the farm has no sprayer",
 }
 
 -- Text and whether it is critical, for a companion notice token.
@@ -1030,6 +1198,10 @@ function Bridge:loadMap()
     if env.g_server == nil then return end
     self:open(env)
     self:installInput(env)
+    pcall(function()
+        env.g_messageCenter:subscribe(env.MessageType.AI_JOB_STOPPED,
+            function(_, job, aiMessage) Bridge.onAIJobStopped(env, job, aiMessage) end, self)
+    end)
 end
 
 function Bridge:deleteMap()

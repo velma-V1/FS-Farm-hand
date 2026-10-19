@@ -31,7 +31,7 @@ from adapters.fs25 import Observation, observation_from_snapshot
 from adapters.world import StepFailed, StepUnverified
 from companion.hitch import STAGING_DISTANCE_M
 from protocol.ipc import MAX_NOTICES, PIPE_PATH, FrameError, FrameReader, encode_command, encode_session
-from protocol.model import Destination, Equipment, HitchPlan, Pose, Position
+from protocol.model import Destination, Equipment, FarmInfo, Field, HitchPlan, Pose, Position
 
 log = logging.getLogger("farmhand")
 
@@ -43,7 +43,7 @@ HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
 ALIGN_MAX_DISTANCE_M = 10.0      # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
-DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0,
+DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "fieldwork": 7300.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -257,6 +257,12 @@ class FS25World:
     def places(self) -> tuple[Destination, ...]:
         return self._observe().places
 
+    def fields(self) -> tuple[Field, ...]:
+        return self._observe().fields
+
+    def farm(self) -> FarmInfo | None:
+        return self._observe().farm
+
     def map_id(self) -> str | None:
         return self._observe().map_id
 
@@ -336,12 +342,18 @@ class FS25World:
         return True
 
     # ------------------------------------------------------------- operations
-    def _run(self, op: str, **args) -> None:
+    def _run(self, op: str, **args) -> str:
         status, code = self.link.command(op, args, self.cancel)
         if status == "FAILED":
             raise StepFailed(code)
         if status == "UNVERIFIED":
             raise StepUnverified(code)
+        return code
+
+    def fieldwork(self, tractor_id: str, field_id: int, pose: Pose, owner: str, area_m2: float = 0.0) -> str:
+        self._reserved(tractor_id, owner)
+        return self._run("fieldwork", tractor=int(tractor_id), field=int(field_id), x=pose.x, z=pose.z,
+                         yaw=pose.yaw, area=float(area_m2))
 
     def travel(self, tractor_id: str, destination_id: str, owner: str) -> None:
         self._reserved(tractor_id, owner)

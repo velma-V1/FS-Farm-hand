@@ -23,7 +23,8 @@
         "status",
         "settings",
         "report",
-        "unsupported"
+        "unsupported",
+        "field_work"
       ]
     },
     "reason": {
@@ -99,6 +100,19 @@
           }
         }
       ]
+    },
+    "field": {
+      "description": "field_work: an owned field's number, or the smallest owned field.",
+      "oneOf": [{"type": "integer", "minimum": 1, "maximum": 100000}, {"const": "smallest"}]
+    },
+    "area_m2": {
+      "description": "field_work: work only this much of the field (a test area, m2).",
+      "type": "number", "minimum": 50, "maximum": 20000
+    },
+    "operations": {
+      "description": "field_work: what to do to the field, in order (each hitches what does it, works the field and unhitches).",
+      "type": "array", "minItems": 1, "maxItems": 4,
+      "items": {"enum": ["plow", "cultivate", "sow", "fertilize"]}
     },
     "implement": {
       "description": "The implement to hitch or unhitch (a GIANTS specialization kind; default forage_wagon to hitch, any to unhitch). Only for fetch_pair, hitch_pair, detach_pair.",
@@ -193,6 +207,11 @@
           ]
         }
       }
+    },
+    {
+      "if": {"properties": {"command": {"const": "field_work"}}},
+      "then": {"required": ["field", "operations"]},
+      "else": {"not": {"anyOf": [{"required": ["field"]}, {"required": ["operations"]}, {"required": ["area_m2"]}]}}
     }
   ]
 }

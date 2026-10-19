@@ -93,6 +93,42 @@ class Equipment:
 
 
 @dataclass(frozen=True)
+class FieldCoverage:
+    """Shares of a field's area (mod/FarmhandObserve.lua Observe.fieldCoverage): per
+    GIANTS FieldGroundType name and per spray level, the field's m2, and FieldState
+    crop samples (fruit name -> count of `sampled` points)."""
+    ground: tuple[tuple[str, float], ...]
+    spray: tuple[tuple[int, float], ...]
+    total_m2: float | None
+    fruit: tuple[tuple[str, int], ...] | None
+    sampled: int
+
+    def share(self, *ground_types: str) -> float:
+        return sum(share for name, share in self.ground if name in ground_types)
+
+    def sprayed(self) -> float:
+        return sum(share for level, share in self.spray if level >= 1)
+
+
+@dataclass(frozen=True)
+class Field:
+    """A field the farm owns."""
+    id: int
+    area_ha: float
+    center: Position
+    coverage: FieldCoverage | None
+    age_ms: float | None
+
+
+@dataclass(frozen=True)
+class FarmInfo:
+    money: float | None
+    helper_buy_seeds: bool | None
+    helper_buy_fertilizer: bool | None
+    helper_buy_fuel: bool | None
+
+
+@dataclass(frozen=True)
 class HitchPlan:
     tractor_joint: int    # attacher joint desc index on the tractor
     wagon_joint: int      # input attacher joint desc index on the wagon

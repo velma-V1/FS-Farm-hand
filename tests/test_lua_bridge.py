@@ -746,6 +746,79 @@ class LuaBridgeTests(unittest.TestCase):
         self.beating(12000)
         self.assertEqual(self.results(1)[-1], (1, "UNVERIFIED", "DETACH_TIMEOUT"))
 
+    # ----------------------------------------------------------- fieldwork
+    FIELD = {"tractor": 11, "field": 7, "x": 200.0, "z": 300.0, "yaw": 0.5, "area": 0.0}
+
+    def fieldwork_stubs(self, available=True):
+        """GIANTS' FIELDWORK job shape (AIJobFieldWork 22-49, 134-224) on the GOTO stub."""
+        self.lua.execute(r"""
+            local w, available = ...
+            local env = w.env
+            env.AIJobType.FIELDWORK = 2
+            local job = env.g_currentMission.aiJobTypeManager:createJob()
+            function job:getIsAvailableForVehicle() return available end
+            local create = env.g_currentMission.aiJobTypeManager.createJob
+            env.g_currentMission.aiJobTypeManager.createJob = function(m, t)
+                table.insert(w.calls, "createJob:" .. tostring(t)); return create(m, t)
+            end
+            job.vehicleParameter = { getVehicle = function() return w.tractor end }
+            env.ClassUtil = { getClassObjectByObject = function(o) return o.class end }
+            env.AIMessageSuccessFinishedJob = { name = "finished" }
+            env.AIMessageErrorOutOfFill = { name = "outOfFill" }
+            w.job = job
+        """, self.w, available)
+
+    def end_job(self, message):
+        self.lua.execute("local w, B, m = ...; w.aiActive = false; B.onAIJobStopped(w.env, w.job, { class = w.env[m] })",
+                         self.w, self.bridge, message)
+
+    def test_fieldwork_starts_giants_helper_and_reports_why_it_ended(self):
+        output = []
+        self.lua.globals().print = lambda *a: output.append(" ".join(map(str, a)))
+        for message, code in (("AIMessageSuccessFinishedJob", "FINISHED"), ("AIMessageErrorOutOfFill", "OUT_OF_FILL")):
+            with self.subTest(code=code):
+                self.w = self.W.new()
+                self.adopt()
+                self.fieldwork_stubs()
+                self.w.gotoStarts = True
+                self.send(1, "fieldwork", self.FIELD)
+                self.W.run(self.w, 1000)
+                self.assertIn("createJob:2", self.calls())
+                self.assertIn("startJob", self.calls())
+                self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])    # still working
+                self.end_job(message)
+                self.W.run(self.w, 300)
+                self.assertEqual(self.results(1)[-1], (1, "DONE", code))         # never "worked": measured
+
+    def test_changed_area_is_the_share_that_moved_times_the_field(self):
+        f = self.lua.eval("""function(B)
+            local before = { ground = { STUBBLE = 1.0 }, spray = {}, total_m2 = 4000 }
+            local after = { ground = { STUBBLE = 0.9, CULTIVATED = 0.1 }, spray = { ["1"] = 0.05 }, total_m2 = 4000 }
+            return B.changedArea(before, after), B.changedArea(nil, after), B.changedArea(before, { ground = {} })
+        end""")
+        changed, unknown, unmeasured = f(self.bridge)
+        self.assertAlmostEqual(changed, 400.0)
+        self.assertIsNone(unknown)
+        self.assertIsNone(unmeasured)
+
+    def test_fieldwork_refusals_and_stop(self):
+        self.adopt()
+        self.fieldwork_stubs(available=False)
+        self.send(1, "fieldwork", self.FIELD)
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "FIELDWORK_UNAVAILABLE"))
+        self.assertNotIn("startJob", self.calls())
+        self.w = self.W.new()
+        self.adopt()
+        self.fieldwork_stubs()
+        self.w.gotoStarts = True
+        self.send(1, "fieldwork", self.FIELD)
+        self.W.run(self.w, 1000)
+        self.send(2, "stop", {"tractor": 11})
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "STOPPED"))
+        self.assertIn("stopCurrentAIJob", self.calls())
+        self.assertEqual(self.results(2)[-1], (2, "DONE", "STOPPED"))
+
     # ---------------------------------------------------------- pull_clear
     PAIR = {"tractor": 11, "wagon": 12}
 

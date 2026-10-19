@@ -111,6 +111,7 @@ COMMAND_ARGS = {
     "drive": ("tractor", "marker"),
     "stage": ("tractor", "x", "z", "yaw"),
     "navigate": ("tractor", "x", "z", "yaw"),
+    "fieldwork": ("tractor", "field", "x", "z", "yaw", "area"),
     "maneuver": ("tractor", "wagon", "tractorJoint", "wagonJoint"),
     "align": ("tractor", "wagon", "tractorJoint", "wagonJoint", "maxDistanceM"),
     "attach": ("tractor", "wagon", "tractorJoint", "wagonJoint"),
@@ -119,8 +120,8 @@ COMMAND_ARGS = {
     "stop": ("tractor",),
 }
 _ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "x", "z": "z",
-              "yaw": "yaw", "tractorJoint": "tj", "wagonJoint": "wj", "maxDistanceM": "dist"}
-_INTEGER = {"tractor", "wagon", "marker", "tractorJoint", "wagonJoint"}
+              "yaw": "yaw", "tractorJoint": "tj", "wagonJoint": "wj", "maxDistanceM": "dist", "field": "field", "area": "area"}
+_INTEGER = {"tractor", "wagon", "marker", "tractorJoint", "wagonJoint", "field"}
 _TOKEN = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 MAX_COMMAND_ID = 2147483647
 

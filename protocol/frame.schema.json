@@ -146,7 +146,53 @@
         "skipped": {"type": "integer", "minimum": 0, "maximum": 100000},
         "vehicles": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/vehicle"}},
         "destinations": {"type": "array", "maxItems": 2000, "items": {"$ref": "#/$defs/destination"}},
-        "places": {"type": "array", "maxItems": 500, "items": {"$ref": "#/$defs/place"}}
+        "places": {"type": "array", "maxItems": 500, "items": {"$ref": "#/$defs/place"}},
+        "fields": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/field"}},
+        "farm": {"$ref": "#/$defs/farm"}
+      }
+    },
+    "fraction": {"type": "number", "minimum": 0, "maximum": 1.0001},
+    "coverage": {
+      "description": "mod/FarmhandObserve.lua Observe.fieldCoverage: share of the field's area per GIANTS FieldGroundType name and per spray level, the field's m2, and FieldState crop samples.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ground", "spray", "total_m2", "fruit", "sampled"],
+      "properties": {
+        "ground": {"type": "object", "maxProperties": 64, "propertyNames": {"$ref": "#/$defs/token"},
+                   "additionalProperties": {"$ref": "#/$defs/fraction"}},
+        "spray": {"type": "object", "maxProperties": 16, "propertyNames": {"pattern": "^[0-9]{1,2}$"},
+                  "additionalProperties": {"$ref": "#/$defs/fraction"}},
+        "total_m2": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 100000000}, {"type": "null"}]},
+        "fruit": {"oneOf": [{"type": "null"},
+                            {"type": "object", "maxProperties": 16, "propertyNames": {"$ref": "#/$defs/token"},
+                             "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 64}}]},
+        "sampled": {"type": "integer", "minimum": 0, "maximum": 64}
+      }
+    },
+    "field": {
+      "description": "One field the farm owns (FarmlandManager:getFarmlandOwner of its farmland).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "area_ha", "x", "z", "coverage", "age_ms"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 0, "maximum": 100000},
+        "area_ha": {"type": "number", "minimum": 0, "maximum": 100000},
+        "x": {"$ref": "#/$defs/coordinate"},
+        "z": {"$ref": "#/$defs/coordinate"},
+        "coverage": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/coverage"}]},
+        "age_ms": {"oneOf": [{"type": "null"}, {"type": "number", "minimum": 0, "maximum": 1000000000000}]}
+      }
+    },
+    "farm": {
+      "description": "Money and GIANTS' helper purchase settings, read only.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["money", "helper_buy_seeds", "helper_buy_fertilizer", "helper_buy_fuel"],
+      "properties": {
+        "money": {"oneOf": [{"type": "number", "minimum": -1000000000000, "maximum": 1000000000000}, {"type": "null"}]},
+        "helper_buy_seeds": {"$ref": "#/$defs/nullableBool"},
+        "helper_buy_fertilizer": {"$ref": "#/$defs/nullableBool"},
+        "helper_buy_fuel": {"$ref": "#/$defs/nullableBool"}
       }
     },
     "result": {

@@ -14,7 +14,8 @@ from adapters.world import StepFailed, StepUnverified, World
 from companion.hitch import (ALIGN_MAX_HEADING_RAD, IMPLEMENT_CATEGORIES, LOCAL_WORK_RADIUS_M, align_problem,
                              against_loose_implement, approach_poses, hitch_problem, joint_error,
                              joint_separation, plan_hitch, PULL_CLEAR_M)
-from protocol.model import Destination, Equipment, HitchPlan, Pose, Position, Result
+from protocol.model import (Destination, Equipment, FarmInfo, Field, FieldCoverage, HitchPlan, Pose, Position,
+                            Result)
 
 log = logging.getLogger("farmhand")
 SCHEMA = json.loads((Path(__file__).resolve().parents[1] / "protocol/intent.schema.json").read_text())
@@ -108,7 +109,7 @@ PULL_CLEAR_REFUSALS = frozenset({"PULL_CLEAR_BLOCKED", "PULL_CLEAR_PERSON", "PUL
 # (one snapshot after the brake; the mod stops the instant it reaches it).
 PULL_CLEAR_TOLERANCE_M = 0.25
 
-CANCELLABLE_STEPS = frozenset({"RESERVE", "PULL_CLEAR", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
+CANCELLABLE_STEPS = frozenset({"RESERVE", "FIELD_WORK", "PULL_CLEAR", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
                                "DETACH", "DELIVER"})
 
 
@@ -306,6 +307,75 @@ def detachable(tractor: Equipment, implement: Equipment, kind: str | None = None
             and (kind is None or of_kind(implement, kind)) and {"attach", "stop"} <= tractor.capabilities)
 
 
+# ---------------------------------------------------------------- field work
+# Which owned field, which implement, and what "done" means. The authority is the
+# field's own state as GIANTS stores it, measured by mod/FarmhandObserve.lua with GIANTS'
+# field-mission pattern (adapters/EVIDENCE.md "Field coverage"): a helper job that ended
+# is never "worked"; the measured share is.
+# GIANTS' contracts count a field as done at AbstractMission.SUCCESS_FACTOR of its
+# area (AbstractFieldMission:getCompletion 452-456 divides by it); its value is not
+# documented, so ours is fixed here: 95 % of the field's measured area.
+COVERAGE_REQUIRED = 0.95
+
+# Ground types (GIANTS FieldGroundType names, as the running game defines them) that
+# each operation leaves. Names the game does not define simply never match.
+PREPARED = frozenset({"PLOWED", "CULTIVATED", "SEEDBED", "ROLLED_SEEDBED", "STUBBLE_TILLAGE"})
+PLOWED = frozenset({"PLOWED"})
+SOWN = frozenset({"SOWN", "DIRECT_SOWN", "PLANTED", "RIDGE", "RIDGE_SOWN"})
+
+
+@dataclass(frozen=True)
+class Operation:
+    name: str
+    kinds: tuple[str, ...]            # implement kinds (Observe.KINDS) that do it, preferred first
+    material: str | None              # the implement's fill-unit role it uses (FillUnit.role)
+
+    def done(self, coverage: FieldCoverage) -> float:
+        if self.name == "fertilize":
+            return coverage.sprayed()
+        names = {"plow": PLOWED, "cultivate": PREPARED, "sow": SOWN}[self.name]
+        return coverage.share(*names)
+
+
+OPERATIONS = {
+    "plow": Operation("plow", ("plow",), None),
+    "cultivate": Operation("cultivate", ("cultivator", "plow"), None),
+    "sow": Operation("sow", ("sowing_machine",), "seed"),
+    "fertilize": Operation("fertilize", ("sprayer",), "spray"),
+}
+
+
+def resolve_field(wanted, fields: tuple[Field, ...]) -> tuple[Field | None, str | None]:
+    """An owned field by its GIANTS id, or "smallest": the smallest owned field."""
+    if not fields:
+        return None, "NO_OWNED_FIELD"
+    if wanted == "smallest":
+        return min(fields, key=lambda f: (f.area_ha, f.id)), None
+    match = next((f for f in fields if f.id == wanted), None)
+    return (match, None) if match is not None else (None, "FIELD_NOT_OWNED")
+
+
+def describe(coverage: FieldCoverage | None) -> str:
+    if coverage is None:
+        return "unmeasured"
+    ground = " ".join(f"{name}={share:.3f}" for name, share in coverage.ground)
+    spray = " ".join(f"{level}={share:.3f}" for level, share in coverage.spray)
+    fruit = " ".join(f"{name}x{n}" for name, n in coverage.fruit or ())
+    return f"ground[{ground}] spray[{spray}] fruit[{fruit}]/{coverage.sampled} m2={coverage.total_m2}"
+
+
+def workable(tractor: Equipment, implement: Equipment, kinds: tuple[str, ...] = ()) -> bool:
+    """field_work: a tractor GIANTS' field-work helper can run (AIFieldWorker) with an
+    AI-usable implement (AIImplement) of one of ``kinds`` hitched to it."""
+    return (detachable(tractor, implement) and "ai_field_worker" in tractor.kinds
+            and "ai_implement" in implement.kinds and any(of_kind(implement, k) for k in kinds))
+
+
+def _material(implement: Equipment, role: str | None):
+    """The implement's fill unit of ``role`` (seed, spray), or None."""
+    return next((u for u in implement.fill_units if role is not None and u.role == role), None)
+
+
 def _angle(a: float, b: float) -> float:
     """Absolute difference of two yaws, wrapped to [0, pi]."""
     return abs((a - b + math.pi) % (2 * math.pi) - math.pi)
@@ -462,6 +532,34 @@ class Executor:
         _, _, tractor, implement = min(pairs, key=lambda p: (p[0], p[1]))
         return (tractor, implement), None
 
+    def _field(self, field_id):
+        """The field's latest measured state (the mod measures it again at the start
+        and the end of every field-work job)."""
+        field = next((f for f in self.world.fields() if f.id == field_id), None)
+        if field is None:
+            raise ObservationMismatch("FIELD_NOT_OBSERVED")
+        return field
+
+    def _helper_buys(self, operation) -> bool:
+        """GIANTS' helper buys this material itself (missionInfo helperBuySeeds /
+        helperBuyFertilizer; SowingMachine 510-519, Sprayer 558-581)."""
+        farm = self.world.farm()
+        if farm is None:
+            return False
+        return {"seed": farm.helper_buy_seeds, "spray": farm.helper_buy_fertilizer}.get(operation.material) is True
+
+    def _supply_problem(self, implement, operation):
+        """BLOCKED before reserving when the implement has none of the material and
+        GIANTS' helper will not buy it (it would end OUT_OF_FILL at once)."""
+        if operation.material is None:
+            return None
+        unit = _material(implement, operation.material)
+        if unit is None:
+            return "MATERIAL_UNKNOWN"
+        if (unit.level or 0) > 0 or self._helper_buys(operation):
+            return None
+        return {"seed": "NEEDS_SEED", "spray": "NEEDS_FERTILIZER"}[operation.material]
+
     def _move(self, tractor_id, route, owner, deliver=False):
         """One travel step by the route's provider: AutoDrive to a marker, or GIANTS
         GOTO to a pose."""
@@ -533,10 +631,16 @@ class Executor:
         status, reason = "BLOCKED", "NO_ELIGIBLE_PAIR"
         moving = command["task"] == "move_pair"
         detaching = command["task"] == "detach_pair"
+        working = command["task"] == "field_work"
+        operation = OPERATIONS.get(command.get("operation")) if working else None
         hitch_only = command["task"] == "hitch_pair"
         # One implement kind per job; every pair check of this job uses it. A detach
         # without a named kind takes any implement.
-        if detaching:
+        if working:
+            kinds = (command["implement"],) if command.get("implement") else operation.kinds
+            self._kind = kinds[0]
+            self._compatible = functools.partial(workable, kinds=kinds)
+        elif detaching:
             self._kind = command.get("implement")
             self._compatible = functools.partial(detachable, kind=self._kind)
         else:
@@ -547,14 +651,22 @@ class Executor:
         try:
             # Every destination is resolved and validated before any reservation.
             requester = None
-            if command["target"] == "player_at_acceptance" or moving or detaching:
+            if (command["target"] == "player_at_acceptance" or moving or detaching) and not working:
                 # move_pair and detach_pair always need the requester: "this" is the pair nearest them.
                 requester = self.world.player_position(farm_id)
                 if not valid_position(requester):
                     return Result("BLOCKED", "INVALID_REQUESTER_POSITION")
                 requester = tuple(requester)
                 log.info("requester at %s", requester)
-            if command["target"] == "player_at_acceptance":
+            if working:
+                enter("FIND")
+                field, failure = resolve_field(command["field"], self.world.fields())
+                if field is None:
+                    return Result("BLOCKED", failure, states=tuple(states))
+                target = field.center
+                log.info("field %s: %.2f ha at %s, before: %s", field.id, field.area_ha, field.center,
+                         describe(field.coverage))
+            elif command["target"] == "player_at_acceptance":
                 enter("FIND")
                 target = requester
             elif command["target"]["type"] == "place":
@@ -581,10 +693,14 @@ class Executor:
                                                                self.world.destinations())
                 plan = travel = None
                 aims = ()
-            elif detaching:
-                pair, failure = self._choose_attached(items, farm_id, requester)
+            elif detaching or working:
+                pair, failure = self._choose_attached(items, farm_id, requester or target)
                 plan = travel = None
                 aims = ()
+                if working and pair is not None:
+                    failure = self._supply_problem(pair[1], operation)
+                    if failure is not None:
+                        return Result("BLOCKED", failure, tuple(i.id for i in pair), tuple(states))
             else:
                 free = [item for item in items if usable(item, farm_id)
                         and item.attached_to is None and item.stopped]
@@ -601,6 +717,8 @@ class Executor:
                 log.info("moving hitched tractor %s wagon %s to %s", *ids, delivery)
             elif detaching:
                 log.info("detaching implement %s from tractor %s", ids[1], ids[0])
+            elif working:
+                log.info("field work %s on field %s: tractor %s implement %s", operation.name, field.id, *ids)
             else:
                 log.info("selected tractor %s wagon %s joints %d/%d approaches %s travel %s delivery %s", *ids,
                          plan.tractor_joint, plan.wagon_joint, list(aims), travel, delivery)
@@ -616,6 +734,53 @@ class Executor:
                 enter("DELIVER")
                 self._move(tractor.id, delivery, owner, deliver=True)
                 self._arrival(ids, farm_id, owner, delivery, check=movable)
+            elif working:
+                # FIELD_WORK -> VERIFY: GIANTS' field-work helper drives to the field and
+                # works it; complete only when the field's own measured state shows the
+                # operation over COVERAGE_REQUIRED of its area, and the material went.
+                tractor, implement = self._pair(ids, farm_id, owner, attached=True)
+                if not tractor.stopped:
+                    raise ObservationMismatch("EQUIPMENT_MOVING")
+                before = self._field(field.id)
+                before_done = operation.done(before.coverage) if before.coverage else None
+                material = _material(implement, operation.material)
+                money = (self.world.farm() or FarmInfo(None, None, None, None)).money
+                physical_attempted = True
+                enter("FIELD_WORK")
+                yaw = math.atan2(field.center[0] - tractor.position[0], field.center[1] - tractor.position[1])
+                area = command.get("area_m2")
+                ended = self.world.fieldwork(tractor.id, field.id, Pose(field.center[0], field.center[1], yaw), owner,
+                                             area or 0.0)
+                enter("VERIFY")
+                tractor, implement = self._pair(ids, farm_id, owner, attached=True)
+                after = self._field(field.id)
+                if after.coverage is None:
+                    raise ObservationMismatch("FIELD_NOT_OBSERVED")
+                done = operation.done(after.coverage)
+                log.info("FIELD_WORK %s ended %s: field %s %s %.3f -> %.3f; after: %s", operation.name, ended,
+                         field.id, operation.name, before_done if before_done is not None else -1, done,
+                         describe(after.coverage))
+                if area:
+                    # A bounded test area: the operation's own measured share grew by it.
+                    worked = (done - (before_done or 0.0)) * (after.coverage.total_m2 or 0.0)
+                    log.info("FIELD_WORK test area: %.0f m2 worked of %.0f m2 asked", worked, area)
+                    if worked < area * COVERAGE_REQUIRED:
+                        raise StepFailed(ended if ended not in ("FINISHED", "AREA_REACHED") else "PARTIAL_COVERAGE")
+                elif done < COVERAGE_REQUIRED:
+                    # GIANTS' own reason when it stopped early (OUT_OF_FILL, FIELD_NOT_READY, ...).
+                    raise StepFailed(ended if ended != "FINISHED" else "PARTIAL_COVERAGE")
+                if operation.material is not None:
+                    used = _material(implement, operation.material)
+                    farm = self.world.farm()
+                    level_fell = (material is not None and used is not None and material.level is not None
+                                  and used.level is not None and used.level < material.level)
+                    bought = (farm is not None and money is not None and farm.money is not None
+                              and farm.money < money and self._helper_buys(operation))
+                    log.info("material %s: %s -> %s l; money %s -> %s", operation.material,
+                             material and material.level, used and used.level, money, farm and farm.money)
+                    if not (level_fell or bought):
+                        raise ObservationMismatch("MATERIAL_USE_NOT_OBSERVED")
+                status, reason = "COMPLETE", "AREA_WORK_OBSERVED" if area else "FIELD_WORK_OBSERVED"
             elif detaching:
                 # DETACH -> VERIFY: GIANTS' own detach where it allows it; complete only
                 # when a fresh snapshot shows neither end attached and both at rest.
@@ -815,7 +980,7 @@ class Executor:
                     enter("DELIVER")
                     self._move(tractor.id, delivery, owner, deliver=True)
                     self._arrival(ids, farm_id, owner, delivery)
-            if not (hitch_only or detaching):
+            if not (hitch_only or detaching or working):
                 status, reason = "COMPLETE", "DELIVERY_OBSERVED"
         except Cancelled:
             status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
@@ -860,6 +1025,10 @@ class Executor:
                                      {i: stopped[i].busy_reason for i in ids if stopped[i].busy})
                             raise _CleanupFailed("CLEANUP_AI_NOT_CLEARED")
                     if status == "COMPLETE" and hitch_only:
+                        tractor, _ = self._pair(ids, farm_id, owner, attached=True)
+                        if not tractor.stopped:
+                            raise ObservationMismatch("EQUIPMENT_MOVING")
+                    elif status == "COMPLETE" and working:
                         tractor, _ = self._pair(ids, farm_id, owner, attached=True)
                         if not tractor.stopped:
                             raise ObservationMismatch("EQUIPMENT_MOVING")

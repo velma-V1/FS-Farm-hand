@@ -28,9 +28,10 @@
         "deliver_tractor_and_forage_wagon",
         "move_pair",
         "hitch_pair",
-        "detach_pair"
+        "detach_pair",
+        "field_work"
       ],
-      "description": "deliver_tractor_and_forage_wagon: select, hitch and deliver an available pair. move_pair: move the hitched tractor and forage wagon nearest the requester. hitch_pair: select and hitch an available pair where the wagon stands, no delivery. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to nearest the requester, where it stands; target is player_at_acceptance."
+      "description": "field_work: GIANTS' field-work helper works an owned field with the hitched implement that does the operation; complete only on the field's measured state; target is player_at_acceptance. deliver_tractor_and_forage_wagon: select, hitch and deliver an available pair. move_pair: move the hitched tractor and forage wagon nearest the requester. hitch_pair: select and hitch an available pair where the wagon stands, no delivery. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to nearest the requester, where it stands; target is player_at_acceptance."
     },
     "farm_id": {
       "type": "string",
@@ -128,6 +129,18 @@
         }
       ]
     },
+    "field": {
+      "description": "field_work: an owned field's GIANTS id, or the smallest owned field.",
+      "oneOf": [{"type": "integer", "minimum": 1, "maximum": 100000}, {"const": "smallest"}]
+    },
+    "area_m2": {
+      "description": "field_work: work only this much of the field (a bounded test area, m2); the whole field when absent.",
+      "type": "number", "minimum": 50, "maximum": 20000
+    },
+    "operation": {
+      "description": "field_work: what to do to the field (companion/field.py OPERATIONS).",
+      "enum": ["plow", "cultivate", "sow", "fertilize"]
+    },
     "implement": {
       "description": "The implement to hitch or unhitch (a GIANTS specialization kind; default forage_wagon to hitch, any to unhitch). Only for deliver_tractor_and_forage_wagon, hitch_pair, detach_pair.",
       "enum": [
@@ -164,7 +177,8 @@
               "enum": [
                 "deliver_tractor_and_forage_wagon",
                 "hitch_pair",
-                "detach_pair"
+                "detach_pair",
+                "field_work"
               ]
             }
           }
@@ -177,6 +191,11 @@
           ]
         }
       }
+    },
+    {
+      "if": {"properties": {"task": {"const": "field_work"}}},
+      "then": {"required": ["field", "operation"], "properties": {"target": {"const": "player_at_acceptance"}}},
+      "else": {"not": {"anyOf": [{"required": ["field"]}, {"required": ["operation"]}, {"required": ["area_m2"]}]}}
     },
     {
       "if": {

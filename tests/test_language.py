@@ -75,7 +75,7 @@ class RuleInterpreterTests(unittest.TestCase):
             # Not orders, or not a hitch: never a job.
             ("don't hitch the plough", None),
             ("where is the seeder", None),
-            ("plow field 12", None),                  # field work is not hitching
+            ("plow field 12", {"version": 1, "command": "field_work", "field": 12, "operations": ["plow"]}),
             ("the cultivator", None),
             # The forage wagon keeps its own rules.
             ("fetch the forage wagon", FETCH),
@@ -197,11 +197,31 @@ class RuleInterpreterTests(unittest.TestCase):
             ("bring it back to the wagon", None), ("hook it up to the wagon", None),
         ])
 
+    def test_field_work_orders_name_the_operations_in_order_and_the_field(self):
+        def work(field, *operations):
+            return {"version": 1, "command": "field_work", "field": field, "operations": list(operations)}
+
+        self.check([
+            ("plow, seed and fertilize field 7", work(7, "plow", "sow", "fertilize")),
+            ("cultivate then sow the smallest field", work("smallest", "cultivate", "sow")),
+            ("till field 3", work(3, "cultivate")),
+            ("fertilise our small field", work("smallest", "fertilize")),
+            ("spray field 4 please", work(4, "fertilize")),
+            ("please plant field number 12", work(12, "sow")),
+            # Not orders of work on an owned field.
+            ("don't plow field 7", None), ("did you seed field 7", None), ("plow the field", None),
+            ("seed and sow field 2", None), ("plow field 0", None), ("bring the seeder to field 3",
+                                                                      {"version": 1, "command": "fetch_pair",
+                                                                       "implement": "sowing_machine",
+                                                                       "target": {"type": "field_entrance",
+                                                                                  "field": 3}}),
+        ])
+
     def test_anything_else_is_not_understood(self):
         self.check([
             ("", None), ("   ", None), ("make me a sandwich", None), ("tractor", None),
 
-            ("plow field 3", None), ("sell the forage wagon", None),
+            ("sell the forage wagon", None),
         ])
         self.assertIsNone(self.rules.interpret(None))
         self.assertIsNone(self.rules.interpret(42))

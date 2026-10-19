@@ -572,9 +572,171 @@ end
 
 -- Returns (line, nil), or (nil, reason) when the farm, the vehicle list or the
 -- AutoDrive destination list cannot be observed (nothing is sent in that case).
-function Observe.snapshot(env, seq, session)
+-- ------------------------------------------------------------------ fields
+-- The farm's own fields and how much of each is in which state: GIANTS' field
+-- mission pattern (PlowMission:createModifier 40-47, AbstractFieldMission
+-- initializeModifier 370-421, getPartitionCompletion 439-448): a DensityMapModifier
+-- on the ground-type (or spray-level) map, the field's density-map polygon applied,
+-- one EQUAL filter per value, executeGet -> (sumPixels, area, totalArea). Every
+-- ground-type name the running game defines is measured (FieldGroundType, values
+-- through getValueByType), so no enum value is assumed. Crop identity comes from
+-- FieldState point samples (FieldState.new 33-56; FieldManager 327-336 samples the
+-- same way). Read-only; recomputed one field per FIELD_REFRESH_MS.
+Observe.MAX_FIELDS = 64
+Observe.FIELD_REFRESH_MS = 3000
+Observe.fieldCache = {}          -- field id -> last coverage record
+Observe.fieldTimer = 0
+Observe.fieldCursor = 0
+
+local function fieldId(f)
+    local id = try(function() return f:getId() end) or try(function() return f.fieldId end)
+    return integer(id) and id or nil
+end
+
+local function fieldOwned(env, f, farmId)
+    return try(function()
+        return env.g_farmlandManager:getFarmlandOwner(f.farmland.id) == farmId
+    end) == true
+end
+
+local function ownedFields(env, farmId)
+    local fields = try(function() return env.g_fieldManager.fields end)
+    local out = {}
+    if type(fields) ~= "table" then return out end
+    for _, f in ipairs(fields) do
+        if fieldId(f) ~= nil and fieldOwned(env, f, farmId) then out[#out + 1] = f end
+    end
+    table.sort(out, function(a, b) return fieldId(a) < fieldId(b) end)
+    return out
+end
+
+-- {name -> fraction} of `values` ({name -> value}) on map `kind`, and the total m2.
+local function measure(env, f, kind, values)
+    local m = env.g_currentMission
+    local mapId, first, num = m.fieldGroundSystem:getDensityMapData(kind)
+    local mod = env.DensityMapModifier.new(mapId, first, num, env.g_terrainNode)
+    f:getDensityMapPolygon():applyToModifier(mod)
+    local flt = env.DensityMapFilter.new(mod)
+    local out, total = {}, nil
+    for name, value in pairs(values) do
+        flt:setValueCompareParams(env.DensityValueCompareType.EQUAL, value)
+        local _, area, totalArea = mod:executeGet(flt)
+        assert(finite(area) and finite(totalArea))
+        total = totalArea
+        if totalArea > 0 and area > 0 then out[name] = area / totalArea end
+    end
+    return out, total
+end
+
+-- Up to 9 FieldState samples: the field's centre and points 30% of the way from it
+-- to its polygon corners. Counts of {fruit name, ground type value} pairs.
+local function sampleFruit(env, f)
+    local cx, cz = try(function() return f.posX end), try(function() return f.posZ end)
+    if not (finite(cx) and finite(cz)) then return nil end
+    local points = { { cx, cz } }
+    local corners = try(function() return f.polygonPoints end)
+    if type(corners) == "table" then
+        local step = math.max(1, math.floor(#corners / 8))
+        for i = 1, #corners, step do
+            local px, _, pz = try(function() return env.getWorldTranslation(corners[i]) end)
+            if finite(px) and finite(pz) and #points < 9 then
+                points[#points + 1] = { cx + 0.7 * (px - cx), cz + 0.7 * (pz - cz) }
+            end
+        end
+    end
+    local counts = {}
+    for _, p in ipairs(points) do
+        local state = env.FieldState.new()
+        state:update(p[1], p[2])
+        if state.isValid ~= false then
+            local name = "NONE"
+            if state.fruitTypeIndex ~= nil and state.fruitTypeIndex ~= env.FruitType.UNKNOWN then
+                local desc = env.g_fruitTypeManager:getFruitTypeByIndex(state.fruitTypeIndex)
+                name = token(desc and desc.name) or tostring(state.fruitTypeIndex)
+            end
+            counts[name] = (counts[name] or 0) + 1
+        end
+    end
+    return counts, #points
+end
+
+function Observe.fieldCoverage(env, f)
+    local ground = {}
+    for name, v in pairs(env.FieldGroundType) do
+        if type(v) == "number" and token(name) ~= nil then
+            local value = try(function() return env.FieldGroundType.getValueByType(v) end)
+            if integer(value) then ground[name] = value end
+        end
+    end
+    local groundShare, total = measure(env, f, env.FieldDensityMap.GROUND_TYPE, ground)
+    local maxSpray = env.g_currentMission.fieldGroundSystem:getMaxValue(env.FieldDensityMap.SPRAY_LEVEL)
+    local levels = {}
+    for level = 1, (integer(maxSpray) and maxSpray or 0) do levels[tostring(level)] = level end
+    local sprayShare = measure(env, f, env.FieldDensityMap.SPRAY_LEVEL, levels)
+    local fruit, sampled = sampleFruit(env, f)
+    return { ground = groundShare, spray = sprayShare, total_m2 = total or Observe.NULL, fruit = fruit or Observe.NULL,
+             sampled = sampled or 0 }
+end
+
+-- The owned fields' records; one stale field's coverage is recomputed per call
+-- once FIELD_REFRESH_MS have passed (Observe.tickFields).
+function Observe.fields(env, farmId)
+    local out = Observe.array()
+    for _, f in ipairs(ownedFields(env, farmId)) do
+        if #out >= Observe.MAX_FIELDS then break end
+        local id = fieldId(f)
+        local x, z = try(function() return f.posX end), try(function() return f.posZ end)
+        local area = try(function() return f:getAreaHa() end) or try(function() return f.areaHa end)
+        if finite(x) and finite(z) and finite(area) then
+            local c = Observe.fieldCache[id]
+            out[#out + 1] = { id = id, area_ha = area, x = x, z = z,
+                              coverage = c and c.record or Observe.NULL, age_ms = c and c.age or Observe.NULL }
+        end
+    end
+    return out
+end
+
+function Observe.tickFields(env, farmId, dt)
+    for _, c in pairs(Observe.fieldCache) do c.age = c.age + dt end
+    Observe.fieldTimer = Observe.fieldTimer + dt
+    if Observe.fieldTimer < Observe.FIELD_REFRESH_MS then return end
+    Observe.fieldTimer = 0
+    local fields = ownedFields(env, farmId)
+    if #fields == 0 then return end
+    Observe.fieldCursor = Observe.fieldCursor % #fields + 1
+    local f = fields[Observe.fieldCursor]
+    local ok, record = pcall(Observe.fieldCoverage, env, f)
+    Observe.fieldCache[fieldId(f)] = { record = ok and record or nil, age = 0 }
+end
+
+-- Refresh one field now (the companion asks before and after field work).
+function Observe.refreshField(env, id)
+    local fields = try(function() return env.g_fieldManager.fields end)
+    for _, f in ipairs(type(fields) == "table" and fields or {}) do
+        if fieldId(f) == id then
+            local ok, record = pcall(Observe.fieldCoverage, env, f)
+            Observe.fieldCache[id] = { record = ok and record or nil, age = 0 }
+            return ok
+        end
+    end
+    return false
+end
+
+-- Money and GIANTS' helper purchase settings (missionInfo helperBuy*, Motorized
+-- 2212, SowingMachine 510/1070, Sprayer 478-480): read only, never changed.
+local function farmInfo(env, farmId)
+    local info = try(function() return env.g_currentMission.missionInfo end) or {}
+    local money = try(function() return env.g_farmManager:getFarmById(farmId).money end)
+    local function flag(v) if v == true or v == false then return v end return Observe.NULL end
+    return { money = finite(money) and money or Observe.NULL,
+             helper_buy_seeds = flag(info.helperBuySeeds), helper_buy_fertilizer = flag(info.helperBuyFertilizer),
+             helper_buy_fuel = flag(info.helperBuyFuel) }
+end
+
+function Observe.snapshot(env, seq, session, dt)
     local farmId = try(function() return env.g_currentMission:getFarmId() end)
     if not integer(farmId) or farmId < 1 or farmId > 255 then return nil, "NO_FARM" end
+    pcall(Observe.tickFields, env, farmId, dt or 0)
     local vehicles = try(function() return env.g_currentMission.vehicleSystem.vehicles end)
         or try(function() return env.g_currentMission.vehicles end)
     if type(vehicles) ~= "table" then return nil, "NO_VEHICLES" end
@@ -650,6 +812,8 @@ function Observe.snapshot(env, seq, session)
         vehicles = records,
         destinations = destinations,
         places = places,
+        fields = try(function() return Observe.fields(env, farmId) end) or Observe.array(),
+        farm = farmInfo(env, farmId),
     }), nil
 end
 

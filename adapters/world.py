@@ -4,7 +4,7 @@ FS25World; mock: simulator/world.py.
 See adapters/EVIDENCE.md for which upstream capability backs each operation.
 """
 from typing import Protocol
-from protocol.model import Destination, Equipment, HitchPlan, Pose, Position
+from protocol.model import Destination, Equipment, FarmInfo, Field, HitchPlan, Pose, Position
 
 
 class StepFailed(RuntimeError):
@@ -38,6 +38,22 @@ class World(Protocol):
 
     def places(self) -> tuple[Destination, ...]:
         """Return the farm's own named placeables (buildings), fresh."""
+        ...
+
+    def fields(self) -> tuple[Field, ...]:
+        """Return the farm's own fields with their last measured coverage, fresh."""
+        ...
+
+    def farm(self) -> FarmInfo | None:
+        """Return the farm's money and GIANTS' helper purchase settings, fresh."""
+        ...
+
+    def fieldwork(self, tractor_id: str, field_id: int, pose: Pose, owner: str, area_m2: float = 0.0) -> str:
+        """FIELD_WORK: GIANTS' own field-work helper (AIJobFieldWork) for the reserved
+        tractor and what is hitched to it, driving to ``pose`` inside the field first;
+        with ``area_m2`` the mod stops it once that much of the field changed (AREA_REACHED).
+        Returns GIANTS' end reason (FINISHED, FIELD_NOT_READY, ...); never evidence
+        that the field was worked: the executor measures the field."""
         ...
 
     def map_id(self) -> str | None:

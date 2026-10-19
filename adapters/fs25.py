@@ -6,7 +6,8 @@ upstream data is unproven, the mapping fails closed (ineligible equipment).
 """
 from dataclasses import dataclass
 
-from protocol.model import Destination, Equipment, FillUnit, InputJoint, OutputJoint, Pose, Position
+from protocol.model import (Destination, Equipment, FarmInfo, Field, FieldCoverage, FillUnit, InputJoint, OutputJoint,
+                            Pose, Position)
 
 # AutoDrive treats ``lastSpeedReal * 3600 < 1`` (km/h) as not moving
 # (scripts/Modules/TrailerModule.lua:502); getLastSpeed() reports km/h. Whether
@@ -56,6 +57,8 @@ class Observation:
     equipment: tuple[Equipment, ...]
     destinations: tuple[Destination, ...]
     places: tuple[Destination, ...] = ()
+    fields: tuple[Field, ...] = ()
+    farm: FarmInfo | None = None
 
 
 def _claimed_links(vehicles) -> dict[int, set[int]]:
@@ -210,6 +213,10 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = N
     # Owned placeables, ordered by content so their opaque ids are repeatable.
     places = tuple(Destination(f"place-{n}", (p["x"], p["z"]), p["name"]) for n, p in enumerate(
         sorted(frame["places"], key=lambda p: (p["name"], p["x"], p["z"]))))
+    fields = tuple(field_from_frame(f) for f in frame.get("fields", ()))
+    if len({f.id for f in fields}) != len(fields):
+        raise ObservationError("DUPLICATE_FIELD_ID")
+    farm = frame.get("farm")
     player = frame["player"]
     return Observation(
         farm_id=str(frame["farm_id"]),
@@ -218,4 +225,20 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = N
         equipment=equipment,
         destinations=destinations,
         places=places,
+        fields=fields,
+        farm=None if farm is None else FarmInfo(farm["money"], farm["helper_buy_seeds"],
+                                                farm["helper_buy_fertilizer"], farm["helper_buy_fuel"]),
     )
+
+
+def field_from_frame(f) -> Field:
+    c = f["coverage"]
+    coverage = None
+    if c is not None:
+        coverage = FieldCoverage(
+            ground=tuple(sorted((name, min(1.0, share)) for name, share in c["ground"].items())),
+            spray=tuple(sorted((int(level), min(1.0, share)) for level, share in c["spray"].items())),
+            total_m2=c["total_m2"],
+            fruit=None if c["fruit"] is None else tuple(sorted(c["fruit"].items())),
+            sampled=c["sampled"])
+    return Field(f["id"], f["area_ha"], (f["x"], f["z"]), coverage, f["age_ms"])

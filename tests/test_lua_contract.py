@@ -482,6 +482,81 @@ class LuaContractTests(unittest.TestCase):
                          [("Cow Barn (Medium)", (-200, 50)), ("Machine Shed", (300.5, -80))])
         self.assertEqual(self.snapshot(self.stubs.world())["places"], [])     # no placeable system
 
+    FIELD_STUBS = r"""
+        local env, observe = ...
+        -- GIANTS' field objects with the calls the field missions use (PlowMission
+        -- createModifier 40-47, AbstractFieldMission 370-448; FieldState 33-56).
+        -- Each field's density map is a table: map kind -> {value -> m2}.
+        local function field(id, farmland, x, z, area, maps, fruit)
+            local f = { fieldId = id, farmland = { id = farmland }, posX = x, posZ = z, maps = maps,
+                        polygonPoints = {}, fruit = fruit }
+            function f:getId() return id end
+            function f:getAreaHa() return area end
+            function f:getDensityMapPolygon()
+                return { applyToModifier = function(_, mod) mod.field = f end }
+            end
+            return f
+        end
+        local fields = {
+            field(7, 70, 100, 200, 0.4, { [1] = { [3] = 3000, [5] = 1000 }, [2] = { [1] = 400 } }, 2),
+            field(9, 90, 500, 600, 1.2, { [1] = { [3] = 12000 }, [2] = {} }, 0),
+            field(8, 80, -50, -60, 2.0, { [1] = { [3] = 20000 }, [2] = {} }, 0),   -- not ours
+        }
+        env.g_fieldManager = { fields = fields }
+        local owners = { [70] = 1, [90] = 1, [80] = 2 }
+        env.g_farmlandManager = { getFarmlandOwner = function(_, id) return owners[id] end }
+        env.FieldGroundType = { CULTIVATED = 103, SOWN = 105, getValueByType = function(t) return t - 100 end }
+        env.FieldDensityMap = { GROUND_TYPE = 1, SPRAY_LEVEL = 2 }
+        env.DensityValueCompareType = { EQUAL = "eq" }
+        env.g_currentMission.fieldGroundSystem = {
+            getDensityMapData = function(_, kind) return kind, 0, 4 end,
+            getMaxValue = function(_, kind) return 2 end }
+        env.g_terrainNode = {}
+        env.DensityMapModifier = { new = function(kind) return { kind = kind, executeGet = function(mod, flt)
+            local total = 0
+            for _, m2 in pairs(mod.field.maps[1]) do total = total + m2 end
+            return 0, mod.field.maps[mod.kind][flt.value] or 0, total
+        end } end }
+        env.DensityMapFilter = { new = function() return { setValueCompareParams = function(flt, cmp, v)
+            assert(cmp == "eq"); flt.value = v end } end }
+        env.FruitType = { UNKNOWN = 0 }
+        env.g_fruitTypeManager = { getFruitTypeByIndex = function(_, i) return { name = i == 2 and "WHEAT" or "X" } end }
+        env.FieldState = { new = function()
+            return { isValid = true, update = function(st, x, z)
+                for _, f in ipairs(fields) do if f.posX == x then st.fruitTypeIndex = f.fruit end end
+            end }
+        end }
+        env.g_farmManager = { getFarmById = function() return { money = 125000.5 } end }
+        env.g_currentMission.missionInfo = { helperBuySeeds = true, helperBuyFertilizer = false }
+    """
+
+    def test_owned_fields_and_their_coverage_are_observed(self):
+        world = self.stubs.world()
+        self.lua.execute(self.FIELD_STUBS, world.env, self.observe)
+        frame = self.snapshot(world)
+        self.assertEqual([f["id"] for f in frame["fields"]], [7, 9])              # owned only, by id
+        self.assertTrue(all(f["coverage"] is None for f in frame["fields"]))      # not measured yet
+        self.assertEqual(frame["farm"], {"money": 125000.5, "helper_buy_seeds": True,
+                                         "helper_buy_fertilizer": False, "helper_buy_fuel": None})
+        self.assertTrue(self.observe.refreshField(world.env, 7))
+        observed = observation_from_snapshot(self.snapshot(world))
+        field = observed.fields[0]
+        self.assertEqual((field.id, field.area_ha, field.center), (7, 0.4, (100, 200)))
+        c = field.coverage
+        self.assertEqual(c.ground, (("CULTIVATED", 0.75), ("SOWN", 0.25)))
+        self.assertEqual((c.share("CULTIVATED"), c.sprayed(), c.total_m2), (0.75, 0.1, 4000))
+        self.assertEqual((c.fruit, c.sampled), ((("WHEAT", 1),), 1))
+        self.assertEqual((observed.farm.money, observed.farm.helper_buy_seeds), (125000.5, True))
+
+    def test_field_coverage_refreshes_one_field_at_a_time(self):
+        world = self.stubs.world()
+        self.lua.execute(self.FIELD_STUBS, world.env, self.observe)
+        self.observe.snapshot(world.env, 1, None, 3000)
+        measured = [f["id"] for f in self.snapshot(world)["fields"] if f["coverage"] is not None]
+        self.assertEqual(len(measured), 1)
+        self.observe.snapshot(world.env, 2, None, 3000)
+        self.assertEqual(len([f for f in self.snapshot(world)["fields"] if f["coverage"] is not None]), 2)
+
     def test_attachment_unknown_versus_empty(self):
         tractor = '{ id = 21, file = "STUB_TRACTORS", joints = { "TRAILER" }, modes = { %s } }'
         wagon = '{ id = 22, file = "STUB_WAGONS", inputs = { "TRAILER" }, modes = { %s } }'

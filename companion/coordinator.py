@@ -22,6 +22,8 @@ import threading
 from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified
+from companion.executor import OPERATIONS, of_kind, resolve_field, usable
+from protocol.model import Equipment, Result
 
 log = logging.getLogger("farmhand")
 COMMAND_SCHEMA = json.loads((Path(__file__).resolve().parents[1] / "protocol/command.schema.json").read_text())
@@ -37,12 +39,13 @@ def token(text: str) -> str:
 
 # Steps worth telling the player about while a job works (WORKING_<step>); the
 # rest is visible on request (STATUS_WORKING_<step>).
-MILESTONES = frozenset({"PULL_CLEAR", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "DELIVER"})
+MILESTONES = frozenset({"FIELD_WORK", "PULL_CLEAR", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "DELIVER"})
 # The executor task and the player-facing notices of each job command.
 JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE"),
         "move_pair": ("move_pair", "ACCEPTED_MOVE", "COMPLETE_MOVE"),
         "hitch_pair": ("hitch_pair", "ACCEPTED_HITCH", "COMPLETE_HITCH"),
-        "detach_pair": ("detach_pair", "ACCEPTED_DETACH", "COMPLETE_DETACH")}
+        "detach_pair": ("detach_pair", "ACCEPTED_DETACH", "COMPLETE_DETACH"),
+        "field_work": ("field_work", "ACCEPTED_FIELD_WORK", "COMPLETE_FIELD_WORK")}
 
 
 def result_notice(status: str, reason: str, complete: str = "COMPLETE") -> str:
@@ -52,6 +55,53 @@ def result_notice(status: str, reason: str, complete: str = "COMPLETE") -> str:
     if status == "CANCELLED":
         return status
     return token(f"{status}_{reason}")
+
+
+# ------------------------------------------------------------- field planning
+# A field-work goal as executor steps, one operation at a time, from fresh state. The
+# planner decides only what happens next; the executor selects, validates and
+# verifies every step. For each operation: hitch an implement that does it (unless one
+# is already hitched to a tractor), work the field, then unhitch it where it stands
+# (PULL_CLEAR included) so the next operation's tool change has a tractor.
+def implement_kind(items: tuple[Equipment, ...], operation: str, farm_id: str) -> tuple[str | None, str | None]:
+    """The implement kind to use for ``operation``: the first of its kinds the farm
+    has (owned, available); a cultivator stands in for a plow only when the farm has
+    no plow (said in the note). None and why when the farm has none."""
+    kinds = OPERATIONS[operation].kinds
+    if operation == "plow" and not _have(items, "plow", farm_id):
+        kinds = OPERATIONS["cultivate"].kinds
+        if _have(items, "cultivator", farm_id):
+            return "cultivator", "NO_PLOW_CULTIVATING"
+    for kind in kinds:
+        if _have(items, kind, farm_id):
+            return kind, None
+    return None, "NO_IMPLEMENT_FOR_" + operation.upper()
+
+
+def _have(items, kind, farm_id) -> bool:
+    return any(of_kind(i, kind) and usable(i, farm_id) and "ai_implement" in i.kinds for i in items)
+
+
+def _hitched(items, kind) -> bool:
+    observed = {i.id: i for i in items}
+    return any(i.category == "tractor" and observed.get(i.attached_to) is not None
+               and of_kind(observed[i.attached_to], kind) for i in items)
+
+
+def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: str, area_m2=None):
+    """The steps for one operation on ``field`` (an id or "smallest"), as executor
+    intent fragments, or (None, why)."""
+    kind, note = implement_kind(items, operation, farm_id)
+    if kind is None:
+        return None, note
+    work_op = "cultivate" if note == "NO_PLOW_CULTIVATING" else operation
+    steps = []
+    if not _hitched(items, kind):
+        steps.append({"task": "hitch_pair", "implement": kind})
+    steps.append({"task": "field_work", "field": field, "operation": work_op, "implement": kind,
+                  **({"area_m2": area_m2} if area_m2 else {})})
+    steps.append({"task": "detach_pair", "implement": kind})
+    return steps, note
 
 
 @dataclass
@@ -102,7 +152,9 @@ class Coordinator:
         elif command == "unsupported":                 # understood: say exactly what is missing
             self.notify(token(f"UNSUPPORTED_{proposal['reason'].upper()}"), spoken)
         else:
-            return self.start(command, proposal.get("target", "here"), spoken, proposal.get("implement"))
+            work = ({"field": proposal["field"], "operations": proposal["operations"],
+                     "area_m2": proposal.get("area_m2")} if command == "field_work" else None)
+            return self.start(command, proposal.get("target", "here"), spoken, proposal.get("implement"), work)
         return None
 
     # ------------------------------------------------------------------ status
@@ -149,7 +201,8 @@ class Coordinator:
             log.info("stop for %s: %s", owner, getattr(error, "code", error))
 
     # -------------------------------------------------------------------- jobs
-    def start(self, command: str, target, spoken: bool = False, implement: str | None = None) -> Job | None:
+    def start(self, command: str, target, spoken: bool = False, implement: str | None = None,
+              work: dict | None = None) -> Job | None:
         with self._lock:
             if self.current is not None:
                 busy = True
@@ -163,21 +216,17 @@ class Coordinator:
             self.notify("BUSY", spoken)
             return None
         self.notify(JOBS[command][1], spoken)
-        self._worker = threading.Thread(target=self._run, args=(job, cancel, command, target, implement), daemon=True,
-                                        name=f"farmhand-job-{job.number}")
+        self._worker = threading.Thread(target=self._run, args=(job, cancel, command, target, implement, work),
+                                        daemon=True, name=f"farmhand-job-{job.number}")
         self._worker.start()
         return job
 
-    def _run(self, job: Job, cancel: threading.Event, command: str, target, implement: str | None = None) -> None:
+    def _run(self, job: Job, cancel: threading.Event, command: str, target, implement: str | None = None,
+             work: dict | None = None) -> None:
         task, _, complete = JOBS[command]
         try:
             for owner in self.world.retained():   # an earlier job's unconfirmed stop
                 self.world.recover(owner)
-            intent = {"version": 1, "request_id": job.owner, "task": task,
-                      "farm_id": self.farm(), "target": "player_at_acceptance" if target == "here" else target}
-            if implement is not None:
-                intent["implement"] = implement
-            log.info("job %d intent %s", job.number, json.dumps(intent))
 
             def entered(state):
                 job.step = state
@@ -185,7 +234,15 @@ class Coordinator:
                     self.notify(f"WORKING_{state}", job.spoken)
 
             self.world.cancel = cancel           # the link refuses steps once it is set
-            result = self.executor.execute(intent, cancel=cancel, on_state=entered)
+            if command == "field_work":
+                result = self._field_work(job, cancel, entered, work)
+            else:
+                intent = {"version": 1, "request_id": job.owner, "task": task,
+                          "farm_id": self.farm(), "target": "player_at_acceptance" if target == "here" else target}
+                if implement is not None:
+                    intent["implement"] = implement
+                log.info("job %d intent %s", job.number, json.dumps(intent))
+                result = self.executor.execute(intent, cancel=cancel, on_state=entered)
             job.states, job.equipment = tuple(result.states), tuple(result.equipment_ids)
             job.state, job.reason = result.status, result.reason
             log.info("job %d result %s", job.number, json.dumps({
@@ -201,6 +258,35 @@ class Coordinator:
             with self._lock:
                 self.current, self.last = None, job
             self.notify(result_notice(job.state, job.reason or "", complete), job.spoken)
+
+    def _field_work(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
+        """Each operation in turn on the same field (resolved once): the planner's next
+        steps from fresh state, each a full executor job; the first one that is not
+        COMPLETE ends the plan with its result."""
+        field, failure = resolve_field(work["field"], self.world.fields())
+        if field is None:
+            return Result("BLOCKED", failure)
+        log.info("job %d field work %s on field %s (%.2f ha)", job.number, work["operations"], field.id, field.area_ha)
+        states, equipment, n = [], [], 0
+        for operation in work["operations"]:
+            steps, note = field_steps(tuple(self.world.snapshot()), operation, field.id, self.farm(),
+                                      work.get("area_m2"))
+            if steps is None:
+                return Result("BLOCKED", note, tuple(equipment), tuple(states))
+            if note is not None:
+                log.info("job %d %s: %s", job.number, operation, note)
+            for step in steps:
+                n += 1
+                intent = {"version": 1, "request_id": f"{job.owner}-{n}", "farm_id": self.farm(),
+                          "target": "player_at_acceptance", **step}
+                log.info("job %d step %d intent %s", job.number, n, json.dumps(intent))
+                result = self.executor.execute(intent, cancel=cancel, on_state=entered)
+                states += [f"{step['task']}:{s}" for s in result.states]
+                equipment += [e for e in result.equipment_ids if e not in equipment]
+                log.info("job %d step %d result %s %s", job.number, n, result.status, result.reason)
+                if result.status != "COMPLETE":
+                    return Result(result.status, result.reason, tuple(equipment), tuple(states))
+        return Result("COMPLETE", "FIELD_WORK_OBSERVED", tuple(equipment), tuple(states))
 
     def wait(self, timeout: float | None = None) -> None:
         """Wait for the running job (tests and shutdown)."""

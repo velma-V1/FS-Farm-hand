@@ -4,7 +4,7 @@ import math
 from threading import RLock
 
 from adapters.world import StepFailed
-from protocol.model import Destination, Equipment, Pose
+from protocol.model import Destination, Equipment, FarmInfo, Field, FieldCoverage, Pose
 
 # Mock-only stand-ins for GIANTS' attach-range decision and AIJobGoTo accuracy.
 # They are NOT GIANTS' rules (adapters/EVIDENCE.md); they only let orchestration
@@ -19,7 +19,7 @@ MOCK_PULL_MAX_M = 8.0            # and its cap (Hitch.PULL_LIMITS.maxDistanceM)
 
 
 class MockWorld:
-    def __init__(self, equipment, players, destinations=(), map_id=None, places=()):
+    def __init__(self, equipment, players, destinations=(), map_id=None, places=(), fields=(), farm=None):
         equipment, destinations = tuple(equipment), tuple(destinations)
         self.items: dict[str, Equipment] = {item.id: item for item in equipment}
         if len(self.items) != len(equipment):
@@ -30,6 +30,8 @@ class MockWorld:
         self.players = dict(players)
         self.current_map_id = map_id
         self.place_list = tuple(places)
+        self.field_map: dict[int, Field] = {f.id: f for f in fields}
+        self.farm_info = farm
         self._lock = RLock()
         self._reservations: dict[str, tuple[str, tuple[str, str]]] = {}
 
@@ -48,6 +50,49 @@ class MockWorld:
     def places(self):
         with self._lock:
             return self.place_list
+
+    def fields(self):
+        with self._lock:
+            return tuple(self.field_map.values())
+
+    def farm(self):
+        with self._lock:
+            return self.farm_info
+
+    # What each implement kind leaves on the field (mock only, never GIANTS').
+    MOCK_WORK = {"cultivator": ("CULTIVATED", None), "plow": ("PLOWED", None), "sowing_machine": ("SOWN", "WHEAT"),
+                 "sprayer": (None, None)}
+
+    def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0):
+        # Mock-only: the hitched implement's kind turns the whole field into its result
+        # and uses 100 l of its material; the tractor ends inside the field.
+        with self._lock:
+            reservation = self._reservations.get(owner)
+            if not reservation or tractor_id != reservation[1][0]:
+                raise RuntimeError("NOT_RESERVED")
+            tractor = self.items[tractor_id]
+            implement = self.items.get(tractor.attached_to)
+            field = self.field_map.get(field_id)
+            if implement is None or field is None:
+                raise RuntimeError("NO_FIELD_FOUND")
+            kind = next((k for k in self.MOCK_WORK if k in implement.kinds), None)
+            if kind is None:
+                raise RuntimeError("FIELDWORK_UNAVAILABLE")
+            ground, fruit = self.MOCK_WORK[kind]
+            old = field.coverage or FieldCoverage((), (), 10000.0, None, 9)
+            share = min(1.0, area_m2 / old.total_m2) if area_m2 else 1.0     # a bounded test area
+            rest = tuple((n, s * (1 - share)) for n, s in old.ground if n != ground)
+            coverage = FieldCoverage(
+                ground=tuple(sorted(rest + ((ground, share + dict(old.ground).get(ground, 0) * (1 - share)),)))
+                if ground else old.ground,
+                spray=((1, share + dict(old.spray).get(1, 0) * (1 - share)),) if kind == "sprayer" else old.spray,
+                total_m2=old.total_m2, fruit=((fruit, 9),) if fruit else old.fruit, sampled=old.sampled)
+            self.field_map[field_id] = replace(field, coverage=coverage, age_ms=0.0)
+            units = tuple(replace(u, level=max(0.0, u.level - 100.0)) if u.role and u.level else u
+                          for u in implement.fill_units)
+            self.items[implement.id] = replace(implement, fill_units=units)
+            self._place(tractor, pose)
+            return "AREA_REACHED" if area_m2 else "FINISHED"
 
     def map_id(self):
         with self._lock:

@@ -147,6 +147,46 @@ def refuses(text: str) -> bool:
     return bool(_NEGATION.search(words) or _QUESTION.match(words))
 
 
+# Field work: "plow, seed and fertilize field 7", "seed the smallest field".
+_FIELD_VERBS = {"plow": "plow", "plough": "plow", "cultivate": "cultivate", "till": "cultivate",
+                "seed": "sow", "sow": "sow", "plant": "sow", "drill": "sow",
+                "fertilize": "fertilize", "fertilise": "fertilize", "spray": "fertilize"}
+_FIELD_VERB = r"(?:" + "|".join(_FIELD_VERBS) + r")"
+_FIELD_WORK = re.compile(
+    rf"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?P<verbs>{_FIELD_VERB}(?:\s+(?:(?:and|then|and\s+then)\s+)?{_FIELD_VERB})*)"
+    r"\s+(?:(?:a\s+)?(?:(?P<test>small|test)\s+(?:test\s+)?(?:area|patch|strip|plot)"
+    r"|(?P<m2>\d{2,5})\s+(?:square\s+(?:meters|metres)|m2|sqm))\s+(?:of|on|in)\s+)?"
+    r"(?:on\s+|in\s+)?(?:the\s+|our\s+|my\s+)?(?:(?P<smallest>smallest|small)\s+(?:owned\s+)?field"
+    r"|field\s+(?:number\s+)?(?P<number>\d{1,5}))(?:\s+please)?$")
+
+
+TEST_AREA_M2 = 400        # "a small area of field 7": about a minute of work for one implement
+
+
+def field_work(words: str) -> dict | None:
+    match = _FIELD_WORK.match(words)
+    if match is None:
+        return None
+    operations = []
+    for verb in re.findall(_FIELD_VERB, match["verbs"]):
+        operation = _FIELD_VERBS[verb]
+        if operation in operations:
+            return None                              # "seed and sow": not an order of work
+        operations.append(operation)
+    field = "smallest" if match["smallest"] else int(match["number"])
+    if field != "smallest" and field < 1:
+        return None
+    work = {"version": 1, "command": "field_work", "field": field, "operations": operations}
+    if match["test"]:
+        work["area_m2"] = TEST_AREA_M2
+    elif match["m2"]:
+        area = int(match["m2"])
+        if not 50 <= area <= 20000:
+            return None
+        work["area_m2"] = area
+    return work
+
+
 class RuleInterpreter:
     """Deterministic wording rules for the supported commands."""
 
@@ -167,6 +207,9 @@ class RuleInterpreter:
             return None                               # never an order to move
         if _COME.match(words):
             return {"version": 1, "command": "move_pair"}
+        work = field_work(words)
+        if work is not None:
+            return work
         kind = implement_kind(words)
         if _DETACH_VERB.match(words) or _DROP.match(words):
             return self._detach(text, words, kind)

@@ -39,7 +39,7 @@ RUNNER_STALE_S = 5.0
 # How long each op may take on the host (its own bounds plus a margin).
 TIMEOUT_S = {"status": 40.0, "install-current-build": 180.0, "launch-fs25": 660.0, "restart-fs25": 1800.0,
              "stop-fs25": 90.0, "run-hitch-test": 30.0, "run-request-test": 30.0, "stop-test": 30.0, "collect": 30.0}
-HITCH_WAIT_S = 2400.0          # beyond the longest job: TRAVEL_NEAR alone may take 20 min
+HITCH_WAIT_S = 23500.0         # beyond the longest job: a field-work plan of three 2 h jobs
 EXIT = {"COMPLETE": 0, "FAILED": 1, "BLOCKED": 3, "UNVERIFIED": 4, "CANCELLED": 5}
 INFRASTRUCTURE = 10
 
