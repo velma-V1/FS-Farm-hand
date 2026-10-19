@@ -688,6 +688,7 @@ Bridge.CRITICAL = {
 Bridge.STEPS = {
     FIND = "looking for a tractor and the implement",
     RESERVE = "reserving the equipment",
+    PULL_CLEAR = "pulling away from the unhitched implement",
     TRAVEL_NEAR = "driving to the implement",
     STAGE = "driving to the implement",
     LOCAL_MANEUVER = "lining up with the implement",

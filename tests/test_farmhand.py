@@ -7,7 +7,7 @@ import unittest
 
 from adapters.world import StepFailed
 from companion.executor import DELIVERY_STANDOFF_M, MAX_APPROACH_DRIVES, PLACE_STANDOFF_M, Executor
-from companion.hitch import approach_poses, plan_hitch
+from companion.hitch import PULL_CLEAR_M, approach_poses, plan_hitch, pull_clear_pose
 from protocol.model import Destination, Equipment, InputJoint, OutputJoint, Pose
 from simulator.world import MockWorld
 
@@ -706,6 +706,61 @@ class GiantsNavigationTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("FAILED", "TRAPPED"))
         self.assertEqual([c[0] for c in calls], ["navigate", "maneuver", "stage"])     # no wasted retries
         self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
+
+    def loose_world(self, cls):
+        """The far tractor with a loose cultivator unhitched on its rear joint."""
+        tractor, wagon = self.world(far=True).snapshot()
+        rear = min(tractor.output_joints, key=lambda j: j.z)
+        joint = tractor.ai_root.to_world(rear.x, rear.z + 0.12)
+        loose = Equipment(id="loose-cultivator", category="implement", farm_id=tractor.farm_id,
+                          position=(joint[0], joint[1] - 3.0), kinds=frozenset({"cultivator"}),
+                          heading=0.0, input_joints=(InputJoint(1, rear.joint_type, joint, True),))
+        return cls([tractor, wagon, loose], PLAYERS, DESTINATIONS), tractor
+
+    def test_a_tractor_on_an_unhitched_implement_pulls_clear_ahead_first(self):
+        # Live 5cdd589ebdce4f01-3: just unhitched, GIANTS' agent stayed BLOCKED for a
+        # target behind the tractor. GIANTS' GOTO first drives it straight ahead.
+        calls = []
+
+        class Recording(MockWorld):
+            def navigate(self, tractor_id, pose, owner):
+                calls.append(pose)
+                return super().navigate(tractor_id, pose, owner)
+
+        world, tractor = self.loose_world(Recording)
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual(result.states[:3], ("FIND", "RESERVE", "PULL_CLEAR"))
+        ahead = tractor.ai_root.to_world(0.0, PULL_CLEAR_M)
+        self.assertAlmostEqual(calls[0].x, ahead[0])
+        self.assertAlmostEqual(calls[0].z, ahead[1])
+        self.assertAlmostEqual(calls[0].yaw, tractor.ai_root.yaw)
+
+    def test_a_tractor_that_cannot_even_pull_clear_is_trapped(self):
+        calls = []
+
+        class Blocked(MockWorld):
+            def navigate(self, tractor_id, pose, owner):
+                calls.append(pose)
+                raise StepFailed("NAVIGATE_STALLED")              # GIANTS' agent BLOCKED, unmoved
+
+        world, _ = self.loose_world(Blocked)
+        result = Executor(world).execute(intent())
+        self.assertEqual((result.status, result.reason), ("FAILED", "TRAPPED"))
+        self.assertEqual(result.states, ("FIND", "RESERVE", "PULL_CLEAR", "STOP", "RELEASE"))
+        self.assertEqual(len(calls), 1)                          # no approach is tried
+        self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
+
+    def test_no_pull_clear_without_a_loose_implement_on_a_joint(self):
+        _, tractor = self.loose_world(MockWorld)
+        _, wagon = self.world(far=True).snapshot()
+        self.assertIsNone(pull_clear_pose(tractor, [wagon]))       # the implement being hitched is excluded
+        attached = replace(self.loose_world(MockWorld)[0].snapshot()[2], attached_to="someone")
+        self.assertIsNone(pull_clear_pose(tractor, [attached]))
+        far = replace(attached, attached_to=None,
+                      input_joints=tuple(replace(i, position=(i.position[0], i.position[1] - 2.0))
+                                         for i in attached.input_joints))
+        self.assertIsNone(pull_clear_pose(tractor, [far]))
 
     def test_aims_giants_refuses_as_blocked_are_skipped_without_moving(self):
         # AIParameterPosition:validate 83-90: a target on blocked ground is refused.

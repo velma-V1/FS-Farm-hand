@@ -33,6 +33,14 @@ MAX_STAGING_DISTANCE_M = 10.0
 APPROACHES = ((-2.0, 10.0, 45.0), (2.0, 12.0, 90.0), (-6.0, 15.0, 0.0))
 APPROACH_CLEARANCE_M = 10.0         # an aim this close to other equipment is tried after the clear ones
 
+# A tractor standing with one of its joints on a loose implement's input joint (live
+# 5cdd589ebdce4f01-3: just unhitched, joints 0.12 m apart) is not driven off by GIANTS'
+# agent towards a target behind it: the agent stays BLOCKED (AIDrivable:onUpdate) with
+# the job active and the tractor still. It is first sent this far straight ahead, by
+# GIANTS' GOTO like any aim (pull_clear_pose).
+PULL_CLEAR_JOINT_M = 1.5
+PULL_CLEAR_M = 12.0
+
 # The envelope from which the bounded reverse (mod/FarmhandHitch.lua) can bring the
 # planned tractor joint to the wagon's input joint, measured on the observed joints
 # in the wagon's frame. Provisional: every check logs the numbers.
@@ -118,6 +126,22 @@ def approach_poses(plan: HitchPlan, origin, others) -> tuple[Pose, ...]:
             ranked.append(((crowded, rank, math.dist((pose.x, pose.z), tuple(origin))), pose))
     ranked.sort(key=lambda entry: entry[0])
     return tuple(pose for _, pose in ranked)
+
+
+def pull_clear_pose(tractor: Equipment, others) -> Pose | None:
+    """The AI root pose PULL_CLEAR_M straight ahead when one of ``tractor``'s joints
+    is within PULL_CLEAR_JOINT_M of an input joint of an implement in ``others``
+    that is attached to nothing; else None."""
+    root = tractor.ai_root
+    if root is None or not _finite(root.x, root.z, root.yaw):
+        return None
+    joints = [root.to_world(j.x, j.z) for j in tractor.output_joints if _finite(j.x, j.z)]
+    loose = [i.position for e in others if e.id != tractor.id and e.attached_to is None
+             for i in e.input_joints if _finite(*i.position)]
+    if not any(math.dist(j, p) <= PULL_CLEAR_JOINT_M for j in joints for p in loose):
+        return None
+    x, z = root.to_world(0.0, PULL_CLEAR_M)
+    return Pose(x, z, root.yaw)
 
 
 def hitch_problem(tractor: Equipment, wagon: Equipment) -> str:

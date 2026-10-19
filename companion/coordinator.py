@@ -37,7 +37,7 @@ def token(text: str) -> str:
 
 # Steps worth telling the player about while a job works (WORKING_<step>); the
 # rest is visible on request (STATUS_WORKING_<step>).
-MILESTONES = frozenset({"TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "DELIVER"})
+MILESTONES = frozenset({"PULL_CLEAR", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "DELIVER"})
 # The executor task and the player-facing notices of each job command.
 JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE"),
         "move_pair": ("move_pair", "ACCEPTED_MOVE", "COMPLETE_MOVE"),

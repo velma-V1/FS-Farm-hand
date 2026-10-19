@@ -63,6 +63,10 @@ Executable mapping (`python scripts/check.py`):
   only a GOTO that moves the tractor counts as a drive; no aim moving it is
   BLOCKED NO_SAFE_APPROACH, a stall far from the implement ends at once
   (NAVIGATE_STALLED), and a stuck tractor no GOTO can move is TRAPPED;
+  a tractor standing on another loose implement's joint (just unhitched) first
+  pulls PULL_CLEAR_M straight ahead by GIANTS' GOTO, TRAPPED if even that stalls
+  unmoved, never for the implement being hitched (`test_a_tractor_on_an_unhitched_implement_pulls_clear_ahead_first`,
+  `test_a_tractor_that_cannot_even_pull_clear_is_trapped`, `test_no_pull_clear_without_a_loose_implement_on_a_joint`);
   joints already within ATTACH_READY_M take a look-only ALIGN_REVERSE (GIANTS'
   candidate, no motion; `test_lua_hitch` look-only test) and ATTACH, never a
   maneuver, GOTO or reverse from the far side;

@@ -12,7 +12,7 @@ from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified, World
 from companion.hitch import (ALIGN_MAX_HEADING_RAD, IMPLEMENT_CATEGORIES, LOCAL_WORK_RADIUS_M, align_problem,
-                             approach_poses, hitch_problem, joint_error, plan_hitch)
+                             approach_poses, hitch_problem, joint_error, plan_hitch, pull_clear_pose)
 from protocol.model import Destination, Equipment, HitchPlan, Pose, Position, Result
 
 log = logging.getLogger("farmhand")
@@ -100,7 +100,7 @@ ATTACH_READY_M = 0.5
 # A GOTO that left the tractor within this of where it stood did not drive.
 GOTO_MOVED_M = 1.0
 
-CANCELLABLE_STEPS = frozenset({"RESERVE", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
+CANCELLABLE_STEPS = frozenset({"RESERVE", "PULL_CLEAR", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
                                "DETACH", "DELIVER"})
 
 
@@ -686,6 +686,29 @@ class Executor:
                         return _Blocked("NO_SAFE_APPROACH")
                     return StepFailed("TRAVEL_ENDED_TOO_FAR")
 
+                # PULL_CLEAR: a tractor standing on another loose implement's joint
+                # (just unhitched) first drives straight ahead by GIANTS' GOTO; if even
+                # that leaves it where it stood after GIANTS' no-progress stop, it is
+                # TRAPPED. Never for the implement being hitched (its joints meet).
+                tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
+                clear = pull_clear_pose(tractor, [i for i in self.world.snapshot() if i.id != ids[1]])
+                if clear is not None:
+                    enter("PULL_CLEAR")
+                    stalled = False
+                    try:
+                        self.world.navigate(ids[0], clear, owner)
+                    except StepFailed as failure:
+                        if failure.code.endswith("GOTO_INVALID"):
+                            log.info("PULL_CLEAR to %s refused by GIANTS (%s)", clear, failure.code)
+                        elif failure.code in GOTO_STALL_CODES:
+                            stalled = True
+                        else:
+                            raise
+                    after, _ = self._hitch_state(ids, farm_id, owner, plan)
+                    log.info("PULL_CLEAR end: root %s, %.1f m from where it stood%s", after.position,
+                             math.dist(tractor.position, after.position), " (stalled)" if stalled else "")
+                    if stalled and math.dist(tractor.position, after.position) < GOTO_MOVED_M:
+                        raise StepFailed("TRAPPED")
                 if travel is not None:
                     tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
                     while True:
