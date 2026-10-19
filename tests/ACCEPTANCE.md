@@ -63,6 +63,9 @@ Executable mapping (`python scripts/check.py`):
   only a GOTO that moves the tractor counts as a drive; no aim moving it is
   BLOCKED NO_SAFE_APPROACH, a stall far from the implement ends at once
   (NAVIGATE_STALLED), and a stuck tractor no GOTO can move is TRAPPED;
+  joints already within ATTACH_READY_M take a look-only ALIGN_REVERSE (GIANTS'
+  candidate, no motion; `test_lua_hitch` look-only test) and ATTACH, never a
+  maneuver, GOTO or reverse from the far side;
   STAGE ends beyond it on both fail TRAVEL_ENDED_TOO_FAR with no local motion, one outside the reverse's envelope is lined up by LOCAL_MANEUVER,
   a maneuver failure or a maneuver end outside the envelope never reverses;
   unplannable pairs block

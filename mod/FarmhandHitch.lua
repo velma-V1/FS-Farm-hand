@@ -219,7 +219,8 @@ end
 function Hitch.limits(args)
     local L, D = Hitch.LIMITS, Hitch.DEFAULTS
     local r = {
-        maxDistanceM = capped(args.maxDistanceM, nil, L.maxDistanceM),
+        -- 0: look only (the joints already meet): ask GIANTS for the candidate, never drive.
+        maxDistanceM = args.maxDistanceM == 0 and 0 or capped(args.maxDistanceM, nil, L.maxDistanceM),
         maxSpeedKmh = capped(args.maxSpeedKmh, D.maxSpeedKmh, L.maxSpeedKmh),
         timeoutMs = capped(args.timeoutMs, D.timeoutMs, L.timeoutMs),
         maxVerticalM = capped(args.maxVerticalM, D.maxVerticalM, L.maxVerticalM),
@@ -268,6 +269,7 @@ function Hitch.newAlign(env, args)
             wagonStartX = wx, wagonStartZ = wz, tractorStartX = tx, tractorStartZ = tz,
             dirX = fx, dirZ = fz, elapsed = 0, sinceProgress = 0, trace = {}, sinceTrace = nil,
             bestGap = distance(tx, tz, wx, wz), lastGap = distance(tx, tz, wx, wz), result = nil,
+            checkOnly = lim.maxDistanceM == 0,
         }
         Hitch.watchDriver(env, tractor)
         local denied = authority(s)
@@ -363,6 +365,7 @@ local function checkAndDrive(env, s, dt)
     -- GIANTS decides attachability; the instant it names exactly our pair, stop.
     local found = exactCandidate(env, s)
     if found ~= nil then return found end
+    if s.checkOnly then return "NO_CANDIDATE" end           -- look only: never drives
 
     local tx, _, tz = world(env, s.tractorJoint.jointTransform)
     if distance(tx, tz, s.tractorStartX, s.tractorStartZ) > s.maxDistanceM then return "DISTANCE_LIMIT" end

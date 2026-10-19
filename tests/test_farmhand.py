@@ -1570,6 +1570,33 @@ class HitchOnlyTests(unittest.TestCase):
         self.assertEqual(Executor(world).execute({**intent(), "task": "move_pair", "implement": "plow"}).reason,
                          "INVALID_INTENT")                                                  # not for move_pair
 
+    def test_joints_that_already_meet_attach_without_any_motion(self):
+        # Live ec4422f2a4484f9e-3: re-hitching right after a detach, gap 0.12 m with the
+        # tractor joint 0.11 m on the far side: a look-only reverse, then ATTACH.
+        calls = []
+
+        class Recording(MockWorld):
+            def align(self, tractor_id, wagon_id, plan, owner, check_only=False):
+                calls.append(("align", check_only))
+                return super().align(tractor_id, wagon_id, plan, owner, check_only)
+
+            def maneuver(self, *args):
+                raise AssertionError("no maneuver at the hitch point")
+
+            def stage(self, *args):
+                raise AssertionError("no GOTO at the hitch point")
+
+        tractor, wagon = simple_world().snapshot()
+        plan = plan_hitch(tractor, wagon)
+        back = math.sin(plan.final.yaw) * -0.11, math.cos(plan.final.yaw) * -0.11
+        there = Pose(plan.final.x + back[0], plan.final.z + back[1], plan.final.yaw)
+        world = Recording([replace(tractor, position=(there.x, there.z), ai_root=there, heading=there.yaw), wagon],
+                          PLAYERS, DESTINATIONS)
+        result = Executor(world).execute({**intent(), "task": "hitch_pair"})
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "HITCH_OBSERVED"), result)
+        self.assertEqual(result.states, ("FIND", "RESERVE", "ALIGN_REVERSE", "ATTACH", "VERIFY", "STOP", "RELEASE"))
+        self.assertEqual(calls, [("align", True)])
+
     def test_a_failed_hitch_is_never_complete(self):
         world = FaultWorld("false_attach")
         result = Executor(world).execute({**intent(), "task": "hitch_pair"})

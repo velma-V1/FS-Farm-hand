@@ -11,9 +11,8 @@ from threading import Lock
 from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified, World
-from companion.hitch import (IMPLEMENT_CATEGORIES, LOCAL_WORK_RADIUS_M, align_problem, approach_poses, hitch_problem,
-                             joint_error,
-                             plan_hitch)
+from companion.hitch import (ALIGN_MAX_HEADING_RAD, IMPLEMENT_CATEGORIES, LOCAL_WORK_RADIUS_M, align_problem,
+                             approach_poses, hitch_problem, joint_error, plan_hitch)
 from protocol.model import Destination, Equipment, HitchPlan, Pose, Position, Result
 
 log = logging.getLogger("farmhand")
@@ -95,6 +94,9 @@ MAX_APPROACH_DRIVES = 3
 # NAVIGATE_STALL_MS; live 4167b7fd4e8143db-1: 1.2 km, then stuck 12 m short): the tractor is
 # stopped, and like an ended GOTO what follows is decided by the observed joints.
 GOTO_STALL_CODES = frozenset({"NAVIGATE_STALLED"})
+# Joints at most this far apart already meet: GIANTS' candidate is asked without
+# any motion (look-only ALIGN_REVERSE); never a reverse from the far side.
+ATTACH_READY_M = 0.5
 # A GOTO that left the tractor within this of where it stood did not drive.
 GOTO_MOVED_M = 1.0
 
@@ -709,6 +711,7 @@ class Executor:
                             raise StepFailed("TRAVEL_ENDED_TOO_FAR")
                 tractor, wagon, error = self._joints("HITCH start", ids, farm_id, owner, plan)
                 refused = None
+                at_hitch = False
                 while True:
                     if error.gap > LOCAL_WORK_RADIUS_M or refused is not None:
                         if not goto("STAGE"):
@@ -718,6 +721,12 @@ class Executor:
                                                              beyond="TRAVEL_ENDED_TOO_FAR")
                         if error.gap > LOCAL_WORK_RADIUS_M:
                             continue
+                    if error.gap <= ATTACH_READY_M and abs(error.heading) <= ALIGN_MAX_HEADING_RAD:
+                        # The joints already meet (live: re-hitching after a detach, gap
+                        # 0.12 m, 0.11 m on the far side): no motion, only GIANTS'
+                        # candidate decides (a look-only ALIGN_REVERSE).
+                        at_hitch = True
+                        break
                     if align_problem(error) is None:
                         break
                     enter("LOCAL_MANEUVER")
@@ -742,7 +751,10 @@ class Executor:
                     break
                 enter("ALIGN_REVERSE")
                 try:
-                    self.world.align(tractor.id, wagon.id, plan, owner)
+                    if at_hitch:
+                        self.world.align(tractor.id, wagon.id, plan, owner, check_only=True)
+                    else:
+                        self.world.align(tractor.id, wagon.id, plan, owner)
                 finally:
                     self._log_joints("ALIGN_REVERSE end", ids, plan)
                 tractor, wagon = self._hitch_state(ids, farm_id, owner, plan)

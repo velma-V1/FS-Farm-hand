@@ -161,9 +161,15 @@ class MockWorld:
                 raise RuntimeError("OUTSIDE_LOCAL_AREA")
             self._place(tractor, plan.staging)
 
-    def align(self, tractor_id, wagon_id, plan, owner):
+    def align(self, tractor_id, wagon_id, plan, owner, check_only=False):
         with self._lock:
             tractor, wagon = self._unattached_pair(tractor_id, wagon_id, owner)
+            if check_only:                    # look only: the candidate is there or not
+                out = next((j for j in tractor.output_joints if j.index == plan.tractor_joint), None)
+                if out is None or tractor.ai_root is None or math.dist(
+                        tractor.ai_root.to_world(out.x, out.z), plan.target) > MOCK_ATTACH_RANGE_M:
+                    raise RuntimeError("NO_CANDIDATE")
+                return
             joint = next((j for j in wagon.input_joints if j.index == plan.wagon_joint), None)
             root = tractor.ai_root
             # Like the real step, only reverse towards an unmoved wagon from within the

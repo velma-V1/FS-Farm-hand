@@ -35,7 +35,9 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 | ~45° heading | — | — | OPEN | |
 | Large heading error | — | — | OPEN | |
 | Different tractor | — | — | OPEN | |
-| Detach / reattach | — | — | OPEN | |
+| Cultivator in open ground, repeated from save 3 | ec4422f2a4484f9e-1 | 01d0eae | PASS | same chain and numbers as 2ded907e5cb34b6c-3 (LINED_UP 7.26 m / -0.14 m / -3.7 deg, gap 0.55 m, ATTACHED, VERIFY) |
+| Detach ("unhitch the cultivator") | ec4422f2a4484f9e-2 | 01d0eae | PASS | FIND, RESERVE, DETACH (GIANTS isDetachAllowed, detachImplementByObject), VERIFY: both ends unattached and stopped; nothing moved |
+| Reattach right after the detach | ec4422f2a4484f9e-3 | 01d0eae | FAIL (fixed) | joints 0.12 m apart, tractor joint 0.11 m on the far side: ALIGN_WRONG_SIDE sent it to LOCAL_MANEUVER (refused), then a re-approach STAGE hung (STAGE_TIMEOUT, nothing moved). Joints within 0.5 m now take a look-only ALIGN_REVERSE (GIANTS' candidate, never a drive), then ATTACH |
 | STOP mid-maneuver | — | — | OPEN | |
 | Player takeover | — | — | OPEN | |
 | Stall / failure | — | — | OPEN | |

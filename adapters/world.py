@@ -73,9 +73,10 @@ class World(Protocol):
         centreline, a few metres ahead of its joint, facing its heading."""
         ...
 
-    def align(self, tractor_id: str, wagon_id: str, plan: HitchPlan, owner: str) -> None:
+    def align(self, tractor_id: str, wagon_id: str, plan: HitchPlan, owner: str, check_only: bool = False) -> None:
         """ALIGN_REVERSE: bounded reverse (mod/FarmhandHitch.lua) that stops as soon
-        as GIANTS reports exactly the planned joints as the attach candidate."""
+        as GIANTS reports exactly the planned joints as the attach candidate.
+        ``check_only``: the joints already meet; ask for the candidate, never move."""
         ...
 
     def attach(self, tractor_id: str, wagon_id: str, joints: tuple[int, int], owner: str) -> None:

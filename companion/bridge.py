@@ -360,10 +360,12 @@ class FS25World:
         self._run("maneuver", tractor=int(tractor_id), wagon=int(wagon_id), tractorJoint=plan.tractor_joint,
                   wagonJoint=plan.wagon_joint)
 
-    def align(self, tractor_id: str, wagon_id: str, plan: HitchPlan, owner: str) -> None:
+    def align(self, tractor_id: str, wagon_id: str, plan: HitchPlan, owner: str, check_only: bool = False) -> None:
         self._reserved(tractor_id, owner, wagon_id)
+        # 0 m: look only (mod/FarmhandHitch.lua Hitch.limits): GIANTS' candidate, no motion.
+        reach = 0.0 if check_only else self._reverse_length(tractor_id, plan)
         self._run("align", tractor=int(tractor_id), wagon=int(wagon_id), tractorJoint=plan.tractor_joint,
-                  wagonJoint=plan.wagon_joint, maxDistanceM=self._reverse_length(tractor_id, plan))
+                  wagonJoint=plan.wagon_joint, maxDistanceM=reach)
 
     def _reverse_length(self, tractor_id: str, plan: HitchPlan) -> float:
         """The bounded reverse's length: the gap STAGE actually left plus 2 m, never

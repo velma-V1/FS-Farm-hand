@@ -233,6 +233,17 @@ class LuaHitchTests(unittest.TestCase):
         self.assertEqual(list(w.calls.values()), ["stopCurrentAIJob:stoppedByUser"])
 
     # ------------------------------------------------------------ preconditions
+    def test_a_look_only_reverse_asks_giants_and_never_drives(self):
+        # maxDistanceM 0: the joints already meet (live: re-hitching after a detach).
+        for gap, expected in ((0.3, "CANDIDATE"), (3.0, "NO_CANDIDATE")):
+            with self.subTest(gap=gap):
+                w = self.world(gap=gap)
+                session, why = self.align(w, maxDistanceM=0)
+                self.assertIsNotNone(session, why)
+                code, _ = self.W.run(w, session, 50, 20)
+                self.assertEqual(code, expected)
+                self.assertEqual([d for d in self.drives(w) if d["allowed"] or d["acc"] != 0], [])
+
     def test_align_refuses_unsafe_requests(self):
         cases = [
             ({}, {"maxSpeedKmh": 5.5}, "INVALID_LIMITS"),
@@ -241,7 +252,7 @@ class LuaHitchTests(unittest.TestCase):
             ({}, {"assistRadiusM": 0}, "INVALID_LIMITS"),
             ({}, {"maxVerticalM": 1.1}, "INVALID_LIMITS"),
             ({}, {"maxDistanceM": 10.5}, "INVALID_LIMITS"),
-            ({}, {"maxDistanceM": 0}, "INVALID_LIMITS"),
+            ({}, {"maxDistanceM": -1}, "INVALID_LIMITS"),
             ({}, {"timeoutMs": 61000}, "INVALID_LIMITS"),
             ({}, {"isReserved": False}, "INVALID_LIMITS"),
             ({}, {"tractorJoint": 9}, "UNKNOWN_JOINT"),
