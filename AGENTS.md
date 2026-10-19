@@ -64,7 +64,8 @@ have precedence; report conflicts instead of silently changing the scope.
 - Development-only live tests (user-authorized 2026-10-18): the host runner
   `scripts/fs25_host_runner.py`, started by the user outside the agent's sandbox,
   performs only its fixed allowlist (status, install the checkout's build, launch
-  FS25 by its package's own gamelaunchhelper.exe or else its exe — fixed paths —,
+  FS25 by Windows' activation of its installed package (fixed AppUserModelID), else
+  its package's own gamelaunchhelper.exe, else its exe — fixed paths —,
   restart or stop FS25 — that image only —, the production hitch_pair, the player's
   own typed words through the production rules (letters, digits, spaces, light
   punctuation; 160 at most), STOP, collect). Never widen it into a shell, file or

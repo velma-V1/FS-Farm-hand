@@ -67,6 +67,9 @@ FS25_EXE = r"C:\XboxGames\Farming Simulator 25 (PC)\Content\x64\FarmingSimulator
 FS25_PROFILE = r"C:\Users\Matt\AppData\Local\Packages\GIANTSSoftware.FarmingSimulator25PC_fa8jxm5fj0esw\LocalCache\Local"
 FARMHAND_DATA = r"C:\Users\Matt\AppData\Local\FS25Farmhand"
 FS25_IMAGE = "FarmingSimulator2025Game.exe"
+# The package's Application Id (its appxmanifest), with the package family name from
+# the profile path (...\Packages\<family>\LocalCache\Local) forms its AppUserModelID.
+FS25_APP_ID = "x64.FarmingSimulator2025Game"
 MOD_NAME = "FS25_Farmhand"
 MOD_SETTINGS = ("modSettings", "FS25_Farmhand")
 LIVE_FOLDER = "livetest"
@@ -96,7 +99,7 @@ COMPANION_QUIT_S = 45.0
 COMPANION_START_S = 30.0
 # The Xbox (GDK) launcher may take over a minute before the game process appears
 # (live 2026-10-18: FS25_DID_NOT_START at 60 s, then the game loaded).
-GAME_CLOSE_S, GAME_KILL_S, GAME_APPEAR_S = 20.0, 15.0, 180.0
+GAME_CLOSE_S, GAME_KILL_S, GAME_APPEAR_S = 20.0, 15.0, 240.0
 READY_S = 900.0
 MAX_LOG_LINES, MAX_LINE_CHARS = 2000, 1200    # a full maneuver STEER line is ~700 characters
 _ID = re.compile(r"[0-9]{1,20}")
@@ -220,13 +223,18 @@ class System:
         Returns what the starter said (for a launch that never appears), bounded."""
         if sys.platform == "win32":
             try:
+                if program.startswith("shell:AppsFolder\\"):
+                    os.startfile(program, "open", subprocess.list2cmdline(arguments))
+                    return {}
                 subprocess.Popen([program, *arguments], cwd=folder, close_fds=True,
                                  creationflags=0x00000008 | 0x00000200)   # DETACHED_PROCESS | NEW_PROCESS_GROUP
             except OSError as error:
                 return {"error": str(error)[:300]}
             return {}
         quoted = " ".join(f'"{_plain(a)}"' if " " in a else _plain(a) for a in arguments)
-        command = f"Start-Process -FilePath '{_plain(program)}' -WorkingDirectory '{_plain(folder)}'"
+        command = f"Start-Process -FilePath '{_plain(program)}'"
+        if folder is not None:
+            command += f" -WorkingDirectory '{_plain(folder)}'"
         if quoted:
             command += f" -ArgumentList '{quoted}'"
         done = self._run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command])
@@ -245,6 +253,11 @@ class Targets:
         self.local_exe = local(exe)
         # The package's launch helper beside the x64 folder (Content\\gamelaunchhelper.exe).
         self.launcher = str(PureWindowsPath(exe).parent.parent / "gamelaunchhelper.exe")
+        # Activation of the installed package by its AppUserModelID, the way Windows
+        # starts a packaged app (None when the profile is not a package's).
+        parts = PureWindowsPath(profile).parts
+        family = parts[parts.index("Packages") + 1] if "Packages" in parts[:-1] else None
+        self.app = _plain(f"shell:AppsFolder\\{family}!{FS25_APP_ID}") if family else None
         self.mod = self.local_profile / "mods" / MOD_NAME
         self.settings = self.local_profile.joinpath(*MOD_SETTINGS)
         self.live = self.settings / LIVE_FOLDER
@@ -890,15 +903,18 @@ class Runner:
                                    "installed": self._installed_builds()}
 
     def _launch(self):
-        """The package's own entry point first (Content\\gamelaunchhelper.exe, the
-        appxmanifest Application Executable, which starts the game exe inside the
-        Xbox package; live 2026-10-18 the bare exe started only some of the time),
-        then the game exe itself. Both are fixed paths derived from the target."""
+        """Windows' activation of the installed package by its AppUserModelID first
+        (live 2026-10-19 both direct starts below failed after a forced stop), then
+        the package's entry point (Content\\gamelaunchhelper.exe, the appxmanifest
+        Application Executable), then the game exe. All fixed, derived from the target."""
         said = {}
-        for program in (self.targets.launcher, self.targets.exe):
-            said[PureWindowsPath(program).name] = self.system.start(
-                program, self.targets.game_arguments(), str(PureWindowsPath(program).parent)) or {}
-            deadline = time.monotonic() + GAME_APPEAR_S / 2
+        starters = [(p, str(PureWindowsPath(p).parent)) for p in (self.targets.launcher, self.targets.exe)]
+        if self.targets.app is not None:
+            starters.insert(0, (self.targets.app, None))
+        for program, folder in starters:
+            name = "app" if folder is None else PureWindowsPath(program).name
+            said[name] = self.system.start(program, self.targets.game_arguments(), folder) or {}
+            deadline = time.monotonic() + GAME_APPEAR_S / len(starters)
             while time.monotonic() < deadline:
                 pids = self.system.processes(FS25_IMAGE)
                 if pids:

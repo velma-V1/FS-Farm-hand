@@ -44,6 +44,8 @@ def wait_for(predicate, timeout=10.0):
         time.sleep(0.01)
 
 
+APP = "shell:AppsFolder\\" + PureWindowsPath(host.FS25_PROFILE).parts[-3] + "!" + host.FS25_APP_ID
+
 class CompanionCase(unittest.TestCase):
     """A FakeGame, the real serve() loop and a LiveTest polling a temporary folder."""
 
@@ -347,7 +349,8 @@ class FakeSystem:
             build = text.split('\nBUILD = "')[1].split('"')[0]
             self.live.mkdir(parents=True, exist_ok=True)
             (self.live / "enabled.json").write_text(json.dumps({"build": build}))
-        elif not (getattr(self, "helper_fails", False) and program.endswith("gamelaunchhelper.exe")):
+        elif not ((getattr(self, "helper_fails", False) and program.endswith("gamelaunchhelper.exe"))
+                  or (getattr(self, "app_fails", False) and program.startswith("shell:AppsFolder"))):
             self.fs25 = [999]
         if self.on_start:
             self.on_start(program)
@@ -725,20 +728,28 @@ class HostRunnerLifecycleTests(RunnerCase):
         self.assertEqual(self.send("install-current-build")["code"], "FS25_RUNNING")
 
     def test_launch_starts_only_the_configured_executable(self):
-        # The package's launch helper first (appxmanifest Application Executable).
-        helper = str(PureWindowsPath(host.FS25_EXE).parent.parent / "gamelaunchhelper.exe")
+        # Windows' activation of the package by its AppUserModelID first.
         answer = self.send("launch-fs25")
         self.assertTrue(answer["ok"], answer)
-        self.assertEqual(self.system.calls, [("start", helper, ("-autoStartSavegameId", "3"),
-                                              str(PureWindowsPath(helper).parent))])
+        self.assertEqual(self.system.calls, [("start", APP, ("-autoStartSavegameId", "3"), None)])
         self.assertEqual(self.send("launch-fs25")["code"], "FS25_RUNNING")
 
-    def test_a_launch_the_helper_cannot_start_falls_back_to_the_game_exe(self):
-        self.system.helper_fails = True
-        with unittest.mock.patch.object(host, "GAME_APPEAR_S", 0.2):
-            self.assertEqual(self.send("launch-fs25")["code"], "LAUNCHED")
+    def test_a_launch_the_package_cannot_start_falls_back_to_the_helper_then_the_game_exe(self):
         helper = str(PureWindowsPath(host.FS25_EXE).parent.parent / "gamelaunchhelper.exe")
-        self.assertEqual([c[1] for c in self.system.calls], [helper, host.FS25_EXE])
+        self.system.app_fails = True
+        with unittest.mock.patch.object(host, "GAME_APPEAR_S", 0.3):
+            self.assertEqual(self.send("launch-fs25")["code"], "LAUNCHED")
+        self.assertEqual([c[1] for c in self.system.calls], [APP, helper])
+        self.system.calls.clear()
+        self.system.fs25 = []
+        self.system.helper_fails = True
+        with unittest.mock.patch.object(host, "GAME_APPEAR_S", 0.3):
+            self.assertEqual(self.send("launch-fs25")["code"], "LAUNCHED")
+        self.assertEqual([c[1] for c in self.system.calls], [APP, helper, host.FS25_EXE])
+
+    def test_the_package_id_comes_from_the_fixed_profile_path(self):
+        self.assertEqual(APP, "shell:AppsFolder\\GIANTSSoftware.FarmingSimulator25PC_fa8jxm5fj0esw!x64.FarmingSimulator2025Game")
+        self.assertIsNone(host.Targets(profile=r"C:\\Users\\Matt\\Documents\\FS25", local=lambda p: Path("/x")).app)
 
     def test_restart_stops_only_fs25_then_waits_for_ready(self):
         self.system.fs25 = [1]
@@ -751,8 +762,7 @@ class HostRunnerLifecycleTests(RunnerCase):
         self.assertEqual((answer["ok"], answer["code"]), (True, "READY"))
         self.assertEqual(status.call_count, 3)
         self.assertEqual(self.system.calls[0], ("close", host.FS25_IMAGE, False))
-        self.assertEqual(self.system.calls[1][:2],
-                         ("start", str(PureWindowsPath(host.FS25_EXE).parent.parent / "gamelaunchhelper.exe")))
+        self.assertEqual(self.system.calls[1][:2], ("start", APP))
 
     def test_a_stale_game_link_is_not_ready(self):
         self.system.fs25, self.system.companion_pid = [1], 4242
@@ -769,7 +779,7 @@ class HostRunnerLifecycleTests(RunnerCase):
         with unittest.mock.patch.object(host, "GAME_APPEAR_S", 0.1):
             answer = self.send("launch-fs25")
         self.assertEqual(answer["code"], "FS25_DID_NOT_START")
-        for starter in ("gamelaunchhelper.exe", "FarmingSimulator2025Game.exe"):
+        for starter in ("app", "gamelaunchhelper.exe", "FarmingSimulator2025Game.exe"):
             self.assertIn("Access is denied", answer["result"]["starter"][starter]["stderr"])
 
     def test_restart_reports_not_ready_within_its_bound(self):
