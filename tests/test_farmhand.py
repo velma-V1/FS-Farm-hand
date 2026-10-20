@@ -1624,6 +1624,34 @@ class HitchOnlyTests(unittest.TestCase):
         self.assertEqual(Executor(world).execute({**intent(), "task": "move_pair", "implement": "plow"}).reason,
                          "INVALID_INTENT")                                                  # not for move_pair
 
+    def test_a_tractor_that_cannot_reach_the_implement_hands_over_to_the_next(self):
+        # Live FourFields: the first tractor by ID stood boxed in (GIANTS not_reachable
+        # for every aim, the local path through the implement); nothing moved.
+        tractor, wagon = simple_world().snapshot()
+        boxed = replace(tractor, id="0-boxed")
+
+        class Boxed(MockWorld):
+            def navigate(self, tractor_id, pose, owner):
+                if tractor_id == "0-boxed":
+                    return None                          # GOTO ended, the tractor did not move
+                return super().navigate(tractor_id, pose, owner)
+
+            def stage(self, tractor_id, wagon_id, pose, owner):
+                if tractor_id == "0-boxed":
+                    return None
+                return super().stage(tractor_id, wagon_id, pose, owner)
+
+            def maneuver(self, tractor_id, wagon_id, plan, owner):
+                if tractor_id == "0-boxed":
+                    raise StepFailed("LOCAL_PATH_HITS_WAGON")
+                return super().maneuver(tractor_id, wagon_id, plan, owner)
+
+        world = Boxed([boxed, tractor, wagon], PLAYERS, DESTINATIONS)
+        result = Executor(world).execute({**intent(), "task": "hitch_pair"})
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "HITCH_OBSERVED"), result)
+        self.assertEqual(result.equipment_ids, (tractor.id, wagon.id))
+        self.assertIn("RELEASE", result.states[:result.states.index("ATTACH")])   # the first try released
+
     def test_joints_that_already_meet_attach_without_any_motion(self):
         # Live ec4422f2a4484f9e-3: re-hitching right after a detach, gap 0.12 m with the
         # tractor joint 0.11 m on the far side: a look-only reverse, then ATTACH.

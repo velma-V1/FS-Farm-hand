@@ -36,7 +36,10 @@ DELIVERY_STANDOFF_M = 10.0
 PLACE_STANDOFF_M = 15.0
 TRACTOR_ARRIVAL_TOLERANCE_M = 3.0
 WAGON_ARRIVAL_TOLERANCE_M = 15.0
-ARRIVAL_SETTLE_S = 10.0          # an arrival is judged at rest, waited for this long
+ARRIVAL_SETTLE_S = 10.0
+MAX_TRACTOR_TRIES = 3            # tractors tried for one hitch whose attempt moved nothing
+UNMOVED_M = 0.5
+NOT_RETRIED = frozenset({"RESERVATION_CONFLICT", "CANCELLED_BY_REQUESTER", "INVALID_INTENT"})          # an arrival is judged at rest, waited for this long
 
 # HITCH observation checks (provisional; tune at the first FS25 test). These are
 # coarse cross-checks of each step's outcome, not GIANTS' attach rules: GIANTS'
@@ -518,6 +521,8 @@ class Executor:
         self._results: dict[str, tuple[dict, Result]] = {}
         self._kind = "forage_wagon"
         self._compatible = compatible
+        self._skip: set[str] = set()     # tractors this request already found unable to hitch
+        self._chosen: dict[str, tuple] = {}   # the pair this attempt chose, where it stood
         # Where each implement was taken from, by this companion: the tractor's pose
         # when it hitched it (or found it hitched for field work). move_pair to
         # {"type": "origin"} takes it back there (the user: "you can't just leave it
@@ -539,9 +544,42 @@ class Executor:
             if request_id in self._results:
                 old, result = self._results[request_id]
                 return result if old == command else Result("BLOCKED", "REQUEST_ID_CONFLICT")
-            result = self._run(command, cancel, on_state)
+            result = self._with_other_tractors(command, cancel, on_state)
             self._results[request_id] = (command, result)
             return result
+
+    def _with_other_tractors(self, command, cancel, on_state) -> Result:
+        """A hitch that failed with nothing moved (live FourFields: the first tractor by
+        ID stood between a hall and a row of implements, GIANTS `not_reachable` for every
+        aim) is tried with the next compatible tractor, at most MAX_TRACTOR_TRIES in all;
+        the states of every attempt are kept."""
+        self._skip = set()
+        if command["task"] not in ("hitch_pair", "deliver_tractor_and_forage_wagon"):
+            return self._run(command, cancel, on_state)
+        states, first = (), None
+        for attempt in range(MAX_TRACTOR_TRIES):
+            self._chosen = {}
+            result = self._run(command, cancel, on_state)
+            if first is not None and len(result.equipment_ids) != 2:
+                return first                    # no other tractor: the failure that stands
+            states += result.states
+            result = Result(result.status, result.reason, result.equipment_ids, states)
+            if (result.status not in ("FAILED", "BLOCKED") or result.reason in NOT_RETRIED
+                    or len(result.equipment_ids) != 2 or (cancel is not None and cancel.is_set())
+                    or attempt == MAX_TRACTOR_TRIES - 1 or set(self._chosen) != set(result.equipment_ids)):
+                return result
+            after = {i.id: i for i in self.world.snapshot()}
+            unmoved = all(
+                i in after and after[i].attached_to is None
+                and math.dist(self._chosen[i], after[i].position) <= UNMOVED_M
+                for i in result.equipment_ids)
+            if not unmoved:
+                return result
+            log.info("tractor %s could not reach implement %s (%s), nothing moved: next tractor",
+                     result.equipment_ids[0], result.equipment_ids[1], result.reason)
+            self._skip.add(result.equipment_ids[0])
+            first = result
+        return result
 
     def _pair(self, ids, farm_id, owner, attached, check=None):
         check = check or self._compatible
@@ -976,7 +1014,7 @@ class Executor:
                         return Result("BLOCKED", failure, tuple(i.id for i in pair), tuple(states))
             else:
                 free = [item for item in items if usable(item, farm_id)
-                        and item.attached_to is None and item.stopped
+                        and item.attached_to is None and item.stopped and item.id not in self._skip
                         and named(item, command.get("tractor_name") if item.category == "tractor"
                                   else command.get("implement_name"))]
                 for item in items:
@@ -985,6 +1023,7 @@ class Executor:
                                  ", ".join(rejections(item, farm_id)) or "UNKNOWN")
                 pair, plan, travel, delivery, failure = self._choose(free, self.world.destinations(), target, items)
                 plan, aims = plan or (None, ())
+                self._chosen = {i.id: i.position for i in pair or ()}
             if pair is None:
                 return Result(status, failure, states=tuple(states))
             ids = tuple(item.id for item in pair)
