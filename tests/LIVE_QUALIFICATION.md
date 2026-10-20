@@ -95,6 +95,10 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 | --- | --- | --- | --- |
 | Plow 400 m2 of field 3 (MF 5700 S + JD 980) | 82cf8000835e474c-2/-3, f5726787ab834af4-1/-2 | FAILED (cause found) | GIANTS' helper drove the pair ~550 m from the Farm house to field 3's edge (task 1, plow raised, 6.4 km/h), then pressed against a map fence GIANTS' map does not show: `agent state driving`, unmoved (FIELDWORK_STUCK). Marking the spot impassable left the agent BLOCKED (it cannot reverse); the user freed the tractor; it stuck again further along the same fence. Fixed: gates near a stuck vehicle are opened, otherwise STUCK_ON_OBSTACLE without marks |
 | Plow 400 m2 of field 8 from there | f5726787ab834af4-3 | FAILED (setup) | the tractor still against field 3's fence among the session's marks: BLOCKED from the start |
+| Plow a small area of field 8 (MF 5700 S + JD 980) | earlier session, build 3b5586a+ | COMPLETE (AREA_WORK_OBSERVED) | 575 m2 PLOWED on the field's density map (0 -> 0.012 of 47,142 m2); detach + PULL_CLEAR verified |
+| "seed and fertilize a small area of field 8": seed | 5454f21977df465b-2 (build 9016f52) | sow COMPLETE; plan BLOCKED (fixed) | GL 860 hitched to the MF; 410 m2 RIDGE_SOWN (0 -> 0.009); the helper bought the seed (money -62.67). Next step `detach_pair` found no pair at rest (MF `MOVING` 1.5 s after the helper stopped): NO_ATTACHED_IMPLEMENT. Fixed in 497752f: each planned step waits up to 30 s for the farm's tractors at rest. Crop identity unconfirmed: all 9 fixed samples missed the strip (NONE); 497752f samples along the worked track |
+| "unhitch the seeder" | 5454f21977df465b-3 (9016f52) | COMPLETE (DETACH_OBSERVED) | 164 off 171, PULL_CLEAR, both at rest |
+| "fertilize a small area of field 8" | 5454f21977df465b-4 (9016f52) | COMPLETE (FIELD_WORK_OBSERVED) | plan hitch Vantage 4300 (162) -> fertilize -> detach, each verified; spray level 1 0 -> 0.028 (1,320 m2: the boom passes 400 m2 between 60 s area checks); helper bought the fertilizer (money -32.94) |
 
 ## Navigation, supplies, jobs
 
