@@ -1765,40 +1765,24 @@ class DetachTests(unittest.TestCase):
 
 
 class DetourTests(unittest.TestCase):
-    """Live 2026-10-20: GIANTS' GOTO drove into a closed gate its map treats as open
-    road and kept "driving" unmoved. The spot is blocked for GIANTS' planner and the
-    GOTO asked again, at most MAX_DETOURS times."""
+    """Live 2026-10-20: GIANTS' GOTO kept "driving" against something its map does not
+    show. Without a gate to open, the job ends STUCK_ON_OBSTACLE and marks nothing
+    (a mark next to a vehicle pressed against the fence only kept GIANTS' agent BLOCKED)."""
 
-    def world(self, stuck_times):
+    def test_stuck_without_a_gate_ends_precisely_and_marks_nothing(self):
         tractor, wagon = simple_world().snapshot()
         tractor = replace(tractor, capabilities=GOTO_TRACTOR, position=(600.0, 600.0),
                           ai_root=Pose(600.0, 600.0, 0.0), heading=0.0)
-        calls = []
 
-        class Gate(MockWorld):
+        class Fence(MockWorld):
             def navigate(self, tractor_id, pose, owner):
-                calls.append("navigate")
-                if calls.count("navigate") <= stuck_times:
-                    raise StepFailed("NAVIGATE_STUCK")
-                return super().navigate(tractor_id, pose, owner)
+                raise StepFailed("NAVIGATE_STUCK")
 
-        return Gate([tractor, wagon], PLAYERS, DESTINATIONS), calls
-
-    def test_a_gate_is_routed_around(self):
-        world, calls = self.world(stuck_times=1)
+        world = Fence([tractor, wagon], PLAYERS, DESTINATIONS)
         result = Executor(world).execute(intent())
-        self.assertEqual(result.status, "COMPLETE", result)
-        (x, z, size), = world.blocked
-        self.assertEqual((round(x, 3), round(z, 3), size), (600.0, 606.0, 8.0))      # just ahead of it
-
-    def test_detours_are_bounded(self):
-        world, calls = self.world(stuck_times=10)
-        result = Executor(world).execute(intent())
-        self.assertEqual(result.status, "FAILED", result)
-        self.assertIn(result.reason, ("NAVIGATE_STUCK", "TRAPPED"))
-        drives = calls.count("navigate") / 3                    # each drive: one try and two detours
-        self.assertEqual(len(world.blocked), 2 * drives)
-        self.assertLessEqual(drives, MAX_APPROACH_DRIVES)
+        self.assertEqual((result.status, result.reason), ("FAILED", "STUCK_ON_OBSTACLE"), result)
+        self.assertEqual(world.blocked, ())
+        self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
 
 
 class GateTests(unittest.TestCase):

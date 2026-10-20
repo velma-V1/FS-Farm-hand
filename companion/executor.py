@@ -753,17 +753,19 @@ class Executor:
             raise StepFailed("NAVIGATE_STUCK")
         try:
             self.world.open_gates(vehicle.position[0], vehicle.position[1], GATE_RADIUS_M)
-            log.info("stuck at %s: opened the closed gate(s) within %.0f m, detour %d", vehicle.position,
+            log.info("stuck at %s: opened the closed gate(s) within %.0f m, retry %d", vehicle.position,
                      GATE_RADIUS_M, detour + 1)
             return
         except StepFailed as failure:
             if failure.code != "NO_CLOSED_GATE":
                 raise
-        x = vehicle.position[0] + DETOUR_AHEAD_M * math.sin(vehicle.heading)
-        z = vehicle.position[1] + DETOUR_AHEAD_M * math.cos(vehicle.heading)
-        log.info("stuck at %s (GIANTS still driving): blocking %.0f m around (%.1f, %.1f), detour %d",
-                 vehicle.position, DETOUR_SIZE_M, x, z, detour + 1)
-        self.world.block_area(x, z, DETOUR_SIZE_M)
+        # No gate: something GIANTS' map does not show holds it (live 2026-10-20: a
+        # fence beside field 3). Marking ground just ahead does not help a vehicle pressed
+        # against it (GIANTS' agent cannot reverse and then stays BLOCKED by the mark),
+        # so nothing is marked: the job ends with the precise reason.
+        log.info("stuck at %s on something GIANTS' map does not show (no gate near)", vehicle.position)
+        raise StepFailed("STUCK_ON_OBSTACLE")
+
 
     def _move(self, tractor_id, route, owner, deliver=False):
         """One travel step by the route's provider: AutoDrive to a marker, or GIANTS

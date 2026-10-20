@@ -89,6 +89,13 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 | "bring the trailer to the farm house with the gmc" | fdfd2ed8c88e4d70-1 | edff1fc | FAILED (fixed, unverified) | the store's spawn yard: every line-up curve within 8 m of another vehicle (clearance kept); a stage hung. GOTO's last aim is now the staging pose straight ahead of the drawbar |
 | "save the game" | 07:47 2026-10-20 | edff1fc | SAVED, reported UNVERIFIED (fixed) | the game logged "Game saved successfully." 0.4 s after the request; the check (save date, day only) could not see it. Now: completion of GIANTS' saveSavegame itself |
 
+## Field work, 2026-10-20 (build 902bed7)
+
+| Case | Test id | Result | Observed |
+| --- | --- | --- | --- |
+| Plow 400 m2 of field 3 (MF 5700 S + JD 980) | 82cf8000835e474c-2/-3, f5726787ab834af4-1/-2 | FAILED (cause found) | GIANTS' helper drove the pair ~550 m from the Farm house to field 3's edge (task 1, plow raised, 6.4 km/h), then pressed against a map fence GIANTS' map does not show: `agent state driving`, unmoved (FIELDWORK_STUCK). Marking the spot impassable left the agent BLOCKED (it cannot reverse); the user freed the tractor; it stuck again further along the same fence. Fixed: gates near a stuck vehicle are opened, otherwise STUCK_ON_OBSTACLE without marks |
+| Plow 400 m2 of field 8 from there | f5726787ab834af4-3 | FAILED (setup) | the tractor still against field 3's fence among the session's marks: BLOCKED from the start |
+
 ## Navigation, supplies, jobs
 
 All OPEN; rows are added as each capability lands.

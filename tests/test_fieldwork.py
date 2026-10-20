@@ -260,18 +260,26 @@ class AlreadyDoneTests(unittest.TestCase):
 
 
 class FieldDetourTests(unittest.TestCase):
-    def test_field_work_stuck_on_the_way_is_routed_around(self):
-        # Live 82cf8000835e474c-2: GIANTS' helper stopped 64 m from field 3 (a gate).
+    def test_field_work_stuck_at_a_closed_gate_opens_it_and_goes_on(self):
         class Gate(MockWorld):
-            tries = 0
-
             def fieldwork(self, *args):
-                Gate.tries += 1
-                if Gate.tries == 1:
+                if self.gates:
                     raise StepFailed("FIELDWORK_STUCK")
                 return super().fieldwork(*args)
 
         world = Gate(rig("cultivator"), PLAYERS, fields=(field(7, 0.4),), farm=FARM)
+        world.gates = ((103.0, 104.0),)
         result = Executor(world).execute(work("cultivate", area_m2=400))
         self.assertEqual((result.status, result.reason), ("COMPLETE", "AREA_WORK_OBSERVED"), result)
-        self.assertEqual(len(world.blocked), 1)
+        self.assertEqual(world.opened, ((103.0, 104.0),))
+
+    def test_field_work_stuck_on_a_fence_ends_precisely(self):
+        # Live 2026-10-20: GIANTS' helper pressed against a fence beside field 3.
+        class Fence(MockWorld):
+            def fieldwork(self, *args):
+                raise StepFailed("FIELDWORK_STUCK")
+
+        world = Fence(rig("cultivator"), PLAYERS, fields=(field(7, 0.4),), farm=FARM)
+        result = Executor(world).execute(work("cultivate", area_m2=400))
+        self.assertEqual((result.status, result.reason), ("FAILED", "STUCK_ON_OBSTACLE"), result)
+        self.assertEqual(world.blocked, ())
