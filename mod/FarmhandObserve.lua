@@ -21,6 +21,7 @@ Observe.MAX_VEHICLES = 200
 Observe.MAX_DESTINATIONS = 2000
 Observe.MAX_PLACES = 500
 Observe.MAX_JOINTS = 32
+Observe.JOINT_DRIFT_M = 1.0     -- a joint node this far from its load-time AI offset is not used
 Observe.NULL = setmetatable({}, { __tostring = function() return "null" end })
 
 local ARRAY = {}
@@ -271,7 +272,19 @@ function Observe.hitchGeometry(env, v, ptoNames)
                 assert(v:getAttacherJointByJointDescIndex(i) == joint)
             end
             local name, offset = byValue[joint.jointType], offsets[i]
-            if name ~= nil and offset ~= nil and finite(offset.x) and finite(offset.z)
+            -- The joint's node now must still be where GIANTS' load-time offset says (live
+            -- FourFields 7R joint 2: offset 3.4 m behind, node 25 m away): else unusable.
+            local drifted = false
+            if offset ~= nil and joint.jointTransform ~= nil then
+                local ok, lx, lz = pcall(function()
+                    local wx, wy, wz = env.getWorldTranslation(joint.jointTransform)
+                    local x, _, z = env.worldToLocal(v:getAIRootNode(), wx, wy, wz)
+                    return x, z
+                end)
+                drifted = not (ok and finite(lx) and finite(lz) and finite(offset.x) and finite(offset.z)
+                    and math.sqrt((lx - offset.x) ^ 2 + (lz - offset.z) ^ 2) <= Observe.JOINT_DRIFT_M)
+            end
+            if name ~= nil and offset ~= nil and not drifted and finite(offset.x) and finite(offset.z)
                     and math.abs(offset.x) <= 50 and math.abs(offset.z) <= 50 then
                 -- jointIndex == 0 is GIANTS' "joint free" test (AttacherJoints 1910, 3063).
                 result[#result + 1] = { index = i, type = name, x = offset.x, z = offset.z,

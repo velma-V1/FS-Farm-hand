@@ -105,6 +105,13 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 | "bring the plow to the farm house" (the user reset the 980 to the store) | 914bca8b1e064726-2 (4ba1138) | FAILED LOCAL_PATH_BLOCKED | "the plow" took the Titan Vineyard Plow 175 (first by opaque ID; the 980 is now 379). In the store yard (GMC, Deckover, gooseneck, both plows within ~25 m) every line-up and three stages were blocked or unmoved; 8 m clearance kept. A model number now names the implement ("the 980 plow", 2026-10-20) |
 | "fertilize a small area of field 8" | 5454f21977df465b-4 (9016f52) | COMPLETE (FIELD_WORK_OBSERVED) | plan hitch Vantage 4300 (162) -> fertilize -> detach, each verified; spray level 1 0 -> 0.028 (the 3 s area check stopped GIANTS' helper at 660 m2 changed, 11.5 km/h with a wide boom; 1,320 m2 measured once at rest); helper bought the fertilizer (money -32.94) |
 
+## Field work on FourFields, save slot 2 (2026-10-20, build 5f3cd37)
+
+| Case | Test id | Result | Observed |
+| --- | --- | --- | --- |
+| Save observed | status | PASS | map FS25_fourFields; owned field 1, 66 ha, 100 % HARVEST_READY wheat; tractors 7R 109, X8 91, Puma 92, Series 200 98; PROLANDER 108, OMEGA 99 (seeder), ZA-TS 96; no plow. A standing crop now blocks soil work unless "... anyway" (022f68c) |
+| "plow, seed and fertilize a small area of field 1" | a2a1b79036614eba-1 | FAILED OUTSIDE_LOCAL_AREA (cause found) | no plow: cultivator 108 by 7R 109 (side by side by the Open Hall). The plan's joint 2 (load-time AI offset 3.4 m behind) was 25 m from the tractor in the game (Lua tractorJoint (951.8, 835.6)): LOCAL refused unmoved; every GOTO staging aim `not_reachable` (5-21 m). A joint whose node left its load-time offset by > 1 m is no longer reported |
+
 ## Navigation, supplies, jobs
 
 All OPEN; rows are added as each capability lands.
