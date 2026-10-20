@@ -350,7 +350,9 @@ class LiveTest:
             frame = link.fresh_snapshot()
             farm = {"farm_id": str(frame["farm_id"]), "map_id": frame.get("map_id"),
                     "player": frame.get("player"), "info": frame.get("farm"), "fields": frame.get("fields"),
-                    "places": [p.get("name") for p in frame.get("places") or []][:60]}
+                    "places": [(p.get("name"), round(p.get("x")), round(p.get("z"))) for p in frame.get("places") or []][:60],
+                    "markers": [(d.get("name"), round(d.get("x")), round(d.get("z")))
+                                for d in frame.get("destinations") or []][:300]}
             candidates = self.candidates(farm["farm_id"])
         except StepUnverified as error:
             problems.append("GAME_" + error.code)
