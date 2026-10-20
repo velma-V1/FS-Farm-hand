@@ -1127,7 +1127,8 @@ local function pullDrive(env, s, dt)
     if denied ~= nil then return denied end
     if s.tractor:getIsEntered() ~= false then return "SEATED_DURING_PULL_CLEAR" end
     local o = observePull(env, s)
-    s.lastSeparation, s.lastX, s.lastY = o.separation, o.x, o.y
+    s.lastSeparation, s.lastX, s.lastY, s.lastAway = o.separation, o.x, o.y, o.away
+    pcall(function() s.lastSpeed = s.tractor:getLastSpeed() end)
     if distance(o.ix, o.iz, s.implementX, s.implementZ) > Hitch.DEFAULTS.wagonToleranceM
             or distance(o.rx, o.rz, s.rootX, s.rootZ) > Hitch.DEFAULTS.wagonToleranceM then
         return "IMPLEMENT_MOVED"
@@ -1194,7 +1195,10 @@ function Hitch.describePull(s)
     return string.format("separation=%.2f (start %.2f, clear %.1f) along=%s lateral=%s t=%dms",
         s.lastSeparation or s.startSeparation or -1, s.startSeparation or -1, s.clearM or -1,
         s.lastX and string.format("%.2f", s.lastX) or "?", s.lastY and string.format("%.2f", s.lastY) or "?",
-        s.elapsed or 0)
+        s.elapsed or 0) .. string.format(" away=%s best=%s speed=%s",
+        s.lastAway and string.format("%.2f", s.lastAway) or "?",
+        s.bestSeparation and string.format("%.2f", s.bestSeparation) or "?",
+        s.lastSpeed and string.format("%.2f", s.lastSpeed) or "?")
 end
 
 -- ------------------------------------------------------------------ ATTACH
