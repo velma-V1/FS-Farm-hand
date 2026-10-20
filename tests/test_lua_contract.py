@@ -52,6 +52,7 @@ function stubs.vehicle(world, t)
             return joints[i]
         end
         if t.extraOffset then offsets[#offsets + 1] = { x = 0, y = 0, z = -1 } end
+        if t.missingOffset then offsets[#offsets] = nil end   -- a joint added after onPostLoad
         if t.aiDrivable then
             v.spec_aiDrivable = { attacherJointOffsets = offsets }
             function v:getAIRootNode() return v.rootNode end
@@ -619,9 +620,13 @@ class LuaContractTests(unittest.TestCase):
             # Index mapping disagrees with GIANTS' own lookup: geometry unknown.
             ('{ id = 31, file = "STUB_TRACTORS", aiDrivable = true, joints = { "TRAILER" }, badIndexMap = true }',
              "output_joints", []),
-            # Offsets not 1:1 with joints (joints changed since onPostLoad): unknown.
+            # More offsets than joints (joints removed since onPostLoad): unknown.
             ('{ id = 31, file = "STUB_TRACTORS", aiDrivable = true, joints = { "TRAILER" }, extraOffset = true }',
              "output_joints", []),
+            # A joint added after onPostLoad (live: the GMC's bed): the others keep their index.
+            ('{ id = 31, file = "STUB_TRACTORS", aiDrivable = true, joints = { "TRAILER", "IMPLEMENT" },'
+             '  missingOffset = true }', "output_joints",
+             [{"index": 1, "type": "TRAILER", "x": 0, "z": -2.5, "free": True, "pto_names": []}]),
             (tractor % "getAIRootNode = 'raises'", "ai_root", None),
             (tractor % "getAIRootNode = 'missing'", "ai_root", None),
             # Without AIDrivable there are no GIANTS offsets, hence no tractor geometry.

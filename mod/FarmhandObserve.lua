@@ -260,7 +260,10 @@ function Observe.hitchGeometry(env, v, ptoNames)
     -- The list position must be GIANTS' joint desc index, or nothing is reported.
     local outputs = try(function()
         local joints, offsets = v:getAttacherJoints(), v.spec_aiDrivable.attacherJointOffsets
-        assert(type(joints) == "table" and type(offsets) == "table" and #joints == #offsets)
+        -- Offsets exist for the joints present at onPostLoad, in the same order; joints a
+        -- vehicle adds later (live: the GMC Sierra's bed attachments) have none and are
+        -- left out, the others keep their index.
+        assert(type(joints) == "table" and type(offsets) == "table" and #offsets <= #joints)
         assert(#joints <= Observe.MAX_JOINTS)
         local result = Observe.array()
         for i, joint in ipairs(joints) do
@@ -268,7 +271,7 @@ function Observe.hitchGeometry(env, v, ptoNames)
                 assert(v:getAttacherJointByJointDescIndex(i) == joint)
             end
             local name, offset = byValue[joint.jointType], offsets[i]
-            if name ~= nil and finite(offset.x) and finite(offset.z)
+            if name ~= nil and offset ~= nil and finite(offset.x) and finite(offset.z)
                     and math.abs(offset.x) <= 50 and math.abs(offset.z) <= 50 then
                 -- jointIndex == 0 is GIANTS' "joint free" test (AttacherJoints 1910, 3063).
                 result[#result + 1] = { index = i, type = name, x = offset.x, z = offset.z,
