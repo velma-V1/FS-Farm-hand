@@ -480,6 +480,28 @@ function Bridge.onAIJobStopped(env, job, aiMessage)
     end)
 end
 
+-- Diagnostics only, every read protected: where GIANTS' field-work job stands. The job's
+-- current task (1 drive-to, 2 field work; AIJob:update 117-164), field work active
+-- (getIsFieldWorkActive), the AI preparing its tools (getIsAIPreparingToDrive,
+-- AIDrivable 636-648), each attached tool lowered / turned on, the speed.
+function Bridge.logFieldWork(env, v, what)
+    local function read(f) local ok, value = pcall(f); return ok and tostring(value) or "?" end
+    local tools = {}
+    pcall(function()
+        for _, impl in ipairs(v:getAttachedImplements()) do
+            local o = impl.object
+            tools[#tools + 1] = string.format("%s lowered=%s on=%s", read(function() return o:getName() end),
+                read(function() return o:getIsLowered() end), read(function() return o:getIsTurnedOn() end))
+        end
+    end)
+    log("fieldwork %s: task %s fieldWorkActive %s preparing %s speed %s aiActive %s tools [%s]", what,
+        read(function() return v:getJob().currentTaskIndex end),
+        read(function() return v:getIsFieldWorkActive() end),
+        read(function() return v:getIsAIPreparingToDrive() end),
+        read(function() return v:getLastSpeed() end),
+        read(function() return v:getIsAIActive() end), table.concat(tools, "; "))
+end
+
 function starters.fieldwork(env, spec)
     local v = spec.tractor
     local denied = idle(env, v, spec.farmId)
@@ -542,10 +564,15 @@ function steppers.fieldwork(env, task, dt)
         if task.elapsed > Bridge.FIELDWORK_TIMEOUT_MS then return "FAILED", "TIMEOUT" end
         local x, _, z = env.getWorldTranslation(v.rootNode)
         if not (finite(x) and finite(z)) then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
+        if not task.sampled and task.elapsed > 60000 then
+            task.sampled = true
+            Bridge.logFieldWork(env, v, "at 60 s")
+        end
         if task.fromX == nil or math.sqrt((x - task.fromX) ^ 2 + (z - task.fromZ) ^ 2) >= Bridge.NAVIGATE_PROGRESS_M then
             task.fromX, task.fromZ, task.fromAt = x, z, task.elapsed
         elseif task.elapsed - task.fromAt > Bridge.FIELDWORK_STALL_MS then
             logAgent(env, v, "fieldwork stalled")
+            Bridge.logFieldWork(env, v, "stalled")
             -- Still driving to the field yet unmoved (live: stopped 64 m from field 3,
             -- likely a gate GIANTS' map treats as open), as NAVIGATE_STUCK.
             local driving = pcall(function()
