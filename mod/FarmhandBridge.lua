@@ -124,15 +124,16 @@ function starters.drive(env, spec)
     local v = spec.tractor
     local denied = idle(env, v, spec.farmId)
     if denied ~= nil then return nil, denied end
-    if v.ad == nil or env.AutoDrive == nil then return nil, "NO_AUTODRIVE" end
+    local AD = (Bridge.Observe and Bridge.Observe.autoDrive and Bridge.Observe.autoDrive(env)) or env.AutoDrive
+    if v.ad == nil or AD == nil then return nil, "NO_AUTODRIVE" end
     -- With the vehicle's "start helper" on, AutoDrive's own stop hands the vehicle
     -- to Courseplay or a GIANTS AI job (Specialization.lua:1251-1285), which would
     -- drive off with the pair. That setting is the user's; refuse, never change it.
     if v.ad.stateModule:getStartHelper() ~= false then return nil, "AD_START_HELPER_ON" end
-    local markers = env.AutoDrive:GetAvailableDestinations()
+    local markers = AD:GetAvailableDestinations()
     if type(spec.marker) ~= "number" or markers[spec.marker] == nil then return nil, "UNKNOWN_MARKER" end
-    v.ad.stateModule:setMode(env.AutoDrive.MODE_DRIVETO)
-    env.AutoDrive:StartDriving(v, spec.marker, spec.marker)
+    v.ad.stateModule:setMode(AD.MODE_DRIVETO)
+    AD:StartDriving(v, spec.marker, spec.marker)
     return { seen = false }
 end
 

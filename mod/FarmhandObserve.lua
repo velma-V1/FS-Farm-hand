@@ -537,9 +537,37 @@ end
 
 -- ------------------------------------------------------------- frames
 
+-- AutoDrive's class table. FS25 runs each mod in its own environment and AutoDrive
+-- never writes `AutoDrive` to the shared globals (live: no version seen with it
+-- loaded), so it is found where GIANTS keeps it: in a vehicle's specializations, the
+-- class tables aligned with specializationNames (AutoDrive registers its spec under
+-- the name "AutoDrive", register.lua 159-175). Its ExternalInterface functions
+-- (StartDriving, GetAvailableDestinations, ExternalInterface.lua 114+) live on it.
+Observe.autoDriveClass = nil
+
+function Observe.autoDrive(env)
+    if env.AutoDrive ~= nil then return env.AutoDrive end
+    if Observe.autoDriveClass ~= nil then return Observe.autoDriveClass end
+    local vehicles = try(function() return env.g_currentMission.vehicleSystem.vehicles end) or {}
+    for _, v in pairs(vehicles) do
+        local names, specs = v.specializationNames, v.specializations
+        if type(names) == "table" and type(specs) == "table" then
+            for i, name in ipairs(names) do
+                local class = specs[i]
+                if type(name) == "string" and name:match("AutoDrive$") and type(class) == "table"
+                        and type(class.StartDriving) == "function" then
+                    Observe.autoDriveClass = class
+                    return class
+                end
+            end
+        end
+    end
+    return nil
+end
+
 function Observe.hello(env)
     local modVersion = try(function() return env.g_modManager:getModByName(env.g_currentModName).version end)
-    local autoDriveVersion = try(function() return env.AutoDrive.version end)
+    local autoDriveVersion = try(function() return Observe.autoDrive(env).version end)
     return encode({
         event = "hello",
         protocol = Observe.PROTOCOL,
@@ -834,8 +862,9 @@ function Observe.snapshot(env, seq, session, dt)
     end
 
     local destinations = Observe.array()
-    if env.AutoDrive ~= nil and type(env.AutoDrive.GetAvailableDestinations) == "function" then
-        local markers = try(function() return env.AutoDrive:GetAvailableDestinations() end)
+    local AD = Observe.autoDrive(env)
+    if AD ~= nil and type(AD.GetAvailableDestinations) == "function" then
+        local markers = try(function() return AD:GetAvailableDestinations() end)
         if type(markers) ~= "table" then return nil, "NO_DESTINATIONS" end
         for _, marker in pairs(markers) do
             if integer(marker.id) and finite(marker.x) and finite(marker.z) then

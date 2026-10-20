@@ -289,6 +289,24 @@ class LuaContractTests(unittest.TestCase):
         bare = self.stubs.world(self.lua.table(noAutoDrive=True))
         self.assertIsNone(parse_frame(self.observe.hello(bare.env).encode())["autodrive_version"])
 
+    def test_autodrive_is_found_through_a_vehicles_specializations(self):
+        # FS25 keeps each mod's globals in its own environment: AutoDrive is reached
+        # through the class table GIANTS keeps on the vehicles it is added to.
+        world = self.stubs.world(self.lua.table(noAutoDrive=True))
+        self.observe.autoDriveClass = None
+        self.lua.execute("""
+            local env = ...
+            local AD = { version = "3.0.1.4", StartDriving = function() end,
+                         GetAvailableDestinations = function() return { [7] = { id = 7, name = "Store", x = 1, z = 2 } } end }
+            local v = { ownerFarmId = 1, rootNode = { x = 0, y = 0, z = 0 }, specializationNames = { "motorized", "FS25_AutoDrive.AutoDrive" },
+                        specializations = { {}, AD } }
+            env.g_currentMission.vehicleSystem = { vehicles = { v } }
+        """, world.env)
+        hello = parse_frame(self.observe.hello(world.env).encode())
+        self.assertEqual(hello["autodrive_version"], "3.0.1.4")
+        self.assertEqual(self.snapshot(world)["destinations"], [{"id": 7, "name": "Store", "x": 1, "z": 2}])
+        self.observe.autoDriveClass = None
+
     def test_module_is_exposed_for_fs25(self):
         # FS25 discards a sourceFile's return value; the mod reaches it by name.
         self.assertTrue(self.lua.eval("function(t) return FarmhandObserve == t end")(self.observe))
