@@ -103,6 +103,7 @@ GOTO_STALL_CODES = frozenset({"NAVIGATE_STALLED", "NAVIGATE_STUCK"})
 # at most MAX_DETOURS times per drive.
 MAX_DETOURS = 2
 DETOUR_AHEAD_M, DETOUR_SIZE_M = 6.0, 8.0
+GATE_RADIUS_M = 15.0              # closed gates this near a stuck vehicle are opened first
 # Joints at most this far apart already meet: GIANTS' candidate is asked without
 # any motion (look-only ALIGN_REVERSE); never a reverse from the far side.
 ATTACH_READY_M = 0.5
@@ -744,10 +745,20 @@ class Executor:
                 self._block_ahead(tractor_id, detour)
 
     def _block_ahead(self, tractor_id, detour):
-        """Mark the ground just ahead of the stuck vehicle impassable for GIANTS."""
+        """Something physical holds the vehicle while GIANTS drives: a closed gate near
+        it is opened as GIANTS opens one; with none, the ground just ahead is marked
+        impassable for GIANTS so it routes around."""
         vehicle = next((i for i in self.world.snapshot() if i.id == tractor_id), None)
         if vehicle is None or vehicle.heading is None or not valid_position(vehicle.position):
             raise StepFailed("NAVIGATE_STUCK")
+        try:
+            self.world.open_gates(vehicle.position[0], vehicle.position[1], GATE_RADIUS_M)
+            log.info("stuck at %s: opened the closed gate(s) within %.0f m, detour %d", vehicle.position,
+                     GATE_RADIUS_M, detour + 1)
+            return
+        except StepFailed as failure:
+            if failure.code != "NO_CLOSED_GATE":
+                raise
         x = vehicle.position[0] + DETOUR_AHEAD_M * math.sin(vehicle.heading)
         z = vehicle.position[1] + DETOUR_AHEAD_M * math.cos(vehicle.heading)
         log.info("stuck at %s (GIANTS still driving): blocking %.0f m around (%.1f, %.1f), detour %d",

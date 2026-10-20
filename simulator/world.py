@@ -64,6 +64,17 @@ class MockWorld:
     saved = 0
     blocked = ()
 
+    gates = ()                    # mock closed gates: positions
+    opened = ()
+
+    def open_gates(self, x, z, radius):
+        near = [g for g in self.gates if math.dist(g, (x, z)) <= radius]
+        if not near:
+            raise StepFailed("NO_CLOSED_GATE")
+        self.gates = tuple(g for g in self.gates if g not in near)
+        self.opened = self.opened + tuple(near)
+        return "GATES_OPENED"
+
     def block_area(self, x, z, size):
         self.blocked = self.blocked + ((x, z, size),)
         return "BLOCKED_AREA"

@@ -115,6 +115,7 @@ COMMAND_ARGS = {
     "buy": ("item", "hitch"),
     "save": (),
     "block": ("x", "z", "area"),
+    "open_gates": ("x", "z", "area"),
     "maneuver": ("tractor", "wagon", "tractorJoint", "wagonJoint"),
     "align": ("tractor", "wagon", "tractorJoint", "wagonJoint", "maxDistanceM"),
     "attach": ("tractor", "wagon", "tractorJoint", "wagonJoint"),

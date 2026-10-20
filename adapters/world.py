@@ -48,6 +48,11 @@ class World(Protocol):
         """Return the farm's money and GIANTS' helper purchase settings, fresh."""
         ...
 
+    def open_gates(self, x: float, z: float, radius: float) -> str:
+        """Open closed gates near (x, z) the way GIANTS opens one (opening hours).
+        StepFailed NO_CLOSED_GATE when there is none."""
+        ...
+
     def block_area(self, x: float, z: float, size: float) -> str:
         """Mark a box of ground GIANTS' navigation must route around (a gate it
         believes open). Never makes anything passable."""

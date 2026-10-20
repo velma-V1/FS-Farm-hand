@@ -1799,3 +1799,24 @@ class DetourTests(unittest.TestCase):
         drives = calls.count("navigate") / 3                    # each drive: one try and two detours
         self.assertEqual(len(world.blocked), 2 * drives)
         self.assertLessEqual(drives, MAX_APPROACH_DRIVES)
+
+
+class GateTests(unittest.TestCase):
+    def test_a_closed_gate_near_a_stuck_vehicle_is_opened_before_any_detour(self):
+        tractor, wagon = simple_world().snapshot()
+        tractor = replace(tractor, capabilities=GOTO_TRACTOR, position=(600.0, 600.0),
+                          ai_root=Pose(600.0, 600.0, 0.0), heading=0.0)
+        tries = []
+
+        class Gate(MockWorld):
+            def navigate(self, tractor_id, pose, owner):
+                tries.append(1)
+                if self.gates:
+                    raise StepFailed("NAVIGATE_STUCK")
+                return super().navigate(tractor_id, pose, owner)
+
+        world = Gate([tractor, wagon], PLAYERS, DESTINATIONS)
+        world.gates = ((603.0, 604.0),)
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual((world.opened, world.blocked), (((603.0, 604.0),), ()))

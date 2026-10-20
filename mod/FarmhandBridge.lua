@@ -607,6 +607,77 @@ end
 
 aborts.fieldwork = abortGoto
 
+-- ------------------------------------------------------------- open_gates
+-- Open the closed gates within a few metres of where a vehicle is stuck, the way GIANTS
+-- opens a gate itself (AnimatedObject:hourChanged 694-703: animation.direction = 1,
+-- raiseActive; update 548-563 then animates it and, fully open, unblocks its AI region
+-- with aiSystem:setBlockingRegionState). Live 2026-10-20: GIANTS' helpers stopped at
+-- closed gates (the farm-store road, field 3's entrance) its map treats as open.
+-- Gates: placeables' spec_animatedObjects.animatedObjects (PlaceableAnimatedObjects
+-- onLoad 66-86), fence gates' animatedObjects (FenceGate:delete 156-166), else any
+-- registered object that is an AnimatedObject. Enabled, not yet open ones only.
+Bridge.MAX_GATE_RADIUS_M = 30
+
+local function gateCandidates(env)
+    local found, seen = {}, {}
+    local function add(o)
+        if type(o) == "table" and o.animation ~= nil and o.nodeId ~= nil and not seen[o] then
+            seen[o] = true
+            found[#found + 1] = o
+        end
+    end
+    pcall(function()
+        for _, pl in pairs(env.g_currentMission.placeableSystem.placeables) do
+            local spec = pl.spec_animatedObjects
+            for _, o in ipairs(spec and spec.animatedObjects or {}) do add(o) end
+            local fence = pl.spec_fence
+            for _, gate in pairs(fence and fence.gates or {}) do
+                for _, o in ipairs(gate.animatedObjects or {}) do add(o) end
+            end
+        end
+    end)
+    pcall(function()
+        for _, o in pairs(env.g_server.objects) do
+            if type(o) == "table" and type(o.isa) == "function" and o:isa(env.AnimatedObject) then add(o) end
+        end
+    end)
+    return found
+end
+
+function starters.open_gates(env, spec)
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    if not (finite(spec.x) and finite(spec.z) and finite(spec.area)) or spec.area <= 0
+            or spec.area > Bridge.MAX_GATE_RADIUS_M then
+        return nil, "INVALID_AREA"
+    end
+    local opened, closest = 0, nil
+    for _, o in ipairs(gateCandidates(env)) do
+        pcall(function()
+            local gx, _, gz = env.getWorldTranslation(o.nodeId)
+            local d = math.sqrt((gx - spec.x) ^ 2 + (gz - spec.z) ^ 2)
+            closest = math.min(closest or d, d)
+            if d <= spec.area and o.isEnabled ~= false and (o.animation.time or 0) < 1 then
+                o.animation.direction = 1
+                o:raiseActive()
+                opened = opened + 1
+                log("opening gate %s at (%.1f, %.1f), %.1f m away", tostring(o.saveId), gx, gz, d)
+            end
+        end)
+    end
+    log("open_gates near (%.1f, %.1f): %d opened; nearest gate %s m", spec.x, spec.z, opened,
+        closest and string.format("%.1f", closest) or "none")
+    if opened == 0 then return nil, "NO_CLOSED_GATE" end
+    return { opened = opened }
+end
+
+-- DONE once the gates had their animation time (a gate opens in a few seconds).
+function steppers.open_gates(_env, task)
+    if task.elapsed < 6000 then return nil end
+    return "DONE", "GATES_OPENED"
+end
+
+function aborts.open_gates() end
+
 -- ------------------------------------------------------------------ block
 -- Mark a box of ground GIANTS' navigation must route around, the way GIANTS' own
 -- placeables mark theirs (PlaceableAI:setObstacleActive 312-324: addObstacle(node,
@@ -808,7 +879,7 @@ function aborts.stop() end
 -- --------------------------------------------------------------- runner
 
 Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true }
-Bridge.NO_VEHICLE = { buy = true, save = true, block = true }   -- ops that act on no vehicle
+Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true }   -- ops that act on no vehicle
 
 function Bridge.start(env, spec)
     local starter = starters[spec.op]
