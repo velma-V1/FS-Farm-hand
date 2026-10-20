@@ -201,9 +201,15 @@ class PtoTests(unittest.TestCase):
 
     def test_pto_required_without_a_matching_pair_has_no_plan(self):
         self.assertIsNone(self.plan(0.4, inputs=frozenset({"frontPto"})))
-        self.assertIsNone(self.plan(0.4, inputs=frozenset()))
         no_pto = (OutputJoint(1, "TRAILER", 0.0, -2.4, True, frozenset()),)
         self.assertIsNone(self.plan(0.4, outputs=no_pto))
+
+    def test_an_implement_joint_without_any_input_pto_has_nothing_to_connect(self):
+        # Live (FourFields ZA-TS 3200, OMEGA seeder): torque needed, no input PTO at the
+        # joint; GIANTS connects nothing and PowerConsumer turns on by torque alone.
+        self.assertIsNotNone(self.plan(0.4, inputs=frozenset()))
+        no_pto = (OutputJoint(1, "TRAILER", 0.0, -2.4, True, frozenset()),)
+        self.assertIsNotNone(self.plan(0.4, inputs=frozenset(), outputs=no_pto))
 
     def test_unknown_pto_or_power_fails_closed(self):
         unknown_out = (OutputJoint(2, "TRAILER", 0.0, -2.6, True, None),)

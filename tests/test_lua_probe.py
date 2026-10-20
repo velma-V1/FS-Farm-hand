@@ -90,9 +90,8 @@ function W.new(opts)
     function wagon:getIsInputAttacherActive(joint) return joint == wJoint end
     function wagon:getAttacherVehicle() return w.attacher end
     function wagon:getConsumedPtoTorque(a, b) return 1.0 end
-    function wagon:getInputPowerTakeOffsByJointDescIndexAndName(i, name)
-        if name == "rearPto" then return { { ptoName = name } } end
-        return {}
+    function wagon:getInputPowerTakeOffs()
+        return { { ptoName = "rearPto", inputAttacherJointIndices = { [1] = true } } }
     end
     function wagon:isAttachAllowed(farm, attacher) return farm == 1 and attacher == tractor end
 

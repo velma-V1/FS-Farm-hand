@@ -1290,12 +1290,17 @@ class PowerAndPtoTests(unittest.TestCase):
         cases = [({"output_joints": outputs(frozenset())}, None),
                  ({"output_joints": outputs(frozenset({"frontPto"}))}, None),
                  ({"output_joints": outputs(None)}, None),             # unknown outputs
-                 (None, {"input_joints": inputs(frozenset())}),
+                 (None, {"input_joints": inputs(frozenset({"frontPto"}))}),
                  (None, {"input_joints": inputs(None)})]                # unknown inputs
         for tractor_change, wagon_change in cases:
             with self.subTest(tractor=tractor_change, wagon=wagon_change):
                 self.assert_blocked("NO_HITCH_GEOMETRY", tractor_change=tractor_change,
                                     wagon_change=wagon_change)
+
+    def test_a_wagon_joint_without_input_pto_hitches_on_torque_alone(self):
+        wagon = {"input_joints": (InputJoint(1, "drawbar", (40.0, 24.0), True, frozenset()),)}
+        _, _, result = self.run_pair(wagon_change=wagon)
+        self.assertEqual(result.status, "COMPLETE", result)
 
     def test_pto_is_matched_on_the_planned_joint_not_any_joint(self):
         # The only joint with the matching PTO is a front joint, which is never planned.

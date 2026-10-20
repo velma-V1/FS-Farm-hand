@@ -231,21 +231,29 @@ function Observe.outputPtoNames(v, jointIndex)
     return names
 end
 
-local function inputPtoNames(v, jointIndex, candidates)
-    if type(v.getInputPowerTakeOffsByJointDescIndexAndName) ~= "function" then return Observe.array() end
-    local names = Observe.array()
-    for _, name in ipairs(candidates) do
-        local inputs = v:getInputPowerTakeOffsByJointDescIndexAndName(jointIndex, name)
-        assert(type(inputs) == "table")
-        if #inputs > 0 then names[#names + 1] = name end
+-- Every input PTO name GIANTS holds at an implement joint: PowerTakeOffs:
+-- getInputPowerTakeOffs (735-737) returns spec.inputPowerTakeOffs, each loaded with
+-- its ptoName (570, default DEFAULT_PTO) and inputAttacherJointIndices (563), the
+-- same fields getInputPowerTakeOffsByJointDescIndexAndName matches (709-711). Empty
+-- means GIANTS connects nothing at that joint.
+local function inputPtoNames(v, jointIndex)
+    if type(v.getInputPowerTakeOffs) ~= "function" then return Observe.array() end
+    local inputs = v:getInputPowerTakeOffs()
+    assert(type(inputs) == "table")
+    local names, seen = Observe.array(), {}
+    for _, input in pairs(inputs) do
+        assert(type(input.inputAttacherJointIndices) == "table")
+        if input.inputAttacherJointIndices[jointIndex] ~= nil then
+            local name = ptoName(input)
+            if not seen[name] then seen[name] = true; names[#names + 1] = name end
+        end
     end
     assert(#names <= 16)
+    table.sort(names)
     return names
 end
 
--- `ptoNames`: every output PTO name on the farm's vehicles (sorted), the only
--- names an input could be matched against.
-function Observe.hitchGeometry(env, v, ptoNames)
+function Observe.hitchGeometry(env, v)
     local byValue = jointTypeNames(env.AttacherJoints)
     local heading = try(function() return yawOf(env, v.rootNode) end)
 
@@ -313,7 +321,7 @@ function Observe.hitchGeometry(env, v, ptoNames)
                 result[#result + 1] = { index = i, type = name, x = x, z = z,
                                         active = okActive and active == true,
                                         pto_names = nullable(try(function()
-                                            return inputPtoNames(v, i, ptoNames or {})
+                                            return inputPtoNames(v, i)
                                         end)) }
             end
         end
@@ -406,7 +414,7 @@ end
 
 -- Returns one vehicle record, or nil when identity or position cannot be
 -- observed (the vehicle is then counted as skipped).
-function Observe.vehicle(env, v, ptoNames)
+function Observe.vehicle(env, v)
     local id = try(function() return env.NetworkUtil.getObjectId(v) end)
     local farmId = try(function() return v.ownerFarmId end)
     local x, _, z = try(function() return env.getWorldTranslation(v.rootNode) end)
@@ -476,7 +484,7 @@ function Observe.vehicle(env, v, ptoNames)
         end)
     end
 
-    local heading, aiRoot, outputJoints, inputJointPoses = Observe.hitchGeometry(env, v, ptoNames)
+    local heading, aiRoot, outputJoints, inputJointPoses = Observe.hitchGeometry(env, v)
 
     -- The vehicle parts of GIANTS' availability rule for its GOTO job
     -- (AIJobGoTo:getIsAvailableForVehicle 92-102): a navigation agent and support
@@ -606,25 +614,6 @@ local function playerPosition(env)
     end)
     if finite(x) and finite(z) then return { x = x, z = z } end
     return Observe.NULL
-end
-
--- The output PTO names of the farm's vehicles (sorted): the only names an
--- implement input could be matched against. Unreadable ones are simply not
--- candidates; their joints report unknown PTO names.
-function Observe.farmPtoNames(vehicles, farmId)
-    local seen, names = {}, {}
-    for _, v in pairs(vehicles) do
-        if try(function() return v.ownerFarmId == farmId end) then
-            local joints = try(function() return v:getAttacherJoints() end)
-            for i = 1, type(joints) == "table" and #joints or 0 do
-                for _, name in ipairs(try(function() return Observe.outputPtoNames(v, i) end) or {}) do
-                    if not seen[name] then seen[name] = true; names[#names + 1] = name end
-                end
-            end
-        end
-    end
-    table.sort(names)
-    return names
 end
 
 -- Returns (line, nil), or (nil, reason) when the farm, the vehicle list or the
@@ -888,12 +877,11 @@ function Observe.snapshot(env, seq, session, dt)
         or try(function() return env.g_currentMission.vehicles end)
     if type(vehicles) ~= "table" then return nil, "NO_VEHICLES" end
 
-    local ptoNames = Observe.farmPtoNames(vehicles, farmId)
     local records, skipped, truncated = Observe.array(), 0, false
     for _, v in pairs(vehicles) do
         local owned = try(function() return v.ownerFarmId == farmId end)
         if owned then
-            local record = Observe.vehicle(env, v, ptoNames)
+            local record = Observe.vehicle(env, v)
             if record == nil then
                 skipped = skipped + 1
             elseif #records >= Observe.MAX_VEHICLES then

@@ -64,8 +64,8 @@ function stubs.vehicle(world, t)
             return list
         end
     end
-    -- PTO outputs per tractor joint and inputs per implement joint, by ptoName
-    -- (PowerTakeOffs:attachPowerTakeOff 749, 753).
+    -- PTO outputs per tractor joint (PowerTakeOffs:attachPowerTakeOff 749) and every
+    -- input with its joints (getInputPowerTakeOffs 735, fields loaded at 563/570).
     if t.ptos then
         function v:getOutputPowerTakeOffsByJointDescIndex(i)
             if t.ptoBroken then error("engine error") end
@@ -75,11 +75,13 @@ function stubs.vehicle(world, t)
         end
     end
     if t.ptoInputs then
-        function v:getInputPowerTakeOffsByJointDescIndexAndName(i, name)
+        function v:getInputPowerTakeOffs()
             if t.ptoBroken then error("engine error") end
             local inputs = {}
-            for _, candidate in ipairs(t.ptoInputs[i] or {}) do
-                if candidate == name then inputs[#inputs + 1] = { ptoName = name } end
+            for i, names in pairs(t.ptoInputs) do
+                for _, name in ipairs(names) do
+                    inputs[#inputs + 1] = { ptoName = name, inputAttacherJointIndices = { [i] = true } }
+                end
             end
             return inputs
         end
@@ -735,8 +737,8 @@ class LuaContractTests(unittest.TestCase):
         self.assertEqual(records[32]["pto_torque"], 1.7)
         self.assertTrue(records[32]["forage_wagon"])
         self.assertFalse(records[31]["forage_wagon"])
-        # Only names some farm tractor outputs are probed; "ownOnly" has no output.
-        self.assertEqual(records[32]["input_joint_poses"][0]["pto_names"], ["rearPto"])
+        # Every input name GIANTS holds at the joint, matched or not.
+        self.assertEqual(records[32]["input_joint_poses"][0]["pto_names"], ["ownOnly", "rearPto"])
 
         items = {e.id: e for e in observation_from_snapshot(frame, CATEGORIES).equipment}
         tractor, wagon = items["31"], items["32"]

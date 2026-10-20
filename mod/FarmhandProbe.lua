@@ -52,6 +52,7 @@ end
 
 local function ptoConnects(outputs, inputs, null)
     if outputs == null or inputs == null then return false end
+    if #inputs == 0 then return true end                   -- no input PTO: nothing to connect
     for _, a in ipairs(outputs) do
         for _, b in ipairs(inputs) do
             if a == b then return true end
@@ -108,11 +109,10 @@ local function vehicles(env)
     return (m.vehicleSystem and m.vehicleSystem.vehicles) or m.vehicles or {}
 end
 
--- Fresh records for the pair; wagon PTO inputs are probed with the farm's names.
+-- Fresh records for the pair.
 local function observePair(self, tractor, wagon)
     local env, O = self.env, self.Observe
-    local names = O.farmPtoNames(vehicles(env), env.g_currentMission:getFarmId())
-    return O.vehicle(env, tractor, names), O.vehicle(env, wagon, names)
+    return O.vehicle(env, tractor), O.vehicle(env, wagon)
 end
 
 local function pto(names, null)
@@ -153,10 +153,9 @@ function Probe:consoleList()
         log("GIANTS MAX_ATTACH_DISTANCE_SQ=%s MAX_ATTACH_ANGLE=%s", tostring(j.MAX_ATTACH_DISTANCE_SQ),
             tostring(j.MAX_ATTACH_ANGLE))
         local farmId = env.g_currentMission:getFarmId()
-        local names = O.farmPtoNames(vehicles(env), farmId)
         for _, v in pairs(vehicles(env)) do
             if v.ownerFarmId == farmId then
-                local r = O.vehicle(env, v, names)
+                local r = O.vehicle(env, v)
                 local item = env.g_storeManager:getItemByXMLFilename(v.configFileName)
                 if r ~= nil then
                     local motor = r.motor ~= O.NULL and string.format("%.4f/%.4f", r.motor.peak_torque,

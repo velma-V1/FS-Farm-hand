@@ -68,8 +68,12 @@ def _finite(*values) -> bool:
 
 def _pto_connects(outputs, inputs) -> bool:
     """GIANTS' PowerTakeOffs:attachPowerTakeOff (747-766) connects each output at
-    the tractor joint to the wagon inputs at the wagon joint with the same ptoName."""
-    return outputs is not None and inputs is not None and bool(outputs & inputs)
+    the tractor joint to the wagon inputs at the wagon joint with the same ptoName.
+    A wagon joint with no input PTO at all (known empty) has nothing to connect:
+    PowerConsumer turns on by torque alone (power_sufficient), never by a shaft."""
+    if outputs is None or inputs is None:
+        return False
+    return not inputs or bool(outputs & inputs)
 
 
 def plan_hitch(tractor: Equipment, wagon: Equipment,

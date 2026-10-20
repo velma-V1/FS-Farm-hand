@@ -290,8 +290,9 @@ class MockWorld:
             inp = next((j for j in wagon.input_joints if j.index == joints[1]), None)
             if (out is None or inp is None or tractor.ai_root is None
                     or not out.free or not inp.active or out.joint_type != inp.joint_type
-                    or wagon.required_pto_torque and not (out.pto_names and inp.pto_names
-                                                          and out.pto_names & inp.pto_names)
+                    or wagon.required_pto_torque and not (
+                        out.pto_names is not None and inp.pto_names is not None
+                        and (not inp.pto_names or out.pto_names & inp.pto_names))
                     or not tractor.stopped or not wagon.stopped
                     or math.dist(tractor.ai_root.to_world(out.x, out.z), inp.position)
                     > MOCK_ATTACH_RANGE_M):

@@ -54,7 +54,9 @@ Executable mapping (`python scripts/check.py`):
   matched on the planned joints only when PTO power is needed; unknown fails closed.
 - `PowerAndPtoTests`: GIANTS' torque rule accepts adequate/exact capacity, rejects
   insufficient or unknown power, never rejects a wagon needing no PTO power, and
-  matches PTO on the planned joint pair (not any joint).
+  matches PTO on the planned joint pair (not any joint); an implement joint with no
+  input PTO at all hitches on torque alone (`test_a_wagon_joint_without_input_pto_hitches_on_torque_alone`,
+  `PtoTests.test_an_implement_joint_without_any_input_pto_has_nothing_to_connect`).
 - `HitchCompositionTests`: steps use the plan exactly; AutoDrive TRAVEL_NEAR only
   when far (and unobserved arrival stops); GOTO (STAGE) aims at the approaches
   (`ApproachTests` in test_hitch: beside the implement, a clear side first), only
