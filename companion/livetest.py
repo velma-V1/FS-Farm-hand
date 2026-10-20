@@ -352,7 +352,12 @@ class LiveTest:
                     "player": frame.get("player"), "info": frame.get("farm"), "fields": frame.get("fields"),
                     "places": [(p.get("name"), round(p.get("x")), round(p.get("z"))) for p in frame.get("places") or []][:60],
                     "markers": [(d.get("name"), round(d.get("x")), round(d.get("z")))
-                                for d in frame.get("destinations") or []][:300]}
+                                for d in frame.get("destinations") or []][:300],
+                    # Why a motorized vehicle is no towing vehicle (adapters/fs25.py _towing_vehicle).
+                    "unclassified": [{k: v.get(k) for k in ("id", "name", "category", "self_propelled", "motor",
+                                                            "kinds", "output_joints")}
+                                     for v in frame.get("vehicles") or []
+                                     if v.get("motor") is not None or v.get("self_propelled")][:20]}
             candidates = self.candidates(farm["farm_id"])
         except StepUnverified as error:
             problems.append("GAME_" + error.code)
