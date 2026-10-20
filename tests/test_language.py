@@ -270,3 +270,18 @@ class CommandSchemaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModelNumberTests(unittest.TestCase):
+    """Live 914bca8b1e064726-2: "the plow" took the vineyard plow (first by ID) when the
+    player meant the 980; a model number before the noun names the one."""
+
+    def test_a_model_number_before_the_noun_names_the_implement(self):
+        from companion.language import RuleInterpreter
+        rules = RuleInterpreter()
+        self.assertEqual(rules.interpret("bring the 980 plow to the farm house")["implement_name"], "980")
+        self.assertEqual(rules.interpret("hitch the vantage 4300 sprayer")["implement_name"], "4300")
+        for words in ("bring the plow to the farm house", "bring the big plow to the farm house"):
+            self.assertNotIn("implement_name", rules.interpret(words))
+        self.assertEqual(rules.interpret("unhitch the 980 plow")["command"], "detach_pair")
+

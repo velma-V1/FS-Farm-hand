@@ -226,6 +226,19 @@ _WITH = re.compile(r"\s+(?:with|using)\s+(?:the|my|our)\s+([a-z0-9][a-z0-9-]{0,2
 _GOOSENECK = re.compile(r"\bgoosenecks?\b")
 
 
+def model_name(words: str) -> str | None:
+    """A model number right before the implement's noun ("the 980 plow", "the
+    vantage 4300 sprayer"): the one word with a digit in it, never a size or colour."""
+    for pattern, _ in _IMPLEMENT_NOUNS:
+        noun = pattern.search(words)
+        if noun is not None:
+            before = words[:noun.start()].split()
+            if before and re.fullmatch(r"[a-z0-9-]*[0-9][a-z0-9-]*", before[-1]) and len(before[-1]) <= 20:
+                return before[-1]
+            return None
+    return None
+
+
 class RuleInterpreter:
     """Deterministic wording rules for the supported commands."""
 
@@ -260,7 +273,10 @@ class RuleInterpreter:
             text = re.sub(r"\s+(?:with|using)\s+(?:the|my|our)\s+\S+(?:\s+\S+)?\s*[.!?]*$", "", text.strip(),
                           flags=re.IGNORECASE)
         proposal = self._interpret_rest(text, words)
-        if proposal is None or (towing is None and not _GOOSENECK.search(words)):
+        model = model_name(words)
+        if proposal is not None and proposal.get("command") not in ("fetch_pair", "hitch_pair"):
+            model = None                              # a model number only picks among candidates
+        if proposal is None or (towing is None and not _GOOSENECK.search(words) and model is None):
             return proposal
         if proposal.get("command") not in ("fetch_pair", "hitch_pair"):
             return None                               # a name only where a pair is chosen
@@ -268,6 +284,8 @@ class RuleInterpreter:
             proposal["tractor_name"] = towing.group(1)
         if _GOOSENECK.search(words):
             proposal["implement_name"] = "gooseneck"
+        elif model is not None:
+            proposal["implement_name"] = model         # "the 980 plow": that one, not any plow
         return proposal
 
     def _interpret_rest(self, text: str, words: str) -> dict | None:
