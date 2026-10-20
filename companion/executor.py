@@ -1038,6 +1038,7 @@ class Executor:
                 # (REAPPROACH_CODES).
                 physical_attempted = True
                 aim = {"next": 0, "drives": 0, "stuck": False}
+                aims = list(aims)
 
                 def more():
                     return aim["next"] < len(aims) and aim["drives"] < MAX_APPROACH_DRIVES
@@ -1148,6 +1149,13 @@ class Executor:
                             raise
                         log.info("LOCAL_MANEUVER refused unmoved (%s): re-approach", failure.code)
                         refused = failure.code
+                        # No room to curve in: the staging pose (straight ahead of the
+                        # drawbar, a plain reverse from there) is the next aim (live
+                        # 9c1beb5ad65c4255-1: the store yard refused every curve and the
+                        # drive cap ran out before it).
+                        if plan.staging in aims[aim["next"]:]:
+                            aims.remove(plan.staging)
+                            aims.insert(aim["next"], plan.staging)
                         tractor, wagon, error = self._joints("re-approach start", ids, farm_id, owner, plan)
                         continue
                     except Exception:

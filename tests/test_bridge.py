@@ -449,10 +449,11 @@ class ProductionSequenceTests(unittest.TestCase):
             # and bounded failures stop, release, and never reverse or attach.
             ({"maneuver": "FAILED:SEATED_DURING_MANEUVER"}, NEAR, "FAILED", "SEATED_DURING_MANEUVER",
              ["maneuver", "stop"]),
-            # Refused unmoved for where the tractor stands: GOTO drives to up to three
-            # approaches beside the implement, the maneuver is tried from each, then it stops.
-            ({"maneuver": "FAILED:LOCAL_PATH_LEAVES_AREA"}, NEAR, "FAILED", "LOCAL_PATH_LEAVES_AREA",
-             ["maneuver"] + ["stage", "maneuver"] * 3 + ["stop"]),
+            # Refused unmoved for where the tractor stands (no room to curve in): GOTO to
+            # the staging pose straight ahead of the drawbar next, then the plain reverse
+            # attaches (live 9c1beb5ad65c4255-1: the store's crowded spawn yard).
+            ({"maneuver": "FAILED:LOCAL_PATH_LEAVES_AREA"}, NEAR, "COMPLETE", "DELIVERY_OBSERVED",
+             ["maneuver", "stage", "align", "attach", "drive", "stop"]),
             ({"maneuver": "FAILED:TURN_RADIUS_UNKNOWN"}, NEAR, "FAILED", "TURN_RADIUS_UNKNOWN", ["maneuver", "stop"]),
             ({"maneuver": "FAILED:STALLED"}, NEAR, "FAILED", "STALLED", ["maneuver", "stop"]),
             ({"maneuver": "FAILED:DIVERGED"}, NEAR, "FAILED", "DIVERGED", ["maneuver", "stop"]),
