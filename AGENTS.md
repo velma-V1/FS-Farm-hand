@@ -73,7 +73,10 @@ have precedence; report conflicts instead of silently changing the scope.
   hosted service being required for ordinary operation.
 - Development-only live tests (user-authorized 2026-10-18): the host runner
   `scripts/fs25_host_runner.py`, started by the user outside the agent's sandbox,
-  performs only its fixed allowlist (status, install the checkout's build, launch
+  performs only its fixed allowlist (status, install the checkout's build (also under a
+  running FS25, never under a running job: the mod takes effect when the save is next
+  loaded from the main menu; the user, 2026-10-20: reload save 2 from the menu, relaunch
+  FS25 only when unavoidable), launch
   FS25 by Windows' activation of its installed package (fixed AppUserModelID), else
   its package's own gamelaunchhelper.exe, else its exe — fixed paths —,
   restart or stop FS25 — that image only —, a screenshot of the FS25 window to a fixed

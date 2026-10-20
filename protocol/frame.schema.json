@@ -223,7 +223,9 @@
         "money": {"oneOf": [{"type": "number", "minimum": -1000000000000, "maximum": 1000000000000}, {"type": "null"}]},
         "helper_buy_seeds": {"$ref": "#/$defs/nullableBool"},
         "helper_buy_fertilizer": {"$ref": "#/$defs/nullableBool"},
-        "helper_buy_fuel": {"$ref": "#/$defs/nullableBool"}
+        "helper_buy_fuel": {"$ref": "#/$defs/nullableBool"},
+        "savegame": {"description": "The loaded savegame slot (missionInfo.savegameIndex).",
+                     "oneOf": [{"type": "integer", "minimum": 1, "maximum": 99}, {"type": "null"}]}
       }
     },
     "result": {

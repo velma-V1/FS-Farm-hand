@@ -747,10 +747,19 @@ class HostRunnerLifecycleTests(RunnerCase):
             self.assertEqual(self.send("install-current-build")["code"], "SYMLINK_REFUSED")
         self.assertFalse(self.targets.mod.exists())
 
-    def test_install_never_runs_under_the_game(self):
+    def test_install_under_the_running_game_only_without_a_job(self):
+        # The user: keep FS25 alive, reload save 2 from the main menu instead.
         self.build()
         self.system.fs25 = [999]
-        self.assertEqual(self.send("install-current-build")["code"], "FS25_RUNNING")
+        for result in ({"job": {"running": "owner-1"}}, {"test_active": "owner-1"}):
+            with self.subTest(result=result), unittest.mock.patch.object(
+                    self.runner.companion, "ask", return_value={"ok": True, "result": result}):
+                self.assertEqual(self.send("install-current-build")["code"], "JOB_RUNNING")
+        self.assertFalse(self.targets.mod.exists())
+        with unittest.mock.patch.object(self.runner, "_start_companion", return_value=4242):
+            self.assertEqual(self.send("install-current-build")["code"], "INSTALLED")
+        self.assertTrue(self.targets.mod.exists())
+        self.assertEqual(self.system.fs25, [999])                    # the game kept running
 
     def test_launch_starts_only_the_configured_executable(self):
         # Windows' activation of the package by its AppUserModelID first.
@@ -956,7 +965,7 @@ class EndToEndTests(CompanionCase):
         self.out.clear()
         code = client.command_hitch(poll=0.05)
         self.assertEqual(code, 0, self.out)
-        self.assertEqual(self.out[0]["event"], "started")
+        self.assertEqual([o["event"] for o in self.out[:2]], ["save", "started"])     # the loaded save, said first
         result = self.out[-1]
         self.assertEqual((result["event"], result["status"]), ("result", "COMPLETE"))
         summary = result["summary"]
@@ -972,7 +981,7 @@ class EndToEndTests(CompanionCase):
     def test_claude_runs_the_players_typed_words_and_reads_the_result(self):
         game = self.wire(faults={"stage_end": (5.52, -17.97, 162.9)})
         self.assertEqual(client.main(["request", "hitch the forage wagon"]), 0, self.out)
-        self.assertEqual((self.out[0]["event"], self.out[-1]["status"]), ("started", "COMPLETE"))
+        self.assertEqual((self.out[1]["event"], self.out[-1]["status"]), ("started", "COMPLETE"))
         self.assertEqual([c["op"] for c in game.commands], LIVE_HITCH)
         self.out.clear()
         self.assertEqual(client.main(["request", "sing me a song"]), client.INFRASTRUCTURE)
@@ -1010,3 +1019,22 @@ class BuildDevTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LiveSaveTests(unittest.TestCase):
+    """The user, 2026-10-20: save 2 is the live development save; a test on another
+    loaded save is refused, never reported as qualification."""
+
+    def test_only_the_live_save_is_tested(self):
+        import scripts.fs25_live_test as client
+        status = lambda save: {"result": {"live": {"farm": {"info": {"savegame": save}}}}}
+        self.assertEqual(client.LIVE_SAVE, 2)
+        self.assertEqual(client.loaded_save(status(2)), 2)
+        self.assertIsNone(client.loaded_save(status(None)))
+        self.assertIsNone(client.loaded_save(status(True)))
+        self.assertIsNone(client.loaded_save({}))
+        calls = []
+        with unittest.mock.patch.object(client, "call", side_effect=lambda op, args=None: (
+                calls.append(op) or status(3))), unittest.mock.patch.object(client, "emit"):
+            self.assertEqual(client.command_hitch(text="plow field 1"), client.WRONG_SAVE)
+        self.assertEqual(calls, ["status"])                    # nothing started

@@ -8,7 +8,9 @@ operations for it and nothing else:
     status                 FS25 and the companion running? builds installed? READY?
     install-current-build  copy the checkout's build (.fs25-dev/build, made by
                            scripts/package_probe.py --build-dev) to the fixed mod and
-                           companion folders, then start the companion with --live-test
+                           companion folders, then start the companion with --live-test;
+                           also with FS25 running (the mod takes effect when the save is
+                           next loaded from the main menu), never under a running job
     launch-fs25            start the configured FS25 executable
     restart-fs25           stop only FS25, start it again, wait for Farmhand READY
     stop-fs25              close FS25 (its own image name only; refused under a running job)
@@ -1046,9 +1048,22 @@ class Runner:
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(contents[f"{prefix}/{name}"])
 
+    def _job_running(self) -> bool:
+        """The companion's own answer: a Farmhand job or test is running. If it cannot
+        answer, nothing of Farmhand can be driving."""
+        try:
+            live = self.companion.ask("status")
+        except Refused:
+            live = {}
+        result = live.get("result") or {}
+        return bool(result.get("test_active") or (result.get("job") or {}).get("running"))
+
     def op_install_current_build(self):
-        if self.system.processes(FS25_IMAGE):
-            raise Refused("FS25_RUNNING")              # restart-fs25 after installing, never under the game
+        # With FS25 running (the user, 2026-10-20: keep the game alive; quit save 2 to
+        # the main menu and load it again instead of relaunching), the mod's scripts are
+        # read again when the save loads. Never under a running job or test.
+        if self.system.processes(FS25_IMAGE) and self._job_running():
+            raise Refused("JOB_RUNNING", hint="stop-test first")
         manifest, contents = self._validated_build()
         data = self.targets.local_data
         if not (data / "runtime" / "pythonw.exe").is_file():
@@ -1103,12 +1118,7 @@ class Runner:
         """Only FarmingSimulator2025Game.exe, and never under a running job or test
         (stop-test first): the companion's own answer decides; if it cannot answer,
         the game is closed anyway (nothing of Farmhand can then be driving)."""
-        try:
-            live = self.companion.ask("status")
-        except Refused:
-            live = {}
-        result = live.get("result") or {}
-        if result.get("test_active") or (result.get("job") or {}).get("running"):
+        if self._job_running():
             raise Refused("JOB_RUNNING", hint="stop-test first")
         pids = self._stop_game()
         return True, ("STOPPED" if pids else "NOT_RUNNING"), {"fs25_pids": pids}

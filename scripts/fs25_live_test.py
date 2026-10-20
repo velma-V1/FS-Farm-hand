@@ -43,6 +43,8 @@ TIMEOUT_S = {"status": 40.0, "install-current-build": 180.0, "launch-fs25": 660.
 HITCH_WAIT_S = 23500.0         # beyond the longest job: a field-work plan of three 2 h jobs
 EXIT = {"COMPLETE": 0, "FAILED": 1, "BLOCKED": 3, "UNVERIFIED": 4, "CANCELLED": 5}
 INFRASTRUCTURE = 10
+WRONG_SAVE = 12
+LIVE_SAVE = 2                  # the user, 2026-10-20: save 2 (FourFields) is the live development save
 SIGN_IN = 11                   # load_save: the host's Xbox sign-in failed for this launch
 
 
@@ -286,7 +288,21 @@ def launch_and_load(response: dict) -> int:
     return INFRASTRUCTURE
 
 
+def loaded_save(status: dict):
+    """The savegame slot the linked game reports (missionInfo.savegameIndex), or None."""
+    farm = ((status.get("result") or {}).get("live") or {}).get("farm") or {}
+    save = (farm.get("info") or {}).get("savegame")
+    return save if isinstance(save, int) and not isinstance(save, bool) else None
+
+
 def command_hitch(wait: float = HITCH_WAIT_S, poll: float = 3.0, text: str | None = None) -> int:
+    # Qualification only on the live development save; another loaded save is refused,
+    # an unreported one is said in the output.
+    save = loaded_save(call("status"))
+    if save is not None and save != LIVE_SAVE:
+        emit(event="refused", code="WRONG_SAVE", loaded=save, expected=LIVE_SAVE)
+        return WRONG_SAVE
+    emit(event="save", loaded=save, expected=LIVE_SAVE, verified=save == LIVE_SAVE)
     started = call("run-hitch-test") if text is None else call("run-request-test", {"text": text})
     if not started.get("ok"):
         emit(event="refused", code=started.get("code"), result=started.get("result"))

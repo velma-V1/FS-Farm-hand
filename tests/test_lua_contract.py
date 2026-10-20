@@ -546,7 +546,7 @@ class LuaContractTests(unittest.TestCase):
             end }
         end }
         env.g_farmManager = { getFarmById = function() return { money = 125000.5 } end }
-        env.g_currentMission.missionInfo = { helperBuySeeds = true, helperBuyFertilizer = false }
+        env.g_currentMission.missionInfo = { helperBuySeeds = true, helperBuyFertilizer = false, savegameIndex = 2 }
     """
 
     def test_owned_fields_and_their_coverage_are_observed(self):
@@ -556,7 +556,8 @@ class LuaContractTests(unittest.TestCase):
         self.assertEqual([f["id"] for f in frame["fields"]], [7, 9])              # owned only, by id
         self.assertTrue(all(f["coverage"] is None for f in frame["fields"]))      # not measured yet
         self.assertEqual(frame["farm"], {"money": 125000.5, "helper_buy_seeds": True,
-                                         "helper_buy_fertilizer": False, "helper_buy_fuel": None})
+                                         "helper_buy_fertilizer": False, "helper_buy_fuel": None,
+                                         "savegame": 2})
         self.assertTrue(self.observe.refreshField(world.env, 7))
         observed = observation_from_snapshot(self.snapshot(world))
         field = observed.fields[0]

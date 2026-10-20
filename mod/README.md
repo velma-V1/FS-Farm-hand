@@ -53,11 +53,16 @@ Once, on the PC (WSL, outside Claude's sandbox; the companion package must alrea
 be installed by its Setup.cmd):
 
     python3 scripts/fs25_host_runner.py install-runner
-    python3 ~/.local/share/fs25-farmhand-host/fs25_host_runner.py serve --repo ~/projects/FS-Farm-hand [--savegame N]
+    python3 ~/.local/share/fs25-farmhand-host/fs25_host_runner.py serve --repo ~/projects/FS-Farm-hand --savegame 2
 
-Then Claude runs `status`, `stop-fs25` (only FarmingSimulator2025Game.exe, refused
-while a job or test runs), `install` (FS25 closed), `launch` or `restart`, `hitch`,
-`collect`.
+Save 2 is the live development save (2026-10-20); `request` and `hitch` refuse to
+run (WRONG_SAVE) when the game reports another loaded save. Then Claude runs
+`status`, `install` (also with FS25 running, never under a job: the new mod takes
+effect when save 2 is next loaded, so quit save 2 to the main menu and load it again
+rather than relaunching), `request`, `hitch`, `collect`; `stop-fs25` (only
+FarmingSimulator2025Game.exe, refused while a job or test runs) and `launch` only
+when a full restart is unavoidable (the Xbox build's startup is where Gaming
+Services fails).
 The runner copies only the files of `scripts/package_probe.py --build-dev` whose
 sha256 its manifest names and whose build is the checkout's commit, to the fixed mod
 and companion folders. `--savegame N` passes FS25's `-autoStartSavegameId N`

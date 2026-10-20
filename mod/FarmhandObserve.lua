@@ -865,15 +865,19 @@ function Observe.catalogFrame()
     return encode({ event = "catalog", protocol = Observe.PROTOCOL, items = c.items, truncated = c.truncated })
 end
 
--- Money and GIANTS' helper purchase settings (missionInfo helperBuy*, Motorized
--- 2212, SowingMachine 510/1070, Sprayer 478-480): read only, never changed.
+-- Money, GIANTS' helper purchase settings (missionInfo helperBuy*, Motorized
+-- 2212, SowingMachine 510/1070, Sprayer 478-480) and the loaded savegame slot
+-- (missionInfo.savegameIndex, UNVERIFIED): read only, never changed.
 local function farmInfo(env, farmId)
     local info = try(function() return env.g_currentMission.missionInfo end) or {}
     local money = try(function() return env.g_farmManager:getFarmById(farmId).money end)
     local function flag(v) if v == true or v == false then return v end return Observe.NULL end
     return { money = finite(money) and money or Observe.NULL,
              helper_buy_seeds = flag(info.helperBuySeeds), helper_buy_fertilizer = flag(info.helperBuyFertilizer),
-             helper_buy_fuel = flag(info.helperBuyFuel) }
+             helper_buy_fuel = flag(info.helperBuyFuel),
+             savegame = (finite(info.savegameIndex) and info.savegameIndex == math.floor(info.savegameIndex)
+                         and info.savegameIndex >= 1 and info.savegameIndex <= 99) and info.savegameIndex
+                         or Observe.NULL }
 end
 
 function Observe.snapshot(env, seq, session, dt)
