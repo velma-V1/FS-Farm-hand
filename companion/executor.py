@@ -572,8 +572,11 @@ class Executor:
                     log.info("pair %s/%s rejected: %s", tractor.id, wagon.id, failure)
                     reason = failure
                     continue
+                # Last: the staging pose itself, straight ahead of the drawbar, from which
+                # the bounded reverse attaches without a line-up curve (live: the store's
+                # spawn yard leaves no 8 m clearance for any curve; GIANTS plans the way).
                 aims = approach_poses(plan, tractor.position,
-                                      [i.position for i in items if i.id not in (tractor.id, wagon.id)])
+                                      [i.position for i in items if i.id not in (tractor.id, wagon.id)]) + (plan.staging,)
                 aim = (aims[0].x, aims[0].z)
                 travel = None
                 if math.dist(tractor.position, aim) > NEAR_RADIUS_M:

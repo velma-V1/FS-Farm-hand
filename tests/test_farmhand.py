@@ -611,7 +611,8 @@ class GiantsNavigationTests(unittest.TestCase):
 
                 world = self.world(GOTO_TRACTOR, far=True, cls=Short)
                 tractor, wagon = world.snapshot()
-                aims = approach_poses(plan_hitch(tractor, wagon), tractor.position, ())
+                plan = plan_hitch(tractor, wagon)
+                aims = approach_poses(plan, tractor.position, ()) + (plan.staging,)   # + the staging pose
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, outcome, result)
                 self.assertEqual(calls[:min(short + 1, MAX_APPROACH_DRIVES)],
@@ -623,7 +624,7 @@ class GiantsNavigationTests(unittest.TestCase):
 
     def test_aims_that_leave_the_tractor_where_it_stood_cost_no_drive(self):
         # Live 27539c7115a44b86-1: NOT_REACHABLE at once, 1248 m off, unmoved.
-        for unmoved, outcome in ((5, ("COMPLETE", "DELIVERY_OBSERVED")), (6, ("BLOCKED", "NO_SAFE_APPROACH"))):
+        for unmoved, outcome in ((6, ("COMPLETE", "DELIVERY_OBSERVED")), (7, ("BLOCKED", "NO_SAFE_APPROACH"))):
             with self.subTest(unmoved=unmoved):
                 calls = []
 
@@ -638,7 +639,7 @@ class GiantsNavigationTests(unittest.TestCase):
                 result = Executor(world).execute(intent())
                 self.assertEqual((result.status, result.reason), outcome, result)
                 if outcome[0] == "BLOCKED":
-                    self.assertEqual(len(calls), 6)                 # each aim once
+                    self.assertEqual(len(calls), 7)                 # each aim once (six approaches + staging)
                     self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
 
     def test_a_goto_stopped_as_stalled_is_judged_by_the_observation(self):
@@ -761,7 +762,7 @@ class GiantsNavigationTests(unittest.TestCase):
 
     def test_aims_giants_refuses_as_blocked_are_skipped_without_moving(self):
         # AIParameterPosition:validate 83-90: a target on blocked ground is refused.
-        for refused, outcome in ((5, "COMPLETE"), (6, "BLOCKED")):
+        for refused, outcome in ((6, "COMPLETE"), (7, "BLOCKED")):          # six approaches + the staging pose
             with self.subTest(refused=refused):
                 calls = []
 
@@ -774,7 +775,8 @@ class GiantsNavigationTests(unittest.TestCase):
 
                 world = self.world(GOTO_TRACTOR, far=True, cls=Blocked)
                 tractor, wagon = world.snapshot()
-                aims = approach_poses(plan_hitch(tractor, wagon), tractor.position, ())
+                plan = plan_hitch(tractor, wagon)
+                aims = approach_poses(plan, tractor.position, ()) + (plan.staging,)   # + the staging pose
                 before = world.snapshot()
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, outcome, result)
