@@ -148,6 +148,7 @@ def finish_test(response: dict) -> int:
 GAME_LOG = Path("/mnt/c/Users/Matt/AppData/Local/Packages/GIANTSSoftware.FarmingSimulator25PC_fa8jxm5fj0esw"
                 "/LocalCache/Local/log.txt")
 MENU_S, LOAD_S, LINK_S = 300.0, 900.0, 180.0
+PLAYER_LOADS_S = 900.0        # the player picks the save in the game's menu (no blind keys there)
 # A host Xbox fault, not Farmhand's: GamingServicesUI crashes and the game logs this
 # (2026-10-19); the save system is then unavailable for that launch.
 SIGN_IN_FAILED = "XGameSaveInitializeProvider) => E_GS_USER_CANCELED"
@@ -210,10 +211,12 @@ def _linked(build: str | None) -> bool:
 
 
 def load_save(build: str | None = None, pid: int | None = None) -> int:
-    """The game's own menu, by its own keys (the Xbox build's -autoStartSavegameId never
-    finds the cloud save): Enter on the save list (the last save is selected), Enter on
-    the mod list (START), wait for the map, Enter on START; each step confirmed from the
-    game log (of process ``pid``), the end by the companion's link on ``build``."""
+    """Wait for the player to load the save in the game's own menu (the Xbox build's
+    -autoStartSavegameId never finds the cloud save), then Enter on the loading
+    screen's only button, START; each step confirmed from the game log (of process
+    ``pid``), the end by the companion's link on ``build``. No key is pressed in the
+    menus: live 2026-10-20, after a game update moved the menu focus, blind Enters went
+    into ModHub (a page with Uninstall) and then began a new career."""
     global _game_pid
     _game_pid = pid
     deadline = time.monotonic() + MENU_S
@@ -235,13 +238,8 @@ def load_save(build: str | None = None, pid: int | None = None) -> int:
         emit(event="load-save", ok=False, code="MENU_NOT_SEEN")
         return INFRASTRUCTURE
     if "Starting singleplayer game" not in _log_text():
-        _wait_log("COMPLETE async syncProfileFiles", 60.0)
-        time.sleep(5.0)
-        for _ in range(4):                          # save list, then the mod list's START
-            call("key", {"name": "enter"})
-            if _wait_log("Starting singleplayer game", 8.0):
-                break
-        else:
+        emit(event="load-save", step="waiting-for-player", hint="load the save in the game's menu")
+        if not _wait_log("Starting singleplayer game", PLAYER_LOADS_S):
             emit(event="load-save", ok=False, code="SAVE_NOT_STARTED")
             return INFRASTRUCTURE
     emit(event="load-save", step="loading")
