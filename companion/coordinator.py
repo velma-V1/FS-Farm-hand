@@ -255,7 +255,7 @@ class Coordinator:
                     intent["implement"] = implement
                 intent.update(work or {})            # tractor_name / implement_name
                 log.info("job %d intent %s", job.number, json.dumps(intent))
-                result = self.executor.execute(intent, cancel=cancel, on_state=entered)
+                result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
             job.states, job.equipment = tuple(result.states), tuple(result.equipment_ids)
             job.state, job.reason = result.status, result.reason
             log.info("job %d result %s", job.number, json.dumps({
@@ -286,7 +286,7 @@ class Coordinator:
             intent = {"version": 1, "request_id": f"{job.owner}-{n}", "farm_id": self.farm(),
                       "target": "player_at_acceptance", "task": "buy", "want": want}
             log.info("job %d buy %d intent %s", job.number, n, json.dumps(intent))
-            result = self.executor.execute(intent, cancel=cancel, on_state=entered)
+            result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
             states += [f"buy:{s}" for s in result.states]
             bought += list(result.equipment_ids)
             log.info("job %d buy %d result %s %s %s", job.number, n, result.status, result.reason, result.equipment_ids)
@@ -342,7 +342,7 @@ class Coordinator:
                 intent = {"version": 1, "request_id": f"{job.owner}-{n}", "farm_id": self.farm(),
                           "target": "player_at_acceptance", **step}
                 log.info("job %d step %d intent %s", job.number, n, json.dumps(intent))
-                result = self.executor.execute(intent, cancel=cancel, on_state=entered)
+                result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
                 states += [f"{step['task']}:{s}" for s in result.states]
                 equipment += [e for e in result.equipment_ids if e not in equipment]
                 log.info("job %d step %d result %s %s", job.number, n, result.status, result.reason)

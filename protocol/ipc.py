@@ -121,6 +121,7 @@ COMMAND_ARGS = {
     "attach": ("tractor", "wagon", "tractorJoint", "wagonJoint"),
     "detach": ("tractor", "wagon"),
     "pull_clear": ("tractor", "wagon"),
+    "unpark": ("tractor",),
     "stop": ("tractor",),
 }
 _ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "x", "z": "z",

@@ -46,6 +46,27 @@ have precedence; report conflicts instead of silently changing the scope.
      clear for normal navigation; every exit restores the temporary vehicle-control
      state. The implement is never made passable and GIANTS' collision handling is
      never weakened.
+  4. UNPARK (authorized 2026-10-20 after GIANTS' agent stayed BLOCKED from the first
+     frame inside the Large Shed, live 53c77d1e809645b3-3): only after GIANTS accepted
+     a target, its agent could not start the vehicle from where it stands (blocked, or
+     ended not_reachable, unmoved) and the closed doors near it were opened first;
+     never for an invalid destination, a door left closed, or a vehicle already in
+     the open. Straight only, no turning: forward with whatever is attached, back only
+     with nothing attached; at most 20 m total, 3 km/h, 40 s; to the nearest exit only.
+     Before moving, GIANTS' own collision query (overlapBox, proven on the rig by its
+     own body and the terrain) must show the whole rig's swept volume (length, width,
+     height of every unit, 0.5 m either side) clear of buildings, beams, trees,
+     vehicles and objects; only the rig's own collision nodes and the terrain are
+     excluded, and an unreadable query is never clear. While moving it re-checks past
+     the leading end (at least 2 m, more with speed) and keeps PULL_CLEAR's guards
+     (takeover, player, vehicles, reservation, divergence, stall, timeout) and stops on
+     any change of the rig. It ends braked and at rest only where the whole rig is out
+     from under any roof with 1.5 m clear all round and GIANTS' navigation map takes
+     the ground ahead; every exit restores the temporary vehicle-control state. Then
+     GIANTS gets the original target once, which must move it, else
+     UNPARK_HANDOFF_BLOCKED. One extraction per vehicle per parent job (its plan's
+     steps and next-tractor attempts included). Nothing is made passable, collisions
+     are never disabled, nothing is teleported, and no safety distance is loosened.
 - Keep Python orchestration in companion/, pure contracts in protocol/ and
   adapters/, game-side Lua in mod/, synthetic state in simulator/, tests in tests/.
   Never import simulator into companion or mod. No simulated success in real adapters.

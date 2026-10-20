@@ -59,6 +59,10 @@ Bridge.DRIVE_TIMEOUT_MS = 1200000
 -- stopped: GIANTS keeps a BLOCKED agent waiting (AIDrivable:onUpdate 314-316).
 Bridge.NAVIGATE_STALL_MS = 90000
 Bridge.NAVIGATE_PROGRESS_M = 2
+-- GIANTS' agent BLOCKED this long while the vehicle never left where the job started:
+-- it cannot start from there (live 53c77d1e809645b3-3: inside the Large Shed, 94 s). As
+-- long as the no-progress watchdog, so a passing blocker is still waited for as before.
+Bridge.BLOCKED_START_MS = Bridge.NAVIGATE_STALL_MS
 Bridge.STOP_TIMEOUT_MS = 15000
 Bridge.REQUEST_COOLDOWN_MS = 2000      -- a held or repeated fetch key sends one request
 Bridge.MAX_TEXT = 200                   -- protocol/frame.schema.json request.text
@@ -192,9 +196,34 @@ local function logAgent(env, v, what)
     end)
 end
 
+-- Whether GIANTS' agent reports BLOCKED (live casing is lower case).
+local function agentBlocked(env, v)
+    return pcall(function()
+        assert(tostring(env.AIDrivable.STATES[v.spec_aiDrivable.lastState]):upper() == "BLOCKED")
+    end)
+end
+
+-- Ends the job (prefix .. BLOCKED_AT_START) once GIANTS' agent has reported BLOCKED for
+-- BLOCKED_START_MS while the vehicle never got NAVIGATE_PROGRESS_M from where the job
+-- started; the companion then looks for a closed door or a way out (UNPARK).
+local function blockedAtStart(env, task, v, prefix)
+    local x, _, z = env.getWorldTranslation(v.rootNode)
+    if not (finite(x) and finite(z)) then return nil end
+    if task.startX == nil then task.startX, task.startZ = x, z end
+    if task.leftStart or math.sqrt((x - task.startX) ^ 2 + (z - task.startZ) ^ 2) >= Bridge.NAVIGATE_PROGRESS_M then
+        task.leftStart, task.blockedSince = true, nil
+        return nil
+    end
+    if not agentBlocked(env, v) then task.blockedSince = nil; return nil end
+    task.blockedSince = task.blockedSince or task.elapsed
+    if task.elapsed - task.blockedSince < Bridge.BLOCKED_START_MS then return nil end
+    logAgent(env, v, task.op .. " blocked at its start")
+    return prefix .. "BLOCKED_AT_START"
+end
+
 -- progress: whether a lack of movement ends the job (navigate only; a stage is
 -- short and bounded by its own timeout).
-local function stepGoto(env, task, timeoutMs, timeoutCode, endCode, progress)
+local function stepGoto(env, task, timeoutMs, timeoutCode, endCode, progress, prefix)
     local status, code = stillOurs(task.spec)
     if status ~= nil then return status, code end
     local v = task.spec.tractor
@@ -207,6 +236,8 @@ local function stepGoto(env, task, timeoutMs, timeoutCode, endCode, progress)
     if active ~= false then
         if active ~= true then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
         if task.elapsed > timeoutMs then return "FAILED", timeoutCode end
+        local stuck = blockedAtStart(env, task, v, prefix)
+        if stuck ~= nil then return "FAILED", stuck end
         if progress then
             local x, _, z = env.getWorldTranslation(v.rootNode)
             if not (finite(x) and finite(z)) then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
@@ -269,13 +300,13 @@ end
 
 function starters.stage(env, spec) return startGoto(env, spec, "STAGE_") end
 function steppers.stage(env, task)
-    return stepGoto(env, task, Bridge.STAGE_TIMEOUT_MS, "STAGE_TIMEOUT", "STAGE_ENDED", false)
+    return stepGoto(env, task, Bridge.STAGE_TIMEOUT_MS, "STAGE_TIMEOUT", "STAGE_ENDED", false, "STAGE_")
 end
 aborts.stage = abortGoto
 
 function starters.navigate(env, spec) return startGoto(env, spec, "NAVIGATE_") end
 function steppers.navigate(env, task)
-    return stepGoto(env, task, Bridge.DRIVE_TIMEOUT_MS, "TIMEOUT", "GOTO_ENDED", true)
+    return stepGoto(env, task, Bridge.DRIVE_TIMEOUT_MS, "TIMEOUT", "GOTO_ENDED", true, "NAVIGATE_")
 end
 aborts.navigate = abortGoto
 
@@ -436,6 +467,42 @@ function steppers.pull_clear(env, task, dt)
 end
 
 function aborts.pull_clear(env, task)
+    Bridge.Hitch.abort(env, task.session, "STOPPED")
+end
+
+-- ----------------------------------------------------------------- unpark
+-- UNPARK (AGENTS.md exception 4): the reserved vehicle, with whatever is attached to it,
+-- straight out of the building GIANTS' agent could not start from (Hitch.newUnpark). The
+-- companion asks for it only after GIANTS refused to start and no closed door was found;
+-- DONE UNPARKED once it is clear and at rest. Every refusal leaves it where it stood.
+function starters.unpark(env, spec)
+    local denied = idle(env, spec.tractor, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local session, reason, refused = Bridge.Hitch.newUnpark(env, {
+        tractor = spec.tractor, farmId = spec.farmId, isReserved = spec.owned,
+    })
+    if session == nil then
+        log("unpark refused %s: %s", tostring(reason), Bridge.Hitch.describeUnpark(refused))
+        return nil, reason
+    end
+    log("unpark start: %s", Bridge.Hitch.describeUnpark(session))
+    Bridge.lastUnpark = session
+    return { session = session }
+end
+
+function steppers.unpark(env, task, dt)
+    local code = Bridge.Hitch.unparkStep(env, task.session, dt)
+    if code == "CONTINUE" then return nil end
+    if not task.endLogged then          -- once, not every frame while it brakes to rest
+        task.endLogged = true
+        log("unpark end %s %s", code, Bridge.Hitch.describeUnpark(task.session))
+    end
+    if code ~= "CLEAR" then return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code end
+    return settle(task, "UNPARKED")     -- braked by the latch; DONE once observed at rest
+end
+
+function aborts.unpark(env, task)
     Bridge.Hitch.abort(env, task.session, "STOPPED")
 end
 
@@ -878,6 +945,9 @@ function steppers.stop(env, task)
     if Bridge.lastPull ~= nil and Bridge.lastPull.tractor == v then
         Bridge.Hitch.abort(env, Bridge.lastPull, "STOPPED")      -- latched: brake + cruise off
     end
+    if Bridge.lastUnpark ~= nil and Bridge.lastUnpark.tractor == v then
+        Bridge.Hitch.abort(env, Bridge.lastUnpark, "STOPPED")    -- latched: brake + cruise off
+    end
     local ownMotion = Bridge.pendingGoto[v] ~= nil or (target ~= nil
         and ((target.op == "drive" and v.ad.stateModule:isActive() ~= false)
         or ((target.op == "stage" or target.op == "navigate" or target.op == "fieldwork") and target.seen
@@ -990,6 +1060,7 @@ function Bridge:dropSession(code)
     end
     if self:companionOwner() then Bridge.owner = nil end
     Bridge.lastAlign, Bridge.lastManeuver, Bridge.lastDetach, Bridge.lastPull = nil, nil, nil, nil
+    Bridge.lastUnpark = nil
     log("bridge session %s dropped: %s", tostring(self.session), code)
     self.dropped[self.session] = true      -- a dropped session is never re-adopted
     self.session = nil
@@ -1199,6 +1270,8 @@ Bridge.STEPS = {
     ATTACH = "hitching the implement",
     DETACH = "unhitching the implement",
     PULL_CLEAR = "pulling clear of the unhitched implement",
+    OPEN_DOORS = "opening the doors in the way",
+    UNPARK = "driving out of the building",
     FIELD_WORK = "working the field (GIANTS helper)",
     VERIFY = "checking the hitch",
     DELIVER = "driving to the destination",
@@ -1264,6 +1337,26 @@ Bridge.REASONS = {
     SEATED_DURING_PULL_CLEAR = "you sat in the tractor, so Farmhand stopped pulling clear",
     NOT_JUST_DETACHED = "the tractor can only pull clear straight after unhitching",
     DISTANCE_LIMIT = "the tractor did not get clear of the implement within its limit",
+    NAVIGATE_BLOCKED_AT_START = "the helper cannot start from where it is parked",
+    STAGE_BLOCKED_AT_START = "the helper cannot start from where it is parked",
+    UNPARK_EXIT_BLOCKED = "it is boxed in: something blocks the straight way out of the building",
+    UNPARK_TOO_TIGHT = "it is parked too tightly in the building to drive out safely",
+    UNPARK_EXIT_TOO_FAR = "the way out of the building is longer than Farmhand may drive on its own",
+    UNPARK_BLOCKED = "another vehicle stands in the way out of the building",
+    UNPARK_PERSON = "stand clear of the way out of the building, then ask again",
+    UNPARK_START_NOT_CLEAR = "something touches it where it is parked (a wall, cargo or a raised floor)",
+    UNPARK_REVERSE_NOT_ALLOWED = "it would have to reverse out with something attached, which Farmhand does not do",
+    UNPARK_RIG_NOT_STRAIGHT = "what it pulls is not straight behind it, so Farmhand will not drive it out",
+    UNPARK_GEOMETRY_UNKNOWN = "its size could not be read, so Farmhand will not drive it out",
+    UNPARK_ARTICULATED_UNSUPPORTED = "Farmhand does not drive articulated vehicles out of buildings",
+    UNPARK_QUERY_UNVERIFIED = "the game's collision check could not be confirmed, so Farmhand did not move it",
+    UNPARK_QUERY_UNKNOWN = "the way out could not be checked, so Farmhand did not move it",
+    UNPARK_HANDOFF_BLOCKED = "it drove out of the building, but the helper still cannot start from there",
+    UNPARK_ALREADY_USED = "it was already driven out once in this job and the helper still cannot start",
+    SEATED_DURING_UNPARK = "step out of the vehicle so Farmhand can drive it out of the building",
+    OBSTACLE_AHEAD = "something appeared in the way, so Farmhand stopped",
+    EXIT_NOT_CONFIRMED = "the way out was no longer clear at the end, so Farmhand stopped",
+    RIG_CHANGED = "what it pulls moved or came off, so Farmhand stopped",
     STUCK_ON_OBSTACLE = "the tractor or what it pulls is caught on something the helper cannot see (a fence?); free it and ask again",
     BLOCKED_BY_PERSON = "you are standing in the tractor's way; step aside and ask again",
     NO_OWNED_FIELD = "the farm owns no field",

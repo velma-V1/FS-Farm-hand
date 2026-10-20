@@ -156,7 +156,7 @@ class HitchOptionTests(unittest.TestCase):
         sent = []
 
         class Scripted:
-            def execute(self, intent, cancel=None, on_state=None):
+            def execute(self, intent, cancel=None, on_state=None, job=None):
                 sent.append(intent["want"])
                 return Result("COMPLETE", "BOUGHT", (f"n{len(sent)}",), ("FIND",))
 

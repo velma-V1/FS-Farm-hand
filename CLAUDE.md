@@ -63,8 +63,9 @@ ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snap
   game → companion JSON lines over a Windows named pipe hosted by the companion;
   companion → game one command at a time in `modSettings/FS25_Farmhand/command.xml`
   (atomic rename) plus a `session.xml` heartbeat that also carries player notices.
-  Only nine ops exist: `drive` (AutoDrive), `navigate` (GIANTS GOTO), `stage`,
-  `maneuver`, `align`, `attach`, `detach` (GIANTS' own, where it allows it), `pull_clear` (straight after that detach), `stop`. ACCEPTED/DONE is never success; the game stops a
+  The ops are fixed (protocol/ipc.py COMMAND_ARGS): `drive` (AutoDrive), `navigate` (GIANTS GOTO), `stage`,
+  `maneuver`, `align`, `attach`, `detach` (GIANTS' own, where it allows it), `pull_clear` (straight after that detach),
+  `unpark` (straight out of a building GIANTS cannot start from), `fieldwork`, `open_gates`, `block`, `buy`, `save`, `stop`. ACCEPTED/DONE is never success; the game stops a
   session's motion if the heartbeat is lost for 10 s. Player key presses arrive as
   `request` frames (a fixed `action` or typed `text`).
 - `companion/language.py` (deterministic rules; a local model may sit behind them)
@@ -105,7 +106,9 @@ rather than asserting fixture IDs.
 Nothing has run inside FS25. Passing CI does not prove mod loading, physics, attach
 alignment, routing, IPC on Windows, or game integration — say so when reporting.
 The only self-driven motion allowed is HITCH's capped LOCAL_MANEUVER (forward, inside
-25 m of the wagon's joint), ALIGN_REVERSE (the final reverse) and DETACH's PULL_CLEAR
-(straight forward, at most 8 m at 3 km/h, straight after Farmhand's own detach); all other travel is
+25 m of the wagon's joint), ALIGN_REVERSE (the final reverse), DETACH's PULL_CLEAR
+(straight forward, at most 8 m at 3 km/h, straight after Farmhand's own detach) and UNPARK
+(straight, at most 20 m at 3 km/h, only after GIANTS could not start a vehicle and its doors
+were opened; AGENTS.md exception 4); all other travel is
 delegated to AutoDrive (optional; marker destinations only) or GIANTS GOTO
 (`navigate`, `stage`), whose navigation agent plans for the attached wagon.

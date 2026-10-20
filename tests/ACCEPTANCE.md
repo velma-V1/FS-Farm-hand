@@ -240,7 +240,36 @@ Executable mapping (`python scripts/check.py`):
   on the line, or already clear; stops on takeover, seating, lost reservation, AI,
   the player near, the implement moving, a stall, shrinking separation, drifting off
   the line, another vehicle moving, timeout and distance; every end brakes, switches
-  cruise control off and releases forceIsActive. Wording
+  cruise control off and releases forceIsActive.
+- UNPARK (AGENTS.md exception 4; mock world, `test_unpark`): a hitched pair GIANTS
+  cannot start from (agent blocked at its start; IDs and order varied) is driven out
+  (OPEN_DOORS, UNPARK) and delivered with GIANTS' same target; a closed door near it is
+  opened and nothing is driven; a door that did not free it leaves UNPARK next; a
+  hand-off GIANTS still cannot start fails UNPARK_HANDOFF_BLOCKED with one extraction
+  only; refusals (UNPARK_EXIT_BLOCKED, _TOO_TIGHT, _QUERY_UNVERIFIED) move nothing; a
+  vehicle in the open keeps GIANTS' reason; an invalid target, a stall on the way or a
+  timeout never opens doors or unparks; an UNPARK DONE without motion is UNVERIFIED; a
+  stop before it cancels it; one extraction per vehicle per job across its steps (a new
+  job has its own); a boxed lone tractor is unparked then hitches; one that cannot be
+  hands over to the next tractor unmoved; after UNPARK the first GOTO GIANTS takes must
+  move it. Mod side (`test_lua_bridge`): `unpark` is DONE only CLEAR and at rest,
+  refusals and failures are FAILED, AI blocks it, a stop pre-empts it braked; a
+  navigate or stage whose agent stays BLOCKED 90 s never 2 m from its start ends
+  *_BLOCKED_AT_START, one that drove off first never does. `test_lua_unpark` (the real
+  Hitch.newUnpark / unparkStep on a kinematic stub answering GIANTS' overlapBox call
+  shape): straight out of an open-front shed to the nearest exit at 3 km/h; nose-in
+  backs out with nothing attached; a towed rig never reverses; the Super-Liner and
+  hopper leave forward whole; the exit within the cap; already in the open refused;
+  a low beam, a pallet, a tree or a parked body in the swept path refused before
+  motion, a beam above the rig and margin passed; the whole rig's width and height
+  checked; a tight bay, a vehicle root or the player near the line, cargo touching the
+  rig refused; a query that cannot prove itself (count, own body, terrain, flags,
+  reachability unknown) never clear; seated, moving, AI, unreserved, articulated,
+  unknown size and a crooked rig refused unmoved; stops on takeover, seating,
+  reservation, AI, stall, drift, the player, an obstacle ahead, the rig changing,
+  another vehicle moving, timeout, an exit no longer clear; the callback never ends
+  GIANTS' query early; every end brakes, switches cruise control off and releases
+  forceIsActive. Wording
   (`test_language`): unhitch/detach/unhook/uncouple/disconnect, "drop" only with the
   implement named, never "at" another place.
 - Hitch travel and local alignment (5304adc live): `AlignEnvelopeTests` (joint error in the

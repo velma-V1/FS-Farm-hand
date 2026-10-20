@@ -932,8 +932,102 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertEqual(self.results(2)[-1], (2, "FAILED", "STOPPED"))
         self.assertIn("abort:STOPPED", self.calls())
 
+    # -------------------------------------------------------------- unpark
+    def scripted_unpark(self, codes, refuse=None):
+        """Bridge.Hitch with a scripted UNPARK (FarmhandHitch's own is covered by
+        tests/test_lua_unpark.py)."""
+        fake = self.lua.execute(r"""
+            local Hitch, codes, refuse, calls = ...
+            local F = setmetatable({}, { __index = Hitch })
+            function F.newUnpark(env, args)
+                table.insert(calls, "newUnpark")
+                if refuse then return nil, refuse, { plans = {} } end
+                return { tractor = args.tractor, n = 0 }
+            end
+            function F.unparkStep(env, s, dt)
+                if s.result then table.insert(calls, "brake"); return s.result end
+                s.n = s.n + 1
+                local code = codes[math.min(s.n, #codes)]
+                if code ~= "CONTINUE" then s.result = code; table.insert(calls, "brake") end
+                return code
+            end
+            function F.describeUnpark() return "described" end
+            function F.abort(env, s, code)
+                if s.result == nil then s.result = code end
+                table.insert(calls, "abort:" .. code)
+            end
+            return F
+        """, self.hitch, self.lua.table(*codes), refuse, self.w.calls)
+        self.bridge.Hitch = fake
+        return fake
+
+    def test_unpark_is_done_only_clear_and_at_rest(self):
+        self.adopt()
+        self.scripted_unpark(["CONTINUE", "CLEAR"])
+        self.w.speed = 0.0
+        self.send(1, "unpark", {"tractor": 11})
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "UNPARKED"))
+        self.assertIn("newUnpark", self.calls())
+
+    def test_unpark_refusals_and_failures(self):
+        self.adopt()
+        self.scripted_unpark(["CLEAR"], refuse="UNPARK_EXIT_BLOCKED")
+        self.send(1, "unpark", {"tractor": 11})
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "UNPARK_EXIT_BLOCKED"))
+        self.scripted_unpark(["CONTINUE", "OBSTACLE_AHEAD"])
+        self.send(2, "unpark", {"tractor": 11})
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(2)[-1], (2, "FAILED", "OBSTACLE_AHEAD"))
+        self.w.aiActive = True                                  # never under another controller
+        self.send(3, "unpark", {"tractor": 11})
+        self.assertEqual(self.results(3)[-1], (3, "FAILED", "AI_ACTIVE"))
+
+    def test_a_stop_pre_empts_an_unpark_and_keeps_it_braked(self):
+        self.adopt()
+        self.scripted_unpark(["CONTINUE"])
+        self.send(1, "unpark", {"tractor": 11})
+        self.W.run(self.w, 200)
+        self.send(2, "stop", {"tractor": 11})
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "STOPPED"))
+        self.assertEqual(self.results(2)[-1], (2, "DONE", "STOPPED"))
+        self.assertIn("abort:STOPPED", self.calls())
+
+    def test_a_goto_blocked_at_its_start_ends_with_that_reason(self):
+        # Live 53c77d1e809645b3-3: accepted, agent BLOCKED from the first frame, unmoved.
+        output = []
+        self.lua.globals().print = lambda *a: output.append(" ".join(map(str, a)))
+        for op, code in (("navigate", "NAVIGATE_BLOCKED_AT_START"), ("stage", "STAGE_BLOCKED_AT_START")):
+            with self.subTest(op):
+                self.w = self.W.new()
+                self.adopt()
+                self.w.gotoStarts = True
+                self.w.tractor.spec_aiDrivable = self.lua.table(lastState=3, distanceToTarget=93.8)
+                self.lua.execute("local w = ...; w.env.AIDrivable = { STATES = { [3] = 'blocked' } }", self.w)
+                self.send(1, op, self.POSE)
+                self.beating(85000)
+                self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])   # as long as the stall watch
+                self.beating(7000)
+                self.assertEqual(self.results(1)[-1], (1, "FAILED", code))
+                self.assertIn("stopCurrentAIJob", self.calls())
+        self.assertTrue(any("blocked at its start: agent state blocked, 93.8 m" in line for line in output), output)
+
+    def test_a_goto_that_left_its_start_is_never_blocked_at_its_start(self):
+        self.adopt()
+        self.w.gotoStarts = True
+        self.w.tractor.spec_aiDrivable = self.lua.table(lastState=3, distanceToTarget=50.0)
+        self.lua.execute("local w = ...; w.env.AIDrivable = { STATES = { [3] = 'BLOCKED' } }", self.w)
+        self.send(1, "stage", self.POSE)
+        self.beating(10000)
+        self.w.x += 3.0                                             # drove off, then blocked on the way
+        self.beating(100000)
+        self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])
+        self.beating(12000)                                         # only the stage's own 120 s bound
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "STAGE_TIMEOUT"))
+
     # ------------------------------------------------------------ maneuver
-    MANEUVER = {"tractor": 11, "wagon": 12, "tractorJoint": 4, "wagonJoint": 1}
+    MANEUVER ={"tractor": 11, "wagon": 12, "tractorJoint": 4, "wagonJoint": 1}
 
     def scripted_maneuver(self, codes, refuse=None):
         """Bridge.Hitch with a scripted LOCAL_MANEUVER (FarmhandHitch's own is covered by

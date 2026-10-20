@@ -1227,6 +1227,474 @@ function Hitch.describePull(s)
         s.lastSpeed and string.format("%.2f", s.lastSpeed) or "?")
 end
 
+-- ----------------------------------------------------------------- UNPARK
+-- Live 53c77d1e809645b3-3 (FourFields save 2): the Super-Liner and its hopper inside the
+-- Large Shed; GIANTS accepted a GOTO to a valid target 94 m away, its agent stayed
+-- BLOCKED from the first frame and nothing moved: no GIANTS job drives a vehicle out of
+-- a building. Authorized by the user 2026-10-20 (AGENTS.md exception 4), only after
+-- GIANTS refused to start and no closed door explains it (the companion opens doors
+-- first): straight forward, or straight back for a vehicle with nothing attached, at
+-- most 20 m, 3 km/h and 40 s, to the nearest exit, steered by GIANTS' driveToPoint with
+-- PULL_CLEAR's guards; then GIANTS' GOTO takes over once. Static geometry is checked
+-- with GIANTS' own collision query, overlapBox (GDN engine Physics: synchronous, every
+-- callback performed before it returns, a callback returning true ends the query;
+-- half extents and the yaw rotation as AutoDrive calls it, Specialization.lua:1909,
+-- PathFinderModule.lua:2535), over the whole rig's swept volume: its length, width and
+-- height from GIANTS' size boxes (AIDrivable:setAIRootNodeDirty 526-531 reads them),
+-- the lateral margin either side, from just above the terrain (the supporting surface)
+-- to above its top. Only the rig's own collision nodes and the terrain are excluded;
+-- an unreadable or unproven query is never clear. Nothing is made passable.
+Hitch.UNPARK_LIMITS = { maxDistanceM = 20, maxSpeedKmh = 3, timeoutMs = 40000 }
+Hitch.UNPARK = {
+    lateralMarginM = 0.5,     -- either side of the rig over the whole swept volume
+    floorClearanceM = 0.3,    -- boxes start this far above the terrain under them
+    topMarginM = 0.3,         -- and end this far above the rig's highest point
+    openMarginM = 1.5,        -- at the exit: the rig's footprint this much larger all round is clear
+    roofCheckM = 8,           -- and nothing static over it up to this far above the ground
+    reachAheadM = { 2, 5 },   -- and GIANTS' navigation map takes these points past its leading end
+    stepM = 0.5,              -- the swept path is planned and checked in slabs this long
+    footSlabM = 2,            -- footprint boxes at most this long (one terrain height each)
+    minLookaheadM = 2,        -- while moving: the box past the leading end is at least this long,
+    reactionS = 1, decelMs2 = 1, -- else speed * reaction + stopping distance + 0.5 m
+    lookaheadM = 3,           -- steering target on the line
+    divergeM = 0.5,           -- farther off the line: DIVERGED (PULL_CLEAR's)
+    straightDeg = 10,         -- each attached unit within this of the tractor's heading
+    rigTurnDeg = 3,           -- a unit turning this far relative to the tractor while moving: RIG_CHANGED
+    exitSlackM = 0.25,
+    maxUnits = 6,
+}
+-- The masks: everything a moving vehicle can hit (AutoDrive CollSensor.lua:47-48), the
+-- static part of it without vehicles (CollSensorSplit.lua:3), vehicles alone (AutoDrive
+-- measures its own vehicle with VEHICLE, AutoDrive.lua:218, CollisionDetectionUtils.lua:240)
+-- and the terrain (UtilFuncs.lua:74).
+Hitch.UNPARK_MASKS = {
+    obstacles = { "DEFAULT", "STATIC_OBJECT", "DYNAMIC_OBJECT", "VEHICLE", "TERRAIN_DELTA", "TREE", "BUILDING",
+                  "TRAFFIC_VEHICLE", "TRAFFIC_VEHICLE_BLOCKING" },
+    static = { "DEFAULT", "STATIC_OBJECT", "DYNAMIC_OBJECT", "TERRAIN_DELTA", "TREE", "BUILDING" },
+    vehicles = { "VEHICLE" },
+    terrain = { "TERRAIN" },
+}
+
+local function unparkMasks(env)
+    local out = {}
+    for key, names in pairs(Hitch.UNPARK_MASKS) do
+        local total = 0
+        for _, name in ipairs(names) do
+            local flag = env.CollisionFlag[name]
+            assert(finite(flag) and flag > 0)
+            total = total + flag
+        end
+        out[key] = total
+    end
+    return out
+end
+
+-- authority() for a vehicle with no partner: reserved, the farm's, nobody at the
+-- controls, no AI of any kind, and not itself towed by something else.
+local function unparkAuthority(s)
+    local tractor = s.tractor
+    if s.isReserved() ~= true or tractor.ownerFarmId ~= s.farmId then return "RESERVATION_LOST" end
+    local conflict = Hitch.driverConflict(tractor)
+    if conflict ~= nil then return conflict end
+    local ai = tractor:getIsAIActive()
+    if ai ~= false then return ai == true and "AI_ACTIVE" or "UNKNOWN_OBSERVATION" end
+    if tractor.rootVehicle ~= nil and tractor.rootVehicle ~= tractor then return "NOT_ROOT_VEHICLE" end
+    return nil
+end
+
+-- The tractor and everything attached below it (getAttachedImplements entries' .object,
+-- as Bridge.logFieldWork), the tractor first. Errors on a loop or a deep chain.
+local function rigUnits(tractor)
+    local units, set = {}, {}
+    local function add(v)
+        assert(type(v) == "table" and not set[v] and #units < Hitch.UNPARK.maxUnits)
+        set[v] = true
+        units[#units + 1] = v
+        if type(v.getAttachedImplements) == "function" then
+            for _, implement in ipairs(v:getAttachedImplements() or {}) do add(implement.object) end
+        end
+    end
+    add(tractor)
+    return units, set
+end
+
+-- A point of the start frame (x ahead along the line, y lateral) in the world.
+local function fromFrame(s, a, l)
+    return s.ox + s.dirX * a + s.dirZ * l, s.oz + s.dirZ * a - s.dirX * l
+end
+
+local function terrainAt(env, x, z)
+    local mission = env.g_currentMission
+    local y = env.getTerrainHeightAtWorldPos(mission.terrainRootNode, x, 0, z)
+    assert(finite(y))
+    return y
+end
+
+-- A unit's heading off the line, in degrees.
+local function unitTurn(env, s, v)
+    local x, _, z = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
+    assert(finite(x) and finite(z))
+    return math.deg(atan2(x * s.dirZ - z * s.dirX, x * s.dirX + z * s.dirZ))
+end
+
+-- A unit's size box (GIANTS' vehicle size around its rootNode) in the start frame:
+-- its a/l extent and its top above the terrain under it. Errors on unknown sizes.
+local function unitBox(env, s, v)
+    local size = v.size
+    local w, l, h = size.width, size.length, size.height
+    local wo, lo, ho = size.widthOffset, size.lengthOffset, size.heightOffset
+    assert(finite(w) and w > 0 and finite(l) and l > 0 and finite(h) and h > 0)
+    assert(finite(wo) and finite(lo) and finite(ho))
+    local box = { aMin = math.huge, aMax = -math.huge, lMin = math.huge, lMax = -math.huge }
+    for _, sx in ipairs({ -1, 1 }) do
+        for _, sz in ipairs({ -1, 1 }) do
+            local x, _, z = env.localToWorld(v.rootNode, wo + sx * w / 2, ho, lo + sz * l / 2)
+            assert(finite(x) and finite(z))
+            local a, b = inFrame(s, x, z)
+            box.aMin, box.aMax = math.min(box.aMin, a), math.max(box.aMax, a)
+            box.lMin, box.lMax = math.min(box.lMin, b), math.max(box.lMax, b)
+        end
+    end
+    local cx, top, cz = env.localToWorld(v.rootNode, wo, ho + h, lo)
+    assert(finite(cx) and finite(top) and finite(cz))
+    box.height = top - terrainAt(env, cx, cz)
+    return box
+end
+
+-- GIANTS overlapBox over [a0, a1] x [l0, l1] of the start frame, h0..h1 metres above the
+-- terrain at its centre, with `mask`. Returns the query: hits (node ids that are neither
+-- the rig nor the terrain), own and terrain counts; nil when it cannot be trusted (the
+-- shape count GIANTS returns must equal the callbacks performed, GDN overlapBox).
+local function overlap(env, s, a0, a1, l0, l1, h0, h1, mask)
+    local mission = env.g_currentMission
+    local x, z = fromFrame(s, (a0 + a1) / 2, (l0 + l1) / 2)
+    local ground = terrainAt(env, x, z)
+    local q = { seen = 0, own = 0, terrain = 0, hits = {} }
+    function q.onUnparkOverlap(_, nodeId)
+        q.seen = q.seen + 1
+        if nodeId == mission.terrainRootNode then
+            q.terrain = q.terrain + 1
+        else
+            -- The object a collision node belongs to, as AutoDrive asks (PathFinderModule.lua:3040).
+            local object = mission:getNodeObject(nodeId)
+            if object ~= nil and (s.rig[object] or (object.rootVehicle ~= nil and s.rig[object.rootVehicle])) then
+                q.own = q.own + 1
+            else
+                q.hits[#q.hits + 1] = nodeId
+            end
+        end
+        return false                 -- true would end GIANTS' query before every shape is seen
+    end
+    local n = env.overlapBox(x, ground + (h0 + h1) / 2, z, 0, s.yaw, 0, (l1 - l0) / 2, (h1 - h0) / 2, (a1 - a0) / 2,
+                             "onUnparkOverlap", q, mask, true, true, true, true)
+    if n ~= q.seen then return nil end
+    return q
+end
+
+-- Names of the first few hits, for the log (getName, as AutoDrive logs them).
+local function hitNames(env, hits)
+    local names = {}
+    for i = 1, math.min(#hits, 4) do
+        local ok, name = pcall(env.getName, hits[i])
+        names[i] = ok and tostring(name) or tostring(hits[i])
+    end
+    return table.concat(names, ",")
+end
+
+-- nil if [a0, a1] (any order) is clear for the rig's width with `side` margin and its height,
+-- else "HIT" and the names, or "UNKNOWN". Slabs of at most `slab` metres.
+local function clearVolume(env, s, a0, a1, side, slab, h0, h1, mask)
+    if a0 > a1 then a0, a1 = a1, a0 end
+    local a = a0
+    while a < a1 - 1e-6 do
+        local b = math.min(a1, a + slab)
+        local q = overlap(env, s, a, b, s.lMin - side, s.lMax + side, h0, h1, mask)
+        if q == nil then return "UNKNOWN" end
+        if #q.hits > 0 then return "HIT", hitNames(env, q.hits) end
+        a = b
+    end
+    return nil
+end
+
+-- Whether the rig moved `d` metres along the line (negative: back) stands in the open:
+-- nothing static over it, its footprint with openMarginM all round clear, and GIANTS'
+-- navigation map takes the ground past its leading end (AIParameterPosition:validate
+-- 83-90, aiSystem:getIsPositionReachable). true, false and why, or nil (unknown).
+local function openAt(env, s, d)
+    local U = Hitch.UNPARK
+    local roof = overlap(env, s, s.aMin + d, s.aMax + d, s.lMin, s.lMax, s.height + U.topMarginM,
+                         math.max(U.roofCheckM, s.height + U.topMarginM + 2), s.masks.static)
+    if roof == nil then return nil end
+    if #roof.hits > 0 then return false, "ROOF " .. hitNames(env, roof.hits) end
+    local m = U.openMarginM
+    local bad, names = clearVolume(env, s, s.aMin + d - m, s.aMax + d + m, m, U.footSlabM, U.floorClearanceM,
+                                   s.height + U.topMarginM, s.masks.obstacles)
+    if bad == "UNKNOWN" then return nil end
+    if bad ~= nil then return false, "NEAR " .. names end
+    local sign = d < 0 and -1 or 1
+    local lead = sign > 0 and s.aMax or s.aMin
+    for _, ahead in ipairs(U.reachAheadM) do
+        local x, z = fromFrame(s, lead + d + sign * ahead, (s.lMin + s.lMax) / 2)
+        local reachable = env.g_currentMission.aiSystem:getIsPositionReachable(x, 0, z)
+        if reachable ~= true then return reachable == false and false or nil, "NOT_REACHABLE" end
+    end
+    return true
+end
+
+-- The points PULL_CLEAR's vehicle and player guards watch, `d` along the line: the
+-- steering node and the middle of the rig's leading end.
+local function unparkPoints(s, d)
+    return { { d, 0 }, { s.lead + d, (s.lMin + s.lMax) / 2 } }
+end
+
+-- One direction (sign 1 forward, -1 back): the nearest exit along the line, or why there
+-- is none. Every slab from the rig's far end to the exit is clear with the lateral margin.
+local function planUnpark(env, s, sign)
+    local U, L = Hitch.UNPARK, Hitch.UNPARK_LIMITS
+    s.sign = sign
+    s.lead = sign > 0 and s.aMax or s.aMin
+    local top = s.height + U.topMarginM
+    -- Beside the rig where it stands: the margin it will pass through.
+    local bad, names = clearVolume(env, s, s.aMin, s.aMax, U.lateralMarginM, U.stepM, U.floorClearanceM, top,
+                                   s.masks.obstacles)
+    if bad == "UNKNOWN" then return { why = "UNPARK_QUERY_UNKNOWN" } end
+    if bad ~= nil then return { why = "UNPARK_TOO_TIGHT", at = 0, names = names } end
+    local d = 0
+    while d < L.maxDistanceM - 1e-6 do
+        local nd = math.min(L.maxDistanceM, d + U.stepM)
+        bad, names = clearVolume(env, s, s.lead + sign * d, s.lead + sign * nd, U.lateralMarginM, U.stepM,
+                                 U.floorClearanceM, top, s.masks.obstacles)
+        if bad == "UNKNOWN" then return { why = "UNPARK_QUERY_UNKNOWN" } end
+        if bad ~= nil then return { why = "UNPARK_EXIT_BLOCKED", at = nd, names = names } end
+        local conflict = pullConflict(s, unparkPoints(s, sign * nd), Hitch.LOCAL.vehicleClearanceM,
+                                      Hitch.LOCAL.playerClearanceM)
+        if conflict == "OTHER_VEHICLE_NEAR" then return { why = "UNPARK_BLOCKED", at = nd } end
+        if conflict == "PERSON_TOO_CLOSE" then return { why = "UNPARK_PERSON", at = nd } end
+        local open = openAt(env, s, sign * nd)
+        if open == nil then return { why = "UNPARK_QUERY_UNKNOWN" } end
+        if open then return { exit = nd } end
+        d = nd
+    end
+    return { why = "UNPARK_EXIT_TOO_FAR" }
+end
+
+local function describePlan(p)
+    if p == nil then return "-" end
+    if p.exit then return string.format("exit %.1f m", p.exit) end
+    return p.why .. (p.at and string.format(" at %.1f m", p.at) or "") .. (p.names and (" (" .. p.names .. ")") or "")
+end
+
+-- Prepare the extraction. `args`: tractor, farmId, isReserved; optional maxDistanceM,
+-- maxSpeedKmh, timeoutMs (each capped by UNPARK_LIMITS). Refused before any motion
+-- unless the tractor is empty, at rest and free of AI, every unit's geometry is known,
+-- GIANTS' collision query is proven on this rig (it reports the rig's own body and the
+-- terrain), nothing but the rig and the ground touches it where it stands, it is not
+-- already in the open, and a straight line leads out within the caps. Returns a session,
+-- or nil, a reason and (for the log) the half-built session.
+function Hitch.newUnpark(env, args)
+    local U, L = Hitch.UNPARK, Hitch.UNPARK_LIMITS
+    local maxDistance = capped(args.maxDistanceM, L.maxDistanceM, L.maxDistanceM)
+    local speed = capped(args.maxSpeedKmh, L.maxSpeedKmh, L.maxSpeedKmh)
+    local timeout = capped(args.timeoutMs, L.timeoutMs, L.timeoutMs)
+    if maxDistance == nil or speed == nil or speed < Hitch.LIMITS.minSpeedKmh or timeout == nil
+            or type(args.isReserved) ~= "function" then
+        return nil, "INVALID_LIMITS"
+    end
+    local s = { tractor = args.tractor, farmId = args.farmId, isReserved = args.isReserved, maxDistanceM = maxDistance,
+                maxSpeedKmh = speed, timeoutMs = timeout, elapsed = 0, sinceProgress = 0, best = 0, result = nil,
+                others = {}, plans = {} }
+    local ok, reason = pcall(function()
+        local tractor = s.tractor
+        if tractor:getIsEntered() == true then return "SEATED_DURING_UNPARK" end
+        local v = tractor:getLastSpeed()
+        if not finite(v) or math.abs(v) >= 1 then return "NOT_STOPPED" end
+        Hitch.watchDriver(env, tractor)
+        local denied = unparkAuthority(s)
+        if denied ~= nil then return denied end
+        if tractor.spec_articulatedAxis ~= nil then return "UNPARK_ARTICULATED_UNSUPPORTED" end
+        local node = tractor:getAISteeringNode()
+        local ox, _, oz = world(env, node)
+        local fx, _, fz = env.localDirectionToWorld(node, 0, 0, 1)
+        assert(finite(fx) and finite(fz))
+        s.ox, s.oz, s.dirX, s.dirZ = ox, oz, fx, fz
+        s.yaw = atan2(s.dirX, s.dirZ)
+        s.last = { wx = s.ox, wz = s.oz }   -- the start frame for surroundings
+        local okUnits, units, set = pcall(rigUnits, tractor)
+        if not okUnits then return "UNPARK_GEOMETRY_UNKNOWN" end
+        s.units, s.rig = units, set
+        s.aMin, s.aMax, s.lMin, s.lMax, s.height = math.huge, -math.huge, math.huge, -math.huge, 0
+        s.turns, s.boxes = {}, {}
+        for i, unit in ipairs(units) do
+            local okBox, box = pcall(unitBox, env, s, unit)
+            if not okBox then return "UNPARK_GEOMETRY_UNKNOWN" end
+            s.aMin, s.aMax = math.min(s.aMin, box.aMin), math.max(s.aMax, box.aMax)
+            s.lMin, s.lMax = math.min(s.lMin, box.lMin), math.max(s.lMax, box.lMax)
+            s.height = math.max(s.height, box.height)
+            s.turns[i] = unitTurn(env, s, unit)
+            if i > 1 and math.abs(s.turns[i] - s.turns[1]) > U.straightDeg then return "UNPARK_RIG_NOT_STRAIGHT" end
+            s.boxes[i] = box
+        end
+        local okMasks, masks = pcall(unparkMasks, env)
+        if not okMasks then return "UNPARK_QUERY_UNKNOWN" end
+        s.masks = masks
+        -- The query proves itself on this rig first: GIANTS reports the tractor's own
+        -- body (vehicle mask) and the terrain under it (terrain mask).
+        local b = s.boxes[1]
+        local da, dl = (b.aMax - b.aMin) * 0.1, (b.lMax - b.lMin) * 0.1
+        local body = overlap(env, s, b.aMin + da, b.aMax - da, b.lMin + dl, b.lMax - dl, 0.1 * b.height,
+                             0.9 * b.height, masks.vehicles)
+        local ground = overlap(env, s, b.aMin + da, b.aMax - da, b.lMin + dl, b.lMax - dl, -0.5, 0.5, masks.terrain)
+        if body == nil or body.own < 1 or ground == nil or ground.terrain < 1 then return "UNPARK_QUERY_UNVERIFIED" end
+        -- Where it stands, nothing but the rig and the ground (a raised floor, cargo or a
+        -- wall it touches all show here).
+        for _, box in ipairs(s.boxes) do
+            local q = overlap(env, s, box.aMin, box.aMax, box.lMin, box.lMax, U.floorClearanceM, box.height,
+                              masks.obstacles)
+            if q == nil then return "UNPARK_QUERY_UNKNOWN" end
+            if #q.hits > 0 then
+                s.startHits = hitNames(env, q.hits)
+                return "UNPARK_START_NOT_CLEAR"
+            end
+        end
+        local okAround, others, player = pcall(surroundings, env, s)
+        if not okAround then return "LOCAL_AREA_UNKNOWN" end
+        s.others, s.player = others, player
+        s.sign = 1
+        local open, why = openAt(env, s, 0)
+        if open == nil then return "UNPARK_QUERY_UNKNOWN" end
+        s.startOpen = why
+        if open then return "UNPARK_NOT_BOXED" end
+        -- Forward always; back only with nothing attached (no towed unit behind, and no
+        -- attachment geometry to reverse with).
+        s.plans.forward = planUnpark(env, s, 1)
+        s.plans.back = #units == 1 and planUnpark(env, s, -1) or { why = "UNPARK_REVERSE_NOT_ALLOWED" }
+        local f, r = s.plans.forward, s.plans.back
+        local choice
+        if f.exit and (not r.exit or f.exit <= r.exit) then choice = 1
+        elseif r.exit then choice = -1 end
+        if choice == nil then return f.why end            -- both directions are in the log
+        s.sign = choice
+        s.lead = choice > 0 and s.aMax or s.aMin
+        s.exitM = choice > 0 and f.exit or r.exit
+        if s.exitM > maxDistance then return "UNPARK_EXIT_TOO_FAR" end
+        return nil
+    end)
+    if not ok then return nil, "UNKNOWN_OBSERVATION", s end
+    if reason ~= nil then return nil, reason, s end
+    return s
+end
+
+-- The steering node's place on the line, its lateral offset and the leading end.
+local function observeUnpark(env, s)
+    local node = s.tractor:getAISteeringNode()
+    local x, _, z = world(env, node)
+    local along, lateral = inFrame(s, x, z)
+    return along, lateral, distance(x, z, s.ox, s.oz)
+end
+
+local function unparkDrive(env, s, dt)
+    local U = Hitch.UNPARK
+    local denied = unparkAuthority(s)
+    if denied ~= nil then return denied end
+    if s.tractor:getIsEntered() ~= false then return "SEATED_DURING_UNPARK" end
+    local along, lateral, moved = observeUnpark(env, s)
+    local progress = s.sign * along
+    s.lastAlong, s.lastLateral = along, lateral
+    pcall(function() s.lastSpeed = s.tractor:getLastSpeed() end)
+    -- The rig must stay the rig it planned with: the same units, none turning.
+    local units = rigUnits(s.tractor)
+    if #units ~= #s.units then return "RIG_CHANGED" end
+    for i, unit in ipairs(units) do
+        if unit ~= s.units[i] then return "RIG_CHANGED" end
+        if i > 1 and math.abs((unitTurn(env, s, unit) - unitTurn(env, s, units[1])) - (s.turns[i] - s.turns[1]))
+                > U.rigTurnDeg then
+            return "RIG_CHANGED"
+        end
+    end
+    if math.abs(lateral) > U.divergeM then return "DIVERGED" end
+    if moved > s.maxDistanceM or progress > s.maxDistanceM then return "DISTANCE_LIMIT" end
+    if s.elapsed > s.timeoutMs then return "TIMEOUT" end
+    for _, other in ipairs(s.others) do
+        local vx, _, vz = world(env, other.vehicle.rootNode)
+        if distance(vx, vz, other.wx, other.wz) > Hitch.LOCAL.movedM then return "OTHER_VEHICLE_MOVED" end
+    end
+    local others, player = surroundings(env, s)
+    s.others, s.player = others, player
+    local bad = pullConflict(s, unparkPoints(s, along), Hitch.LOCAL.vehicleStopM, Hitch.LOCAL.playerStopM)
+    if bad ~= nil then return bad end
+    if progress >= s.exitM then
+        -- At the exit: confirmed in the open from fresh queries, else nothing more.
+        local open, why = openAt(env, s, along)
+        s.exitWhy = why
+        if open == nil then return "UNKNOWN_OBSERVATION" end
+        return open and "CLEAR" or "EXIT_NOT_CONFIRMED"
+    end
+    -- Past the leading end: at least the stopping distance at this speed, never under 2 m.
+    local v = math.abs(s.lastSpeed or 0) / 3.6
+    local reach = math.max(U.minLookaheadM, v * U.reactionS + v * v / (2 * U.decelMs2) + 0.5)
+    local front = s.lead + along
+    local hit, names = clearVolume(env, s, front, front + s.sign * reach, U.lateralMarginM, reach, U.floorClearanceM,
+                                   s.height + U.topMarginM, s.masks.obstacles)
+    if hit == "UNKNOWN" then return "UNKNOWN_OBSERVATION" end
+    if hit ~= nil then s.aheadHits = names; return "OBSTACLE_AHEAD" end
+    -- Progress along the line: a collision with anything unseen stalls it.
+    if progress > s.best + Hitch.LOCAL.stallProgressM then
+        s.best, s.sinceProgress = progress, 0
+    else
+        s.sinceProgress = s.sinceProgress + dt
+        if s.sinceProgress > Hitch.LOCAL.stallMs then return "STALLED" end
+    end
+    local tractor = s.tractor
+    if not tractor:getIsMotorStarted() then
+        if not tractor:getCanMotorRun() then return "MOTOR_UNAVAILABLE" end
+        tractor:startMotor()
+    end
+    Hitch.holdActive(s)
+    tractor:raiseActive()
+    -- Steer at the line lookaheadM further on (GIANTS driveToPoint); back in the reverser
+    -- node, else the steering node, as ALIGN_REVERSE.
+    local node = s.sign > 0 and tractor:getAISteeringNode() or (tractor:getAIReverserNode() or tractor:getAISteeringNode())
+    local _, wy = env.getWorldTranslation(node)
+    local gx, gz = fromFrame(s, along + s.sign * U.lookaheadM, 0)
+    local lx, _, lz = env.worldToLocal(node, gx, wy, gz)
+    env.AIVehicleUtil.driveToPoint(tractor, dt, 1, true, s.sign > 0, lx, lz, s.maxSpeedKmh)
+    return "CONTINUE"
+end
+
+-- One update of the extraction: "CONTINUE", "CLEAR" (braked at the exit, in the open) or a
+-- failure: RESERVATION_LOST, DRIVER_TOOK_OVER, SEATED_DURING_UNPARK, AI_ACTIVE,
+-- RIG_CHANGED, DIVERGED, DISTANCE_LIMIT, TIMEOUT, OTHER_VEHICLE_MOVED, OTHER_VEHICLE_NEAR,
+-- PERSON_TOO_CLOSE, OBSTACLE_AHEAD, EXIT_NOT_CONFIRMED, STALLED, MOTOR_UNAVAILABLE,
+-- UNKNOWN_OBSERVATION. Any result other than CONTINUE is final (latched): later calls
+-- only brake, and every end restores cruise control and forceIsActive (Hitch.halt).
+function Hitch.unparkStep(env, s, dt)
+    if s.result ~= nil then
+        Hitch.halt(env, s, dt)
+        return s.result
+    end
+    s.elapsed = s.elapsed + dt
+    local ok, code = pcall(unparkDrive, env, s, dt)
+    if not ok then code = "UNKNOWN_OBSERVATION" end
+    if code ~= "CONTINUE" then
+        s.result = code
+        Hitch.halt(env, s, dt)
+    end
+    return code
+end
+
+-- One line for the log: the rig, each direction's plan, and where it stands now.
+function Hitch.describeUnpark(s)
+    if s == nil then return "-" end
+    local function f(n) return n and string.format("%.2f", n) or "?" end
+    return string.format("rig units=%s length=%s width=%s height=%s start=%s forward=%s back=%s direction=%s "
+        .. "exit=%s along=%s lateral=%s speed=%s t=%dms startHits=%s aheadHits=%s exitWhy=%s",
+        s.units and #s.units or "?", s.aMax and f(s.aMax - s.aMin), s.lMax and f(s.lMax - s.lMin), f(s.height),
+        tostring(s.startOpen or "boxed"), describePlan(s.plans and s.plans.forward),
+        describePlan(s.plans and s.plans.back), s.exitM and (s.sign > 0 and "forward" or "back") or "-",
+        f(s.exitM), f(s.lastAlong), f(s.lastLateral), f(s.lastSpeed), s.elapsed or 0, tostring(s.startHits or "-"),
+        tostring(s.aheadHits or "-"), tostring(s.exitWhy or "-"))
+end
+
 -- ------------------------------------------------------------------ ATTACH
 
 -- Attach only if GIANTS' fresh candidate is exactly the planned pair and GIANTS

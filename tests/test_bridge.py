@@ -761,7 +761,7 @@ class ServiceTests(unittest.TestCase):
         holder = {}
 
         class StopAtDeliver(Executor):
-            def execute(self, intent, cancel=None, on_state=None):
+            def execute(self, intent, cancel=None, on_state=None, job=None):
                 def entered(state):
                     on_state(state)
                     if state == "DELIVER":

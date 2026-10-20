@@ -122,8 +122,28 @@ PULL_CLEAR_REFUSALS = frozenset({"PULL_CLEAR_BLOCKED", "PULL_CLEAR_PERSON", "PUL
 # The observed joint separation after CLEAR may be this much under PULL_CLEAR_M
 # (one snapshot after the brake; the mod stops the instant it reaches it).
 PULL_CLEAR_TOLERANCE_M = 0.25
+# UNPARK (user-authorized 2026-10-20, AGENTS.md exception 4). GIANTS took the target but
+# its agent cannot start from where the vehicle stands (mod/FarmhandBridge.lua
+# BLOCKED_START_MS; live 53c77d1e809645b3-3: the Super-Liner inside the Large Shed, BLOCKED
+# from the first frame, unmoved; 2026-10-20 the X8 and Puma behind closed Farm Barn doors,
+# every aim not_reachable). The closed doors near the vehicle and its partner are opened
+# first, the way GIANTS opens one; only with no door to open does Farmhand's bounded
+# straight extraction (mod/FarmhandHitch.lua Hitch.newUnpark) take it to the nearest exit,
+# and then GIANTS gets the same target once more, which must move it. Each at most once
+# per vehicle per job (a plan's steps and the next-tractor attempts are one job).
+START_BLOCKED_CODES = frozenset({"NAVIGATE_BLOCKED_AT_START", "STAGE_BLOCKED_AT_START"})
+# UNPARK's cap (= mod/FarmhandHitch.lua Hitch.UNPARK_LIMITS.maxDistanceM; a test checks it)
+# and how much more a snapshot of the root may show.
+UNPARK_MAX_M, UNPARK_TOLERANCE_M = 20.0, 1.0
+UNPARK_MIN_M = 0.5                # an UNPARK DONE that moved less did not happen
+# UNPARK's refusals before any motion (mod/FarmhandHitch.lua Hitch.newUnpark).
+UNPARK_REFUSALS = frozenset({
+    "UNPARK_EXIT_BLOCKED", "UNPARK_TOO_TIGHT", "UNPARK_EXIT_TOO_FAR", "UNPARK_BLOCKED", "UNPARK_PERSON",
+    "UNPARK_START_NOT_CLEAR", "UNPARK_REVERSE_NOT_ALLOWED", "UNPARK_RIG_NOT_STRAIGHT", "UNPARK_GEOMETRY_UNKNOWN",
+    "UNPARK_ARTICULATED_UNSUPPORTED", "UNPARK_QUERY_UNVERIFIED", "UNPARK_QUERY_UNKNOWN", "SEATED_DURING_UNPARK",
+    "LOCAL_AREA_UNKNOWN", "NOT_STOPPED", "NOT_ROOT_VEHICLE"})
 
-CANCELLABLE_STEPS = frozenset({"RESERVE", "FIELD_WORK", "PULL_CLEAR", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
+CANCELLABLE_STEPS = frozenset({"RESERVE", "FIELD_WORK", "PULL_CLEAR", "OPEN_DOORS", "UNPARK", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
                                "DETACH", "DELIVER"})
 
 
@@ -528,13 +548,21 @@ class Executor:
         # {"type": "origin"} takes it back there (the user: "you can't just leave it
         # in the field"). Never coordinates from words.
         self._origins: dict[str, Pose] = {}
+        # What freed a vehicle GIANTS could not start ("doors", "unpark"), this job only,
+        # and the vehicles whose next GOTO is UNPARK's hand-off (it must move them).
+        self._job: str | None = None
+        self._freeing: dict[str, set[str]] = {}
+        self._handoff: set[str] = set()
+        self._enter = lambda state: None
 
-    def execute(self, intent: object, cancel=None, on_state=None) -> Result:
+    def execute(self, intent: object, cancel=None, on_state=None, job: str | None = None) -> Result:
         """``cancel``: an optional threading.Event; once set, no further physical
         step starts, the pair is stopped and released as after any failure, and
         the result is CANCELLED (or UNVERIFIED if that stop is not confirmed). A
         step already running is interrupted by the caller's own stop command.
-        ``on_state``: optional callback receiving each state as it is entered."""
+        ``on_state``: optional callback receiving each state as it is entered.
+        ``job``: the requester's job this intent is a step of (a plan's steps share
+        one); per-job budgets such as UNPARK's are kept across its steps."""
         if not VALIDATOR.is_valid(intent):
             return Result("BLOCKED", "INVALID_INTENT")
         # Detach caller-owned input, including the nested target object.
@@ -544,6 +572,8 @@ class Executor:
             if request_id in self._results:
                 old, result = self._results[request_id]
                 return result if old == command else Result("BLOCKED", "REQUEST_ID_CONFLICT")
+            if (job or request_id) != self._job:
+                self._job, self._freeing, self._handoff = job or request_id, {}, set()
             result = self._with_other_tractors(command, cancel, on_state)
             self._results[request_id] = (command, result)
             return result
@@ -808,17 +838,105 @@ class Executor:
             return None
         return {"seed": "NEEDS_SEED", "spray": "NEEDS_FERTILIZER"}[operation.material]
 
-    def _navigate(self, tractor_id, pose, owner):
+    def _position(self, vehicle_id) -> Position:
+        vehicle = next((i for i in self.world.snapshot() if i.id == vehicle_id), None)
+        if vehicle is None or not valid_position(vehicle.position):
+            raise ObservationMismatch("EQUIPMENT_MISSING")
+        return vehicle.position
+
+    def _goto_moved(self, vehicle_id, start) -> bool:
+        """Whether a GOTO GIANTS took moved the vehicle; the hand-off after UNPARK must."""
+        moved = math.dist(start, self._position(vehicle_id)) >= GOTO_MOVED_M
+        if vehicle_id in self._handoff:
+            self._handoff.discard(vehicle_id)
+            if not moved:
+                log.info("UNPARK hand-off: GIANTS still does not start %s from the exit", vehicle_id)
+                raise StepFailed("UNPARK_HANDOFF_BLOCKED")
+        return moved
+
+    def _navigate(self, tractor_id, pose, owner, partner_id=None, free=True):
         """GIANTS GOTO to ``pose``, routing around what physically stops it (see
         MAX_DETOURS): the stuck spot just ahead of the vehicle is blocked for GIANTS'
-        planner and the same GOTO asked again."""
-        for detour in range(MAX_DETOURS + 1):
+        planner and the same GOTO asked again. With ``free``, a GOTO GIANTS took that
+        could not start the vehicle from where it stands frees it once (_free_start)
+        and is asked again."""
+        detours = 0
+        while True:
+            start = self._position(tractor_id)
+            failed = None
             try:
-                return self.world.navigate(tractor_id, pose, owner)
+                self.world.navigate(tractor_id, pose, owner)
             except StepFailed as failure:
-                if failure.code != "NAVIGATE_STUCK" or detour == MAX_DETOURS:
-                    raise
-                self._block_ahead(tractor_id, detour)
+                if failure.code == "NAVIGATE_STUCK" and detours < MAX_DETOURS:
+                    self._block_ahead(tractor_id, detours)
+                    detours += 1
+                    continue
+                failed = failure
+            moved = self._goto_moved(tractor_id, start)
+            vehicle = next(i for i in self.world.snapshot() if i.id == tractor_id)
+            if not free or moved or (failed is None and self._at(vehicle, pose)):
+                if failed is not None:
+                    raise failed
+                return
+            if failed is not None and failed.code not in START_BLOCKED_CODES:
+                raise failed
+            log.info("navigate to %s: GIANTS did not start %s from %s (%s)", pose, tractor_id, start,
+                     failed.code if failed is not None else "ended unmoved")
+            if self._free_start(tractor_id, partner_id, owner) is None:
+                if failed is not None:
+                    raise failed
+                return                     # ended: the caller's observation decides, as before
+
+    def _open_doors(self, ids) -> bool:
+        """Open the closed doors and gates near each of ``ids`` the way GIANTS opens one."""
+        opened = False
+        for item in self.world.snapshot():
+            if item.id in ids and valid_position(item.position):
+                try:
+                    self.world.open_gates(item.position[0], item.position[1], GATE_RADIUS_M)
+                    log.info("opened the closed door(s) within %.0f m of %s", GATE_RADIUS_M, item.id)
+                    opened = True
+                except StepFailed as failure:
+                    if failure.code != "NO_CLOSED_GATE":
+                        raise
+        return opened
+
+    def _free_start(self, vehicle_id, partner_id, owner):
+        """GIANTS took a target but cannot start ``vehicle_id`` from where it stands. Once
+        per vehicle per job each: the closed doors near it and its partner are opened
+        ("DOORS"); else UNPARK takes it (and what is attached) to the nearest exit
+        ("UNPARKED"), verified at rest and within its cap, and its next GOTO is the
+        hand-off. None when UNPARK finds it not boxed in (GIANTS refused for another
+        reason: never compensated). UNPARK's refusals and failures raise; so does a
+        spent budget (UNPARK_ALREADY_USED)."""
+        used = self._freeing.setdefault(vehicle_id, set())
+        if "doors" not in used:
+            used.add("doors")
+            self._enter("OPEN_DOORS")
+            if self._open_doors({vehicle_id, partner_id}):
+                return "DOORS"
+        if "unpark" in used:
+            raise StepFailed("UNPARK_ALREADY_USED")
+        used.add("unpark")
+        start = self._position(vehicle_id)
+        self._enter("UNPARK")
+        try:
+            self.world.unpark(vehicle_id, owner)
+        except StepFailed as failure:
+            if failure.code == "UNPARK_NOT_BOXED":
+                log.info("UNPARK: %s stands in the open; GIANTS refused for another reason", vehicle_id)
+                return None
+            if failure.code in UNPARK_REFUSALS:
+                log.info("UNPARK refused unmoved (%s)", failure.code)
+            raise
+        vehicle = next((i for i in self.world.snapshot() if i.id == vehicle_id), None)
+        if (vehicle is None or not vehicle.stopped or not valid_position(vehicle.position)
+                or not UNPARK_MIN_M <= math.dist(start, vehicle.position) <= UNPARK_MAX_M + UNPARK_TOLERANCE_M):
+            raise ObservationMismatch("UNPARK_NOT_OBSERVED")
+        log.info("UNPARK end: %s from %s to %s (%.1f m), at rest", vehicle_id, start, vehicle.position,
+                 math.dist(start, vehicle.position))
+        self._handoff.add(vehicle_id)
+        return "UNPARKED"
 
     def _block_ahead(self, tractor_id, detour):
         """Something physical holds the vehicle while GIANTS drives: a closed gate near
@@ -843,11 +961,11 @@ class Executor:
         raise StepFailed("STUCK_ON_OBSTACLE")
 
 
-    def _move(self, tractor_id, route, owner, deliver=False):
+    def _move(self, tractor_id, route, owner, deliver=False, partner_id=None):
         """One travel step by the route's provider: AutoDrive to a marker, or GIANTS
         GOTO to a pose."""
         if isinstance(route, Pose):
-            self._navigate(tractor_id, route, owner)
+            self._navigate(tractor_id, route, owner, partner_id)
         elif deliver:
             self.world.deliver(tractor_id, route.id, owner)
         else:
@@ -915,6 +1033,7 @@ class Executor:
             states.append(state)
             if on_state is not None:
                 on_state(state)
+        self._enter = enter
 
         if command["task"] == "buy":
             return self._buy(command, enter, states)
@@ -1046,7 +1165,7 @@ class Executor:
                     raise ObservationMismatch("EQUIPMENT_MOVING")
                 physical_attempted = True
                 enter("DELIVER")
-                self._move(tractor.id, delivery, owner, deliver=True)
+                self._move(tractor.id, delivery, owner, deliver=True, partner_id=ids[1])
                 self._arrival(ids, farm_id, owner, delivery, check=movable)
             elif working:
                 # FIELD_WORK -> VERIFY: GIANTS' field-work helper drives to the field and
@@ -1153,7 +1272,7 @@ class Executor:
                 # LOCAL_MANEUVER refused unmoved for where the tractor stands
                 # (REAPPROACH_CODES).
                 physical_attempted = True
-                aim = {"next": 0, "drives": 0, "stuck": False}
+                aim = {"next": 0, "drives": 0, "stuck": False, "unmoved": 0}
                 aims = list(aims)
 
                 def more():
@@ -1164,41 +1283,53 @@ class Executor:
                     once it has driven, None when no aim is left. An aim GIANTS refuses
                     (GOTO_INVALID) or that leaves the tractor where it stood (live: at
                     once NOT_REACHABLE) costs no drive; one after the tractor got stuck
-                    that cannot move it is TRAPPED."""
-                    while more():
-                        pose = aims[aim["next"]]
-                        aim["next"] += 1
-                        before = self._hitch_state(ids, farm_id, owner, plan)[0].position
-                        enter(step)
-                        stalled = False
-                        try:
-                            if step == "TRAVEL_NEAR":
-                                self._navigate(ids[0], pose, owner)
-                            else:
-                                self.world.stage(ids[0], ids[1], pose, owner)
-                        except StepFailed as failure:
-                            if failure.code.endswith("GOTO_INVALID"):
-                                log.info("%s aim %s refused by GIANTS (%s)", step, pose, failure.code)
+                    that cannot move it is TRAPPED. When no aim GIANTS took moved it (or
+                    GIANTS' agent was blocked at its start, which no other aim changes),
+                    the tractor is freed once (_free_start: doors, else UNPARK) and the
+                    aims are tried again."""
+                    while True:
+                        while more():
+                            pose = aims[aim["next"]]
+                            aim["next"] += 1
+                            before = self._hitch_state(ids, farm_id, owner, plan)[0].position
+                            enter(step)
+                            stalled = blocked = False
+                            try:
+                                if step == "TRAVEL_NEAR":
+                                    self._navigate(ids[0], pose, owner, free=False)
+                                else:
+                                    self.world.stage(ids[0], ids[1], pose, owner)
+                            except StepFailed as failure:
+                                if failure.code.endswith("GOTO_INVALID"):
+                                    log.info("%s aim %s refused by GIANTS (%s)", step, pose, failure.code)
+                                    continue
+                                if failure.code in START_BLOCKED_CODES:
+                                    blocked = True
+                                elif failure.code not in GOTO_STALL_CODES:
+                                    raise
+                                else:
+                                    # Stopped by the game's no-progress watchdog: an ended drive
+                                    # like any other; the fresh observation decides.
+                                    stalled = True
+                            self._hitch_state(ids, farm_id, owner, plan)
+                            if not self._goto_moved(ids[0], before):
+                                log.info("%s aim %s: the tractor did not move%s", step, pose,
+                                         " (blocked at its start)" if blocked else " (stalled)" if stalled else "")
+                                aim["unmoved"] += 1
+                                if blocked:
+                                    break
+                                if aim["stuck"]:
+                                    raise StepFailed("TRAPPED")
+                                aim["stuck"] = stalled
                                 continue
-                            if failure.code not in GOTO_STALL_CODES:
-                                raise
-                            # Stopped by the game's no-progress watchdog: an ended drive
-                            # like any other; the fresh observation decides.
-                            stalled = True
-                        after = self._hitch_state(ids, farm_id, owner, plan)[0].position
-                        if math.dist(before, after) < GOTO_MOVED_M:
-                            log.info("%s aim %s: the tractor did not move%s", step, pose,
-                                     " (stalled)" if stalled else "")
-                            if aim["stuck"]:
-                                raise StepFailed("TRAPPED")
+                            aim["drives"] += 1
                             aim["stuck"] = stalled
-                            continue
-                        aim["drives"] += 1
-                        aim["stuck"] = stalled
-                        if stalled:
-                            log.info("%s to aim %s stalled after driving; observing", step, pose)
-                        return "stalled" if stalled else "ended"
-                    return None
+                            if stalled:
+                                log.info("%s to aim %s stalled after driving; observing", step, pose)
+                            return "stalled" if stalled else "ended"
+                        if aim["drives"] or not aim["unmoved"] or self._free_start(ids[0], ids[1], owner) is None:
+                            return None
+                        aim.update(next=0, unmoved=0, stuck=False)
 
                 def unreached():
                     # No aim moved the tractor: there is no way in from here.
@@ -1311,7 +1442,7 @@ class Executor:
                     status, reason = "COMPLETE", "HITCH_OBSERVED"     # hitched where the wagon stood
                 else:
                     enter("DELIVER")
-                    self._move(tractor.id, delivery, owner, deliver=True)
+                    self._move(tractor.id, delivery, owner, deliver=True, partner_id=ids[1])
                     self._arrival(ids, farm_id, owner, delivery)
             if not (hitch_only or detaching or working):
                 status, reason = "COMPLETE", "DELIVERY_OBSERVED"

@@ -854,7 +854,15 @@ class GiantsNavigationTests(unittest.TestCase):
                 world.items[tractor_id] = replace(world.items[tractor_id], capabilities=GOTO_TRACTOR)
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, status, result)
-                self.assertEqual(result.states[-3:], ("DELIVER", "STOP", "RELEASE"))
+                if fault == "false_arrival":
+                    # Ended with nothing moved, as GIANTS ends a GOTO it cannot start: doors
+                    # first, then UNPARK, which finds it in the open and moves nothing; the
+                    # arrival observation decides as before.
+                    self.assertEqual(result.states[-5:], ("DELIVER", "OPEN_DOORS", "UNPARK", "STOP", "RELEASE"))
+                    self.assertEqual(world.unparked, (tractor_id,))
+                else:
+                    self.assertEqual(result.states[-3:], ("DELIVER", "STOP", "RELEASE"))
+                    self.assertEqual(world.unparked, ())
 
     def test_explicit_marker_needs_autodrive_and_blocks_before_reservation(self):
         world = self.world()

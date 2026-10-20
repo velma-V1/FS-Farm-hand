@@ -16,6 +16,7 @@ MOCK_REVERSE_REACH_M = 10.0      # the mod's reverse cap (Hitch.LIMITS.maxDistan
 MOCK_LOCAL_RADIUS_M = 25.0       # the mod's local work radius (Hitch.LOCAL_LIMITS.workRadiusM)
 MOCK_PULL_CLEAR_M = 4.5          # the mod's pull-clear separation (Hitch.PULL.clearM)
 MOCK_PULL_MAX_M = 8.0            # and its cap (Hitch.PULL_LIMITS.maxDistanceM)
+MOCK_UNPARK_MAX_M = 20.0         # the mod's extraction cap (Hitch.UNPARK_LIMITS.maxDistanceM)
 
 
 class MockWorld:
@@ -66,6 +67,11 @@ class MockWorld:
 
     gates = ()                    # mock closed gates: positions
     opened = ()
+    # Mock-only: vehicles GIANTS' agent cannot start from (a shed), id -> {"door": a gate
+    # position whose opening frees it, "exit": metres straight ahead UNPARK takes it (and
+    # what is attached), "refuse": an UNPARK refusal code, "still": blocked after UNPARK}.
+    boxed = None
+    unparked = ()
 
     def open_gates(self, x, z, radius):
         near = [g for g in self.gates if math.dist(g, (x, z)) <= radius]
@@ -73,7 +79,37 @@ class MockWorld:
             raise StepFailed("NO_CLOSED_GATE")
         self.gates = tuple(g for g in self.gates if g not in near)
         self.opened = self.opened + tuple(near)
+        self.boxed = {i: b for i, b in (self.boxed or {}).items() if b.get("door") not in near}
         return "GATES_OPENED"
+
+    def _start_blocked(self, tractor_id, prefix):
+        # Mock-only: GIANTS accepts the target, its agent stays BLOCKED, nothing moves.
+        if tractor_id in (self.boxed or {}):
+            raise StepFailed(prefix + "BLOCKED_AT_START")
+
+    def unpark(self, tractor_id, owner):
+        # Mock-only teleport straight ahead, standing in for the bounded extraction.
+        with self._lock:
+            tractor = self._owned(tractor_id, owner)
+            box = (self.boxed or {}).get(tractor_id)
+            self.unparked = self.unparked + (tractor_id,)
+            if box is None:
+                raise StepFailed("UNPARK_NOT_BOXED")
+            if box.get("refuse"):
+                raise StepFailed(box["refuse"])
+            root = tractor.ai_root
+            ahead = box.get("exit", 8.0)
+            if ahead > MOCK_UNPARK_MAX_M:
+                raise StepFailed("UNPARK_EXIT_TOO_FAR")
+            x, z = root.to_world(0.0, ahead)
+            self._place(tractor, Pose(x, z, root.yaw))
+            wagon = self.items.get(tractor.attached_to)
+            if wagon is not None:
+                wx, wz = wagon.position
+                dx, dz = x - root.x, z - root.z
+                self.items[wagon.id] = replace(wagon, position=(wx + dx, wz + dz), stopped=True)
+            if not box.get("still"):
+                self.boxed = {i: b for i, b in self.boxed.items() if i != tractor_id}
 
     def block_area(self, x, z, size):
         self.blocked = self.blocked + ((x, z, size),)
@@ -225,6 +261,7 @@ class MockWorld:
             coupled = (tractor.attached_to, wagon.attached_to) == (wagon.id, tractor.id)
             if not coupled and (tractor.attached_to is not None or wagon.attached_to is not None):
                 raise ValueError("Invalid attachment")
+            self._start_blocked(tractor_id, "NAVIGATE_")
             self._place(tractor, pose)
             if coupled:
                 behind = pose.to_world(0.0, -MOCK_TRAILER_OFFSET_M)
@@ -233,6 +270,7 @@ class MockWorld:
     def stage(self, tractor_id, wagon_id, pose, owner):
         with self._lock:
             tractor, _ = self._unattached_pair(tractor_id, wagon_id, owner)
+            self._start_blocked(tractor_id, "STAGE_")
             self._place(tractor, pose)
 
     def maneuver(self, tractor_id, wagon_id, plan, owner):

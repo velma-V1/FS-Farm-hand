@@ -185,7 +185,7 @@ class PlanTests(unittest.TestCase):
         ran = []
 
         class Scripted:
-            def execute(self, intent, cancel=None, on_state=None):
+            def execute(self, intent, cancel=None, on_state=None, job=None):
                 ran.append((intent["task"], intent.get("operation"), intent.get("implement"), intent.get("field")))
                 if intent["task"] == "field_work" and intent["operation"] == "fertilize":
                     return Result("FAILED", "OUT_OF_FILL", ("t-1",), ("FIND", "RESERVE", "FIELD_WORK"))
@@ -231,7 +231,7 @@ class PlanTests(unittest.TestCase):
         world = Rolling(list(self.items("sowing_machine")), PLAYERS, fields=(field(7, 0.4),), farm=FARM)
 
         class Scripted:
-            def execute(self, intent, cancel=None, on_state=None):
+            def execute(self, intent, cancel=None, on_state=None, job=None):
                 seen.append((intent["task"], world.rolls))
                 if intent["task"] == "field_work":
                     world.rolls = 1
@@ -337,7 +337,7 @@ class StandingCropTests(unittest.TestCase):
                 return ()
 
         class Scripted:
-            def execute(self, intent, cancel=None, on_state=None):
+            def execute(self, intent, cancel=None, on_state=None, job=None):
                 ran.append(intent["task"])
 
         world = World(list(PlanTests().items("cultivator", "sowing_machine")), PLAYERS,
@@ -362,7 +362,7 @@ class OverCropTests(unittest.TestCase):
                 return ()
 
         class Scripted:
-            def execute(self, intent, cancel=None, on_state=None):
+            def execute(self, intent, cancel=None, on_state=None, job=None):
                 ran.append((intent["task"], intent.get("over_crop")))
                 return Result("COMPLETE", "OK", ("t-1",), ("FIND",))
 

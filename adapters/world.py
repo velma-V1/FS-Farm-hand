@@ -121,6 +121,14 @@ class World(Protocol):
         clear. Not evidence of the separation: the executor observes it."""
         ...
 
+    def unpark(self, tractor_id: str, owner: str) -> None:
+        """UNPARK: only after GIANTS' agent could not start from where the reserved vehicle
+        stands and no closed door explains it, Farmhand's bounded straight extraction
+        (mod/FarmhandHitch.lua Hitch.newUnpark) of it and whatever is attached to it to the
+        nearest exit its collision query shows clear. Refusals (UNPARK_*) move nothing. Not
+        evidence of the exit: the executor observes it and hands back to GIANTS GOTO."""
+        ...
+
     def deliver(self, tractor_id: str, destination_id: str, owner: str) -> None:
         """Recheck authority/compatibility; delegate bounded AutoDrive travel to a marker."""
         ...
