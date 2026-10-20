@@ -1061,3 +1061,27 @@ class LuaBridgeTests(unittest.TestCase):
 
 class Lua51BridgeTests(LuaBridgeTests):
     runtime = lua51
+
+
+class SaveTests(unittest.TestCase):
+    """The game's own save; complete only once GIANTS' saveSavegame ran to its end."""
+
+    def test_save_is_done_when_giants_save_function_completed(self):
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        bridge = lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        env = lua.execute("""
+            local env = { Utils = { appendedFunction = function(old, new)
+                return function(...) old(...); new(...) end end } }
+            env.saved = 0
+            env.FSBaseMission = { saveSavegame = function(self, flag) env.saved = env.saved + 1 end }
+            env.g_currentMission = { saveSavegame = function(self, flag) env.FSBaseMission.saveSavegame(self, flag) end }
+            return env
+        """)
+        spec = lua.eval("function() return { owned = function() return true end } end")()
+        start = lua.eval("function(B, env, spec) return B.start(env, setmetatable({ op = 'save' }, { __index = spec })) end")
+        code = lua.eval("function(B, env, spec) local t, c = B.start(env, setmetatable({ op = 'save' }, { __index = spec })); return c end")
+        self.assertEqual(code(bridge, env, spec), "SAVE_NOT_WATCHED")             # nothing to judge it by
+        bridge.watchSaves(env)
+        task = start(bridge, env, spec)
+        self.assertEqual(tuple(bridge.step(env, task, 16)), ("DONE", "SAVED"))
+        self.assertEqual(env.saved, 1)

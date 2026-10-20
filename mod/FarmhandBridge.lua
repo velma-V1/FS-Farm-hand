@@ -613,31 +613,33 @@ function aborts.block() end
 -- The game's own save of the running career: g_currentMission:saveSavegame(true), as
 -- the installed FS25 mod EasyDevControls saves (EasyDevControls.lua 2462-2473; GIANTS
 -- SavegameController 888 -> FSBaseMission:saveSavegame 3006 in the game's own stack).
--- DONE SAVED only once missionInfo's save date changed (FSCareerMissionInfo
--- saveToXMLFile writes it), else UNVERIFIED.
+-- DONE SAVED only once GIANTS' own FSBaseMission:saveSavegame has run to its end
+-- after the request: a function appended to it counts completed saves (the pattern
+-- Store Deliveries uses, storeDeliveries.lua 120); live, missionInfo's save date only
+-- carries the day, so it is no evidence. Else UNVERIFIED.
 Bridge.SAVE_TIMEOUT_MS = 60000
+Bridge.savesDone = 0
 
-local function saveStamp(env)
-    local ok, stamp = pcall(function()
-        local info = env.g_currentMission.missionInfo
-        return tostring(info.saveDateFormatted or info.saveDate) .. "|" .. tostring(info.playTime)
-    end)
-    return ok and stamp or nil
+function Bridge.watchSaves(env)
+    if Bridge.savesWatched then return end
+    env.FSBaseMission.saveSavegame = env.Utils.appendedFunction(env.FSBaseMission.saveSavegame,
+        function() Bridge.savesDone = Bridge.savesDone + 1 end)
+    Bridge.savesWatched = true
 end
 
 function starters.save(env, spec)
     if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
-    local before = saveStamp(env)
+    if not Bridge.savesWatched then return nil, "SAVE_NOT_WATCHED" end
+    local before = Bridge.savesDone
     local ok = pcall(function() env.g_currentMission:saveSavegame(true) end)
     if not ok then return nil, "SAVE_ERROR" end
-    log("save requested (stamp %s)", tostring(before))
+    log("save requested")
     return { before = before }
 end
 
 function steppers.save(env, task)
-    local now = saveStamp(env)
-    if now ~= nil and task.before ~= nil and now ~= task.before then
-        log("save done (stamp %s)", now)
+    if Bridge.savesDone > task.before then
+        log("save done")
         return "DONE", "SAVED"
     end
     if task.elapsed > Bridge.SAVE_TIMEOUT_MS then return "UNVERIFIED", "SAVE_NOT_OBSERVED" end
@@ -1391,6 +1393,7 @@ function Bridge:loadMap()
     if env.g_server == nil then return end
     self:open(env)
     self:installInput(env)
+    pcall(Bridge.watchSaves, env)
     pcall(function()
         env.g_messageCenter:subscribe(env.MessageType.AI_JOB_STOPPED,
             function(_, job, aiMessage) Bridge.onAIJobStopped(env, job, aiMessage) end, self)

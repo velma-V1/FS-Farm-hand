@@ -78,6 +78,17 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 | Owned fields and their state observed | status, 2026-10-19 13:48 | 6c74538 | PASS (observation) | 8 owned fields; smallest field 3, 0.54 ha (21,907 m2) at (715, 882); every field 100 % CULTIVATED, no crop (9/9 samples NONE), no spray. GIANTS helper buys seeds, fertilizer and fuel (all three missionInfo settings on); money 999,808 |
 | "cultivate a small area of the smallest field" | 1600bdcae60f4499-1 | 5117813 | FAILED (cause found) | field 3 chosen; step 1 hitch cultivator 165 by tractor 170: GOTO stalled, `agent state blocked`, 4.7 m from the player standing on the yard road (825, 344). Now reported BLOCKED_BY_PERSON. Also: cultivating an already 100 % cultivated field changes nothing measurable; such an operation is now ALREADY_DONE with nothing moved |
 
-## Navigation, procurement, supplies, jobs
+## Procurement, delivery, saving
+
+| Case | Test id | Build | Result | Observed |
+| --- | --- | --- | --- | --- |
+| "buy a large plow, the gmc truck and a gooseneck" | 3bc4afddc91d4e14-1, f7df830605a24f8a-1 | 44a12e7 / d79baca | PASS (after fixes) | catalog -> GIANTS BuyVehicleData; John Deere 980 (4 m, 60 hp of the MF 5700 S's 95), 2024 GMC Sierra Denali 3500HD, Gooseneck Trailer; each a new owned vehicle at the store and the money down by its price. Earlier runs bought a GMC truck bed (no motor) and the forestry gooseneck, and a 300 hp plow by a pickup's power: fixed (trucks drive themselves, own-name matches win, plow power from three-point tractors) |
+| GMC as a towing vehicle | status | 5629acc / edff1fc | PASS | default configuration "No Attachments" had no hitch; with the gooseneck configuration (saved by the user) its joints SEMITRAILERCAR/SEMITRAILER at z = +0.0014 m count as rear joints. Buying now chooses the hitch option (0ad6d1c) |
+| "bring the plow to the farm house" | fdfd2ed8c88e4d70-2 | edff1fc | PASS | MF 5700 S from the gate (671, -255) to the store, STAGE x3, LOCAL_MANEUVER LINED_UP, ALIGN_REVERSE, ATTACH JD 980, DELIVER to the Farm house (0.2 m), STOP, RELEASE |
+| Earlier: the closed gate on the farm-store road | 3bc4afddc91d4e14-2/-3, 4c7070bc7ff64378-2, 4d82677b45374da7-2 | 382f676-5629acc | FAILED (fixed) | GOTO stuck at (671, -255) with the agent `driving` (a closed gate GIANTS' map treats as open). Detour by GIANTS' own obstacle (block op) added; the stuck test first missed GIANTS' lower-case state name (fixed) |
+| "bring the trailer to the farm house with the gmc" | fdfd2ed8c88e4d70-1 | edff1fc | FAILED (fixed, unverified) | the store's spawn yard: every line-up curve within 8 m of another vehicle (clearance kept); a stage hung. GOTO's last aim is now the staging pose straight ahead of the drawbar |
+| "save the game" | 07:47 2026-10-20 | edff1fc | SAVED, reported UNVERIFIED (fixed) | the game logged "Game saved successfully." 0.4 s after the request; the check (save date, day only) could not see it. Now: completion of GIANTS' saveSavegame itself |
+
+## Navigation, supplies, jobs
 
 All OPEN; rows are added as each capability lands.
