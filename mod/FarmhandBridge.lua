@@ -658,11 +658,16 @@ function starters.open_gates(env, spec)
             or spec.area > Bridge.MAX_GATE_RADIUS_M then
         return nil, "INVALID_AREA"
     end
-    local opened, closest = 0, nil
+    local opened, closest, near = 0, nil, nil
     for _, o in ipairs(gateCandidates(env)) do
         pcall(function()
             local gx, _, gz = env.getWorldTranslation(o.nodeId)
             local d = math.sqrt((gx - spec.x) ^ 2 + (gz - spec.z) ^ 2)
+            if closest == nil or d < closest then
+                -- Evidence for the next decision: where it is and how open (0 closed, 1 open).
+                near = string.format("%s at (%.1f, %.1f) open %.2f", tostring(o.saveId), gx, gz,
+                    tonumber(o.animation and o.animation.time) or -1)
+            end
             closest = math.min(closest or d, d)
             if d <= spec.area and o.isEnabled ~= false and (o.animation.time or 0) < 1 then
                 o.animation.direction = 1
@@ -672,8 +677,8 @@ function starters.open_gates(env, spec)
             end
         end)
     end
-    log("open_gates near (%.1f, %.1f): %d opened; nearest gate %s m", spec.x, spec.z, opened,
-        closest and string.format("%.1f", closest) or "none")
+    log("open_gates near (%.1f, %.1f): %d opened; nearest gate %s m%s", spec.x, spec.z, opened,
+        closest and string.format("%.1f", closest) or "none", near and (": " .. near) or "")
     if opened == 0 then return nil, "NO_CLOSED_GATE" end
     return { opened = opened }
 end
