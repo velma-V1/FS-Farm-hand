@@ -250,6 +250,7 @@ class LuaProbeTests(unittest.TestCase):
 
     def test_mirrored_constants_match_the_companion(self):
         self.assertEqual(self.probe.STAGING_DISTANCE_M, hitch.STAGING_DISTANCE_M)
+        self.assertEqual(self.probe.REAR_JOINT_MAX_Z, hitch.REAR_JOINT_MAX_Z)
         self.assertEqual(self.probe.ALIGN_REACH_M, hitch.ALIGN_REACH_M)
         self.assertAlmostEqual(math.radians(self.probe.ALIGN_MAX_HEADING_DEG), hitch.ALIGN_MAX_HEADING_RAD)
         self.assertEqual(self.probe.ALIGN_MAX_LATERAL_M, hitch.ALIGN_MAX_LATERAL_M)

@@ -113,7 +113,8 @@ class PlanTests(unittest.TestCase):
         cases = {
             "type mismatch": (tractor(), wagon(joints=(InputJoint(1, "SEMITRAILER", (10.0, 20.0), True),))),
             "only front joint": (tractor(joints=(OutputJoint(1, "TRAILER", 0.0, 3.0, True),)), wagon()),
-            "joint on root axis": (tractor(joints=(OutputJoint(1, "TRAILER", 0.0, 0.0, True),)), wagon()),
+            # A joint over the rear axle (a gooseneck ball, live) is a rear joint; 0.6 m ahead is not.
+            "joint ahead of the rear axle": (tractor(joints=(OutputJoint(1, "TRAILER", 0.0, 0.6, True),)), wagon()),
             "occupied joint": (tractor(joints=(OutputJoint(1, "TRAILER", 0.0, -2.5, False),)), wagon()),
             "inactive input": (tractor(), wagon(joints=(InputJoint(1, "TRAILER", (10.0, 20.0), False),))),
             "no tractor joints": (tractor(joints=()), wagon()),
@@ -269,3 +270,20 @@ class AlignEnvelopeTests(unittest.TestCase):
         self.assertIsNone(joint_error(replace(t, ai_root=None), w, plan))
         self.assertIsNone(joint_error(t, replace(w, input_joints=()), plan))
         self.assertEqual(align_problem(None), "UNKNOWN_OBSERVATION")
+
+
+class GooseneckJointTests(unittest.TestCase):
+    def test_a_gooseneck_ball_over_the_rear_axle_is_a_rear_joint(self):
+        # Live 2026-10-20: the GMC Sierra's gooseneck joints at z = +0.0014 m.
+        from companion.hitch import plan_hitch
+        from protocol.model import Equipment, InputJoint, OutputJoint, Pose
+        truck = Equipment("g", "tractor", "farm-a", (0.0, 0.0), heading=0.0, ai_root=Pose(0.0, 0.0, 0.0),
+                          output_joints=(OutputJoint(1, "semitrailerCar", -0.0156, 0.0014, True),
+                                         OutputJoint(2, "frontloader", 0.0, 3.0, True)))
+        trailer = Equipment("t", "implement", "farm-a", (0.0, -9.0), heading=0.0, required_pto_torque=0.0,
+                            input_joints=(InputJoint(1, "semitrailerCar", (0.0, -2.0), True),))
+        plan = plan_hitch(truck, trailer)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.tractor_joint, 1)
+        front = replace(truck, output_joints=(OutputJoint(2, "semitrailerCar", 0.0, 3.0, True),))
+        self.assertIsNone(plan_hitch(front, trailer))                       # a front hitch: never

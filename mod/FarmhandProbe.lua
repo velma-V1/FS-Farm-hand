@@ -29,6 +29,7 @@ Probe.COMMANDS = {
 }
 -- Mirrors of companion constants (checked by tests/test_lua_probe.py).
 Probe.STAGING_DISTANCE_M = 6.0           -- companion/hitch.py STAGING_DISTANCE_M
+Probe.REAR_JOINT_MAX_Z = 0.5             -- companion/hitch.py REAR_JOINT_MAX_Z
 Probe.ALIGN_REACH_M = 9.0                -- companion/hitch.py ALIGN_REACH_M
 Probe.ALIGN_MAX_HEADING_DEG = 30         -- companion/hitch.py ALIGN_MAX_HEADING_RAD
 Probe.ALIGN_MAX_LATERAL_M = 2.0          -- companion/hitch.py ALIGN_MAX_LATERAL_M
@@ -78,7 +79,7 @@ function Probe.plan(tractor, wagon, stagingDistance, null)
     local best = nil
     for _, out in ipairs(tractor.output_joints) do
         for _, inp in ipairs(wagon.input_joint_poses) do
-            if out.free and inp.active and out.type == inp.type and out.z < 0
+            if out.free and inp.active and out.type == inp.type and out.z < Probe.REAR_JOINT_MAX_Z
                     and (need == 0 or ptoConnects(out.pto_names, inp.pto_names, null))
                     and (best == nil or out.index < best[1].index
                          or (out.index == best[1].index and inp.index < best[2].index)) then
