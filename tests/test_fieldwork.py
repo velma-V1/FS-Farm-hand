@@ -271,6 +271,30 @@ class ReturnToOriginTests(unittest.TestCase):
         # Unhitched where it came from, the origin is spent.
         self.assertEqual(executor.execute(self.intent("back-2")).reason, "NO_ORIGIN_KNOWN")
 
+    def test_arrival_is_judged_once_the_pair_comes_to_rest(self):
+        # Live 84f4df027cb445bc-3: at the pose, still rolling just after GOTO ended.
+        class Rolling(MockWorld):
+            rolls = 0
+
+            def navigate(self, tractor_id, pose, owner):
+                super().navigate(tractor_id, pose, owner)
+                self.rolls = 2
+
+            def snapshot(self):
+                items = super().snapshot()
+                if self.rolls:
+                    self.rolls -= 1
+                    return tuple(replace(i, stopped=False) if i.id == "t-1" else i for i in items)
+                return items
+
+        tractor, seeder = rig("sowing_machine", 500.0, at=(120.0, 80.0))
+        world = Rolling([tractor, replace(seeder, required_pto_torque=0.0)], PLAYERS,
+                        fields=(field(7, 0.4),), farm=FARM)
+        executor = Executor(world)
+        executor.execute(work("sow"))
+        result = executor.execute(self.intent("back-1"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
+
     def test_a_pair_this_companion_did_not_take_is_not_moved(self):
         world = MockWorld(rig("sowing_machine", 500.0), PLAYERS, fields=(field(7, 0.4),), farm=FARM)
         result = Executor(world).execute(self.intent("back-1"))

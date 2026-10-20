@@ -36,6 +36,7 @@ DELIVERY_STANDOFF_M = 10.0
 PLACE_STANDOFF_M = 15.0
 TRACTOR_ARRIVAL_TOLERANCE_M = 3.0
 WAGON_ARRIVAL_TOLERANCE_M = 15.0
+ARRIVAL_SETTLE_S = 10.0          # an arrival is judged at rest, waited for this long
 
 # HITCH observation checks (provisional; tune at the first FS25 test). These are
 # coarse cross-checks of each step's outcome, not GIANTS' attach rules: GIANTS'
@@ -808,7 +809,13 @@ class Executor:
                 and math.dist(point, route_position(route)) <= TRACTOR_ARRIVAL_TOLERANCE_M)
 
     def _arrival(self, ids, farm_id, owner, route, check=None):
+        # GIANTS ends GOTO while the tractor still rolls (live 84f4df027cb445bc-3:
+        # 0.4 m from the pose, moving 0.17 s after GOTO_ENDED): at rest first, bounded.
+        deadline = time.monotonic() + ARRIVAL_SETTLE_S
         tractor, wagon = self._pair(ids, farm_id, owner, attached=True, check=check)
+        while not (tractor.stopped and wagon.stopped) and time.monotonic() < deadline:
+            time.sleep(0.5)
+            tractor, wagon = self._pair(ids, farm_id, owner, attached=True, check=check)
         target = route_position(route)
         if (not tractor.stopped or not wagon.stopped or not self._at(tractor, route)
                 or math.dist(wagon.position, target) > WAGON_ARRIVAL_TOLERANCE_M):
