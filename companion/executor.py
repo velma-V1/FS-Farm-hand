@@ -96,7 +96,13 @@ MAX_APPROACH_DRIVES = 3
 # A GOTO drive to an approach the game stopped for making no progress (mod/FarmhandBridge.lua
 # NAVIGATE_STALL_MS; live 4167b7fd4e8143db-1: 1.2 km, then stuck 12 m short): the tractor is
 # stopped, and like an ended GOTO what follows is decided by the observed joints.
-GOTO_STALL_CODES = frozenset({"NAVIGATE_STALLED"})
+GOTO_STALL_CODES = frozenset({"NAVIGATE_STALLED", "NAVIGATE_STUCK"})
+# GIANTS' agent still "driving" but nothing moves: something physical its map treats as
+# open (live: a closed gate on the road to the store). That spot, just ahead of the
+# vehicle, is marked impassable for GIANTS' navigation and the same GOTO asked again,
+# at most MAX_DETOURS times per drive.
+MAX_DETOURS = 2
+DETOUR_AHEAD_M, DETOUR_SIZE_M = 6.0, 8.0
 # Joints at most this far apart already meet: GIANTS' candidate is asked without
 # any motion (look-only ALIGN_REVERSE); never a reverse from the far side.
 ATTACH_READY_M = 0.5
@@ -704,11 +710,30 @@ class Executor:
             return None
         return {"seed": "NEEDS_SEED", "spray": "NEEDS_FERTILIZER"}[operation.material]
 
+    def _navigate(self, tractor_id, pose, owner):
+        """GIANTS GOTO to ``pose``, routing around what physically stops it (see
+        MAX_DETOURS): the stuck spot just ahead of the vehicle is blocked for GIANTS'
+        planner and the same GOTO asked again."""
+        for detour in range(MAX_DETOURS + 1):
+            try:
+                return self.world.navigate(tractor_id, pose, owner)
+            except StepFailed as failure:
+                if failure.code != "NAVIGATE_STUCK" or detour == MAX_DETOURS:
+                    raise
+                vehicle = next((i for i in self.world.snapshot() if i.id == tractor_id), None)
+                if vehicle is None or vehicle.heading is None or not valid_position(vehicle.position):
+                    raise
+                x = vehicle.position[0] + DETOUR_AHEAD_M * math.sin(vehicle.heading)
+                z = vehicle.position[1] + DETOUR_AHEAD_M * math.cos(vehicle.heading)
+                log.info("GOTO stuck at %s (GIANTS still driving): blocking %.0f m around (%.1f, %.1f), detour %d",
+                         vehicle.position, DETOUR_SIZE_M, x, z, detour + 1)
+                self.world.block_area(x, z, DETOUR_SIZE_M)
+
     def _move(self, tractor_id, route, owner, deliver=False):
         """One travel step by the route's provider: AutoDrive to a marker, or GIANTS
         GOTO to a pose."""
         if isinstance(route, Pose):
-            self.world.navigate(tractor_id, route, owner)
+            self._navigate(tractor_id, route, owner)
         elif deliver:
             self.world.deliver(tractor_id, route.id, owner)
         else:
@@ -1010,7 +1035,7 @@ class Executor:
                         stalled = False
                         try:
                             if step == "TRAVEL_NEAR":
-                                self.world.navigate(ids[0], pose, owner)
+                                self._navigate(ids[0], pose, owner)
                             else:
                                 self.world.stage(ids[0], ids[1], pose, owner)
                         except StepFailed as failure:

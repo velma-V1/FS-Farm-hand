@@ -215,7 +215,13 @@ local function stepGoto(env, task, timeoutMs, timeoutCode, endCode, progress)
                 task.fromX, task.fromZ, task.fromAt = x, z, task.elapsed
             elseif task.elapsed - task.fromAt > Bridge.NAVIGATE_STALL_MS then
                 logAgent(env, v, task.op .. " stalled")
-                return "FAILED", "NAVIGATE_STALLED"
+                -- The agent still drives (it has a path) yet nothing moves: something
+                -- physical holds the vehicle (live: a closed gate GIANTS' map treats as
+                -- open road). A BLOCKED agent waits for an obstacle it knows.
+                local driving = pcall(function()
+                    assert(env.AIDrivable.STATES[v.spec_aiDrivable.lastState] == "DRIVING")
+                end)
+                return "FAILED", driving and "NAVIGATE_STUCK" or "NAVIGATE_STALLED"
             end
         end
         return nil
@@ -567,6 +573,41 @@ end
 
 aborts.fieldwork = abortGoto
 
+-- ------------------------------------------------------------------ block
+-- Mark a box of ground GIANTS' navigation must route around, the way GIANTS' own
+-- placeables mark theirs (PlaceableAI:setObstacleActive 312-324: addObstacle(node,
+-- offset, size, 0, isPassable=false)), on a free node (createTransformGroup + link to
+-- the root + setTranslation, TreePlantManager 58-60, PlayerMover 139-143); the map is
+-- refreshed with aiSystem:setAreaDirty (PlaceableFence 717-718). Only ever takes
+-- ground away from GIANTS' planner; nothing it already avoids becomes passable.
+Bridge.MAX_BLOCKS, Bridge.MAX_BLOCK_SIZE_M = 32, 20
+Bridge.blocks = {}
+
+function starters.block(env, spec)
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    if not (finite(spec.x) and finite(spec.z) and finite(spec.area)) or spec.area <= 0
+            or spec.area > Bridge.MAX_BLOCK_SIZE_M then
+        return nil, "INVALID_AREA"
+    end
+    if #Bridge.blocks >= Bridge.MAX_BLOCKS then return nil, "TOO_MANY_BLOCKS" end
+    local ok = pcall(function()
+        local y = env.getTerrainHeightAtWorldPos(env.g_currentMission.terrainRootNode, spec.x, 0, spec.z)
+        local node = env.createTransformGroup("farmhandBlockedArea")
+        env.link(env.getRootNode(), node)
+        env.setTranslation(node, spec.x, y, spec.z)
+        local size = spec.area
+        env.g_currentMission.aiSystem:addObstacle(node, 0, 2, 0, size, 4, size, 0, false)
+        env.g_currentMission.aiSystem:setAreaDirty(spec.x - size, spec.x + size, spec.z - size, spec.z + size)
+        table.insert(Bridge.blocks, node)
+    end)
+    if not ok then return nil, "BLOCK_ERROR" end
+    log("blocked %.0f m around (%.1f, %.1f) for GIANTS' navigation", spec.area, spec.x, spec.z)
+    return {}
+end
+
+function steppers.block() return "DONE", "BLOCKED_AREA" end
+function aborts.block() end
+
 -- ------------------------------------------------------------------- save
 -- The game's own save of the running career: g_currentMission:saveSavegame(true), as
 -- the installed FS25 mod EasyDevControls saves (EasyDevControls.lua 2462-2473; GIANTS
@@ -725,7 +766,7 @@ function aborts.stop() end
 -- --------------------------------------------------------------- runner
 
 Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true }
-Bridge.NO_VEHICLE = { buy = true, save = true }   -- ops that act on no vehicle
+Bridge.NO_VEHICLE = { buy = true, save = true, block = true }   -- ops that act on no vehicle
 
 function Bridge.start(env, spec)
     local starter = starters[spec.op]

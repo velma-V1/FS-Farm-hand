@@ -1760,3 +1760,40 @@ class DetachTests(unittest.TestCase):
                 self.assertEqual((result.status, result.reason), outcome, result)
                 self.assertEqual(world.items["t-1"].attached_to, "w-1")
                 self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
+
+
+class DetourTests(unittest.TestCase):
+    """Live 2026-10-20: GIANTS' GOTO drove into a closed gate its map treats as open
+    road and kept "driving" unmoved. The spot is blocked for GIANTS' planner and the
+    GOTO asked again, at most MAX_DETOURS times."""
+
+    def world(self, stuck_times):
+        tractor, wagon = simple_world().snapshot()
+        tractor = replace(tractor, capabilities=GOTO_TRACTOR, position=(600.0, 600.0),
+                          ai_root=Pose(600.0, 600.0, 0.0), heading=0.0)
+        calls = []
+
+        class Gate(MockWorld):
+            def navigate(self, tractor_id, pose, owner):
+                calls.append("navigate")
+                if calls.count("navigate") <= stuck_times:
+                    raise StepFailed("NAVIGATE_STUCK")
+                return super().navigate(tractor_id, pose, owner)
+
+        return Gate([tractor, wagon], PLAYERS, DESTINATIONS), calls
+
+    def test_a_gate_is_routed_around(self):
+        world, calls = self.world(stuck_times=1)
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "COMPLETE", result)
+        (x, z, size), = world.blocked
+        self.assertEqual((round(x, 3), round(z, 3), size), (600.0, 606.0, 8.0))      # just ahead of it
+
+    def test_detours_are_bounded(self):
+        world, calls = self.world(stuck_times=10)
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "FAILED", result)
+        self.assertIn(result.reason, ("NAVIGATE_STUCK", "TRAPPED"))
+        drives = calls.count("navigate") / 3                    # each drive: one try and two detours
+        self.assertEqual(len(world.blocked), 2 * drives)
+        self.assertLessEqual(drives, MAX_APPROACH_DRIVES)

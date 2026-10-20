@@ -48,6 +48,11 @@ class World(Protocol):
         """Return the farm's money and GIANTS' helper purchase settings, fresh."""
         ...
 
+    def block_area(self, x: float, z: float, size: float) -> str:
+        """Mark a box of ground GIANTS' navigation must route around (a gate it
+        believes open). Never makes anything passable."""
+        ...
+
     def fieldwork(self, tractor_id: str, field_id: int, pose: Pose, owner: str, area_m2: float = 0.0) -> str:
         """FIELD_WORK: GIANTS' own field-work helper (AIJobFieldWork) for the reserved
         tractor and what is hitched to it, driving to ``pose`` inside the field first;

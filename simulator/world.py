@@ -62,6 +62,11 @@ class MockWorld:
         return tuple(self.store_items)
 
     saved = 0
+    blocked = ()
+
+    def block_area(self, x, z, size):
+        self.blocked = self.blocked + ((x, z, size),)
+        return "BLOCKED_AREA"
 
     def save_game(self):
         self.saved += 1

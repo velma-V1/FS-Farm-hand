@@ -381,6 +381,39 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertTrue(any("navigate stalled: agent state BLOCKED, 171.5 m from its target" in line
                             for line in output), output)
 
+    def test_a_navigate_unmoved_while_giants_drives_is_stuck(self):
+        # Live 2026-10-20: a closed gate GIANTS' map treats as open road.
+        self.adopt()
+        self.w.gotoStarts = True
+        self.w.tractor.spec_aiDrivable = self.lua.table(lastState=2, distanceToTarget=713.0)
+        self.lua.execute("local w = ...; w.env.AIDrivable = { STATES = { [2] = 'DRIVING' } }", self.w)
+        self.send(1, "navigate", self.POSE)
+        self.beating(92000)
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "NAVIGATE_STUCK"))
+
+    def test_block_marks_ground_impassable_the_way_giants_placeables_do(self):
+        self.adopt()
+        calls = self.lua.execute("""
+            local w = ...
+            local env, calls = w.env, {}
+            env.getTerrainHeightAtWorldPos = function() return 12 end
+            env.createTransformGroup = function(name) return { name = name } end
+            env.getRootNode = function() return "root" end
+            env.link = function(parent, node) table.insert(calls, "link:" .. parent) end
+            env.setTranslation = function(node, x, y, z) table.insert(calls, string.format("at:%g,%g,%g", x, y, z)) end
+            env.g_currentMission.terrainRootNode = {}
+            env.g_currentMission.aiSystem.addObstacle = function(_, node, ox, oy, oz, sx, sy, sz, brake, passable)
+                table.insert(calls, string.format("obstacle:%g,%g,%s", sx, sz, tostring(passable)))
+            end
+            env.g_currentMission.aiSystem.setAreaDirty = function() table.insert(calls, "dirty") end
+            return calls
+        """, self.w)
+        self.send(1, "block", {"x": 670.0, "z": -260.0, "area": 8.0})
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "BLOCKED_AREA"))
+        self.assertEqual(list(calls.values()), ["link:root", "at:670,12,-260", "obstacle:8,8,false", "dirty"])
+        self.send(2, "block", {"x": 670.0, "z": -260.0, "area": 25.0})
+        self.assertEqual(self.results(2)[-1], (2, "FAILED", "INVALID_AREA"))
+
     def test_navigate_failures(self):
         cases = [("never_started", "FAILED", "GOTO_NOT_STARTED", False),
                  ("takeover", "FAILED", "DRIVER_TOOK_OVER", True),
