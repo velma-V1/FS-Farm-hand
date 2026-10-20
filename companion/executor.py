@@ -307,6 +307,13 @@ def rejections(item: Equipment, farm_id: str) -> list[str]:
     return reasons
 
 
+def _pose_of(tractor: Equipment) -> Pose:
+    """The pose GIANTS' agent steers to (the AI root), else the vehicle root."""
+    if tractor.ai_root is not None:
+        return tractor.ai_root
+    return Pose(tractor.position[0], tractor.position[1], tractor.heading or 0.0)
+
+
 def movable(tractor: Equipment, wagon: Equipment) -> bool:
     """move_pair: a tractor with its implement; towing needs no PTO power."""
     return (tractor.category == "tractor" and wagon.category in IMPLEMENT_CATEGORIES
@@ -492,6 +499,11 @@ class Executor:
         self._results: dict[str, tuple[dict, Result]] = {}
         self._kind = "forage_wagon"
         self._compatible = compatible
+        # Where each implement was taken from, by this companion: the tractor's pose
+        # when it hitched it (or found it hitched for field work). move_pair to
+        # {"type": "origin"} takes it back there (the user: "you can't just leave it
+        # in the field"). Never coordinates from words.
+        self._origins: dict[str, Pose] = {}
 
     def execute(self, intent: object, cancel=None, on_state=None) -> Result:
         """``cancel``: an optional threading.Event; once set, no further physical
@@ -603,19 +615,26 @@ class Executor:
         marker = select_destination(markers, target) if autodrive else None
         return (marker or standoff_pose(target, origin, fallback_yaw)), None
 
-    def _choose_hitched(self, items, farm_id, requester, target, markers):
-        """move_pair: the hitched tractor and forage wagon nearest the requester ("this"),
-        ties by opaque ID, and its route; decided before reservation."""
+    def _choose_hitched(self, items, farm_id, requester, target, markers, origins=None, kind=None):
+        """move_pair: the hitched tractor and implement nearest the requester ("this"),
+        ties by opaque ID, and its route; decided before reservation. With ``origins``
+        (target origin): only an implement this companion took (of ``kind``), routed
+        back to the pose it was taken from."""
         observed = {item.id: item for item in items}
         pairs = []
         for tractor in items:
             wagon = observed.get(tractor.attached_to)
+            if origins is not None and (wagon is None or wagon.id not in origins
+                                        or (kind is not None and not of_kind(wagon, kind))):
+                continue
             if (wagon is not None and wagon.attached_to == tractor.id and movable(tractor, wagon)
                     and all(usable(x, farm_id) and x.stopped for x in (tractor, wagon))):
                 pairs.append((math.dist(tractor.position, requester), tractor.id, tractor, wagon))
         if not pairs:
-            return None, None, "NO_HITCHED_PAIR"
+            return None, None, "NO_ORIGIN_KNOWN" if origins is not None else "NO_HITCHED_PAIR"
         _, _, tractor, wagon = min(pairs, key=lambda p: (p[0], p[1]))
+        if origins is not None:
+            return (tractor, wagon), origins[wagon.id], None
         route, failure = self._route(target, tractor, tractor.position, tractor.heading or 0.0, markers)
         if route is None:
             return None, None, failure
@@ -870,6 +889,7 @@ class Executor:
         try:
             # Every destination is resolved and validated before any reservation.
             requester = None
+            to_origin = isinstance(command["target"], dict) and command["target"]["type"] == "origin"
             if (command["target"] == "player_at_acceptance" or moving or detaching) and not working:
                 # move_pair and detach_pair always need the requester: "this" is the pair nearest them.
                 requester = self.world.player_position(farm_id)
@@ -889,7 +909,7 @@ class Executor:
                     # Nothing to do (live: every owned field was already 100 % CULTIVATED):
                     # said so, nothing moved.
                     return Result("COMPLETE", "ALREADY_DONE", states=tuple(states))
-            elif command["target"] == "player_at_acceptance":
+            elif command["target"] == "player_at_acceptance" or to_origin:
                 enter("FIND")
                 target = requester
             elif command["target"]["type"] == "place":
@@ -913,7 +933,9 @@ class Executor:
             items = sorted(self.world.snapshot(), key=lambda item: (not item.ridden, item.id))
             if moving:
                 pair, delivery, failure = self._choose_hitched(items, farm_id, requester, target,
-                                                               self.world.destinations())
+                                                               self.world.destinations(),
+                                                               self._origins if to_origin else None,
+                                                               command.get("implement"))
                 plan = travel = None
                 aims = ()
             elif detaching or working:
@@ -966,6 +988,7 @@ class Executor:
                 tractor, implement = self._pair(ids, farm_id, owner, attached=True)
                 if not tractor.stopped:
                     raise ObservationMismatch("EQUIPMENT_MOVING")
+                self._origins.setdefault(implement.id, _pose_of(tractor))
                 before = self._field(field.id)
                 before_done = operation.done(before.coverage) if before.coverage else None
                 material = _material(implement, operation.material)
@@ -1028,6 +1051,7 @@ class Executor:
                 if not (tractor.stopped and implement.stopped):
                     raise ObservationMismatch("EQUIPMENT_MOVING")
                 status, reason = "COMPLETE", "DETACH_OBSERVED"
+                self._origins.pop(implement.id, None)
                 # PULL_CLEAR (user-authorized 2026-10-19): GIANTS' agent cannot start
                 # next to the implement just unhitched, so Farmhand's bounded straight
                 # pull takes the tractor clear; refused unmoved, the detach still stands.
@@ -1215,6 +1239,7 @@ class Executor:
                 used = next((j for j in tractor.output_joints if j.index == plan.tractor_joint), None)
                 if used is None or used.free:
                     raise ObservationMismatch("ATTACHMENT_MISMATCH")
+                self._origins[wagon.id] = _pose_of(tractor)
                 if hitch_only:
                     status, reason = "COMPLETE", "HITCH_OBSERVED"     # hitched where the wagon stood
                 else:

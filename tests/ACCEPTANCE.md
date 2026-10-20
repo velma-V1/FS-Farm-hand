@@ -370,6 +370,12 @@ Executable mapping (`python scripts/check.py`):
   (`HostRunnerSingleInstanceTests`, `ClientAnswerIdentityTests`). `stop-fs25` takes no
   argument, ends only FarmingSimulator2025Game.exe (asked, then forced), and never
   under a running job or test.
+- `tests/test_fieldwork.py`: field work on an owned field, complete only on the
+  field's measured state. Each operation's plan is hitch → work → back to where the
+  implement was taken (`move_pair` to `origin`: the tractor's pose when this
+  companion hitched it or found it hitched; no coordinates) → unhitch there, each
+  step only once the farm's tractors are at rest (`PlanTests`,
+  `ReturnToOriginTests`); a pair this companion did not take is never moved there.
 
 Synthetic movement sets coordinates and coupling sets relations. The simulator
 has no physics, terrain, route graph, collision, trigger, animation, network or

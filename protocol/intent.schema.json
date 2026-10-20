@@ -128,6 +128,13 @@
               }
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "description": "move_pair only: back to where this companion took the implement from (the tractor's pose when it hitched it, or found it hitched for field work). No coordinates.",
+          "properties": {"type": {"const": "origin"}}
         }
       ]
     },
@@ -158,7 +165,7 @@
       "enum": ["plow", "cultivate", "sow", "fertilize"]
     },
     "implement": {
-      "description": "The implement to hitch or unhitch (a GIANTS specialization kind; default forage_wagon to hitch, any to unhitch). Only for deliver_tractor_and_forage_wagon, hitch_pair, detach_pair.",
+      "description": "The implement to hitch or unhitch (a GIANTS specialization kind; default forage_wagon to hitch, any to unhitch). Only for deliver_tractor_and_forage_wagon, hitch_pair, detach_pair, field_work, move_pair (to origin).",
       "enum": [
         "forage_wagon",
         "plow",
@@ -197,7 +204,8 @@
                 "field_work"
               ]
             }
-          }
+          },
+          "target": {"not": {"type": "object", "required": ["type"], "properties": {"type": {"const": "origin"}}}}
         }
       },
       "then": {
@@ -207,6 +215,10 @@
           ]
         }
       }
+    },
+    {
+      "if": {"properties": {"task": {"not": {"const": "move_pair"}}}},
+      "then": {"properties": {"target": {"not": {"type": "object", "required": ["type"], "properties": {"type": {"const": "origin"}}}}}}
     },
     {
       "if": {"properties": {"task": {"const": "buy"}}},

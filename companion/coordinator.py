@@ -103,6 +103,8 @@ def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: st
         steps.append({"task": "hitch_pair", "implement": kind})
     steps.append({"task": "field_work", "field": field, "operation": work_op, "implement": kind,
                   **({"area_m2": area_m2} if area_m2 else {})})
+    # Back where it was taken from, then unhitched there: never left in the field.
+    steps.append({"task": "move_pair", "implement": kind, "target": {"type": "origin"}})
     steps.append({"task": "detach_pair", "implement": kind})
     return steps, note
 

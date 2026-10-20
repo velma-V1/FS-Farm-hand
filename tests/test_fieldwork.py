@@ -1,6 +1,7 @@
 """field_work: GIANTS' field-work helper on an owned field, complete only on the
 field's measured state (companion/field.py, companion/executor.py)."""
 from dataclasses import replace
+import math
 import unittest
 
 from adapters.world import StepFailed
@@ -159,6 +160,7 @@ class PlanTests(unittest.TestCase):
         steps, note = field_steps(items, "sow", 7, "farm-a")
         self.assertEqual(steps, [{"task": "hitch_pair", "implement": "sowing_machine"},
                                  {"task": "field_work", "field": 7, "operation": "sow", "implement": "sowing_machine"},
+                                 {"task": "move_pair", "implement": "sowing_machine", "target": {"type": "origin"}},
                                  {"task": "detach_pair", "implement": "sowing_machine"}])
         hitched = self.items("cultivator", "sowing_machine", hitched=1)
         self.assertEqual(field_steps(hitched, "sow", 7, "farm-a")[0][0]["task"], "field_work")   # already on
@@ -197,9 +199,9 @@ class PlanTests(unittest.TestCase):
         c.wait(10)
         self.assertEqual(ran, [
             ("hitch_pair", None, "cultivator", None), ("field_work", "cultivate", "cultivator", 7),
-            ("detach_pair", None, "cultivator", None),
+            ("move_pair", None, "cultivator", None), ("detach_pair", None, "cultivator", None),
             ("hitch_pair", None, "sowing_machine", None), ("field_work", "sow", "sowing_machine", 7),
-            ("detach_pair", None, "sowing_machine", None),
+            ("move_pair", None, "sowing_machine", None), ("detach_pair", None, "sowing_machine", None),
             ("hitch_pair", None, "sprayer", None), ("field_work", "fertilize", "sprayer", 7)])
         self.assertEqual((c.last.state, c.last.reason), ("FAILED", "OUT_OF_FILL"))
         self.assertEqual(notices[0], "ACCEPTED_FIELD_WORK")
@@ -238,8 +240,48 @@ class PlanTests(unittest.TestCase):
         c = coordination.Coordinator(world, Scripted(), lambda n, s=False: None, lambda: "farm-a", lambda: "s1")
         c.submit({"version": 1, "command": "field_work", "field": "smallest", "operations": ["sow"]})
         c.wait(20)
-        self.assertEqual(seen, [("hitch_pair", 0), ("field_work", 0), ("detach_pair", 0)])
+        self.assertEqual(seen, [("hitch_pair", 0), ("field_work", 0), ("move_pair", 0), ("detach_pair", 0)])
         self.assertEqual(c.last.state, "COMPLETE")
+
+
+class ReturnToOriginTests(unittest.TestCase):
+    """The user: "you have to take the plow back to where you got it, you can't just
+    leave it in the field". move_pair to origin goes back to the tractor's pose when
+    this companion took the implement; no coordinates come from words."""
+
+    def intent(self, request_id, **extra):
+        return {"version": 1, "request_id": request_id, "farm_id": "farm-a", "task": "move_pair",
+                "implement": "sowing_machine", "target": {"type": "origin"}, **extra}
+
+    def test_the_pair_goes_back_to_where_it_was_taken_then_unhitches_there(self):
+        tractor, seeder = rig("sowing_machine", 500.0, at=(120.0, 80.0))
+        world = MockWorld([tractor, replace(seeder, required_pto_torque=0.0)], PLAYERS,
+                          fields=(field(7, 0.4),), farm=FARM)
+        executor = Executor(world)
+        self.assertEqual(executor.execute(work("sow")).status, "COMPLETE")
+        tractor = next(i for i in world.snapshot() if i.id == "t-1")
+        self.assertGreater(math.dist(tractor.position, (120.0, 80.0)), 50)       # out on the field
+        result = executor.execute(self.intent("back-1"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
+        tractor = next(i for i in world.snapshot() if i.id == "t-1")
+        self.assertLess(math.dist(tractor.position, (120.0, 80.0)), 1.0)
+        detach = {"version": 1, "request_id": "off-1", "farm_id": "farm-a", "task": "detach_pair",
+                  "target": "player_at_acceptance", "implement": "sowing_machine"}
+        self.assertEqual(executor.execute(detach).status, "COMPLETE")
+        # Unhitched where it came from, the origin is spent.
+        self.assertEqual(executor.execute(self.intent("back-2")).reason, "NO_ORIGIN_KNOWN")
+
+    def test_a_pair_this_companion_did_not_take_is_not_moved(self):
+        world = MockWorld(rig("sowing_machine", 500.0), PLAYERS, fields=(field(7, 0.4),), farm=FARM)
+        result = Executor(world).execute(self.intent("back-1"))
+        self.assertEqual((result.status, result.reason, result.states), ("BLOCKED", "NO_ORIGIN_KNOWN", ("FIND",)))
+
+    def test_origin_is_only_a_move_pair_target(self):
+        world = MockWorld(rig("sowing_machine", 500.0), PLAYERS, fields=(field(7, 0.4),), farm=FARM)
+        result = Executor(world).execute({"version": 1, "request_id": "x-1", "farm_id": "farm-a",
+                                          "task": "hitch_pair", "target": {"type": "origin"}})
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertEqual(result.states, ())
 
 
 class TestAreaTests(unittest.TestCase):
