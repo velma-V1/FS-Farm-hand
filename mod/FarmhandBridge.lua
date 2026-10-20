@@ -545,7 +545,13 @@ function steppers.fieldwork(env, task, dt)
         if task.fromX == nil or math.sqrt((x - task.fromX) ^ 2 + (z - task.fromZ) ^ 2) >= Bridge.NAVIGATE_PROGRESS_M then
             task.fromX, task.fromZ, task.fromAt = x, z, task.elapsed
         elseif task.elapsed - task.fromAt > Bridge.FIELDWORK_STALL_MS then
-            return "FAILED", "FIELDWORK_STALLED"
+            logAgent(env, v, "fieldwork stalled")
+            -- Still driving to the field yet unmoved (live: stopped 64 m from field 3,
+            -- likely a gate GIANTS' map treats as open), as NAVIGATE_STUCK.
+            local driving = pcall(function()
+                assert(tostring(env.AIDrivable.STATES[v.spec_aiDrivable.lastState]):upper() == "DRIVING")
+            end)
+            return "FAILED", driving and "FIELDWORK_STUCK" or "FIELDWORK_STALLED"
         end
         -- A bounded test area: once that much of the field changed, GIANTS' own stop.
         if task.spec.area ~= nil and not task.areaReached then

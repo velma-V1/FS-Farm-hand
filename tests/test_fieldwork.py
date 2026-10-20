@@ -257,3 +257,21 @@ class AlreadyDoneTests(unittest.TestCase):
         # Not done: sowing that same field still has work.
         from companion.executor import already_done
         self.assertFalse(already_done(OPERATIONS["sow"], field(3, 0.54, cultivated), 400))
+
+
+class FieldDetourTests(unittest.TestCase):
+    def test_field_work_stuck_on_the_way_is_routed_around(self):
+        # Live 82cf8000835e474c-2: GIANTS' helper stopped 64 m from field 3 (a gate).
+        class Gate(MockWorld):
+            tries = 0
+
+            def fieldwork(self, *args):
+                Gate.tries += 1
+                if Gate.tries == 1:
+                    raise StepFailed("FIELDWORK_STUCK")
+                return super().fieldwork(*args)
+
+        world = Gate(rig("cultivator"), PLAYERS, fields=(field(7, 0.4),), farm=FARM)
+        result = Executor(world).execute(work("cultivate", area_m2=400))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "AREA_WORK_OBSERVED"), result)
+        self.assertEqual(len(world.blocked), 1)

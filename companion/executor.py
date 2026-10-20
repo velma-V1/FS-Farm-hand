@@ -741,14 +741,18 @@ class Executor:
             except StepFailed as failure:
                 if failure.code != "NAVIGATE_STUCK" or detour == MAX_DETOURS:
                     raise
-                vehicle = next((i for i in self.world.snapshot() if i.id == tractor_id), None)
-                if vehicle is None or vehicle.heading is None or not valid_position(vehicle.position):
-                    raise
-                x = vehicle.position[0] + DETOUR_AHEAD_M * math.sin(vehicle.heading)
-                z = vehicle.position[1] + DETOUR_AHEAD_M * math.cos(vehicle.heading)
-                log.info("GOTO stuck at %s (GIANTS still driving): blocking %.0f m around (%.1f, %.1f), detour %d",
-                         vehicle.position, DETOUR_SIZE_M, x, z, detour + 1)
-                self.world.block_area(x, z, DETOUR_SIZE_M)
+                self._block_ahead(tractor_id, detour)
+
+    def _block_ahead(self, tractor_id, detour):
+        """Mark the ground just ahead of the stuck vehicle impassable for GIANTS."""
+        vehicle = next((i for i in self.world.snapshot() if i.id == tractor_id), None)
+        if vehicle is None or vehicle.heading is None or not valid_position(vehicle.position):
+            raise StepFailed("NAVIGATE_STUCK")
+        x = vehicle.position[0] + DETOUR_AHEAD_M * math.sin(vehicle.heading)
+        z = vehicle.position[1] + DETOUR_AHEAD_M * math.cos(vehicle.heading)
+        log.info("stuck at %s (GIANTS still driving): blocking %.0f m around (%.1f, %.1f), detour %d",
+                 vehicle.position, DETOUR_SIZE_M, x, z, detour + 1)
+        self.world.block_area(x, z, DETOUR_SIZE_M)
 
     def _move(self, tractor_id, route, owner, deliver=False):
         """One travel step by the route's provider: AutoDrive to a marker, or GIANTS
@@ -957,8 +961,16 @@ class Executor:
                 enter("FIELD_WORK")
                 yaw = math.atan2(field.center[0] - tractor.position[0], field.center[1] - tractor.position[1])
                 area = command.get("area_m2")
-                ended = self.world.fieldwork(tractor.id, field.id, Pose(field.center[0], field.center[1], yaw), owner,
-                                             area or 0.0)
+                for detour in range(MAX_DETOURS + 1):
+                    try:
+                        ended = self.world.fieldwork(tractor.id, field.id, Pose(field.center[0], field.center[1], yaw),
+                                                     owner, area or 0.0)
+                        break
+                    except StepFailed as failure:
+                        # Stuck on the way while GIANTS still drives: as _navigate.
+                        if failure.code != "FIELDWORK_STUCK" or detour == MAX_DETOURS:
+                            raise
+                        self._block_ahead(tractor.id, detour)
                 enter("VERIFY")
                 tractor, implement = self._pair(ids, farm_id, owner, attached=True)
                 after = self._field(field.id)
