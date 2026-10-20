@@ -284,4 +284,3 @@ class ModelNumberTests(unittest.TestCase):
         for words in ("bring the plow to the farm house", "bring the big plow to the farm house"):
             self.assertNotIn("implement_name", rules.interpret(words))
         self.assertEqual(rules.interpret("unhitch the 980 plow")["command"], "detach_pair")
-
