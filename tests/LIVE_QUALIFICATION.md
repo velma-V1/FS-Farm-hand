@@ -111,6 +111,7 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 | --- | --- | --- | --- |
 | Save observed | status | PASS | map FS25_fourFields; owned field 1, 66 ha, 100 % HARVEST_READY wheat; tractors 7R 109, X8 91, Puma 92, Series 200 98; PROLANDER 108, OMEGA 99 (seeder), ZA-TS 96; no plow. A standing crop now blocks soil work unless "... anyway" (022f68c) |
 | "plow, seed and fertilize a small area of field 1" | a2a1b79036614eba-1 | FAILED OUTSIDE_LOCAL_AREA (cause found) | no plow: cultivator 108 by 7R 109 (side by side by the Open Hall). The plan's joint 2 (load-time AI offset 3.4 m behind) was 25 m from the tractor in the game (Lua tractorJoint (951.8, 835.6)): LOCAL refused unmoved; every GOTO staging aim `not_reachable` (5-21 m). A joint whose node left its load-time offset by > 1 m is no longer reported |
+| Same, with the joint diagnostic | 8e3c1d0bf6fd4395-1, 3169e56fe60240af-1 (70d9ef9, 4e9ca0b) | FAILED OUTSIDE_LOCAL_AREA (cause proven) | the 7R's joints #2-#4 read (951.9, 835.6) / (952.0, 832.3) in world, 24 m from the tractor, while worldToLocal from the AI root still gave their load-time offsets (#2 local (0, -1.43)); joints #1, #5-#9 agree both ways (#5, the rear three-point, at (943.88, 814.80)). The first drift check compared in the local frame and passed; it now compares world points (what the plan and the maneuver use) |
 
 ## Navigation, supplies, jobs
 

@@ -272,17 +272,21 @@ function Observe.hitchGeometry(env, v, ptoNames)
                 assert(v:getAttacherJointByJointDescIndex(i) == joint)
             end
             local name, offset = byValue[joint.jointType], offsets[i]
-            -- The joint's node now must still be where GIANTS' load-time offset says (live
-            -- FourFields 7R joint 2: offset 3.4 m behind, node 25 m away): else unusable.
+            -- The joint's world point must be where its load-time offset puts it from the
+            -- AI root's world point and heading (what the companion's plan and the
+            -- maneuver both use). Live FourFields 7R (4e9ca0b): joints 2-4 read 24 m away
+            -- in world while worldToLocal still gave their offsets: compared in world.
             local drifted = false
             if offset ~= nil and joint.jointTransform ~= nil then
-                local ok, lx, lz = pcall(function()
-                    local wx, wy, wz = env.getWorldTranslation(joint.jointTransform)
-                    local x, _, z = env.worldToLocal(v:getAIRootNode(), wx, wy, wz)
-                    return x, z
+                local ok, gap = pcall(function()
+                    local root = v:getAIRootNode()
+                    local rx, _, rz = env.getWorldTranslation(root)
+                    local fx, _, fz = env.localDirectionToWorld(root, 0, 0, 1)
+                    local px, pz = rx + offset.x * fz + offset.z * fx, rz - offset.x * fx + offset.z * fz
+                    local wx, _, wz = env.getWorldTranslation(joint.jointTransform)
+                    return math.sqrt((wx - px) ^ 2 + (wz - pz) ^ 2)
                 end)
-                drifted = not (ok and finite(lx) and finite(lz) and finite(offset.x) and finite(offset.z)
-                    and math.sqrt((lx - offset.x) ^ 2 + (lz - offset.z) ^ 2) <= Observe.JOINT_DRIFT_M)
+                drifted = not (ok and finite(gap) and gap <= Observe.JOINT_DRIFT_M)
             end
             if name ~= nil and offset ~= nil and not drifted and finite(offset.x) and finite(offset.z)
                     and math.abs(offset.x) <= 50 and math.abs(offset.z) <= 50 then

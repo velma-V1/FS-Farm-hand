@@ -587,7 +587,7 @@ class LuaContractTests(unittest.TestCase):
         self.assertEqual(len([f for f in self.snapshot(world)["fields"] if f["coverage"] is not None]), 2)
 
     def test_a_joint_whose_node_left_its_load_time_offset_is_not_reported(self):
-        # Live FourFields 7R joint 2: offset 3.4 m behind the AI root, node 25 m away;
+        # Live FourFields 7R joint 2: 24 m from where its offset puts it, in world;
         # the plan used the offset and the maneuver refused (OUTSIDE_LOCAL_AREA).
         world = self.stubs.single(self.lua.eval(
             '{ id = 21, file = "STUB_TRACTORS", joints = { "IMPLEMENT", "IMPLEMENT", "TRAILER" }, aiDrivable = true }'))
@@ -595,9 +595,10 @@ class LuaContractTests(unittest.TestCase):
             local world = ...
             local joints = world.byId[21]:getAttacherJoints()
             joints[1].jointTransform = { x = 0.2, y = 0.5, z = -2.4 }    -- where its offset says
-            joints[2].jointTransform = { x = 8, y = 0.5, z = 24 }        -- far from it
+            joints[2].jointTransform = { x = 8, y = 0.5, z = 24 }        -- far from it in world
             -- joints[3]: no node to compare (stub), reported from its offset
-            world.env.worldToLocal = function(n, x, y, z) return x - n.x, y, z - n.z end
+            -- Live: worldToLocal still gave joint 2 its offset; the world point decides.
+            world.env.worldToLocal = function() return 0, 0.5, -2.5 end
         """, world)
         record = self.snapshot(world)["vehicles"][0]
         self.assertEqual([j["index"] for j in record["output_joints"]], [1, 3])
