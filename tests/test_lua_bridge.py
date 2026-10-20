@@ -589,7 +589,7 @@ class LuaBridgeTests(unittest.TestCase):
                  "STATUS_WORKING_ALIGN_REVERSE": ("Farmhand: working - reversing to the implement", False),
                  "STATUS_LAST_CANCELLED": ("Farmhand: idle; last job stopped", False),
                  "COMPLETE_MOVE": ("Farmhand: arrived", False),
-                 "FAILED_NAVIGATE_STALLED": ("Farmhand: not delivered - the tractor got stuck", True)}
+                 "FAILED_NAVIGATE_STALLED": ("Farmhand: not delivered - the tractor got stuck (parked in a shed or boxed in?)", True)}
         for notice, expected in cases.items():
             with self.subTest(notice=notice):
                 self.assertEqual(tuple(self.bridge.noticeText(notice)), expected)
