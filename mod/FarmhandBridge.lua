@@ -289,7 +289,10 @@ function starters.maneuver(env, spec)
         tractor = spec.tractor, wagon = spec.wagon, tractorJoint = spec.tractorJoint,
         wagonJoint = spec.wagonJoint, farmId = spec.farmId, isReserved = spec.owned,
     })
-    if session == nil then return nil, reason end
+    if session == nil then
+        log("maneuver refused %s: joints %s", tostring(reason), Bridge.Hitch.describeJoints(env, spec.tractor))
+        return nil, reason
+    end
     Bridge.lastManeuver = session
     return { session = session }
 end

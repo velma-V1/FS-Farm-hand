@@ -202,3 +202,33 @@ class Lua51PullClearTests(LuaPullClearTests):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DescribeJointsTests(unittest.TestCase):
+    """Live FourFields 7R: the plan's joint 2 and the maneuver's read 25 m apart; the
+    refusal now logs every joint as the game has it (read-only diagnostics)."""
+
+    def test_every_joint_with_world_local_and_offset(self):
+        for runtime in (lua51, lua54):
+            with self.subTest(runtime=runtime.__name__):
+                lua = runtime.LuaRuntime(unpack_returned_tuples=True)
+                hitch = lua.execute((ROOT / "mod/FarmhandHitch.lua").read_text())
+                text = lua.execute("""
+                    local hitch = ...
+                    local root = { x = 10, y = 0, z = 20 }
+                    local env = {
+                        getWorldTranslation = function(n) return n.x, n.y, n.z end,
+                        worldToLocal = function(n, x, y, z) return x - n.x, y, z - n.z end,
+                    }
+                    local tractor = { spec_aiDrivable = { attacherJointOffsets = { { x = 0, z = -2 } } } }
+                    function tractor:getAIRootNode() return root end
+                    function tractor:getAttacherJoints()
+                        return { { jointType = 3, jointIndex = 0, jointTransform = { x = 10, y = 0, z = 18 } },
+                                 { jointType = 3, jointIndex = 0, jointTransform = { x = 18, y = 0, z = 42 } } }
+                    end
+                    return hitch.describeJoints(env, tractor)
+                """, hitch)
+                self.assertIn("aiRoot=(10.00, 20.00)", text)
+                self.assertIn("#1 type=3 used=0 world=(10.00, 18.00) local=(0.00, -2.00) offset=(0.00, -2.00)", text)
+                self.assertIn("#2 type=3 used=0 world=(18.00, 42.00) local=(8.00, 22.00)", text)
+                self.assertEqual(hitch.describeJoints(lua.eval("{}"), lua.eval("{}")), "unreadable")

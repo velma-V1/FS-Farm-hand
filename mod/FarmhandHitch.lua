@@ -762,6 +762,32 @@ end
 
 -- One diagnostics line (kept on the session, printed by the bridge): the joints,
 -- gap, errors in the wagon frame, the command and why.
+-- Read-only: every output joint of `tractor` as the game has it now: type index,
+-- jointIndex, the jointTransform's world point and its point in the AI root frame,
+-- and GIANTS' load-time AI offset (AIDrivable attacherJointOffsets). Diagnostics only.
+function Hitch.describeJoints(env, tractor)
+    local parts = {}
+    local ok = pcall(function()
+        local root = tractor:getAIRootNode()
+        local rx, _, rz = world(env, root)
+        parts[1] = string.format("aiRoot=(%.2f, %.2f)", rx, rz)
+        local offsets = tractor.spec_aiDrivable and tractor.spec_aiDrivable.attacherJointOffsets or {}
+        for i, joint in ipairs(tractor:getAttacherJoints()) do
+            local text = string.format("#%d type=%s used=%s", i, tostring(joint.jointType), tostring(joint.jointIndex))
+            pcall(function()
+                local wx, wy, wz = env.getWorldTranslation(joint.jointTransform)
+                local lx, _, lz = env.worldToLocal(root, wx, wy, wz)
+                text = text .. string.format(" world=(%.2f, %.2f) local=(%.2f, %.2f)", wx, wz, lx, lz)
+            end)
+            local o = offsets[i]
+            if o ~= nil then text = text .. string.format(" offset=(%.2f, %.2f)", o.x or 0 / 0, o.z or 0 / 0) end
+            parts[#parts + 1] = text
+        end
+    end)
+    if not ok then parts[#parts + 1] = "unreadable" end
+    return table.concat(parts, "; ")
+end
+
 function Hitch.note(s, reason, curvature, speed)
     local o = s.last
     if o == nil then return end
