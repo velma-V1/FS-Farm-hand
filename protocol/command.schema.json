@@ -117,7 +117,8 @@
         "properties": {
           "kind": {"enum": ["plow", "truck", "trailer"]},
           "size": {"enum": ["large"]},
-          "name": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[A-Za-z0-9 -]+$"}
+          "name": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[A-Za-z0-9 -]+$"},
+        "hitch": {"enum": ["gooseneck", "drop hitch", "fifth wheel"]}
         }
       }
     },

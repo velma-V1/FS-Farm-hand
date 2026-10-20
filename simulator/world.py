@@ -72,7 +72,7 @@ class MockWorld:
         self.saved += 1
         return "SAVED"
 
-    def buy(self, item_id):
+    def buy(self, item_id, hitch=0):
         # Mock-only: spawns a copy of mock_bought named as the item, and charges it.
         with self._lock:
             item = next((i for i in self.store_items if i.id == item_id), None)

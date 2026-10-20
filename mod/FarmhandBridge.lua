@@ -682,6 +682,12 @@ function starters.buy(env, spec)
         end
         local configs = {}
         for name, id in pairs(item.defaultConfigurationIds or {}) do configs[name] = id end
+        -- The buyer's hitch option (attacherJoint configuration, 1-based); 0 keeps the default.
+        if finite(spec.hitch) and spec.hitch > 0 then
+            local options = item.configurations and item.configurations.attacherJoint
+            if type(options) ~= "table" or options[spec.hitch] == nil then return nil, "UNKNOWN_CONFIGURATION" end
+            configs.attacherJoint = spec.hitch
+        end
         local price = env.g_currentMission.economyManager:getBuyPrice(item, configs, nil)
         local before = balance(env, spec.farmId)
         if not finite(price) or price <= 0 then return nil, "PRICE_UNKNOWN" end
@@ -907,7 +913,7 @@ function Bridge:checkSession()
 end
 
 local ATTRS = { tractor = "tractor", wagon = "wagon", marker = "marker", x = "x", z = "z", yaw = "yaw",
-                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", item = "item" }
+                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", item = "item", hitch = "hitch" }
 
 function Bridge:pollCommand()
     local env, path = self.env, self.dir .. Bridge.COMMAND_FILE

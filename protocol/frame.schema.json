@@ -165,6 +165,7 @@
         "categories": {"type": "array", "maxItems": 4, "items": {"$ref": "#/$defs/token"}},
         "price": {"type": "number", "minimum": 0, "maximum": 1000000000},
         "mod": {"type": "boolean"},
+        "hitches": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 128}},
         "width": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 1000}, {"type": "null"}]},
         "needed_power": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 100000}, {"type": "null"}]},
         "power": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 100000}, {"type": "null"}]}

@@ -83,13 +83,13 @@ class PurchaseTests(unittest.TestCase):
 
     def test_an_unseen_purchase_or_payment_is_never_complete(self):
         class Vanishing(MockWorld):
-            def buy(self, item_id):
+            def buy(self, item_id, hitch=0):
                 return "BOUGHT"                                  # said bought, nothing appeared
 
         class Free(MockWorld):
-            def buy(self, item_id):
+            def buy(self, item_id, hitch=0):
                 money = self.farm_info.money
-                super().buy(item_id)
+                super().buy(item_id, hitch)
                 self.farm_info = replace(self.farm_info, money=money)   # not charged
 
         for cls, reason in ((Vanishing, "PURCHASE_NOT_OBSERVED"), (Free, "PAYMENT_NOT_OBSERVED")):
@@ -133,3 +133,41 @@ class NamedPairTests(unittest.TestCase):
         self.assertFalse(named(gmc, "series 9"))
         self.assertTrue(named(gmc, None))
         self.assertFalse(named(replace(gmc, name=None), "gmc"))
+
+
+class HitchOptionTests(unittest.TestCase):
+    """Live 2026-10-20: the GMC Sierra defaults to "No Attachments"; pulling a gooseneck
+    needs its "Gooseneck" attacherJoint configuration."""
+
+    GMC = item(4, "2024 GMC Sierra Denali 2500 - 3500HD", ["CARS"], 90000, brand="GMC", power=401)
+    GMC = StoreItem(**{**GMC.__dict__, "hitches": ("No Attachments", "Gooseneck", "Plow Mount", "Drop Hitch",
+                                                   "Plow - Drop Hitch", "Plow - Gooseneck",
+                                                   "Gooseneck - Drop Hitch", "All")})
+
+    def test_the_gooseneck_option_that_keeps_a_plain_hitch(self):
+        from companion.executor import choose_hitch
+        self.assertEqual(choose_hitch(self.GMC, {"kind": "truck", "name": "gmc", "hitch": "gooseneck"}), 7)
+        self.assertEqual(choose_hitch(self.GMC, {"kind": "truck", "name": "gmc"}), 0)          # default
+        self.assertEqual(choose_hitch(replace(self.GMC, hitches=()), {"kind": "truck", "hitch": "gooseneck"}), 0)
+
+    def test_a_truck_bought_with_a_gooseneck_gets_the_gooseneck_hitch(self):
+        from companion import coordinator as coordination
+        from protocol.model import Result
+        sent = []
+
+        class Scripted:
+            def execute(self, intent, cancel=None, on_state=None):
+                sent.append(intent["want"])
+                return Result("COMPLETE", "BOUGHT", (f"n{len(sent)}",), ("FIND",))
+
+        class World(MockWorld):
+            cancel = None
+
+            def retained(self):
+                return ()
+
+        c = coordination.Coordinator(World([], {}), Scripted(), lambda *a: None, lambda: "farm-a", lambda: "s")
+        c.submit({"version": 1, "command": "buy", "wants": [
+            {"kind": "truck", "name": "gmc"}, {"kind": "trailer", "name": "gooseneck"}]})
+        c.wait(5)
+        self.assertEqual(sent[0], {"kind": "truck", "name": "gmc", "hitch": "gooseneck"})

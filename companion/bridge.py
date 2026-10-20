@@ -149,7 +149,8 @@ class CommandLink:
                 self._last_session = frame["session"]
             elif event == "catalog":
                 self.catalog = tuple(StoreItem(i["id"], i["name"], i["brand"], tuple(i["categories"]), i["price"],
-                                               i["mod"], i["width"], i["needed_power"], i["power"])
+                                               i["mod"], i["width"], i["needed_power"], i["power"],
+                                               tuple(i.get("hitches") or ()))
                                      for i in frame["items"])
             elif event == "result" and frame["session"] == self.session:
                 self._results.setdefault(frame["id"], []).append((frame["status"], frame["code"]))
@@ -367,10 +368,11 @@ class FS25World:
         once the game's save stamp changed."""
         return self._run("save")
 
-    def buy(self, item_id: int) -> str:
+    def buy(self, item_id: int, hitch: int = 0) -> str:
         """BUY: GIANTS' own BuyVehicleData for the store item (mod/FarmhandBridge.lua
-        starters.buy). DONE BOUGHT names no vehicle: the executor finds it."""
-        return self._run("buy", item=int(item_id))
+        starters.buy), with attacherJoint configuration ``hitch`` (1-based; 0 = the
+        default). DONE BOUGHT names no vehicle: the executor finds it."""
+        return self._run("buy", item=int(item_id), hitch=int(hitch))
 
     def fieldwork(self, tractor_id: str, field_id: int, pose: Pose, owner: str, area_m2: float = 0.0) -> str:
         self._reserved(tractor_id, owner)

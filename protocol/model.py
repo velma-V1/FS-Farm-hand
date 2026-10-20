@@ -132,6 +132,7 @@ class StoreItem:
     width: float | None
     needed_power: float | None
     power: float | None
+    hitches: tuple[str, ...] = ()       # attacherJoint configuration names, in GIANTS' order (1-based)
 
 
 @dataclass(frozen=True)

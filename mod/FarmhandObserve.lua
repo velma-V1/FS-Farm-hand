@@ -793,8 +793,17 @@ function Observe.storeItem(env, item)
     for _, name in ipairs(type(item.categoryNames) == "table" and item.categoryNames or {}) do
         if #categories < 4 and token(name) then categories[#categories + 1] = name end
     end
+    -- The hitch options a buyer chooses from (StoreManager item.configurations,
+    -- 1018-1020; ConfigurationUtil items carry .name): live, the GMC Sierra defaults to
+    -- "No Attachments" and needs "Gooseneck" to pull a gooseneck.
+    local hitches = Observe.array()
+    local options = type(item.configurations) == "table" and item.configurations.attacherJoint or nil
+    for i, option in ipairs(type(options) == "table" and options or {}) do
+        if i > 12 then break end
+        hitches[#hitches + 1] = text(type(option) == "table" and option.name or nil) or ""
+    end
     return { id = item.id, name = text(item.name) or Observe.NULL, brand = text(item.brandNameRaw) or Observe.NULL,
-             categories = categories, price = item.price, mod = item.isMod == true,
+             categories = categories, price = item.price, mod = item.isMod == true, hitches = hitches,
              width = nullable(specNumber(specs.workingWidth, "width")),
              needed_power = nullable(specNumber(specs.neededPower, "base")),
              power = nullable(specNumber(specs.power, "power")) }

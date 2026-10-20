@@ -410,6 +410,20 @@ def _matches(item: StoreItem, want: dict) -> bool:
     return any(k in c for c in item.categories for k in kinds)
 
 
+def choose_hitch(item: StoreItem, want: dict) -> int:
+    """The attacherJoint configuration (1-based) a want asks for, else 0 (the default):
+    an option naming the hitch ("gooseneck"), preferring one that also keeps a plain
+    hitch ("Gooseneck - Drop Hitch") over one carrying other gear ("Plow - Gooseneck")."""
+    hitch = want.get("hitch")
+    if not hitch:
+        return 0
+    options = [(n, name) for n, name in enumerate(item.hitches, 1) if hitch in name.lower()]
+    if not options:
+        return 0
+    return min(options, key=lambda o: ("hitch" not in o[1].lower().replace(hitch, ""), "plow" in o[1].lower(),
+                                       len(o[1]), o[0]))[0]
+
+
 def choose_store_item(catalog, want: dict, money: float | None, tractor_power: float | None):
     """(item, None) or (None, why). Large: the widest the farm's strongest tractor can
     power (needed power known and within it); else the cheapest that matches."""
@@ -660,8 +674,12 @@ class Executor:
                 return Result("BLOCKED", failure, states=tuple(states))
             log.info("buy %s: %s %r (%s) for %.0f, width %s, needs %s of %s", want, item.id, item.name, item.brand,
                      item.price, item.width, item.needed_power, power)
+            hitch = choose_hitch(item, want)
+            if want.get("hitch") and not hitch:
+                return Result("BLOCKED", "NO_HITCH_OPTION", states=tuple(states))
+            log.info("buy: hitch option %d %r", hitch, item.hitches[hitch - 1] if hitch else "default")
             enter("BUY")
-            self.world.buy(item.id)
+            self.world.buy(item.id, hitch)
             enter("VERIFY")
             after = {i.id: i for i in self.world.snapshot()}
             new = [i for i in after.values() if i.id not in before and i.name == item.name]

@@ -271,7 +271,14 @@ class Coordinator:
     def _buy(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """Each want in turn, one executor purchase each; the first not COMPLETE ends it."""
         states, bought = [], []
-        for n, want in enumerate(work["wants"], 1):
+        wants = [dict(w) for w in work["wants"]]
+        # A truck bought with a gooseneck trailer gets a gooseneck hitch (live: the GMC's
+        # default is "No Attachments").
+        if any(w["kind"] == "trailer" and "gooseneck" in (w.get("name") or "") for w in wants):
+            for w in wants:
+                if w["kind"] == "truck":
+                    w.setdefault("hitch", "gooseneck")
+        for n, want in enumerate(wants, 1):
             intent = {"version": 1, "request_id": f"{job.owner}-{n}", "farm_id": self.farm(),
                       "target": "player_at_acceptance", "task": "buy", "want": want}
             log.info("job %d buy %d intent %s", job.number, n, json.dumps(intent))
