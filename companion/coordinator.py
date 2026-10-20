@@ -23,7 +23,7 @@ import time
 from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified
-from companion.executor import OPERATIONS, already_done, of_kind, resolve_field, usable
+from companion.executor import OPERATIONS, already_done, crop_problem, of_kind, resolve_field, usable
 from protocol.model import Equipment, Result
 
 log = logging.getLogger("farmhand")
@@ -158,7 +158,8 @@ class Coordinator:
             self.notify(token(f"UNSUPPORTED_{proposal['reason'].upper()}"), spoken)
         else:
             work = ({"field": proposal["field"], "operations": proposal["operations"],
-                     "area_m2": proposal.get("area_m2")} if command == "field_work"
+                     "area_m2": proposal.get("area_m2"), "over_crop": proposal.get("over_crop", False)}
+                    if command == "field_work"
                     else {"wants": proposal["wants"]} if command == "buy" else None)
             if command in ("fetch_pair", "hitch_pair"):
                 names = {k: proposal[k] for k in ("tractor_name", "implement_name") if k in proposal}
@@ -320,12 +321,21 @@ class Coordinator:
                 log.info("job %d %s: field %s already done; skipped", job.number, operation, field.id)
                 states.append(f"{operation}:ALREADY_DONE")
                 continue
+            crop = None if work.get("over_crop") else crop_problem(OPERATIONS[operation], field)
+            if crop is not None:
+                # Before anything is hitched or moved.
+                log.info("job %d %s: field %s %s", job.number, operation, field.id, crop)
+                return Result("BLOCKED", crop, tuple(equipment), tuple(states))
             steps, note = field_steps(tuple(self.world.snapshot()), operation, field.id, self.farm(),
                                       work.get("area_m2"))
             if steps is None:
                 return Result("BLOCKED", note, tuple(equipment), tuple(states))
             if note is not None:
                 log.info("job %d %s: %s", job.number, operation, note)
+            if work.get("over_crop"):
+                for step in steps:
+                    if step["task"] == "field_work":
+                        step["over_crop"] = True
             for step in steps:
                 n += 1
                 self._settle()

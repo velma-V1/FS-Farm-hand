@@ -308,6 +308,76 @@ class ReturnToOriginTests(unittest.TestCase):
         self.assertEqual(result.states, ())
 
 
+class StandingCropTests(unittest.TestCase):
+    """Live FourFields field 1: 100 % HARVEST_READY wheat. Cultivating or sowing it
+    would destroy the crop: BLOCKED before anything is hitched or moved."""
+    READY = FieldCoverage(ground=(("HARVEST_READY", 1.0),), spray=(), total_m2=4000.0,
+                          fruit=(("WHEAT", 5),), sampled=5)
+    GROWING = FieldCoverage(ground=(("SOWN", 0.9), ("CULTIVATED", 0.1)), spray=(), total_m2=4000.0,
+                            fruit=(("WHEAT", 5),), sampled=5)
+
+    def test_soil_work_or_sowing_on_a_standing_crop_moves_nothing(self):
+        for operation, kind, coverage, reason in (
+                ("cultivate", "cultivator", self.READY, "CROP_READY_TO_HARVEST"),
+                ("sow", "sowing_machine", self.READY, "CROP_READY_TO_HARVEST"),
+                ("cultivate", "cultivator", self.GROWING, "CROP_GROWING")):
+            with self.subTest(operation=operation, reason=reason):
+                world = MockWorld(rig(kind, 500.0), PLAYERS, fields=(field(7, 0.4, coverage),), farm=FARM)
+                before = world.snapshot()
+                result = Executor(world).execute(work(operation))
+                self.assertEqual((result.status, result.reason), ("BLOCKED", reason))
+                self.assertEqual(world.snapshot(), before)
+
+    def test_the_plan_stops_before_hitching(self):
+        from companion import coordinator as coordination
+        ran = []
+
+        class World(MockWorld):
+            def retained(self):
+                return ()
+
+        class Scripted:
+            def execute(self, intent, cancel=None, on_state=None):
+                ran.append(intent["task"])
+
+        world = World(list(PlanTests().items("cultivator", "sowing_machine")), PLAYERS,
+                      fields=(field(7, 0.4, self.READY),), farm=FARM)
+        c = coordination.Coordinator(world, Scripted(), lambda n, s=False: None, lambda: "farm-a", lambda: "s1")
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["plow", "sow"]})
+        c.wait(10)
+        self.assertEqual((ran, c.last.state, c.last.reason), ([], "BLOCKED", "CROP_READY_TO_HARVEST"))
+
+
+class OverCropTests(unittest.TestCase):
+    def test_anyway_works_the_field_over_the_crop(self):
+        from companion import coordinator as coordination
+        from companion.language import RuleInterpreter
+        from protocol.model import Result
+        proposal = RuleInterpreter().interpret("cultivate a small area of field 7 anyway")
+        self.assertTrue(proposal["over_crop"])
+        ran = []
+
+        class World(MockWorld):
+            def retained(self):
+                return ()
+
+        class Scripted:
+            def execute(self, intent, cancel=None, on_state=None):
+                ran.append((intent["task"], intent.get("over_crop")))
+                return Result("COMPLETE", "OK", ("t-1",), ("FIND",))
+
+        world = World(list(PlanTests().items("cultivator")), PLAYERS,
+                      fields=(field(7, 0.4, StandingCropTests.READY),), farm=FARM)
+        c = coordination.Coordinator(world, Scripted(), lambda n, s=False: None, lambda: "farm-a", lambda: "s1")
+        c.submit(proposal)
+        c.wait(20)
+        self.assertEqual(c.last.state, "COMPLETE")
+        self.assertIn(("field_work", True), ran)
+        # The executor honours it too.
+        world = MockWorld(rig("cultivator"), PLAYERS, fields=(field(7, 0.4, StandingCropTests.READY),), farm=FARM)
+        self.assertEqual(Executor(world).execute(work("cultivate", over_crop=True)).status, "COMPLETE")
+
+
 class TestAreaTests(unittest.TestCase):
     """A bounded test area: the mod stops the helper once that much of the field
     changed; complete only when the operation's own measured share grew by it."""

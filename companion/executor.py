@@ -377,6 +377,24 @@ def already_done(operation: Operation, field: Field, area_m2=None) -> bool:
     return done >= COVERAGE_REQUIRED
 
 
+CROP_READY = frozenset({"HARVEST_READY", "HARVEST_READY_OTHER"})
+CROP_SHARE_BLOCKS = 0.5          # most of the field: the work area would be in the crop
+
+
+def crop_problem(operation: Operation, field: Field) -> str | None:
+    """Soil work or sowing would destroy the crop standing on most of the field (live
+    FourFields field 1: 100 % HARVEST_READY wheat): harvest comes first. A growing crop
+    blocks soil work the same way."""
+    c = field.coverage
+    if c is None or operation.name == "fertilize":
+        return None
+    if c.share(*CROP_READY) >= CROP_SHARE_BLOCKS:
+        return "CROP_READY_TO_HARVEST"
+    if operation.name in ("plow", "cultivate") and c.share(*SOWN) >= CROP_SHARE_BLOCKS:
+        return "CROP_GROWING"
+    return None
+
+
 def resolve_field(wanted, fields: tuple[Field, ...]) -> tuple[Field | None, str | None]:
     """An owned field by its GIANTS id, or "smallest": the smallest owned field."""
     if not fields:
@@ -916,6 +934,9 @@ class Executor:
                     # Nothing to do (live: every owned field was already 100 % CULTIVATED):
                     # said so, nothing moved.
                     return Result("COMPLETE", "ALREADY_DONE", states=tuple(states))
+                failure = None if command.get("over_crop") else crop_problem(operation, field)
+                if failure is not None:
+                    return Result("BLOCKED", failure, states=tuple(states))
             elif command["target"] == "player_at_acceptance" or to_origin:
                 enter("FIND")
                 target = requester

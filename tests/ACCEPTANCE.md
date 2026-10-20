@@ -376,6 +376,9 @@ Executable mapping (`python scripts/check.py`):
   companion hitched it or found it hitched; no coordinates) → unhitch there, each
   step only once the farm's tractors are at rest (`PlanTests`,
   `ReturnToOriginTests`); a pair this companion did not take is never moved there.
+  Soil work or sowing over a crop standing on most of the field is BLOCKED
+  (CROP_READY_TO_HARVEST / CROP_GROWING) before anything is hitched, unless the
+  player says "... anyway" (`StandingCropTests`, `OverCropTests`).
 
 Synthetic movement sets coordinates and coupling sets relations. The simulator
 has no physics, terrain, route graph, collision, trigger, animation, network or

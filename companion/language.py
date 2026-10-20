@@ -199,6 +199,10 @@ def buy(words: str) -> dict | None:
 
 
 def field_work(words: str) -> dict | None:
+    # "... anyway": the player knows a crop stands there and wants the work done.
+    over_crop = re.search(r"\s+(?:anyway|anyways|regardless)$", words)
+    if over_crop is not None:
+        words = words[:over_crop.start()]
     match = _FIELD_WORK.match(words)
     if match is None:
         return None
@@ -212,6 +216,8 @@ def field_work(words: str) -> dict | None:
     if field != "smallest" and field < 1:
         return None
     work = {"version": 1, "command": "field_work", "field": field, "operations": operations}
+    if over_crop is not None:
+        work["over_crop"] = True
     if match["test"]:
         work["area_m2"] = TEST_AREA_M2
     elif match["m2"]:

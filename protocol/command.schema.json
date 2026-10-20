@@ -124,6 +124,7 @@
     },
     "tractor_name": {"description": "fetch_pair, hitch_pair: the towing vehicle must have all these words in its name ('with the gmc').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
     "implement_name": {"description": "fetch_pair, hitch_pair: the implement must have all these words in its name ('the gooseneck').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
+    "over_crop": {"description": "field_work: the player said to work the field even over a standing crop ('... anyway').", "const": true},
     "area_m2": {
       "description": "field_work: work only this much of the field (a test area, m2).",
       "type": "number", "minimum": 50, "maximum": 20000
@@ -235,7 +236,7 @@
     {
       "if": {"properties": {"command": {"const": "field_work"}}},
       "then": {"required": ["field", "operations"]},
-      "else": {"not": {"anyOf": [{"required": ["field"]}, {"required": ["operations"]}, {"required": ["area_m2"]}]}}
+      "else": {"not": {"anyOf": [{"required": ["field"]}, {"required": ["operations"]}, {"required": ["area_m2"]}, {"required": ["over_crop"]}]}}
     }
   ]
 }
