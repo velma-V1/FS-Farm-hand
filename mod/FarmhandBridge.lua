@@ -219,7 +219,8 @@ local function stepGoto(env, task, timeoutMs, timeoutCode, endCode, progress)
                 -- physical holds the vehicle (live: a closed gate GIANTS' map treats as
                 -- open road). A BLOCKED agent waits for an obstacle it knows.
                 local driving = pcall(function()
-                    assert(env.AIDrivable.STATES[v.spec_aiDrivable.lastState] == "DRIVING")
+                    -- GIANTS' names are lower case live ("agent state driving").
+                    assert(tostring(env.AIDrivable.STATES[v.spec_aiDrivable.lastState]):upper() == "DRIVING")
                 end)
                 return "FAILED", driving and "NAVIGATE_STUCK" or "NAVIGATE_STALLED"
             end

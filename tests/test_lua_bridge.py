@@ -386,7 +386,7 @@ class LuaBridgeTests(unittest.TestCase):
         self.adopt()
         self.w.gotoStarts = True
         self.w.tractor.spec_aiDrivable = self.lua.table(lastState=2, distanceToTarget=713.0)
-        self.lua.execute("local w = ...; w.env.AIDrivable = { STATES = { [2] = 'DRIVING' } }", self.w)
+        self.lua.execute("local w = ...; w.env.AIDrivable = { STATES = { [2] = 'driving' } }", self.w)   # live casing
         self.send(1, "navigate", self.POSE)
         self.beating(92000)
         self.assertEqual(self.results(1)[-1], (1, "FAILED", "NAVIGATE_STUCK"))
