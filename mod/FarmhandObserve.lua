@@ -492,9 +492,13 @@ function Observe.vehicle(env, v, ptoNames)
     -- from the loaded vehicle, so the actual motor/consumer configuration applies.
     local motor = try(function()
         local m = v:getMotor()
-        local peak, ratio = m:getPeakTorque(), m:getPtoMotorRpmRatio()
-        assert(finite(peak) and peak > 0 and finite(ratio) and ratio > 0)
-        return { peak_torque = peak, pto_rpm_ratio = ratio }
+        local peak = m:getPeakTorque()
+        assert(finite(peak) and peak > 0)
+        -- A vehicle without a PTO (live: the GMC Sierra) has no usable ratio: the motor
+        -- is still known (it tows), its PTO capacity is not.
+        local okRatio, ratio = pcall(function() return m:getPtoMotorRpmRatio() end)
+        if not (okRatio and finite(ratio) and ratio > 0) then ratio = nil end
+        return { peak_torque = peak, pto_rpm_ratio = nullable(ratio) }
     end)
     -- Without PowerConsumer GIANTS sets no power condition: no PTO torque needed.
     local ptoTorque = 0

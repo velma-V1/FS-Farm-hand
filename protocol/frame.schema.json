@@ -80,7 +80,7 @@
                             {"type": "object", "additionalProperties": false,
                              "required": ["peak_torque", "pto_rpm_ratio"],
                              "properties": {"peak_torque": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000000},
-                                            "pto_rpm_ratio": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000}}}]},
+                                            "pto_rpm_ratio": {"oneOf": [{"type": "number", "exclusiveMinimum": 0, "maximum": 1000}, {"type": "null"}]}}}]},
         "pto_torque": {"oneOf": [{"type": "null"}, {"type": "number", "minimum": 0, "maximum": 1000000}]},
         "ai_root": {"oneOf": [{"type": "null"},
                               {"type": "object", "additionalProperties": false, "required": ["x", "z", "yaw"],

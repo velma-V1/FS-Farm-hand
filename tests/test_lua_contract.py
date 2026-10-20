@@ -732,7 +732,8 @@ class LuaContractTests(unittest.TestCase):
         wagon = '{ id = 32, file = "STUB_WAGONS", inputs = { "TRAILER" }, %s }'
         cases = [
             (tractor % ("0/0", "ptos = {}"), lambda r: r["motor"], None),
-            (tractor % ("1", "ratio = 0, ptos = {}"), lambda r: r["motor"], None),
+            # No usable PTO ratio (live: the GMC Sierra): the motor is known, its PTO is not.
+            (tractor % ("1", "ratio = 0, ptos = {}"), lambda r: r["motor"], {"peak_torque": 1, "pto_rpm_ratio": None}),
             (tractor % ("1", "ptos = {}, modes = { getMotor = 'raises' }"), lambda r: r["motor"], None),
             (tractor % ("1", "ptos = {}, modes = { getMotor = 'missing' }"), lambda r: r["motor"], None),
             (tractor % ("1", "ptos = { [1] = { 'rearPto' } }, ptoBroken = true"),

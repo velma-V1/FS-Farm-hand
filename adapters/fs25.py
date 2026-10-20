@@ -166,7 +166,7 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
                                   u["role"]) for u in vehicle["fill_units"]),
         # GIANTS' torque values from the loaded vehicles (actual configuration);
         # None when unobserved, which is never sufficient.
-        pto_torque_capacity=None if motor is None else
+        pto_torque_capacity=None if motor is None or motor["pto_rpm_ratio"] is None else
         GIANTS_PTO_TORQUE_SHARE * motor["peak_torque"] * motor["pto_rpm_ratio"],
         required_pto_torque=vehicle["pto_torque"],
         capabilities=_capabilities(vehicle, bridge_ready),

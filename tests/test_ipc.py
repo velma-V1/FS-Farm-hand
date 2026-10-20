@@ -308,6 +308,8 @@ class MappingTests(unittest.TestCase):
                  ({"self_propelled": False}, "unknown"),           # towed, or no motor table
                  ({"self_propelled": None}, "unknown"),            # unreadable
                  ({"motor": None}, "unknown"),
+                 # No PTO (live: the GMC Sierra): it still tows; its PTO capacity is unknown.
+                 ({"motor": {"peak_torque": 900.0, "pto_rpm_ratio": None}}, "tractor"),
                  ({"output_joints": []}, "unknown"),
                  # A pickup or truck with a trailer hitch tows (the GMC and its gooseneck);
                  # PTO power and joint types are decided per joint pair.
