@@ -206,6 +206,42 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(notices[-1], "FAILED_OUT_OF_FILL")
 
 
+    def test_each_step_waits_for_the_tractor_to_come_to_rest(self):
+        # Live 5454f21977df465b-2: the tractor still rolled when the helper stopped,
+        # and the detach right after found no pair at rest.
+        from companion import coordinator as coordination
+        from protocol.model import Result
+        seen = []
+
+        class Rolling(MockWorld):
+            rolls = 0
+
+            def retained(self):
+                return ()
+
+            def snapshot(self):
+                items = super().snapshot()
+                if self.rolls:
+                    self.rolls -= 1
+                    return tuple(replace(i, stopped=False) if i.category == "tractor" else i for i in items)
+                return items
+
+        world = Rolling(list(self.items("sowing_machine")), PLAYERS, fields=(field(7, 0.4),), farm=FARM)
+
+        class Scripted:
+            def execute(self, intent, cancel=None, on_state=None):
+                seen.append((intent["task"], world.rolls))
+                if intent["task"] == "field_work":
+                    world.rolls = 1
+                return Result("COMPLETE", "OK", ("t-1",), ("FIND",))
+
+        c = coordination.Coordinator(world, Scripted(), lambda n, s=False: None, lambda: "farm-a", lambda: "s1")
+        c.submit({"version": 1, "command": "field_work", "field": "smallest", "operations": ["sow"]})
+        c.wait(20)
+        self.assertEqual(seen, [("hitch_pair", 0), ("field_work", 0), ("detach_pair", 0)])
+        self.assertEqual(c.last.state, "COMPLETE")
+
+
 class TestAreaTests(unittest.TestCase):
     """A bounded test area: the mod stops the helper once that much of the field
     changed; complete only when the operation's own measured share grew by it."""

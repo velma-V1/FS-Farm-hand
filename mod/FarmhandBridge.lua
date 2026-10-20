@@ -564,6 +564,14 @@ function steppers.fieldwork(env, task, dt)
         if task.elapsed > Bridge.FIELDWORK_TIMEOUT_MS then return "FAILED", "TIMEOUT" end
         local x, _, z = env.getWorldTranslation(v.rootNode)
         if not (finite(x) and finite(z)) then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
+        -- The worked track (implement working: field work active), for crop samples.
+        task.track = task.track or {}
+        task.sinceTrack = (task.sinceTrack or 0) + (dt or 0)
+        if task.sinceTrack >= 2000 and #task.track < 200 then
+            task.sinceTrack = 0
+            local active = pcall(function() assert(v:getIsFieldWorkActive() == true) end)
+            if active then task.track[#task.track + 1] = { x, z } end
+        end
         if not task.sampled and task.elapsed > 60000 then
             task.sampled = true
             Bridge.logFieldWork(env, v, "at 60 s")
@@ -601,7 +609,7 @@ function steppers.fieldwork(env, task, dt)
     -- Ended: DONE with GIANTS' reason once at rest; the companion judges the field,
     -- measured again now.
     local ended, endCode = settle(task, task.areaReached and "AREA_REACHED" or Bridge.aiStops[v] or "AI_STOPPED")
-    if ended ~= nil then pcall(Bridge.Observe.refreshField, env, task.spec.field) end
+    if ended ~= nil then pcall(Bridge.Observe.refreshField, env, task.spec.field, task.track) end
     return ended, endCode
 end
 

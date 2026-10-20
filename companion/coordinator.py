@@ -18,6 +18,7 @@ import logging
 from pathlib import Path
 import re
 import threading
+import time
 
 from jsonschema import Draft202012Validator
 
@@ -290,6 +291,18 @@ class Coordinator:
                 return Result(result.status, result.reason, tuple(bought), tuple(states))
         return Result("COMPLETE", "BOUGHT", tuple(bought), tuple(states))
 
+    SETTLE_S = 30.0
+
+    def _settle(self) -> None:
+        """Before each planned step, let the farm's vehicles come to rest (live
+        5454f21977df465b-2: the tractor still rolled 1.5 s after the helper stopped, so
+        the next step found no pair at rest)."""
+        deadline = time.monotonic() + self.SETTLE_S
+        while time.monotonic() < deadline:
+            if all(i.stopped for i in self.world.snapshot() if i.category == "tractor"):
+                return
+            time.sleep(1.0)
+
     def _field_work(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """Each operation in turn on the same field (resolved once): the planner's next
         steps from fresh state, each a full executor job; the first one that is not
@@ -313,6 +326,7 @@ class Coordinator:
                 log.info("job %d %s: %s", job.number, operation, note)
             for step in steps:
                 n += 1
+                self._settle()
                 intent = {"version": 1, "request_id": f"{job.owner}-{n}", "farm_id": self.farm(),
                           "target": "player_at_acceptance", **step}
                 log.info("job %d step %d intent %s", job.number, n, json.dumps(intent))

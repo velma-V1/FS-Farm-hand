@@ -567,6 +567,16 @@ class LuaContractTests(unittest.TestCase):
         self.assertEqual((c.fruit, c.sampled), ((("WHEAT", 1),), 1))
         self.assertEqual((observed.farm.money, observed.farm.helper_buy_seeds), (125000.5, True))
 
+    def test_crop_is_sampled_where_the_work_happened(self):
+        # Live: 9 points across field 8 all missed a 400 m2 sown strip.
+        world = self.stubs.world()
+        self.lua.execute(self.FIELD_STUBS, world.env, self.observe)
+        track = self.lua.eval("function(n) local t = {} for i = 1, n do t[i] = { 100, i } end return t end")
+        self.assertTrue(self.observe.refreshField(world.env, 7, track(30)))
+        c = observation_from_snapshot(self.snapshot(world)).fields[0].coverage
+        self.assertEqual(c.fruit, (("WHEAT", 12),))                       # at most 12 points
+        self.assertEqual(c.sampled, 12)
+
     def test_field_coverage_refreshes_one_field_at_a_time(self):
         world = self.stubs.world()
         self.lua.execute(self.FIELD_STUBS, world.env, self.observe)

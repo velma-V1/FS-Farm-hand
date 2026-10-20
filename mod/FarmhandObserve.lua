@@ -670,12 +670,21 @@ end
 
 -- Up to 9 FieldState samples: the field's centre and points 30% of the way from it
 -- to its polygon corners. Counts of {fruit name, ground type value} pairs.
-local function sampleFruit(env, f)
+local function sampleFruit(env, f, track)
     local cx, cz = try(function() return f.posX end), try(function() return f.posZ end)
     if not (finite(cx) and finite(cz)) then return nil end
     local points = { { cx, cz } }
+    -- Where the work happened (the field-work job's track, live: 9 points across the
+    -- field all missed a 400 m2 strip), else across the field.
+    if type(track) == "table" and #track > 0 then
+        points = {}
+        local step = math.max(1, math.floor(#track / 12))
+        for i = 1, #track, step do
+            if #points < 12 then points[#points + 1] = track[i] end
+        end
+    end
     local corners = try(function() return f.polygonPoints end)
-    if type(corners) == "table" then
+    if type(corners) == "table" and #points == 1 then
         local step = math.max(1, math.floor(#corners / 8))
         for i = 1, #corners, step do
             local px, _, pz = try(function() return env.getWorldTranslation(corners[i]) end)
@@ -700,7 +709,7 @@ local function sampleFruit(env, f)
     return counts, #points
 end
 
-function Observe.fieldCoverage(env, f)
+function Observe.fieldCoverage(env, f, track)
     local ground = {}
     for name, v in pairs(env.FieldGroundType) do
         if type(v) == "number" and token(name) ~= nil then
@@ -713,7 +722,7 @@ function Observe.fieldCoverage(env, f)
     local levels = {}
     for level = 1, (integer(maxSpray) and maxSpray or 0) do levels[tostring(level)] = level end
     local sprayShare = measure(env, f, env.FieldDensityMap.SPRAY_LEVEL, levels)
-    local fruit, sampled = sampleFruit(env, f)
+    local fruit, sampled = sampleFruit(env, f, track)
     return { ground = groundShare, spray = sprayShare, total_m2 = total or Observe.NULL, fruit = fruit or Observe.NULL,
              sampled = sampled or 0 }
 end
@@ -750,11 +759,11 @@ function Observe.tickFields(env, farmId, dt)
 end
 
 -- Refresh one field now (the companion asks before and after field work).
-function Observe.refreshField(env, id)
+function Observe.refreshField(env, id, track)
     local fields = try(function() return env.g_fieldManager.fields end)
     for _, f in ipairs(type(fields) == "table" and fields or {}) do
         if fieldId(f) == id then
-            local ok, record = pcall(Observe.fieldCoverage, env, f)
+            local ok, record = pcall(Observe.fieldCoverage, env, f, track)
             Observe.fieldCache[id] = { record = ok and record or nil, age = 0 }
             return ok
         end
