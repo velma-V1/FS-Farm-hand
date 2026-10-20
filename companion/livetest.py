@@ -357,7 +357,11 @@ class LiveTest:
                     "unclassified": [{k: v.get(k) for k in ("id", "name", "category", "self_propelled", "motor",
                                                             "kinds", "output_joints")}
                                      for v in frame.get("vehicles") or []
-                                     if v.get("motor") is not None or v.get("self_propelled")][:20]}
+                                     if v.get("motor") is not None or v.get("self_propelled")][:20],
+                    # Why an implement pairs with no tractor (hitch_problem): its input joints and PTO need.
+                    "implements": [{k: v.get(k) for k in ("id", "name", "pto_torque", "input_joint_poses")}
+                                   for v in frame.get("vehicles") or []
+                                   if v.get("motor") is None and not v.get("self_propelled")][:40]}
             candidates = self.candidates(farm["farm_id"])
         except StepUnverified as error:
             problems.append("GAME_" + error.code)
