@@ -133,6 +133,35 @@ class _Capture(logging.Handler):
             self.lines.append(self.format(record))
 
 
+# FS25 writes one "  Load mod: <name>" line (indented) per mod the loading savegame activates,
+# all within a second or so, interleaved with the mods' own lines; loads are minutes apart.
+_LOAD_MOD = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\.\d+\s{2,}Load mod: (\S+)\s*$")
+LOAD_GAP_S = 60
+LOG_TAIL_BYTES = 16 * 1024 * 1024
+
+
+def loaded_mods(path: Path | None) -> list[str] | None:
+    """The mods the loaded savegame activated, from FS25's own log of its latest load (the
+    last contiguous block of "Load mod:" lines), sorted; None when the log is unreadable."""
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - LOG_TAIL_BYTES))
+            lines = handle.read().decode("utf-8", "replace").splitlines()
+    except (OSError, TypeError):
+        return None
+    block, last = [], None
+    for line in lines:
+        match = _LOAD_MOD.match(line)
+        if match:
+            at = time.mktime(time.strptime(match.group(1), "%Y-%m-%d %H:%M:%S"))
+            if last is None or at - last > LOAD_GAP_S:
+                block = []
+            block.append(match.group(2))
+            last = at
+    return sorted(block)
+
+
 def _local(at: float) -> str:
     """The wall time as FS25's log.txt and companion.log print it (local time)."""
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(at)) + ".%03d" % int((at % 1) * 1000)
@@ -142,9 +171,10 @@ class LiveTest:
     """Polls the folder on its own thread. ``world`` is the FS25World; ``attach`` gives
     it the coordinator once serve() has made one."""
 
-    def __init__(self, world, folder: Path, clock=time.time):
+    def __init__(self, world, folder: Path, clock=time.time, game_log: Path | None = None):
         self.world, self.link = world, world.link
         self.folder = folder
+        self.game_log = game_log              # FS25's log.txt: the save's mods for each record
         self.clock = clock
         self.started = clock()
         self.coordinator = None
@@ -274,7 +304,7 @@ class LiveTest:
                   "proposal": proposal, "text": request.get("text"), "companion_build": BUILD, "mod_build": self.mod_build(),
                   "started": _local(at), "started_unix": at, "ended": None, "ended_unix": None,
                   "status": "WORKING", "reason": None, "steps": [], "states": [], "equipment": [],
-                  "final_observation": None, "companion_log": []}
+                  "final_observation": None, "companion_log": [], "configuration": self.configuration()}
         with self._lock:
             self.active = record
         self._save(record, capture)
@@ -333,6 +363,15 @@ class LiveTest:
                 old.unlink(missing_ok=True)
 
     # ---------------------------------------------------------------- status
+    def configuration(self) -> dict:
+        """What this test ran on besides the builds: map, savegame slot and the save's mods."""
+        try:
+            frame = self.link.fresh_snapshot()
+        except (StepUnverified, KeyError, TypeError):
+            frame = {}
+        return {"map": frame.get("map_id"), "savegame": (frame.get("farm") or {}).get("savegame"),
+                "mods": loaded_mods(self.game_log)}
+
     def mod_build(self) -> str | None:
         hello = getattr(self.link, "hello", None)
         return None if hello is None else hello.get("build", "unknown")

@@ -301,7 +301,7 @@ def main(argv=None) -> int:
     live = None
     if args.live_test:
         from companion.livetest import FOLDER, LiveTest
-        live = LiveTest(world, profile.joinpath(*MOD_DIR, FOLDER))
+        live = LiveTest(world, profile.joinpath(*MOD_DIR, FOLDER), game_log=profile / "log.txt")
         live.start()
     try:
         serve(world, entrances, ai=ai, should_stop=(data / QUIT_FILE).exists,

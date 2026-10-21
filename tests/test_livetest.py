@@ -121,6 +121,26 @@ class CompanionLiveTestTests(CompanionCase):
         self.assertEqual(record["mod_build"], "abc123")
         self.assertEqual(game.link_world._reservations, {})
 
+    def test_the_saves_mods_come_from_the_games_own_log_of_its_latest_load(self):
+        # Every live record names its configuration (the user's completion plan, stage 1):
+        # FS25 logs "  Load mod: <name>" for each mod a savegame activates, once per load.
+        _, live = self.start(autodrive=False)
+        log = self.folder / "log.txt"
+        log.write_text("2026-10-20 18:00:00.000   Load mod: FS25_Old\n"
+                       "2026-10-20 18:00:00.001   Load mod: FS25_Gone\n"
+                       "2026-10-20 18:00:05.000 Info: map loaded\n"
+                       "2026-10-20 20:53:05.455   Load mod: FS25_UniversalAutoload\n"
+                       "2026-10-20 20:53:05.460   Register machineType 'compactor'\n"
+                       "2026-10-20 20:53:05.456   Load mod: FS25_AutoDrive\n"
+                       "2026-10-20 20:53:23.850 Load mod: Store Deliveries : v1.0.7.0 loaded\n", encoding="utf-8")
+        self.assertEqual(livetest.loaded_mods(log), ["FS25_AutoDrive", "FS25_UniversalAutoload"])
+        self.assertIsNone(livetest.loaded_mods(self.folder / "missing.txt"))
+        live.game_log = log
+        record = self.record(self.request("hitch")["result"]["test_id"])
+        self.assertEqual(record["configuration"]["mods"], ["FS25_AutoDrive", "FS25_UniversalAutoload"])
+        self.assertIn("map", record["configuration"])
+        self.assertIn("savegame", record["configuration"])
+
     def test_the_hitch_is_the_players_proposal_through_the_coordinator(self):
         game, live = self.start(autodrive=False)
         with unittest.mock.patch.object(live.coordinator, "submit", wraps=live.coordinator.submit) as submit:
