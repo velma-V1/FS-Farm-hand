@@ -169,7 +169,7 @@ class MockWorld:
             if wagon is not None:
                 wx, wz = wagon.position
                 dx, dz = x - root.x, z - root.z
-                self.items[wagon.id] = replace(wagon, position=(wx + dx, wz + dz), stopped=True)
+                self._move_wagon(wagon, (wx + dx, wz + dz))
             if not box.get("still"):
                 self.boxed = {i: b for i, b in self.boxed.items() if i != tractor_id}
 
@@ -301,6 +301,16 @@ class MockWorld:
             raise ValueError("Hitch steps require an unattached pair")
         return tractor, wagon
 
+    def _move_wagon(self, wagon, position):
+        # Mock-only: what is belted on it rides along (GIANTS' tension-belt mount joint).
+        dx, dz = position[0] - wagon.position[0], position[1] - wagon.position[1]
+        self.items[wagon.id] = replace(wagon, position=tuple(position), stopped=True)
+        for item in list(self.items.values()):
+            if item.belted_to == wagon.id:
+                moved = (item.position[0] + dx, item.position[1] + dz)
+                root = item.ai_root and Pose(item.ai_root.x + dx, item.ai_root.z + dz, item.ai_root.yaw)
+                self.items[item.id] = replace(item, position=moved, ai_root=root, stopped=True)
+
     def _place(self, tractor, pose):
         # Mock-only teleport, never a substitute for real navigation or reversing.
         if not all(math.isfinite(v) for v in (pose.x, pose.z, pose.yaw)):
@@ -339,7 +349,7 @@ class MockWorld:
             self._place(tractor, pose)
             if coupled:
                 behind = pose.to_world(0.0, -MOCK_TRAILER_OFFSET_M)
-                self.items[wagon.id] = replace(wagon, position=behind, stopped=True)
+                self._move_wagon(wagon, behind)
 
     def stage(self, tractor_id, wagon_id, pose, owner):
         with self._lock:
@@ -393,7 +403,7 @@ class MockWorld:
             # Mock-only teleport of the coupled pair; AutoDrive does real routing.
             yaw = tractor.ai_root.yaw if tractor.ai_root else 0.0
             self._place(tractor, Pose(*destination.position, yaw))
-            self.items[wagon.id] = replace(wagon, position=destination.position, stopped=True)
+            self._move_wagon(wagon, destination.position)
 
     def attach(self, tractor_id, wagon_id, joints, owner):
         with self._lock:

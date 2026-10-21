@@ -23,7 +23,8 @@ import time
 from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified
-from companion.executor import OPERATIONS, already_done, crop_problem, of_kind, resolve_field, usable
+from companion import hitch as transport   # its tractor-transport section
+from companion.executor import OPERATIONS, already_done, crop_problem, named, of_kind, resolve_field, usable
 from protocol.model import Equipment, Result
 
 log = logging.getLogger("farmhand")
@@ -52,7 +53,8 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "save_game": ("save_game", "ACCEPTED_SAVE", "COMPLETE_SAVE"),
         "load_tractor": ("load_tractor", "ACCEPTED_LOAD", "COMPLETE_LOAD"),
         "unload_tractor": ("unload_tractor", "ACCEPTED_UNLOAD", "COMPLETE_UNLOAD"),
-        "sequence": ("sequence", "ACCEPTED_SEQUENCE", "COMPLETE_SEQUENCE")}
+        "sequence": ("sequence", "ACCEPTED_SEQUENCE", "COMPLETE_SEQUENCE"),
+        "haul_tractor": ("haul_tractor", "ACCEPTED_HAUL", "COMPLETE_HAUL")}
 # The proposal fields that pass into a job command's intent.
 NAMES = ("tractor_name", "implement_name")
 
@@ -64,6 +66,52 @@ def result_notice(status: str, reason: str, complete: str = "COMPLETE") -> str:
     if status == "CANCELLED":
         return status
     return token(f"{status}_{reason}")
+
+
+# ------------------------------------------------------------- haul planning
+def _words(name: str | None) -> str | None:
+    """A store name as intent words (lower case, letters, digits, spaces, hyphens)."""
+    words = re.sub(r"[^a-z0-9 -]+", " ", (name or "").casefold()).split()
+    return " ".join(words)[:40].strip() or None
+
+
+def haul_step(items: tuple[Equipment, ...], farm_id: str, name: str | None, target, delivered: bool):
+    """The next executor step of a haul goal from observed state, as an intent fragment,
+    or (None, why): HAULED when it is done; NO_SUCH_TRACTOR, TRACTOR_AMBIGUOUS,
+    NO_TRANSPORT when it cannot go on."""
+    observed = {i.id: i for i in items}
+    transports = [i for i in items if transport.is_transport(i) and i.farm_id == farm_id]
+    if name:
+        tractors = [i for i in items if i.category == "tractor" and i.farm_id == farm_id and named(i, name)
+                    and not transport.is_transport(i)]
+    else:                                   # "the tractor": the one on a transport, if just one
+        tractors = [i for i in items if i.category == "tractor" and i.farm_id == farm_id
+                    and any(i.belted_to == t.id or transport.on_deck(i, t) for t in transports)]
+    if not tractors:
+        return None, "NO_SUCH_TRACTOR"
+    if len(tractors) > 1:
+        return None, "TRACTOR_AMBIGUOUS"
+    tractor = tractors[0]
+    trailer = observed.get(tractor.belted_to) or next((t for t in transports if transport.on_deck(tractor, t)), None)
+    words = name or _words(tractor.name)
+    destination = {} if target in (None, "here") else {"target": target}
+    if delivered:
+        if trailer is None:
+            return None, "HAULED"
+        return {"task": "unload_tractor", "target": "player_at_acceptance", "tractor_name": words}, None
+    if trailer is not None and tractor.belted_to == trailer.id and trailer.fold == 0.0 \
+            and observed.get(trailer.attached_to) is not None:
+        return {"task": "move_pair", "target": "player_at_acceptance", **destination, "cargo_name": words}, None
+    if trailer is not None:                 # aboard, not yet belted or the ramps not up: finish it
+        return {"task": "load_tractor", "target": "player_at_acceptance", "tractor_name": words,
+                "implement_name": _words(trailer.name)}, None
+    hitched = [t for t in transports if observed.get(t.attached_to) is not None]
+    if hitched:
+        return {"task": "load_tractor", "target": "player_at_acceptance", "tractor_name": words}, None
+    if transports:
+        return {"task": "hitch_pair", "target": "player_at_acceptance", "implement": "trailer",
+                "implement_name": _words(transports[0].name)}, None
+    return None, "NO_TRANSPORT"
 
 
 # ------------------------------------------------------------- field planning
@@ -175,6 +223,8 @@ class Coordinator:
                 work = names or None
             elif command == "sequence":
                 work = {"steps": proposal["steps"]}
+            elif command == "haul_tractor":
+                work = {"tractor_name": proposal.get("tractor_name"), "target": proposal.get("target", "here")}
             return self.start(command, proposal.get("target", "here"), spoken, proposal.get("implement"), work)
         return None
 
@@ -261,6 +311,8 @@ class Coordinator:
                 result = self._buy(job, cancel, entered, work)
             elif command == "sequence":
                 result = self._sequence(job, cancel, entered, work)
+            elif command == "haul_tractor":
+                result = self._haul(job, cancel, entered, work)
             else:
                 intent = {"version": 1, "request_id": job.owner, "task": task,
                           "farm_id": self.farm(), "target": "player_at_acceptance" if target == "here" else target}
@@ -319,6 +371,39 @@ class Coordinator:
             if result.status != "COMPLETE":
                 return Result(result.status, result.reason, tuple(used), tuple(states))
         return Result("COMPLETE", "SEQUENCE_DONE", tuple(used), tuple(states))
+
+    MAX_HAUL_STEPS = 8
+
+    def _haul(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
+        """Take a tractor somewhere on a transport trailer and unload it there, planned from
+        the observed state before every step (BUILD_SPEC completion plan, requirement 1):
+        hitch a transport to a truck if none is hitched, load (an executor load continues
+        whatever is already done), deliver the rig carrying the tractor, unload. Unloading
+        only after this goal's delivery step completed (AGENTS.md: never because the rig
+        stopped). The first step not complete ends it with that step's result."""
+        name, target = work.get("tractor_name"), work["target"]
+        states, used, delivered = [], [], False
+        for n in range(1, self.MAX_HAUL_STEPS + 1):
+            if cancel.is_set():
+                return Result("CANCELLED", "CANCELLED_BY_REQUESTER", tuple(used), tuple(states))
+            self._settle()
+            step, failure = haul_step(tuple(self.world.snapshot()), self.farm(), name, target, delivered)
+            if step is None:
+                if failure == "HAULED":
+                    return Result("COMPLETE", "HAULED_AND_UNLOADED", tuple(used), tuple(states))
+                return Result("BLOCKED", failure, tuple(used), tuple(states))
+            intent = {"version": 1, "request_id": f"{job.owner}-h{n}", "farm_id": self.farm(), **step}
+            log.info("job %d haul step %d intent %s", job.number, n, json.dumps(intent))
+            self.running = intent["request_id"]
+            result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
+            states += [f"{step['task']}:{s}" for s in result.states]
+            used += [i for i in result.equipment_ids if i not in used]
+            log.info("job %d haul step %d %s result %s %s", job.number, n, step["task"], result.status, result.reason)
+            if result.status != "COMPLETE":
+                return Result(result.status, result.reason, tuple(used), tuple(states))
+            if step["task"] == "move_pair":
+                delivered = True                  # observed arrival (DELIVERY_OBSERVED): unloading may follow
+        return Result("FAILED", "HAUL_PLAN_TOO_LONG", tuple(used), tuple(states))
 
     def _buy(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """Each want in turn, one executor purchase each; the first not COMPLETE ends it."""

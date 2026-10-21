@@ -7,11 +7,12 @@ is down again before unhitching.
 from dataclasses import replace
 import math
 import unittest
+import unittest.mock
 
 from companion.executor import Executor
 from protocol.model import Equipment, InputJoint, OutputJoint, Pose
 from simulator.world import MockWorld
-from tests.test_farmhand import GOTO_TRACTOR, PLAYERS, intent
+from tests.test_farmhand import AUTODRIVE_TRACTOR, GOTO_TRACTOR, PLAYERS, intent
 
 TRUCK_JOINTS = (OutputJoint(1, "trailerCar", 0.0, -3.0, True), OutputJoint(3, "semitrailerCar", 0.0, 0.0, True))
 
@@ -402,6 +403,105 @@ class SequenceTests(unittest.TestCase):
         self.assertEqual(stopped, [("t-1", world.current)])
         self.assertTrue(world.current.endswith("-s1"))
         self.assertEqual(c.last.state, "CANCELLED")
+
+
+def haul_world(hitched=False, loaded=False, ramps_down=False, marker=True):
+    """The user's transport rig on the mock (mock-only belts, ramps and LOAD): a GMC with a
+    gooseneck joint, a deckover with Foldable ramps and four belts 40 m off (heading 0), a
+    Series 9 (DEUTZFAHR) standing apart; an AutoDrive marker "Field 3" far away."""
+    from protocol.model import Destination
+    truck, deck = rig()
+    truck = replace(truck, capabilities=AUTODRIVE_TRACTOR, size=(6.5, 2.4, 2.0, 0.0), fold=1.0)
+    belts = tuple((40.0 - 1.3, 1.0, 20.0 + a, 40.0 + 1.3, 1.0, 20.0 + a) for a in (-4.0, -2.0, 0.0, 2.0))
+    deck = replace(deck, size=(10.0, 2.6, 1.2, 0.0), belts_fastened=False, belt_markers=belts, kinds=frozenset({"trailer"}))
+    series9 = Equipment("s-9", "tractor", "farm-a", (10.0, -10.0), name="Series 9 2019", brand="DEUTZFAHR",
+                        heading=1.2, ai_root=Pose(10.0, -10.0, 1.2), capabilities=GOTO_TRACTOR,
+                        size=(5.2, 2.7, 3.0, 0.3))
+    markers = (Destination("m-3", (900.0, 900.0), "Field 3"),) if marker else ()
+    world = MockWorld([deck, series9, truck], PLAYERS, markers)
+    world.mock_field_places = (Destination("field-3", (700.0, 650.0), "field 3"),)
+    if hitched or loaded:
+        executor = Executor(world)
+        assert executor.execute(dict(intent("prep-1"), task="hitch_pair", implement="trailer",
+                                     implement_name="deckover")).status == "COMPLETE"
+    if loaded:
+        assert Executor(world).execute(dict(intent("prep-2"), task="load_tractor")).status == "COMPLETE"
+        if ramps_down:
+            world.items[deck.id] = replace(world.items[deck.id], fold=1.0)
+    return world, truck, deck, series9
+
+
+class HaulGoalTests(unittest.TestCase):
+    """"Take the Deutz to field 3 and unload it" (BUILD_SPEC completion plan, C1/C2/C4), the
+    coordinator planning each step from observed state, the real executor on the mock."""
+
+    def run_goal(self, world, words="Take the Deutz to field 3 and unload it"):
+        from companion import coordinator as coordination
+        from companion.language import RuleInterpreter
+
+        class World(type(world)):
+            pass
+        world.__class__ = World
+        world.cancel = None
+        world.retained = lambda: ()
+        notices = []
+        c = coordination.Coordinator(world, Executor(world), lambda n, s=False: notices.append(n), lambda: "farm-a",
+                                     lambda: "s1")
+        with unittest.mock.patch.object(coordination.Coordinator, "SETTLE_S", 0.0):
+            c.submit(RuleInterpreter().interpret(words))
+            c.wait(30)
+        return c.last, notices
+
+    def test_from_an_unprepared_state_every_step_runs_once_in_order(self):
+        from companion import hitch as transport
+        world, truck, deck, series9 = haul_world()
+        job, notices = self.run_goal(world)
+        self.assertEqual((job.state, job.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), job.states)
+        tasks = [s.split(":")[0] for s in job.states]
+        self.assertEqual([t for i, t in enumerate(tasks) if i == 0 or tasks[i - 1] != t],
+                         ["hitch_pair", "load_tractor", "move_pair", "unload_tractor"])
+        after = world.items
+        self.assertTrue(transport.off_ramps(after[series9.id], after[deck.id]))
+        self.assertLess(math.dist(after[deck.id].position, (900.0, 900.0)), 1.0)       # unloaded there
+        self.assertEqual((after[deck.id].fold, after[deck.id].belts_fastened), (0.0, False))
+        self.assertEqual((notices[0], notices[-1]), ("ACCEPTED_HAUL", "COMPLETE_HAUL"))
+
+    def test_from_partly_done_states_nothing_completed_is_repeated(self):
+        for label, prep, first in (("hitched", dict(hitched=True), "load_tractor"),
+                                   ("loaded and belted", dict(loaded=True), "move_pair"),
+                                   ("loaded, ramps left down", dict(loaded=True, ramps_down=True), "load_tractor")):
+            with self.subTest(label):
+                world, truck, deck, series9 = haul_world(**prep)
+                job, _ = self.run_goal(world)
+                self.assertEqual((job.state, job.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), job.states)
+                self.assertEqual(job.states[0].split(":")[0], first)
+                self.assertNotIn("hitch_pair:ATTACH", job.states)
+                if prep.get("loaded"):
+                    self.assertNotIn("load_tractor:LOAD", job.states)          # never driven up twice
+                    self.assertNotIn("load_tractor:BELTS", job.states)
+
+    def test_no_unload_without_the_observed_arrival(self):
+        # No AutoDrive marker: the loaded rig is not sent by GOTO; the goal stops there and
+        # the tractor stays belted on the trailer.
+        world, truck, deck, series9 = haul_world(loaded=True, marker=False)
+        job, notices = self.run_goal(world)
+        self.assertEqual((job.state, job.reason), ("BLOCKED", "LOADED_NEEDS_AUTODRIVE"), job.states)
+        self.assertNotIn("unload_tractor", " ".join(job.states))
+        self.assertEqual(world.items[series9.id].belted_to, deck.id)
+
+    def test_the_next_step_from_each_observed_state(self):
+        from companion.coordinator import haul_step
+        world, truck, deck, series9 = haul_world()
+        items = tuple(world.snapshot())
+        target = {"type": "field_entrance", "field": 3}
+        self.assertEqual(haul_step(items, "farm-a", "deutz", target, False)[0]["task"], "hitch_pair")
+        self.assertEqual(haul_step(items, "farm-a", "fendt", target, False), (None, "NO_SUCH_TRACTOR"))
+        world, *_ = haul_world(loaded=True)
+        items = tuple(world.snapshot())
+        step = haul_step(items, "farm-a", "deutz", target, False)[0]
+        self.assertEqual((step["task"], step["cargo_name"], step["target"]), ("move_pair", "deutz", target))
+        self.assertEqual(haul_step(items, "farm-a", "deutz", target, True)[0]["task"], "unload_tractor")
+        self.assertEqual(haul_step(items, "farm-a", None, target, False)[0]["task"], "move_pair")   # "the tractor"
 
 
 if __name__ == "__main__":

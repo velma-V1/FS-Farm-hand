@@ -113,8 +113,8 @@ _IMPLEMENT_DESTINATION = re.compile(r"^(?:(?:the|a|an|my|that|this)\s+)?[a-z ]{0
 # Delivery asked for: the pair is to come to the requester or a place.
 _DELIVERY = re.compile(r"\b(?:bring|deliver|here|to me|over to me)\b")
 _LEAD_MOVE = re.compile(r"^(?:move|park|drive|return)\b")
-_ANY_VERB = re.compile(r"^(?:bring|take|get|fetch|grab|send|drive|deliver|move)\b")
-_NAMED = re.compile(r"^(?:bring|take|get|fetch|grab|send|drive|deliver|move)\s+(?:the|my|our)\s+"
+_ANY_VERB = re.compile(r"^(?:bring|take|get|fetch|grab|send|drive|deliver|move|haul|transport)\b")
+_NAMED = re.compile(r"^(?:bring|take|get|fetch|grab|send|drive|deliver|move|haul|transport)\s+(?:the|my|our)\s+"
                     r"([a-z0-9][a-z0-9 ]*?)\s+(?:to|here|over|back|into|at)\b")
 
 
@@ -169,6 +169,8 @@ TEST_AREA_M2 = 400        # "a small area of field 7": about a minute of work fo
 # tractor to the forage wagon then take it to the barn" is one fetch).
 _COVERS = {"fetch_pair": {"hitch_pair", "fetch_pair", "move_pair"}, "buy": {"buy"},
            "load_tractor": {"load_tractor"}, "field_work": {"field_work"}}
+# "... and unload it (there)": the end of a haul goal.
+_UNLOAD_TAIL = re.compile(r"\s+(?:and\s+)?(?:then\s+)?unload\s+(?:it|him|that|the tractor)(?:\s+there)?$")
 # Clause breaks of a sequence: commas, "then", "and then", ", and", semicolons.
 _CLAUSE_BREAK = re.compile(r"\s*,\s*(?:and\s+)?(?:then\s+)?|\s+(?:and\s+)?then\s+|\s*;\s*")
 # Tractor transport (AGENTS.md exception 5): "load the tractor onto the trailer", "load the
@@ -364,6 +366,9 @@ class RuleInterpreter:
         # Several commands in one go win over one reading of the whole sentence (live words
         # of the final acceptance request read as a single fetch); a clause not understood
         # leaves the whole sentence to the single reading ("buy a plow, the gmc truck ...").
+        haul = self._haul(text)
+        if haul is not None:
+            return haul
         single = self._interpret_one(text)
         if _CLAUSE_BREAK.search(text.casefold()):
             several = self._sequence(text)
@@ -371,6 +376,29 @@ class RuleInterpreter:
                                             <= _COVERS.get(single["command"], set())):
                 return several
         return single
+
+    def _haul(self, text: str) -> dict | None:
+        """"Take the Deutz to field 3 and unload it": one goal (haul_tractor), the move part
+        read like any move ("take the deutz to field 3"), its vehicle the tractor carried."""
+        words = normalize(text)
+        unload = _UNLOAD_TAIL.search(words)
+        if unload is None:
+            return None
+        prefix = _DEUTZ.sub("deutz", words[:unload.start()])
+        move = self._interpret_one(prefix)
+        if move is not None and move.get("command") == "unsupported" and move.get("reason") == "tractor_only":
+            # "take the tractor to field 3 and unload it": the tractor on the transport.
+            target = self._target(prefix, prefix)
+            move = None if target is None or target == _EQUIPMENT_TARGET else {"command": "move_pair", **target}
+        if move is None or move.get("command") != "move_pair" or "target" not in move and not re.search(
+                r"\b(?:here|to me)\b", prefix):
+            return None
+        proposal = {"version": 1, "command": "haul_tractor"}
+        if move.get("tractor_name"):
+            proposal["tractor_name"] = move["tractor_name"]
+        if "target" in move:
+            proposal["target"] = move["target"]
+        return proposal
 
     def _sequence(self, text: str) -> dict | None:
         """Several job commands said in one go ("take the gmc, hitch the deckover, load the

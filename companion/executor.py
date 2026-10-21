@@ -718,7 +718,8 @@ class Executor:
         marker = select_destination(markers, target) if autodrive else None
         return (marker or standoff_pose(target, origin, fallback_yaw)), None
 
-    def _choose_hitched(self, items, farm_id, requester, target, markers, origins=None, kind=None, name=None):
+    def _choose_hitched(self, items, farm_id, requester, target, markers, origins=None, kind=None, name=None,
+                        cargo=None):
         """move_pair: the hitched tractor and implement nearest the requester ("this"),
         ties by opaque ID, and its route; decided before reservation. With ``origins``
         (target origin): only an implement this companion took (of ``kind``), routed
@@ -732,6 +733,7 @@ class Executor:
                 continue
             if (wagon is not None and wagon.attached_to == tractor.id and movable(tractor, wagon)
                     and named(tractor, name)       # "move the gmc here": that vehicle's rig only
+                    and (cargo is None or any(named(c, cargo) and c.belted_to == wagon.id for c in items))
                     and all(usable(x, farm_id) and x.stopped for x in (tractor, wagon))):
                 pairs.append((math.dist(tractor.position, requester), tractor.id, tractor, wagon))
         if not pairs:
@@ -868,9 +870,12 @@ class Executor:
                             or not usable(tractor, farm_id) or not tractor.stopped or tractor.attached_to is not None
                             or not named(tractor, command.get("tractor_name"))):
                         continue
-                    if loading and (tractor.belted_to is None and not transport.on_deck(tractor, trailer)
-                                    and transport.load_aims(tractor, trailer)
-                                    and not any(transport.on_deck(tractor, t) for t in trailers)):
+                    aboard = tractor.belted_to == trailer.id or transport.on_deck(tractor, trailer)
+                    if loading and aboard:
+                        # Already on it (a goal resumed, or loaded by hand): verify and continue.
+                        pairs.append((-1.0, tractor.id, tractor, trailer))
+                    elif loading and (tractor.belted_to is None and transport.load_aims(tractor, trailer)
+                                      and not any(transport.on_deck(tractor, t) for t in trailers)):
                         pairs.append((math.dist(tractor.position, trailer.position), tractor.id, tractor, trailer))
                     elif not loading and (tractor.belted_to == trailer.id or transport.on_deck(tractor, trailer)):
                         pairs.append((0.0, tractor.id, tractor, trailer))
@@ -886,20 +891,26 @@ class Executor:
                 return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
             reserved = True
             if loading:
-                self._ramps(trailer.id, 1, owner, "RAMPS_DOWN")
-                tractor, trailer = self._transport_pair(ids)
-                if not transport.lined_up(tractor, trailer, share=0.5):
-                    enter("APPROACH")
+                aboard = tractor.belted_to == trailer.id or transport.on_deck(tractor, trailer)
+                if not aboard:
+                    self._ramps(trailer.id, 1, owner, "RAMPS_DOWN")
+                    tractor, trailer = self._transport_pair(ids)
+                    if not transport.lined_up(tractor, trailer, share=0.5):
+                        enter("APPROACH")
+                        moved = True
+                        self._approach(tractor, trailer, owner)
+                    enter("LOAD")
                     moved = True
-                    self._approach(tractor, trailer, owner)
-                enter("LOAD")
-                moved = True
-                self.world.load(tractor.id, trailer.id, 1, owner)
-                tractor, trailer = self._settled_transport(ids)
-                if not transport.on_deck(tractor, trailer):
-                    raise ObservationMismatch("NOT_ON_DECK")
-                enter("BELTS")
-                self.world.belts(trailer.id, True, owner)
+                    self.world.load(tractor.id, trailer.id, 1, owner)
+                    tractor, trailer = self._settled_transport(ids)
+                    if not transport.on_deck(tractor, trailer):
+                        raise ObservationMismatch("NOT_ON_DECK")
+                else:
+                    log.info("tractor %s already on trailer %s (belted: %s): continuing", tractor.id, trailer.id,
+                             tractor.belted_to == trailer.id)
+                if tractor.belted_to != trailer.id or trailer.belts_fastened is not True:
+                    enter("BELTS")
+                    self.world.belts(trailer.id, True, owner)
                 tractor, trailer = self._transport_pair(ids)
                 if trailer.belts_fastened is not True or tractor.belted_to != trailer.id:
                     log.info("belts: fastened %s, holding %s, tractor belted to %s", trailer.belts_fastened,
@@ -1303,13 +1314,22 @@ class Executor:
                 destination, failure = resolve_explicit_destination(
                     command["target"], self.world.destinations(), map_id, self.field_entrances)
                 if destination is None and failure in ("FIELD_NOT_MAPPED", "MAP_UNKNOWN"):
-                    # Any map: GIANTS' own field position, by GOTO (no AutoDrive marker known).
+                    # Any map: an AutoDrive marker named "field N" (AutoDrive's own name for it),
+                    # else GIANTS' own field position by GOTO.
                     number = command["target"]["field"]
+                    named_marker = [d for d in self.world.destinations() if isinstance(d, Destination)
+                                    and _normalized_name(d.name or "") == f"field {number}"]
                     place = next((p for p in self.world.field_places() if p.id == f"field-{number}"), None)
-                    if place is None:
+                    if len(named_marker) > 1:
+                        return Result("BLOCKED", "DESTINATION_AMBIGUOUS", states=tuple(states))
+                    if named_marker and valid_position(named_marker[0].position):
+                        target = PlaceTarget(f"field {number}", named_marker[0], place)
+                        log.info("field %s: AutoDrive marker %s %r", number, named_marker[0].id, named_marker[0].name)
+                    elif place is None:
                         return Result("BLOCKED", failure, states=tuple(states))
-                    target = PlaceTarget(place.name, None, place)
-                    log.info("field %s at %s (GIANTS' field position)", number, place.position)
+                    else:
+                        target = PlaceTarget(place.name, None, place)
+                        log.info("field %s at %s (GIANTS' field position)", number, place.position)
                 elif destination is None:
                     return Result("BLOCKED", failure, states=tuple(states))
                 else:
@@ -1321,7 +1341,8 @@ class Executor:
                 pair, delivery, failure = self._choose_hitched(items, farm_id, requester, target,
                                                                self.world.destinations(),
                                                                self._origins if to_origin else None,
-                                                               command.get("implement"), command.get("tractor_name"))
+                                                               command.get("implement"), command.get("tractor_name"),
+                                                               command.get("cargo_name"))
                 plan = travel = None
                 aims = ()
             elif detaching or working:

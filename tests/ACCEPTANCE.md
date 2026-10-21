@@ -463,10 +463,10 @@ never imply live qualification, and one live combination never implies others.
 
 | # | Observable criterion | Automated | Live |
 | --- | --- | --- | --- |
-| C1 | "Take the Deutz to field 3 and unload it" from an unprepared state (trailer unhitched, tractor elsewhere): hitch, ramps, load, belts, ramps up, delivery, unload, ramps up; COMPLETE only with each verified | pending | pending |
-| C2 | The same from a partly completed state (already hitched / already loaded and belted / ramps left down): completed steps ALREADY_DONE, never repeated | pending | pending |
+| C1 | "Take the Deutz to field 3 and unload it" from an unprepared state (trailer unhitched, tractor elsewhere): hitch, ramps, load, belts, ramps up, delivery, unload, ramps up; COMPLETE only with each verified | `test_transport.HaulGoalTests.test_from_an_unprepared_state_every_step_runs_once_in_order` (mock, AutoDrive marker "Field 3") | pending (FourFields save 2 has no AutoDrive marker) |
+| C2 | The same from a partly completed state (already hitched / already loaded and belted / ramps left down): completed steps never repeated | `test_transport.HaulGoalTests.test_from_partly_done_states_nothing_completed_is_repeated` | pending |
 | C3 | A loaded rig is never sent by GIANTS GOTO; without an AutoDrive route the job is kept and the gap named | `test_transport.TractorTransportTests.test_a_loaded_rig_is_never_sent_by_giants_goto` (refusal only) | refusal cause observed d14230aa9fb24d30-3 |
-| C4 | Unloading only after observed arrival at the destination; a stop, cancel, takeover or failure never unloads | pending | pending |
+| C4 | Unloading only after observed arrival at the destination; a stop, cancel, takeover or failure never unloads | `test_transport.HaulGoalTests.test_no_unload_without_the_observed_arrival` (failure case) | pending |
 | C5 | A destination changed during the job ("take it to field 2 instead") replaces the kept goal's destination; nothing completed repeats | pending | pending |
 | C6 | Player takeover pauses the goal; "continue" resumes from the observed state | pending | pending |
 | C7 | STOP pre-empts the running step of a plan, the goal kept for "continue" | `test_transport.SequenceTests.test_stop_preempts_the_running_steps_own_reservation` (pre-emption only) | pending |
