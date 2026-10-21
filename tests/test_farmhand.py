@@ -786,6 +786,27 @@ class GiantsNavigationTests(unittest.TestCase):
                     self.assertEqual(len(calls), len(aims))          # each aim once
                     self.assertEqual([i.position for i in world.snapshot()], [i.position for i in before])
 
+    def test_a_stage_that_timed_out_tries_the_next_aim(self):
+        # Live 4f792bc3dbeb41fc-3: GIANTS' GOTO wedged between a trailer and a new plow
+        # timed out (the mod cancels it); the next aim is tried instead of giving up.
+        calls = []
+
+        class Wedged(MockWorld):
+            def stage(self, tractor_id, wagon_id, pose, owner):
+                calls.append(pose)
+                if len(calls) == 1:
+                    raise StepFailed("STAGE_TIMEOUT")
+                return super().stage(tractor_id, wagon_id, pose, owner)
+
+        world = self.world(GOTO_TRACTOR, cls=Wedged)
+        tractor, wagon = world.snapshot()
+        world.items[tractor.id] = replace(tractor, position=(wagon.position[0] + 30.0, wagon.position[1]),
+                                          ai_root=Pose(wagon.position[0] + 30.0, wagon.position[1], 0.0))
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertNotEqual(calls[0], calls[1])
+
     def test_far_tractor_without_marker_travels_by_goto_to_staging(self):
         for capabilities in (GOTO_TRACTOR, AUTODRIVE_TRACTOR):     # AD, but no marker near the wagon
             with self.subTest(capabilities=sorted(capabilities)):

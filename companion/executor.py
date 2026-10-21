@@ -14,7 +14,7 @@ from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified, World
 from companion import hitch as transport   # its tractor-transport section
-from companion.hitch import (ALIGN_MAX_HEADING_RAD, IMPLEMENT_CATEGORIES, LOCAL_WORK_RADIUS_M, align_problem,
+from companion.hitch import (ALIGN_MAX_HEADING_RAD, APPROACH_CLEARANCE_M, IMPLEMENT_CATEGORIES, LOCAL_WORK_RADIUS_M, align_problem,
                              against_loose_implement, approach_poses, hitch_problem, joint_error,
                              joint_separation, plan_hitch, PULL_CLEAR_M)
 from protocol.model import (Destination, Equipment, FarmInfo, Field, FieldCoverage, HitchPlan, Pose, Position,
@@ -1857,7 +1857,10 @@ class Executor:
                                     continue
                                 if failure.code in START_BLOCKED_CODES:
                                     blocked = True
-                                elif failure.code not in GOTO_STALL_CODES:
+                                elif failure.code not in GOTO_STALL_CODES and failure.code != "STAGE_TIMEOUT":
+                                    # A STAGE that timed out had its job cancelled by the mod
+                                    # (live 4f792bc3dbeb41fc-3: wedged by a trailer and a new
+                                    # plow, 2 m in 2 min): a stalled drive, the next aim tried.
                                     raise
                                 else:
                                     # Stopped by the game's no-progress watchdog: an ended drive
@@ -1957,7 +1960,11 @@ class Executor:
                         # drawbar, a plain reverse from there) is the next aim (live
                         # 9c1beb5ad65c4255-1: the store yard refused every curve and the
                         # drive cap ran out before it).
-                        if plan.staging in aims[aim["next"]:]:
+                        # Not when other equipment stands by it (live 4f792bc3dbeb41fc-3: 3 m
+                        # beside the deckover's rear, GIANTS never got there).
+                        others = [i.position for i in self.world.snapshot() if i.id not in ids]
+                        if plan.staging in aims[aim["next"]:] and not any(
+                                math.dist((plan.staging.x, plan.staging.z), p) < APPROACH_CLEARANCE_M for p in others):
                             aims.remove(plan.staging)
                             aims.insert(aim["next"], plan.staging)
                         tractor, wagon, error = self._joints("re-approach start", ids, farm_id, owner, plan)
