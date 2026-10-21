@@ -37,6 +37,10 @@ DELIVERY_STANDOFF_M = 10.0
 # its root node (its centre, which is inside it), facing it. Provisional.
 PLACE_STANDOFF_M = 15.0
 TRACTOR_ARRIVAL_TOLERANCE_M = 3.0
+# A loaded transport no installed driver moves (cargo belted on its trailer: GIANTS GOTO blocked,
+# live d14230aa9fb24d30-3; AutoDrive waits on it as traffic, live 831d6868b9df40b0-1) is driven
+# there by the player; it has arrived within this of the destination's point.
+ARRIVED_BY_HAND_M = 25.0
 WAGON_ARRIVAL_TOLERANCE_M = 15.0
 ARRIVAL_SETTLE_S = 10.0
 MAX_TRACTOR_TRIES = 3            # tractors tried for one hitch whose attempt moved nothing
@@ -750,10 +754,18 @@ class Executor:
         # GIANTS' agent does not start a rig whose trailer carries a belted vehicle (live
         # d14230aa9fb24d30-3: BLOCKED from the first frame by its own cargo); AutoDrive counts
         # belt-mounted objects as its own (AutoDriveUtilFuncs checkIsConnected 61-64).
-        if isinstance(route, Pose) and any(item.belted_to == wagon.id for item in items):
-            route, failure = self._field_marker(target, tractor)
-            if route is None:
-                return None, None, failure
+        if any(item.belted_to == wagon.id for item in items):
+            # Cargo belted on the towed trailer: neither GIANTS GOTO nor AutoDrive moves it
+            # (AutoDrive ignores only what is mounted on the vehicle itself, AutoDriveUtilFuncs
+            # checkIsConnected 61-64; its sensors stop for the rest). The destination's point is
+            # an AutoDrive marker where it can be made; the player drives there, then "continue".
+            if isinstance(route, Pose):
+                marker, _ = self._field_marker(target, tractor)
+                route = marker or route
+            if math.dist(tractor.position, route_position(route)) > ARRIVED_BY_HAND_M:
+                log.info("loaded rig %s/%s %.0f m from %s: no driver moves it", tractor.id, wagon.id,
+                         math.dist(tractor.position, route_position(route)), route)
+                return None, None, "LOADED_NO_DRIVER"
         return (tractor, wagon), route, None
 
     def _field_marker(self, target, tractor):
@@ -1275,7 +1287,7 @@ class Executor:
             except (RuntimeError, ValueError) as error:
                 return Result("FAILED", getattr(error, "code", None) or type(error).__name__, states=tuple(states))
 
-        reserved = physical_attempted = False
+        reserved = physical_attempted = already_there = False
         status, reason = "BLOCKED", "NO_ELIGIBLE_PAIR"
         moving = command["task"] == "move_pair"
         detaching = command["task"] == "detach_pair"
@@ -1408,13 +1420,18 @@ class Executor:
             reserved = True
             self.active = ids                     # observed progress (Coordinator.status)
             if moving:
-                tractor, _ = self._pair(ids, farm_id, owner, attached=True, check=movable)
+                tractor, wagon = self._pair(ids, farm_id, owner, attached=True, check=movable)
                 if not tractor.stopped:
                     raise ObservationMismatch("EQUIPMENT_MOVING")
-                physical_attempted = True
-                enter("DELIVER")
-                self._move(tractor.id, delivery, owner, deliver=True, partner_id=ids[1])
-                self._arrival(ids, farm_id, owner, delivery, check=movable)
+                if (any(i.belted_to == wagon.id for i in self.world.snapshot())
+                        and math.dist(tractor.position, route_position(delivery)) <= ARRIVED_BY_HAND_M):
+                    log.info("loaded rig already at %s (driven there): no drive", delivery)
+                    already_there = True
+                else:
+                    physical_attempted = True
+                    enter("DELIVER")
+                    self._move(tractor.id, delivery, owner, deliver=True, partner_id=ids[1])
+                    self._arrival(ids, farm_id, owner, delivery, check=movable)
             elif working:
                 # FIELD_WORK -> VERIFY: GIANTS' field-work helper drives to the field and
                 # works it; complete only when the field's own measured state shows the
@@ -1709,7 +1726,7 @@ class Executor:
                     self._move(tractor.id, delivery, owner, deliver=True, partner_id=ids[1])
                     self._arrival(ids, farm_id, owner, delivery)
             if not (hitch_only or detaching or working):
-                status, reason = "COMPLETE", "DELIVERY_OBSERVED"
+                status, reason = "COMPLETE", "ALREADY_THERE" if already_there else "DELIVERY_OBSERVED"
         except Cancelled:
             status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
         except ObservationMismatch as error:
@@ -1763,6 +1780,10 @@ class Executor:
                     elif status == "COMPLETE" and detaching:
                         tractor, implement = self._pair(ids, farm_id, owner, attached=False)
                         if not (tractor.stopped and implement.stopped):
+                            raise ObservationMismatch("EQUIPMENT_MOVING")
+                    elif status == "COMPLETE" and already_there:
+                        tractor, wagon = self._pair(ids, farm_id, owner, attached=True, check=check)
+                        if not (tractor.stopped and wagon.stopped):
                             raise ObservationMismatch("EQUIPMENT_MOVING")
                     elif status == "COMPLETE":
                         self._arrival(ids, farm_id, owner, delivery, check=check)

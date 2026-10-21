@@ -96,12 +96,15 @@ have precedence; report conflicts instead of silently changing the scope.
   done (hitched, loaded, belted, bought, delivered) is verified and the work continues;
   it is never refused for that, nor repeated. A purchase is never made twice for one goal.
 - Autonomous delivery of a loaded transport (a trailer carrying a belted vehicle) is
-  AutoDrive's: GIANTS GOTO was observed blocked by its own belted cargo (FourFields save 2,
-  GMC 3500HD + 1124 Deckover + Deutz Series 9, build e91fc6c, live d14230aa9fb24d30-3; scoped to
-  that combination until other combinations are tested) and is not used for it. FollowMe
-  runs only when the player explicitly asks to be followed; it never stands in for a
-  point-to-point delivery. Without a usable AutoDrive route the job is kept and the
-  exact route or configuration gap is reported.
+  AutoDrive's wherever it can do it. Observed (FourFields save 2, GMC 3500HD + 1124 Deckover +
+  Deutz Series 9; scoped to that combination until others are tested): GIANTS GOTO is blocked by
+  its own belted cargo (build e91fc6c, live d14230aa9fb24d30-3) and AutoDrive 3.0.1.4 waits on it
+  as traffic (build 24c7dfb, live 831d6868b9df40b0-1; its source ignores only what is mounted on
+  the vehicle itself). Neither is started for it, and AutoDrive's global traffic detection is
+  never turned off: the job is kept and the player asked for the smallest help (drive it to the
+  destination, then "continue"). FollowMe runs only when the player explicitly asks to be
+  followed; it never stands in for a point-to-point delivery. Without a usable AutoDrive route
+  the job is kept and the exact route or configuration gap is reported.
 - Unloading happens only on observed arrival at the intended destination's unloading
   area. Stopping for traffic, a cancellation, a takeover or a failure never unloads.
 - AutoDrive configuration may be completed only through AutoDrive's own supported
