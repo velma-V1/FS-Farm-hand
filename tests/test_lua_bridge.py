@@ -1013,6 +1013,20 @@ class LuaBridgeTests(unittest.TestCase):
                 self.assertIn("stopCurrentAIJob", self.calls())
         self.assertTrue(any("blocked at its start: agent state blocked, 93.8 m" in line for line in output), output)
 
+    def test_a_navigate_planning_first_then_blocked_unmoved_is_blocked_at_its_start(self):
+        # Live fc25907b61fb402f-1: the stall watch ended it at 95 s ("agent state blocked")
+        # before 90 s of uninterrupted BLOCKED had passed: the agent planned first.
+        self.adopt()
+        self.w.gotoStarts = True
+        self.w.tractor.spec_aiDrivable = self.lua.table(lastState=1, distanceToTarget=93.8)
+        self.lua.execute("local w = ...; w.env.AIDrivable = { STATES = { [1] = 'planning', [3] = 'blocked' } }",
+                         self.w)
+        self.send(1, "navigate", self.POSE)
+        self.beating(8000)
+        self.w.tractor.spec_aiDrivable.lastState = 3
+        self.beating(86000)
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "NAVIGATE_BLOCKED_AT_START"))
+
     def test_a_goto_that_left_its_start_is_never_blocked_at_its_start(self):
         self.adopt()
         self.w.gotoStarts = True

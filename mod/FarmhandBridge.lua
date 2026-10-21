@@ -246,6 +246,10 @@ local function stepGoto(env, task, timeoutMs, timeoutCode, endCode, progress, pr
                 task.fromX, task.fromZ, task.fromAt = x, z, task.elapsed
             elseif task.elapsed - task.fromAt > Bridge.NAVIGATE_STALL_MS then
                 logAgent(env, v, task.op .. " stalled")
+                -- Never left its start and GIANTS' agent says BLOCKED: it cannot start from
+                -- there (live fc25907b61fb402f-1: the agent planned first, so this watch
+                -- fired before BLOCKED_START_MS of uninterrupted BLOCKED had passed).
+                if not task.leftStart and agentBlocked(env, v) then return "FAILED", prefix .. "BLOCKED_AT_START" end
                 -- The agent still drives (it has a path) yet nothing moves: something
                 -- physical holds the vehicle (live: a closed gate GIANTS' map treats as
                 -- open road). A BLOCKED agent waits for an obstacle it knows.
