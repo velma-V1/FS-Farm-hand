@@ -149,3 +149,10 @@ AI: Ollama `ministral-3:3b-instruct-2512-q8_0` (the user's choice).
 | "how is everything coming along out there" | model | status | NOT_A_JOB (status answered); the first two asks after the companion restart timed out (Ollama cold load, `TimeoutError`), answered once warm |
 | "could you get a small bit of field 1 plowed for me" | model | field_work, field 1, plow, area 400 m2 | BLOCKED CROP_READY_TO_HARVEST (standing wheat, no "anyway"), nothing moved |
 | "go work the dirt on field 1 with a plow" | model | field_work, field 1, plow | BLOCKED CROP_READY_TO_HARVEST, nothing moved |
+
+## Tractor transport rig: setup on save 2 (2026-10-21, build 9585e02)
+
+| Case | Test id | Result | Observed |
+| --- | --- | --- | --- |
+| "buy the gmc truck and the 1124 deckover" | 74e00c6acc754c38-1 | COMPLETE BOUGHT | GMC Sierra Denali 2500-3500HD (store item 1719) with attacherJoint option 7 "Gooseneck - Drop Hitch" (joints TRAILER, TRAILERCAR, SEMITRAILERCAR, SEMITRAILER) as vehicle 513, GIANTS' configured price 90,500; 1124 Deckover Trailer (BRANDT, item 1649) as vehicle 515 (inputs SEMITRAILER, SEMITRAILERCAR, TRAILER, TRAILERLOW, TRAILERCAR), configured price 14,000 (catalog base prices 90,000 / 12,500); balance down by exactly those; both at the store (-878, 805) |
+| "save the game" | same job's next request | COMPLETE SAVED | user-authorized single save so the rig persists across reloads; GIANTS logged "Game saved successfully." |
