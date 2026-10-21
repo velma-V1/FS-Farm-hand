@@ -251,8 +251,9 @@ Executable mapping (`python scripts/check.py`):
   timeout never opens doors or unparks; an UNPARK DONE without motion is UNVERIFIED; a
   stop before it cancels it; one extraction per vehicle per job across its steps (a new
   job has its own); a boxed lone tractor is unparked then hitches; one that cannot be
-  hands over to the next tractor unmoved; after UNPARK the first GOTO GIANTS takes must
-  move it. Mod side (`test_lua_bridge`): `unpark` is DONE only CLEAR and at rest,
+  hands over to the next tractor unmoved; after UNPARK beyond the local radius the
+  first GOTO GIANTS takes must move it, inside it LOCAL_MANEUVER / ALIGN_REVERSE take
+  over with no GOTO. Mod side (`test_lua_bridge`): `unpark` is DONE only CLEAR and at rest,
   refusals and failures are FAILED, AI blocks it, a stop pre-empts it braked, a closed
   door within 15 m refuses it without opening it; a
   navigate or stage whose agent stays BLOCKED 90 s never 2 m from its start ends

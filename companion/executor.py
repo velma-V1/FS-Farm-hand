@@ -1266,7 +1266,10 @@ class Executor:
                     once NOT_REACHABLE) costs no drive; one after the tractor got stuck
                     that cannot move it is TRAPPED. When no aim GIANTS took moved it (or
                     GIANTS' agent was blocked at its start, which no other aim changes),
-                    UNPARK frees it once (_free_start) and the aims are tried again."""
+                    UNPARK frees it once (_free_start) and "unparked" hands back to the
+                    hitch planner, which re-plans from the exit from fresh joints (the user,
+                    2026-10-20, after live 34c38284ac53469b-1): inside the local radius the
+                    bounded steps, else the aims again, the first GOTO being the hand-off."""
                     while True:
                         while more():
                             pose = aims[aim["next"]]
@@ -1310,6 +1313,7 @@ class Executor:
                         if aim["drives"] or not aim["unmoved"] or self._free_start(ids[0], owner) is None:
                             return None
                         aim.update(next=0, unmoved=0, stuck=False)
+                        return "unparked"
 
                 def unreached():
                     # No aim moved the tractor: there is no way in from here.
@@ -1359,6 +1363,9 @@ class Executor:
                                                              beyond="TRAVEL_ENDED_TOO_FAR")
                         if error.gap > LOCAL_WORK_RADIUS_M:
                             continue
+                    # Inside the local radius the bounded steps take over: after UNPARK no
+                    # hand-off GOTO is owed.
+                    self._handoff.discard(ids[0])
                     if error.gap <= ATTACH_READY_M and abs(error.heading) <= ALIGN_MAX_HEADING_RAD:
                         # The joints already meet (live: re-hitching after a detach, gap
                         # 0.12 m, 0.11 m on the far side): no motion, only GIANTS'

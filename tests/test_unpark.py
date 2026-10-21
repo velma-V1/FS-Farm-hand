@@ -168,6 +168,20 @@ class HitchFromAShedTests(unittest.TestCase):
         self.assertEqual(world.items[tractor.id].position, tractor.position)    # never moved
         self.assertEqual(world.unparked, (tractor.id,))
 
+    def test_inside_the_local_radius_after_unpark_the_bounded_hitch_steps_take_over(self):
+        # Live 34c38284ac53469b-1: UNPARK took the 7R 8.5 m out of the Open Hall, ~8 m from
+        # the PROLANDER's drawbar; the hand-off GOTO to an aim beside it was not_reachable.
+        # The user, 2026-10-20: re-plan from the exit (inside 25 m no GOTO at all).
+        tractor, wagon = simple_world().snapshot()
+        tractor = replace(tractor, capabilities=GOTO_TRACTOR, position=(30.0, -6.0), ai_root=Pose(30.0, -6.0, 0.0))
+        world = MockWorld([tractor, wagon], PLAYERS, ())
+        world.boxed = {tractor.id: {"exit": 15.0, "still": True}}     # any GOTO after it would fail
+        result = Executor(world).execute(dict(intent(), task="hitch_pair"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "HITCH_OBSERVED"), result)
+        after = result.states[result.states.index("UNPARK") + 1:]
+        self.assertEqual(after[:3], ("LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH"))
+        self.assertEqual(world.unparked, (tractor.id,))
+
     def test_after_unpark_the_first_goto_giants_takes_must_move_it(self):
         world, tractor, _ = self.hitch_world({"exit": 6.0, "still": True})
         result = Executor(world).execute(dict(intent(), task="hitch_pair"))

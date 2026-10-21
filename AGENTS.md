@@ -70,7 +70,9 @@ have precedence; report conflicts instead of silently changing the scope.
      from under any roof with 1.5 m clear all round and GIANTS' navigation map takes
      the ground ahead; every exit restores the temporary vehicle-control state. Then
      GIANTS gets the original target once, which must move it, else
-     UNPARK_HANDOFF_BLOCKED. One extraction per vehicle per parent job (its plan's
+     UNPARK_HANDOFF_BLOCKED; a hitch re-plans from the exit (the user, 2026-10-20):
+     inside the 25 m local radius the bounded LOCAL_MANEUVER / ALIGN_REVERSE take over
+     with no GOTO, beyond it the one hand-off GOTO. One extraction per vehicle per parent job (its plan's
      steps and next-tractor attempts included). Nothing is made passable, collisions
      are never disabled, nothing is teleported, and no safety distance is loosened.
 - Keep Python orchestration in companion/, pure contracts in protocol/ and
