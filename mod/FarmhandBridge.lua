@@ -1500,6 +1500,7 @@ Bridge.NOTICES = {
     NOT_LINKED = "Farmhand: the companion is not running",
     NO_TEXT_INPUT = "Farmhand: the text field is unavailable",
     STATUS_IDLE = "Farmhand: idle",
+    STATUS_PAUSED = "Farmhand: a job is paused; say continue to pick it up",
     LISTENING = "Farmhand: listening...",
     NOT_HEARD = "Farmhand: sorry, I did not hear that",
     VOICE_UNAVAILABLE = "Farmhand: voice is unavailable (no microphone, or Left Alt + N to install speech); type with Left Alt + K",

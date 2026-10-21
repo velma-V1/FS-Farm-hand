@@ -5,7 +5,9 @@ gooseneck is reversed under, stays down while hitched (clearance is never assume
 is down again before unhitching.
 """
 from dataclasses import replace
+import json
 import math
+from pathlib import Path
 import unittest
 import unittest.mock
 
@@ -644,6 +646,77 @@ class ResumeTests(unittest.TestCase):
         self.wait_idle(c)
         self.assertEqual(c.last.reason, "HAULED_AND_UNLOADED", c.last.states)
         self.assertLess(math.dist(world.items[deck.id].position, (-600.0, 300.0)), 1.0)
+
+
+class RestartTests(unittest.TestCase):
+    """A kept goal survives a reload or a companion restart and is re-planned from the
+    observed world; a purchase is never repeated (ACCEPTANCE C8). Mock world only."""
+
+    def test_a_paused_goal_is_saved_reloaded_by_a_new_companion_and_finished(self):
+        import tempfile
+        from companion import coordinator as coordination
+        from protocol.model import Result
+        world, truck, deck, series9 = haul_world(loaded=True)
+        world.cancel, world.retained, world.reservation = None, (lambda: ()), (lambda owner: None)
+        folder = Path(tempfile.mkdtemp())
+        goal = folder / "goal.json"
+        executor = Executor(world)
+
+        class Interrupted:
+            def execute(self, intent, cancel=None, on_state=None, job=None):
+                if intent["task"] == "move_pair":
+                    return Result("UNVERIFIED", "LINK_LOST", (truck.id, deck.id), ("FIND", "RESERVE", "DELIVER"))
+                return executor.execute(intent, cancel=cancel, on_state=on_state, job=job)
+
+        with unittest.mock.patch.object(coordination.Coordinator, "SETTLE_S", 0.0):
+            first = coordination.Coordinator(world, Interrupted(), lambda n, s=False: None, lambda: "farm-a",
+                                             lambda: "s1", goal_file=goal)
+            from companion.language import RuleInterpreter
+            first.submit(RuleInterpreter().interpret("take the deutz to field 3 and unload it"))
+            first.wait(30)
+            self.assertTrue(goal.exists())
+            # A new companion (restart): new session, same world.
+            notices = []
+            second = coordination.Coordinator(world, Executor(world), lambda n, s=False: notices.append(n),
+                                              lambda: "farm-a", lambda: "s2", goal_file=goal)
+            self.assertEqual(second.status(), "STATUS_PAUSED")
+            second.submit({"version": 1, "command": "resume"})
+            second.wait(30)
+            for _ in range(100):
+                if not second.busy:
+                    break
+                second.wait(0.1)
+        self.assertEqual((second.last.state, second.last.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), second.last.states)
+        self.assertFalse(goal.exists())                                     # done: nothing kept
+
+    def test_a_resumed_goal_never_buys_twice(self):
+        import tempfile
+        from companion import coordinator as coordination
+        from protocol.model import Result
+        world, truck, deck, series9 = haul_world()
+        world.cancel, world.retained, world.reservation = None, (lambda: ()), (lambda owner: None)
+        bought = []
+
+        class Scripted:
+            def execute(self, intent, cancel=None, on_state=None, job=None):
+                if intent["task"] == "buy":
+                    bought.append(intent["want"])
+                    return Result("COMPLETE", "BOUGHT", ("x",), ("FIND", "BUY", "VERIFY"))
+                return Result("COMPLETE", "OK", (), ("FIND",))
+
+        goal = Path(tempfile.mkdtemp()) / "goal.json"
+        # As left by a companion that crashed after the purchase, before marking it done:
+        # the step's baseline recorded, the farm now owning one more Series 9.
+        steps = [{"version": 1, "command": "buy", "wants": [{"kind": "tractor", "name": "deutz series 9"}]},
+                 {"version": 1, "command": "load_tractor"}]
+        goal.write_text(json.dumps({"command": "sequence", "target": "here", "implement": None,
+                                    "work": {"steps": steps, "done": 0, "baseline": {"1": 0}}}))
+        c = coordination.Coordinator(world, Scripted(), lambda n, s=False: None, lambda: "farm-a", lambda: "s3",
+                                     goal_file=goal)
+        c.submit({"version": 1, "command": "resume"})
+        c.wait(10)
+        self.assertEqual(bought, [])                                        # the Series 9 is already there
+        self.assertEqual((c.last.state, c.last.states[0]), ("COMPLETE", "buy:ALREADY_DONE"))
 
 
 if __name__ == "__main__":

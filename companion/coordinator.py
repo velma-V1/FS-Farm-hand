@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import threading
@@ -66,6 +67,21 @@ def result_notice(status: str, reason: str, complete: str = "COMPLETE") -> str:
     if status == "CANCELLED":
         return status
     return token(f"{status}_{reason}")
+
+
+def owned_like(items: tuple[Equipment, ...], farm_id: str, wants) -> int:
+    """How many of the farm's vehicles answer these wants (by name or brand words, or a
+    plow by kind): a purchase step's before-and-after measure."""
+    count = 0
+    for item in items:
+        if item.farm_id != farm_id:
+            continue
+        for want in wants:
+            if want.get("name") and named(item, want["name"].casefold()):
+                count += 1
+            elif not want.get("name") and want["kind"] == "plow" and of_kind(item, "plow"):
+                count += 1
+    return count
 
 
 # ------------------------------------------------------------- haul planning
@@ -196,9 +212,12 @@ class Coordinator:
     spoken)`` shows a token in game (and speaks it when the request was spoken); ``farm`` returns the linked farm id, or raises
     StepUnverified when the game is not linked to this companion."""
 
-    def __init__(self, world, executor, notify, farm, session):
+    def __init__(self, world, executor, notify, farm, session, goal_file: Path | None = None):
         self.world, self.executor, self.notify = world, executor, notify
         self.farm, self.session = farm, session
+        # The kept goal survives a game reload or a companion restart: "continue" re-plans it
+        # from the observed world (equipment by name and brand; session IDs change).
+        self.goal_file = goal_file
         self._lock = threading.Lock()
         self._jobs = 0
         self.current: Job | None = None
@@ -208,7 +227,7 @@ class Coordinator:
         # The request id of the executor job running now: a plan's step reserves under its
         # own id, and STOP must pre-empt that reservation's running bridge operation.
         self.running: str | None = None
-        self.kept: Kept | None = None             # the goal "continue" resumes
+        self.kept: Kept | None = self._load_goal()  # the goal "continue" resumes
         self._then = None                         # a destination to resume with once this job ends
 
     @property
@@ -255,6 +274,8 @@ class Coordinator:
             job, last = self.current, self.last
         if job is not None:
             return token(f"STATUS_WORKING_{job.step or 'FIND'}")
+        if self.kept is not None:
+            return "STATUS_PAUSED"
         if last is not None:
             return token(f"STATUS_LAST_{last.state}")
         return "STATUS_IDLE"
@@ -362,6 +383,7 @@ class Coordinator:
                 self.current, self.last = None, job
                 if command in GOALS:
                     self.kept = None if job.state == "COMPLETE" else Kept(command, target, implement, work)
+                    self._save_goal()
                 then, self._then = self._then, None
             notice = result_notice(job.state, job.reason or "", complete)
             if command in GOALS and job.state != "COMPLETE" and then is None:
@@ -408,6 +430,37 @@ class Coordinator:
         self.notify("RETARGETED", spoken)
         return self.resume(spoken)
 
+    def _load_goal(self) -> Kept | None:
+        if self.goal_file is None:
+            return None
+        try:
+            data = json.loads(self.goal_file.read_text(encoding="utf-8"))
+            if data.get("command") not in GOALS or not isinstance(data.get("work"), dict):
+                raise ValueError("not a goal")
+            log.info("kept goal from %s: %s", self.goal_file, data)
+            return Kept(data["command"], data.get("target", "here"), data.get("implement"), data["work"])
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, TypeError, AttributeError) as error:
+            log.info("kept goal unreadable (%s): ignored", error)
+            return None
+
+    def _save_goal(self) -> None:
+        """Atomically: the kept goal, or no file when there is none."""
+        if self.goal_file is None:
+            return
+        try:
+            if self.kept is None:
+                self.goal_file.unlink(missing_ok=True)
+                return
+            self.goal_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.goal_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"command": self.kept.command, "target": self.kept.target,
+                                       "implement": self.kept.implement, "work": self.kept.work}), encoding="utf-8")
+            os.replace(tmp, self.goal_file)
+        except OSError as error:
+            log.info("kept goal not saved: %s", error)
+
     def _retarget_kept(self, target) -> None:
         kept = self.kept
         kept.target = target
@@ -419,6 +472,7 @@ class Coordinator:
                 if n >= kept.work.get("done", 0) and step["command"] in ("move_pair", "fetch_pair"):
                     step["target"] = target
         log.info("goal %s retargeted to %s", kept.command, target)
+        self._save_goal()
 
     def _sequence(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """The player's commands in order, one job: each step starts only after the one
@@ -433,6 +487,19 @@ class Coordinator:
             if cancel.is_set():
                 return Result("CANCELLED", "CANCELLED_BY_REQUESTER", tuple(used), tuple(states))
             command = step["command"]
+            if command == "buy":
+                baseline = work.setdefault("baseline", {})
+                count = owned_like(tuple(self.world.snapshot()), self.farm(), step["wants"])
+                if str(n) in baseline and count > baseline[str(n)]:
+                    # Bought before a restart or a stop (the farm has more of it than before
+                    # this step first ran): never bought twice.
+                    log.info("job %d step %d buy: already bought (%d > %d)", job.number, n, count, baseline[str(n)])
+                    states.append("buy:ALREADY_DONE")
+                    work["done"] = n
+                    self._save_goal()
+                    continue
+                baseline.setdefault(str(n), count)
+                self._save_goal()
             sub = Job(number=job.number, owner=f"{job.owner}-s{n}", spoken=job.spoken)
             if command == "field_work":
                 result = self._field_work(sub, cancel, entered, {
@@ -456,6 +523,7 @@ class Coordinator:
             if result.status != "COMPLETE":
                 return Result(result.status, result.reason, tuple(used), tuple(states))
             work["done"] = n
+            self._save_goal()
         return Result("COMPLETE", "SEQUENCE_DONE", tuple(used), tuple(states))
 
     MAX_HAUL_STEPS = 8

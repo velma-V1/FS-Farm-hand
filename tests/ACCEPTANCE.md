@@ -470,7 +470,7 @@ never imply live qualification, and one live combination never implies others.
 | C5 | A destination changed during the job ("take it to field 2 instead") replaces the kept goal's destination; nothing completed repeats | `test_transport.ResumeTests.test_a_new_destination_while_driving_stops_and_carries_on_there`, `..._for_a_kept_goal_and_nothing_to_continue` | pending |
 | C6 | Player takeover pauses the goal; "continue" resumes from the observed state | `test_transport.ResumeTests.test_a_takeover_pauses_and_continue_resumes_from_the_observed_state` (takeover as the step's DRIVER_TOOK_OVER result) | pending |
 | C7 | STOP pre-empts the running step of a plan, the goal kept for "continue" | `test_transport.SequenceTests.test_stop_preempts_the_running_steps_own_reservation`, `ResumeTests.test_stop_pauses_the_goal_and_continue_finishes_it_without_repeating` | pending |
-| C8 | After a reload or companion restart the kept goal is reconciled with the world, equipment re-identified, no purchase repeated | pending | pending |
+| C8 | After a reload or companion restart the kept goal is reconciled with the world, equipment re-identified, no purchase repeated | `test_transport.RestartTests` (goal file %LOCALAPPDATA%/FS25Farmhand/goal.json; re-planned by names) | pending |
 | C9 | Vehicles by brand and nickname ("the Deutz"); "it", "that trailer", "take it back" resolve to the goal's own equipment | brand: `test_procurement.NamedPairTests.test_only_the_named_vehicles_are_chosen` | brand: pending (gap seen d14230aa9fb24d30-1) |
 | C10 | Progress notices and STATUS from observed state only | pending | pending |
 | C11 | Spending limit, preferences, buy/sell permission checked before buying | pending | pending |
