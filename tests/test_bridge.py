@@ -678,10 +678,11 @@ class ServiceTests(unittest.TestCase):
         game.press(2)
         self.wait_for(lambda: notices[-1:] == ["BUSY"])
         game.say(3, "Farmhand, what are you doing?")
-        self.wait_for(lambda: notices[-1:] == ["STATUS_WORKING_ALIGN_REVERSE"])
+        # The held reverse moves nothing: said so (an accepted command is not motion).
+        self.wait_for(lambda: notices[-1:] == ["STATUS_WAITING_ALIGN_REVERSE"])
         game.say(4, "STOP!")
         self.wait_for(lambda: notices[-1:] == ["CANCELLED"])
-        self.assertEqual(notices, ["ACCEPTED", "BUSY", "STATUS_WORKING_ALIGN_REVERSE", "STOPPING", "CANCELLED"])
+        self.assertEqual(notices, ["ACCEPTED", "BUSY", "STATUS_WAITING_ALIGN_REVERSE", "STOPPING", "CANCELLED"])
         ops = self.ops(game)
         self.assertEqual(ops[:3], ["stage", "maneuver", "align"])
         self.assertNotIn("attach", ops)                          # nothing after the stop

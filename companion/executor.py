@@ -551,6 +551,8 @@ def _angle(a: float, b: float) -> float:
 class Executor:
     """Serialized in-process execution. Replay cache is NOT crash-durable."""
 
+    active: tuple = ()        # the units the running step reserved (observed progress)
+
     def __init__(self, world: World, field_entrances=None):
         self.world = world
         self.field_entrances = validated_field_entrances(field_entrances)
@@ -911,6 +913,7 @@ class Executor:
             if not self.world.reserve(ids, owner, transport=True):
                 return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
             reserved = True
+            self.active = ids
             if loading:
                 aboard = tractor.belted_to == trailer.id or transport.on_deck(tractor, trailer)
                 if not aboard:
@@ -978,6 +981,7 @@ class Executor:
                 except Exception as error:
                     log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
                     status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        self.active = ()
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, ids, tuple(states))
 
@@ -1402,6 +1406,7 @@ class Executor:
             if not self.world.reserve(ids, owner):
                 return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
             reserved = True
+            self.active = ids                     # observed progress (Coordinator.status)
             if moving:
                 tractor, _ = self._pair(ids, farm_id, owner, attached=True, check=movable)
                 if not tractor.stopped:
@@ -1770,5 +1775,6 @@ class Executor:
                 except Exception as error:
                     log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
                     status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        self.active = ()
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, ids, tuple(states))

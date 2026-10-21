@@ -1774,11 +1774,19 @@ function Bridge.noticeText(notice)
     if working ~= nil then return "Farmhand: " .. (Bridge.STEPS[working] or working), false end
     local step = notice:match("^STATUS_WORKING_([%u_]+)$")
     if step ~= nil then return "Farmhand: working - " .. (Bridge.STEPS[step] or step), false end
+    -- A motion step whose equipment is not observed moving: said so, never "driving".
+    local waiting = notice:match("^STATUS_WAITING_([%u_]+)$")
+    if waiting ~= nil then
+        return "Farmhand: " .. (Bridge.STEPS[waiting] or waiting) .. " - not moving yet", false
+    end
     local last = notice:match("^STATUS_LAST_(%u+)$")
     if last ~= nil then return "Farmhand: idle; last job " .. (Bridge.OUTCOMES[last] or last), false end
     local status, reason = notice:match("^(%u+)_([%w_]+)$")
-    if status == "BLOCKED" or status == "FAILED" or status == "UNVERIFIED" then
-        return "Farmhand: not delivered - " .. (Bridge.REASONS[reason] or reason), true
+    -- What happened, not "not delivered" for every job: nothing started, it stopped
+    -- part-way, or the outcome is not certain.
+    local lead = { BLOCKED = "could not start", FAILED = "stopped short", UNVERIFIED = "unsure, check it" }
+    if lead[status] ~= nil then
+        return "Farmhand: " .. lead[status] .. " - " .. (Bridge.REASONS[reason] or reason), true
     end
     return "Farmhand: " .. notice, false
 end

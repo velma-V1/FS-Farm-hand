@@ -549,8 +549,8 @@ class LuaBridgeTests(unittest.TestCase):
             "4:Farmhand: companion connected",
             "4:Farmhand: tractor and implement delivered",
             "4:Farmhand: stopping",
-            "1:Farmhand: not delivered - no available tractor and implement",
-            "1:Farmhand: not delivered - SOMETHING_NEW"])
+            "1:Farmhand: could not start - no available tractor and implement",
+            "1:Farmhand: stopped short - SOMETHING_NEW"])
 
     def test_the_ai_menu_is_shown_and_the_pick_is_sent(self):
         from protocol.ipc import encode_menu
@@ -589,7 +589,7 @@ class LuaBridgeTests(unittest.TestCase):
                  "STATUS_WORKING_ALIGN_REVERSE": ("Farmhand: working - reversing to the implement", False),
                  "STATUS_LAST_CANCELLED": ("Farmhand: idle; last job stopped", False),
                  "COMPLETE_MOVE": ("Farmhand: arrived", False),
-                 "FAILED_NAVIGATE_STALLED": ("Farmhand: not delivered - the tractor got stuck (parked in a shed or boxed in?)", True)}
+                 "FAILED_NAVIGATE_STALLED": ("Farmhand: stopped short - the tractor got stuck (parked in a shed or boxed in?)", True)}
         for notice, expected in cases.items():
             with self.subTest(notice=notice):
                 self.assertEqual(tuple(self.bridge.noticeText(notice)), expected)
@@ -1335,10 +1335,10 @@ class LuaBridgeTests(unittest.TestCase):
         cases = {"WORKING_LOCAL_MANEUVER": ("Farmhand: lining up with the implement", False),
                  "WORKING_STAGE": ("Farmhand: driving to the implement", False),
                  "FAILED_SEATED_DURING_MANEUVER": (
-                     "Farmhand: not delivered - step out of the tractor for the last metres of the hitch, "
+                     "Farmhand: stopped short - step out of the tractor for the last metres of the hitch, "
                      "then ask again", True),
                  "FAILED_LOCAL_PATH_HITS_WAGON": (
-                     "Farmhand: not delivered - there is no room to line up with the implement from here", True)}
+                     "Farmhand: stopped short - there is no room to line up with the implement from here", True)}
         for notice, expected in cases.items():
             with self.subTest(notice=notice):
                 self.assertEqual(tuple(self.bridge.noticeText(notice)), expected)

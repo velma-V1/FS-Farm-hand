@@ -758,5 +758,27 @@ class AutoDriveBackupTests(unittest.TestCase):
         self.assertEqual(failed.exception.code, "AD_CONFIG_BACKUP_FAILED")
 
 
+class ProgressTests(unittest.TestCase):
+    """STATUS says a motion step is driving only when its equipment is observed moving (C10)."""
+
+    def test_status_follows_observed_motion(self):
+        from companion import coordinator as coordination
+        world, truck, deck, series9 = haul_world(hitched=True)
+
+        class Executor_:
+            active = ()
+
+        executor = Executor_()
+        c = coordination.Coordinator(world, executor, lambda n, s=False: None, lambda: "farm-a", lambda: "s1")
+        c.current = coordination.Job(1, "s1-1", step="DELIVER", command="haul_tractor")
+        self.assertEqual(c.status(), "STATUS_WAITING_DELIVER")                 # nothing reserved yet
+        executor.active = (truck.id, deck.id)
+        self.assertEqual(c.status(), "STATUS_WAITING_DELIVER")                 # reserved, at rest
+        world.items[truck.id] = replace(world.items[truck.id], stopped=False)
+        self.assertEqual(c.status(), "STATUS_WORKING_DELIVER")                 # observed moving
+        c.current = coordination.Job(1, "s1-1", step="BELTS", command="haul_tractor")
+        self.assertEqual(c.status(), "STATUS_WORKING_BELTS")                   # not a motion step
+
+
 if __name__ == "__main__":
     unittest.main()

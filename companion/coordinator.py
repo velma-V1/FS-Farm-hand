@@ -42,6 +42,9 @@ def token(text: str) -> str:
 
 # Steps worth telling the player about while a job works (WORKING_<step>); the
 # rest is visible on request (STATUS_WORKING_<step>).
+# Steps that move equipment: STATUS says "driving" only when it is observed moving.
+MOTION_STEPS = frozenset({"TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "PULL_CLEAR", "UNPARK",
+                          "DELIVER", "FIELD_WORK", "APPROACH", "LOAD", "UNLOAD"})
 MILESTONES = frozenset({"FIELD_WORK", "PULL_CLEAR", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "DELIVER",
                         "RAMPS_DOWN", "LOAD", "BELTS", "RAMPS_UP", "UNLOAD"})
 # The executor task and the player-facing notices of each job command.
@@ -273,12 +276,25 @@ class Coordinator:
         with self._lock:
             job, last = self.current, self.last
         if job is not None:
-            return token(f"STATUS_WORKING_{job.step or 'FIND'}")
+            step = job.step or "FIND"
+            if step in MOTION_STEPS and not self._moving():
+                return token(f"STATUS_WAITING_{step}")    # a pending command is not motion
+            return token(f"STATUS_WORKING_{step}")
         if self.kept is not None:
             return "STATUS_PAUSED"
         if last is not None:
             return token(f"STATUS_LAST_{last.state}")
         return "STATUS_IDLE"
+
+    def _moving(self) -> bool:
+        """Whether a unit the running step reserved is observed moving now."""
+        ids = set(getattr(self.executor, "active", ()) or ())
+        if not ids:
+            return False
+        try:
+            return any(item.id in ids and not item.stopped for item in self.world.snapshot())
+        except Exception:                          # unobserved is not moving
+            return False
 
     # -------------------------------------------------------------------- stop
     def stop(self, spoken: bool = False) -> None:
