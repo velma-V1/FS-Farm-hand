@@ -245,6 +245,18 @@ class TractorTransportTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("UNVERIFIED", "NOT_ON_DECK"))
         self.assertNotIn("BELTS", result.states)
 
+    def test_a_loaded_rig_is_never_sent_by_giants_goto(self):
+        # Live d14230aa9fb24d30-3: GIANTS' agent stayed BLOCKED from the first frame with the
+        # Series 9 belted on the deckover. Without an AutoDrive marker: refused, nothing moved.
+        world, tractor, deck, truck = transport_world()
+        Executor(world).execute(load())
+        world.players = {"farm-a": (500.0, 500.0)}
+        before = world.snapshot()
+        result = Executor(world).execute(dict(intent(request_id="move-1"), task="move_pair"))
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "LOADED_NEEDS_AUTODRIVE"), result)
+        self.assertNotIn("RESERVE", result.states)
+        self.assertEqual(world.snapshot(), before)
+
     def test_what_is_chosen(self):
         # Named: the deutz; a tractor towing something, or one the player rides away, is never loaded.
         world, tractor, deck, truck = transport_world()

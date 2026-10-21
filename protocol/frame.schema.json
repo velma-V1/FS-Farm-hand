@@ -60,6 +60,7 @@
                                  "markers": {"type": "array", "maxItems": 16, "items": {
                                    "type": "array", "minItems": 6, "maxItems": 6, "items": {"type": "number"}}}}}]},
         "belted_to": {"oneOf": [{"$ref": "#/$defs/objectId"}, {"type": "null"}]},
+        "brand": {"oneOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
         "size": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false,
                  "required": ["length", "width", "height", "length_offset"],
                  "properties": {"length": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},

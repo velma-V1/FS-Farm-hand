@@ -433,6 +433,12 @@ function Observe.vehicle(env, v)
         local item = env.g_storeManager:getItemByXMLFilename(v.configFileName)
         return item and item.name
     end)
+    -- Its brand as the store lists it (brandNameRaw, as Observe.storeItem): live, the
+    -- Series 9 2019 is DEUTZFAHR's, and the player calls it "the deutz".
+    local brand = try(function()
+        local item = env.g_storeManager:getItemByXMLFilename(v.configFileName)
+        return item and item.brandNameRaw
+    end)
 
     local speed = try(function() return v:getLastSpeed() end)
     if not finite(speed) or math.abs(speed) > 1000 then speed = nil end
@@ -595,6 +601,7 @@ function Observe.vehicle(env, v)
         kinds = Observe.kinds(v),
         fill_units = Observe.fillUnits(env, v),
         name = nullable(text(storeName)),
+        brand = nullable(text(brand)),
         x = x,
         z = z,
         speed_kmh = nullable(speed),

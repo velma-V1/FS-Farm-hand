@@ -187,6 +187,12 @@ class NamedPairTests(unittest.TestCase):
         self.assertFalse(named(gmc, "series 9"))
         self.assertTrue(named(gmc, None))
         self.assertFalse(named(replace(gmc, name=None), "gmc"))
+        # By its brand too (live d14230aa9fb24d30-1: "the deutz" did not find "Series 9 2019").
+        series9 = Equipment("d", "tractor", "farm-a", (0, 0), name="Series 9 2019", brand="DEUTZFAHR")
+        self.assertTrue(named(series9, "deutz"))
+        self.assertTrue(named(series9, "deutz series 9"))
+        self.assertFalse(named(series9, "fendt"))
+        self.assertFalse(named(replace(series9, brand=None), "deutz"))
 
 
 class HitchOptionTests(unittest.TestCase):

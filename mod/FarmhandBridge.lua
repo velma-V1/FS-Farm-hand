@@ -1565,6 +1565,7 @@ Bridge.REASONS = {
     LOAD_TRACTOR_NOT_ALONE = "unhitch the tractor's implement first",
     TRANSPORT_MOVED = "the truck or trailer moved; stopped",
     BELTS_NOT_HOLDING = "the belts did not hold the tractor; check it",
+    LOADED_NEEDS_AUTODRIVE = "a loaded trailer needs an AutoDrive destination (the game's own driver will not start with cargo)",
     NOT_ON_DECK = "the tractor is not on the deck; check it",
     DETACH_NOT_ALLOWED = "the game does not allow unhitching it right now",
     NOT_ATTACHED = "that implement is not hitched",

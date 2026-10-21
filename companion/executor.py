@@ -522,11 +522,12 @@ def _name_fit(item: StoreItem, want: dict) -> int:
 
 
 def named(item: Equipment, name: str | None) -> bool:
-    """The player named it ("with the gmc"): every word in its store name."""
+    """The player named it ("with the gmc", "the deutz"): every word in its store name or
+    brand (live: the Series 9 2019 is DEUTZFAHR's)."""
     if not name:
         return True
-    return item.name is not None and all(w in item.name.casefold().split() or w in item.name.casefold()
-                                         for w in name.split())
+    text = " ".join(t for t in (item.name, item.brand) if t).casefold()
+    return bool(text) and all(w in text.split() or w in text for w in name.split())
 
 
 def workable(tractor: Equipment, implement: Equipment, kinds: tuple[str, ...] = ()) -> bool:
@@ -741,6 +742,11 @@ class Executor:
         route, failure = self._route(target, tractor, tractor.position, tractor.heading or 0.0, markers)
         if route is None:
             return None, None, failure
+        # GIANTS' agent does not start a rig whose trailer carries a belted vehicle (live
+        # d14230aa9fb24d30-3: BLOCKED from the first frame by its own cargo); AutoDrive counts
+        # belt-mounted objects as its own (AutoDriveUtilFuncs checkIsConnected 61-64).
+        if isinstance(route, Pose) and any(item.belted_to == wagon.id for item in items):
+            return None, None, "LOADED_NEEDS_AUTODRIVE"
         return (tractor, wagon), route, None
 
     def _choose_attached(self, items, farm_id, requester):

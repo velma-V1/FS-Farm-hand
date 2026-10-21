@@ -93,6 +93,7 @@ class Equipment:
     belted_to: str | None = None
     belt_markers: tuple[tuple[float, ...], ...] = ()   # each belt's start x y z, end x y z (world)
     size: tuple[float, float, float, float] | None = None  # GIANTS size box: length, width, height, length offset
+    brand: str | None = None              # the store's brand (brandNameRaw), e.g. DEUTZFAHR
     stopped: bool = True
     # Hitch geometry; unknown values are None/empty and make a vehicle unhitchable.
     # Joint types are compared per joint pair (companion/hitch.py), as GIANTS does.
