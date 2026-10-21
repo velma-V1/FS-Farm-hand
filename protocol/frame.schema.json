@@ -56,7 +56,9 @@
         "belts": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false,
                   "required": ["fastened", "held"],
                   "properties": {"fastened": {"type": "boolean"},
-                                 "held": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/objectId"}}}}]},
+                                 "held": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/objectId"}},
+                                 "markers": {"type": "array", "maxItems": 16, "items": {
+                                   "type": "array", "minItems": 6, "maxItems": 6, "items": {"type": "number"}}}}}]},
         "belted_to": {"oneOf": [{"$ref": "#/$defs/objectId"}, {"type": "null"}]},
         "name": {"oneOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
         "fill_units": {"type": "array", "maxItems": 8, "items": {

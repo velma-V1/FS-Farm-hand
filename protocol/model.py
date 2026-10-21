@@ -91,6 +91,7 @@ class Equipment:
     belts_fastened: bool | None = None
     belted: tuple[str, ...] = ()
     belted_to: str | None = None
+    belt_markers: tuple[tuple[float, ...], ...] = ()   # each belt's start x y z, end x y z (world)
     stopped: bool = True
     # Hitch geometry; unknown values are None/empty and make a vehicle unhitchable.
     # Joint types are compared per joint pair (companion/hitch.py), as GIANTS does.

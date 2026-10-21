@@ -558,7 +558,16 @@ function Observe.vehicle(env, v)
             if integer(heldId) then held[#held + 1] = heldId end
         end
         table.sort(held)
-        return { fastened = spec.areAllBeltsFastened, held = Observe.array(held) }
+        -- Where each belt runs (its start and end markers, as getObjectToMount 1100-1193 builds
+        -- the box it holds): GIANTS' own cargo area of the deck, x y z at both ends.
+        local markers = {}
+        for _, belt in ipairs(spec.sortedBelts or {}) do
+            local sx, sy, sz = env.getWorldTranslation(belt.startNode)
+            local ex, ey, ez = env.getWorldTranslation(belt.endNode)
+            assert(finite(sx) and finite(sy) and finite(sz) and finite(ex) and finite(ey) and finite(ez))
+            if #markers < 16 then markers[#markers + 1] = Observe.array({ sx, sy, sz, ex, ey, ez }) end
+        end
+        return { fastened = spec.areAllBeltsFastened, held = Observe.array(held), markers = Observe.array(markers) }
     end)
     local beltedTo = try(function()
         if v.tensionMountObject == nil then return nil end

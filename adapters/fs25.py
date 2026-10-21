@@ -195,6 +195,7 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
         belts_fastened=(vehicle.get("belts") or {}).get("fastened"),
         belted=tuple(str(i) for i in (vehicle.get("belts") or {}).get("held", ())),
         belted_to=None if vehicle.get("belted_to") is None else str(vehicle["belted_to"]),
+        belt_markers=tuple(tuple(m) for m in (vehicle.get("belts") or {}).get("markers", ())),
     )
 
 
