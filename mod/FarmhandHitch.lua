@@ -1227,6 +1227,11 @@ Hitch.PULL = {
     lookaheadM = 3,
     divergeM = 0.5,           -- farther than this off the starting line: DIVERGED
     separationSlackM = 0.05,  -- the separation may never shrink more than this: SEPARATION_LOST
+    -- The unhitched implement is behind when its joint is no farther ahead than the
+    -- tractor's own joint plus this (= companion/hitch.py FRONT_JOINT_SLACK_M) and its root
+    -- is behind the steering node: a gooseneck ball sits over the steering axle (live
+    -- 31365e0476674ed6-4, GMC 3500HD: 0.02 m), a drawbar 1-2 m behind it.
+    jointSlackM = 0.5,
 }
 
 -- The tractor's checked points at `along` metres on its starting line (x ahead,
@@ -1313,8 +1318,10 @@ function Hitch.newPullClear(env, args)
         local o = observePull(env, s)
         s.implementX, s.implementZ, s.rootX, s.rootZ = o.ix, o.iz, o.rx, o.rz
         s.bestSeparation, s.startSeparation = o.separation, o.separation      -- away == separation here
-        local ix = inFrame(s, o.ix, o.iz)
-        if ix >= 0 then return nil, "PULL_CLEAR_NOT_BEHIND" end     -- forward would drive into it
+        -- Forward would drive into it.
+        if inFrame(s, o.ix, o.iz) > s.jointAhead + P.jointSlackM or inFrame(s, o.rx, o.rz) >= 0 then
+            return nil, "PULL_CLEAR_NOT_BEHIND"
+        end
         local okAround, others, player = pcall(surroundings, env, s)
         if not okAround then return nil, "LOCAL_AREA_UNKNOWN" end
         s.others, s.player = others, player

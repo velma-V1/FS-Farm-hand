@@ -58,8 +58,20 @@ class LuaPullClearTests(unittest.TestCase):
         self.assertEqual(events[-2:], ["brake", "cruise:0"])
         self.assertNotEqual(w.tractor.forceIsActive, True)
 
+    def test_a_gooseneck_ball_over_the_axle_pulls_clear(self):
+        # Live 31365e0476674ed6-4 (GMC 3500HD, Deckover): the ball sits 0.02 m from the
+        # steering node, so the just-unhitched coupler was not behind that node and the
+        # pull was refused PULL_CLEAR_NOT_BEHIND, unmoved. It is at the truck's own joint.
+        w = self.world(ahead=-0.03, lateral=0.0, back=0.02)   # coupler 3 cm ahead of the ball
+        session, why = self.start(w)
+        self.assertIsNotNone(session, why)
+        self.assertEqual(self.pull(w, session)[0], "CLEAR")
+        self.assertTrue(all(d["forwards"] for d in self.drives(w) if d["allowed"]))
+        self.assert_ended_braked_and_restored(w)
+
     def test_mirrors_the_companion(self):
         self.assertEqual(self.hitch.PULL.clearM, companion_hitch.PULL_CLEAR_M + companion_hitch.PULL_CLEAR_MARGIN_M)
+        self.assertEqual(self.hitch.PULL.jointSlackM, companion_hitch.FRONT_JOINT_SLACK_M)
 
     def test_pulls_straight_forward_until_clear_then_brakes(self):
         w = self.world()
