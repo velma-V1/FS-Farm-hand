@@ -91,6 +91,7 @@ class Cancelled(Exception):
 # other approach and the maneuver is tried again from there. Bounded by the
 # approaches (two GOTO aims per hitch); a person nearby is never driven round.
 REAPPROACH_CODES = frozenset({"LOCAL_PATH_HITS_WAGON", "LOCAL_PATH_LEAVES_AREA", "LOCAL_PATH_TOO_LONG",
+                              "LOCAL_PATH_OBSTRUCTED",
                               "LOCAL_PATH_BLOCKED", "LOCAL_NO_PATH", "LOCAL_START_AT_WAGON",
                               "OUTSIDE_LOCAL_AREA"})
 

@@ -167,6 +167,58 @@ function W.new(o)
         return v
     end
     w.wagonNode = w.wagonRoot
+    -- GIANTS' collision query (NOT GIANTS physics; tests/test_lua_unpark.py has the same
+    -- model): oriented boxes, the terrain flat at 0, the tractor's own body following its
+    -- steering node, static boxes in w.statics; the callback goes on while it returns true.
+    tractor.size = { width = 2.5, length = 5.0, height = 3.0, widthOffset = 0, lengthOffset = 0, heightOffset = 0 }
+    local F = { DEFAULT = 1, STATIC_OBJECT = 2, DYNAMIC_OBJECT = 4, VEHICLE = 8, TERRAIN_DELTA = 16, TREE = 32,
+                BUILDING = 64, TRAFFIC_VEHICLE = 128, TRAFFIC_VEHICLE_BLOCKING = 256, TERRAIN = 512 }
+    env.CollisionFlag = F
+    local function has(mask, flag) return math.floor(mask / flag) % 2 == 1 end
+    local function axes(r) local s, c = math.sin(r.yaw), math.cos(r.yaw); return { { c, -s }, { s, c } } end
+    local function project(r, ax)
+        local a = axes(r)
+        local c = r.x * ax[1] + r.z * ax[2]
+        local e = r.hx * math.abs(a[1][1] * ax[1] + a[1][2] * ax[2]) + r.hz * math.abs(a[2][1] * ax[1] + a[2][2] * ax[2])
+        return c - e, c + e
+    end
+    local function overlaps(p, q)
+        if p.y1 < q.y0 or q.y1 < p.y0 then return false end
+        for _, r in ipairs({ p, q }) do
+            for _, ax in ipairs(axes(r)) do
+                local a0, a1 = project(p, ax)
+                local b0, b1 = project(q, ax)
+                if a1 < b0 or b1 < a0 then return false end
+            end
+        end
+        return true
+    end
+    w.statics = {}
+    function w.static(cx, cz, yaw, hx, hz, y0, y1, name)
+        table.insert(w.statics, { id = 300 + #w.statics, rect = { x = cx, z = cz, yaw = yaw, hx = hx, hz = hz, y0 = y0, y1 = y1 },
+                                  name = name })
+    end
+    env.localToWorld = function(n, x, y, z)
+        local s, c = math.sin(n.yaw), math.cos(n.yaw)
+        return n.x + x * c + z * s, (n.y or 0) + y, n.z - x * s + z * c
+    end
+    env.getTerrainHeightAtWorldPos = function() return 0 end
+    env.getName = function(id) for _, st in ipairs(w.statics) do if st.id == id then return st.name end end return "body" end
+    env.g_currentMission.terrainRootNode = 1
+    env.g_currentMission.getNodeObject = function(_, id) if id == 101 then return tractor end return nil end
+    env.overlapBox = function(x, y, z, rx, ry, rz, ex, ey, ez, cb, target, mask)
+        if w.noQuery then error("no overlapBox") end
+        local q = { x = x, z = z, yaw = ry, hx = ex, hz = ez, y0 = y - ey, y1 = y + ey }
+        local n = 0
+        local function report(id) n = n + 1; return target[cb](target, id, 0) ~= true end
+        if has(mask, F.TERRAIN) and q.y0 <= 0 and 0 <= q.y1 and report(1) then return n end
+        local body = { x = w.steer.x, z = w.steer.z, yaw = w.steer.yaw, hx = 1.15, hz = 2.4, y0 = 0.2, y1 = 2.9 }
+        if has(mask, F.VEHICLE) and overlaps(q, body) and report(101) then return n end
+        for _, st in ipairs(w.statics) do
+            if has(mask, F.BUILDING) and overlaps(q, st.rect) and report(st.id) then return n end
+        end
+        return n
+    end
     Hitch.onNote = function(line) table.insert(w.notes, line) end
     w.steers = {}
     Hitch.onSteer = function(line) table.insert(w.steers, line) end
@@ -621,6 +673,54 @@ class LuaManeuverTests(unittest.TestCase):
         else:
             self.assertEqual(why, "LOCAL_PATH_BLOCKED")
             self.assertEqual(self.drives(w), [])
+
+    # ---------------------------------------- static geometry (GIANTS' collision query)
+    def wall_on_curve(self, w, curve, d):
+        """A 2 m square, 3 m tall static box on the curve, d metres along it."""
+        x, y = self.hitch.curvePoint(curve, d)[:2]
+        fx, fz = math.sin(w.eye.yaw), math.cos(w.eye.yaw)
+        w.static(w.eye.x + x * fx + y * fz, w.eye.z + x * fz - y * fx, 0.0, 1.0, 1.0, 0.0, 3.0, "post")
+
+    def test_a_wall_on_the_chosen_curve_is_avoided_or_refused_before_any_motion(self):
+        # Live 34c38284ac53469b-1 and 8f44d1209a9c4d40-1: the maneuver stalled on geometry it
+        # did not observe. The tractor's footprint along a curve must be clear in GIANTS' query.
+        w = self.world(**CASE_A)
+        clean, _ = self.start(w)
+        for d in (3.0, 10.0, clean.curve.length - 1.0):
+            with self.subTest(d=d):
+                w = self.world(**CASE_A)
+                self.wall_on_curve(w, clean.curve, d)
+                session, why = self.start(w)
+                if session is None:
+                    self.assertEqual(why, "LOCAL_PATH_OBSTRUCTED")
+                    self.assertEqual(self.drives(w), [])
+                    self.assertTrue(any("post" in n for n in self.notes(w)), self.notes(w))
+                else:                       # another curve keeps clear of it: it must hold
+                    self.assertNotEqual(session.curve.length, clean.curve.length)
+                    self.assertEqual(self.run_to_end(w, session)[0], "LINED_UP")
+
+    def test_something_appearing_on_the_curve_ahead_stops_it(self):
+        w = self.world(**CASE_A)
+        session, why = self.start(w)
+        self.assertIsNotNone(session, why)
+
+        def bale(i):
+            if i == 30:
+                self.wall_on_curve(w, session.curve, session.progress + 2.0)
+
+        code, _ = self.run_to_end(w, session, hook=bale)
+        self.assertEqual(code, "OBSTACLE_AHEAD")
+        self.assert_braked_last(w)
+
+    def test_an_unproven_collision_query_moves_nothing(self):
+        for spoil in ("noQuery",):
+            with self.subTest(spoil):
+                w = self.world(**CASE_A)
+                setattr(w, spoil, True)
+                session, why = self.start(w)
+                self.assertIsNone(session)
+                self.assertEqual(why, "LOCAL_AREA_UNKNOWN")
+                self.assertEqual(self.drives(w), [])
 
     def test_live_yard_refusal_names_the_parked_vehicles_not_the_work_radius(self):
         w = self.world(**CASE_C)

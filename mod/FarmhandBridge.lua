@@ -1514,6 +1514,7 @@ Bridge.REASONS = {
     ENVELOPE_EXCEEDED = "the tractor left the area around the implement while lining up",
     LINEUP_MISSED = "the tractor could not line up with the implement",
     LOCAL_PATH_BLOCKED = "another vehicle is in the way of lining up with the implement",
+    LOCAL_PATH_OBSTRUCTED = "a building or object is in the way of lining up with the implement",
     LOCAL_PATH_PERSON = "stand clear of the tractor and the implement, then ask again",
     PERSON_TOO_CLOSE = "you came too close to the tractor, so Farmhand stopped",
     OTHER_VEHICLE_MOVED = "another vehicle moved near the tractor, so Farmhand stopped",
