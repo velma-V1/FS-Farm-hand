@@ -481,6 +481,13 @@ class LiveTest:
                 "inventory": [{"id": i.id, "category": i.category, "name": i.name, "kinds": sorted(i.kinds),
                                "attached_to": i.attached_to, "position": [round(i.position[0], 1),
                                                                           round(i.position[1], 1)],
+                               "heading": None if i.heading is None else round(i.heading, 3),
+                               # GIANTS Foldable and TensionBelts state, when it has them.
+                               **({"fold": i.fold, "folding": i.folding} if i.fold is not None else {}),
+                               **({"belts_fastened": i.belts_fastened, "belted": list(i.belted),
+                                   "belt_markers": [[round(c, 2) for c in m] for m in i.belt_markers]}
+                                  if i.belts_fastened is not None else {}),
+                               **({"belted_to": i.belted_to} if i.belted_to is not None else {}),
                                "fill_units": [{"index": u.index, "fill_type": u.fill_type, "level": u.level,
                                                "capacity": u.capacity, "role": u.role,
                                                "supported": sorted(u.supported)[:12]} for u in i.fill_units]}

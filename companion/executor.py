@@ -145,7 +145,7 @@ UNPARK_REFUSALS = frozenset({
     "UNPARK_ARTICULATED_UNSUPPORTED", "UNPARK_QUERY_UNVERIFIED", "UNPARK_QUERY_UNKNOWN", "SEATED_DURING_UNPARK",
     "LOCAL_AREA_UNKNOWN", "NOT_STOPPED", "NOT_ROOT_VEHICLE", "UNPARK_DOOR_CLOSED"})
 
-CANCELLABLE_STEPS = frozenset({"RESERVE", "FIELD_WORK", "PULL_CLEAR", "UNPARK", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
+CANCELLABLE_STEPS = frozenset({"RESERVE", "FIELD_WORK", "PULL_CLEAR", "UNPARK", "TAILGATE", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
                                "DETACH", "DELIVER"})
 
 
@@ -840,6 +840,23 @@ class Executor:
             return None
         return {"seed": "NEEDS_SEED", "spray": "NEEDS_FERTILIZER"}[operation.material]
 
+    def _tailgate_down(self, truck: Equipment, joint_index: int, owner: str) -> None:
+        """A regular bed under a gooseneck (the user's completion plan, stage 3): the truck's
+        GIANTS Foldable part (its tailgate) goes down and is verified down from a fresh
+        snapshot before the gooseneck comes over it or leaves it; it stays down while
+        hitched, as clearance is never assumed. Nothing to do without a gooseneck joint
+        or a Foldable part, or when it is already down (fold time 1)."""
+        joint = next((j for j in truck.output_joints if j.index == joint_index), None)
+        if joint is None or "semitrailer" not in (joint.joint_type or "").lower() or truck.fold is None \
+                or (truck.fold >= 1.0 and not truck.folding):
+            return
+        self._enter("TAILGATE")
+        self.world.fold(truck.id, 1, owner)
+        after = next((i for i in self.world.snapshot() if i.id == truck.id), None)
+        if after is None or after.fold is None or after.fold < 1.0 or after.folding:
+            raise ObservationMismatch("TAILGATE_NOT_OBSERVED")
+        log.info("TAILGATE: %s down (fold %.2f) for its gooseneck joint %d", truck.id, after.fold, joint_index)
+
     def _position(self, vehicle_id) -> Position:
         vehicle = next((i for i in self.world.snapshot() if i.id == vehicle_id), None)
         if vehicle is None or not valid_position(vehicle.position):
@@ -1211,6 +1228,9 @@ class Executor:
                 if not tractor.stopped:
                     raise ObservationMismatch("EQUIPMENT_MOVING")
                 physical_attempted = True
+                used = next((j for j in tractor.output_joints if not j.free), None)
+                if used is not None:
+                    self._tailgate_down(tractor, used.index, owner)
                 enter("DETACH")
                 self.world.detach(ids[0], ids[1], owner)
                 enter("VERIFY")
@@ -1328,6 +1348,7 @@ class Executor:
                 tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
                 if against_loose_implement(tractor, [i for i in self.world.snapshot() if i.id != ids[1]]):
                     raise _Blocked("AGAINST_IMPLEMENT")
+                self._tailgate_down(tractor, plan.tractor_joint, owner)
                 if travel is not None:
                     tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
                     while True:
