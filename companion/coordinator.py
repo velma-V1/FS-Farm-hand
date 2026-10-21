@@ -308,9 +308,10 @@ class Coordinator:
             self.notify("BUSY", spoken)
             return None
         self.notify(JOBS[command][1], spoken)
-        self._worker = threading.Thread(target=self._run, args=(job, cancel, command, target, implement, work),
-                                        daemon=True, name=f"farmhand-job-{job.number}")
-        self._worker.start()
+        worker = threading.Thread(target=self._run, args=(job, cancel, command, target, implement, work),
+                                  daemon=True, name=f"farmhand-job-{job.number}")
+        worker.start()
+        self._worker = worker                      # published started: wait() never joins an unstarted thread
         return job
 
     def _run(self, job: Job, cancel: threading.Event, command: str, target, implement: str | None = None,
