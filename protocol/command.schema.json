@@ -13,7 +13,7 @@
       "const": 1
     },
     "command": {
-      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to, the pair nearest the requester, where it stands. unsupported: understood, but not something Farmhand does yet (reason). load_tractor: drive a free tractor (tractor_name) up a transport trailer's ramps (implement_name), belt it and raise the ramps ('load the tractor and secure it'). unload_tractor: release the belts and back the tractor off ('unload it'). sequence: several job commands in order (steps). follow_me: the named rig (tractor_name) follows the vehicle the player drives, with FollowMe, until stopped; only on the player's explicit 'follow me'. resume: continue the goal that was stopped, taken over or blocked, from what is already done ('continue'). retarget: give the goal a new destination ('take it to field 2 instead'). haul_tractor: take the named tractor (tractor_name) to the target on a transport and unload it there, from whatever is already done ('take the deutz to field 3 and unload it'). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop.",
+      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to, the pair nearest the requester, where it stands. unsupported: understood, but not something Farmhand does yet (reason). load_tractor: drive a free tractor (tractor_name) up a transport trailer's ramps (implement_name), belt it and raise the ramps ('load the tractor and secure it'). unload_tractor: release the belts and back the tractor off ('unload it'). sequence: several job commands in order (steps). follow_me: the named rig (tractor_name) follows the vehicle the player drives, with FollowMe, until stopped; only on the player's explicit 'follow me'. resume: continue the goal that was stopped, taken over or blocked, from what is already done ('continue'). retarget: give the goal a new destination ('take it to field 2 instead'). haul_tractor: take the named tractor (tractor_name) to the target on a transport and unload it there, from whatever is already done ('take the deutz to field 3 and unload it'). contract: a GIANTS field contract taken, worked and collected (field, kind optional; 'do a contract', 'do the plow contract on field 12'). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop.",
       "enum": [
         "fetch_pair",
         "move_pair",
@@ -33,7 +33,8 @@
         "haul_tractor",
         "resume",
         "retarget",
-        "follow_me"
+        "follow_me",
+        "contract"
       ]
     },
     "steps": {
@@ -119,7 +120,7 @@
       ]
     },
     "field": {
-      "description": "field_work: an owned field's number, or the smallest owned field.",
+      "description": "field_work: an owned field's number, or the smallest owned field. contract: the contract's field number.",
       "oneOf": [{"type": "integer", "minimum": 1, "maximum": 100000}, {"const": "smallest"}]
     },
     "wants": {
@@ -143,6 +144,7 @@
     "carry": {"description": "load_tractor: the implement mounted on the tractor goes along ('load the tractor and plow'): hitched first if it is not.", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
     "tractor_name": {"description": "fetch_pair, hitch_pair: the towing vehicle must have all these words in its name ('with the gmc').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
     "implement_name": {"description": "fetch_pair, hitch_pair: the implement must have all these words in its name ('the gooseneck').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
+    "kind": {"description": "contract: the start of the contract type's name ('plow', 'cultiv', 'fertili').", "type": "string", "pattern": "^[a-z]{3,12}$"},
     "crop": {"description": "field_work: the crop to sow in the player's words ('wheat', 'sugar beets'); matched to the seeder's own crops.", "type": "string", "minLength": 2, "maxLength": 30, "pattern": "^[a-z][a-z -]*$"},
     "over_crop": {"description": "field_work: the player said to work the field even over a standing crop ('... anyway').", "const": true},
     "area_m2": {
@@ -196,7 +198,8 @@
               "load_tractor",
               "unload_tractor",
               "sequence",
-              "follow_me"
+              "follow_me",
+              "contract"
             ]
           }
         }
@@ -268,9 +271,18 @@
       "else": {"not": {"required": ["wants"]}}
     },
     {
+      "if": {"properties": {"command": {"enum": ["field_work", "contract"]}}},
+      "else": {"not": {"required": ["field"]}}
+    },
+    {
+      "if": {"properties": {"command": {"const": "contract"}}},
+      "then": {"properties": {"field": {"type": "integer"}}},
+      "else": {"not": {"required": ["kind"]}}
+    },
+    {
       "if": {"properties": {"command": {"const": "field_work"}}},
       "then": {"required": ["field", "operations"]},
-      "else": {"not": {"anyOf": [{"required": ["field"]}, {"required": ["operations"]}, {"required": ["area_m2"]}, {"required": ["over_crop"]}, {"required": ["crop"]}]}}
+      "else": {"not": {"anyOf": [{"required": ["operations"]}, {"required": ["area_m2"]}, {"required": ["over_crop"]}, {"required": ["crop"]}]}}
     }
   ]
 }

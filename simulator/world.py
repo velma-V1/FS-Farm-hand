@@ -223,6 +223,40 @@ class MockWorld:
         with self._lock:
             return self.farm_info
 
+    # Mock-only contracts: Contract records and each contract field (not owned until taken).
+    # A running contract finishes once Farmhand worked its field (GIANTS judges it in game).
+    mock_contracts = ()
+    mock_contract_fields = {}
+
+    def contracts(self):
+        with self._lock:
+            worked = getattr(self, "_worked", set())
+            self.mock_contracts = tuple(replace(c, status="FINISHED") if c.mine and c.status == "RUNNING"
+                                        and c.field in worked else c for c in self.mock_contracts)
+            return tuple(self.mock_contracts)
+
+    def contract(self, field, start):
+        with self._lock:
+            mine = next((c for c in self.contracts() if c.field == field and c.mine), None)
+            if start:
+                offer = next((c for c in self.mock_contracts if c.field == field and c.status == "CREATED"), None)
+                if offer is None:
+                    raise StepFailed("NO_CONTRACT_ON_FIELD")
+                if any(c.mine for c in self.mock_contracts):
+                    raise StepFailed("CONTRACT_LIMIT_REACHED")
+                self.mock_contracts = tuple(replace(c, status="RUNNING", mine=True) if c is offer else c
+                                            for c in self.mock_contracts)
+                self.field_map[field] = self.mock_contract_fields[field]
+                return "CONTRACT_RUNNING"
+            if mine is None:
+                raise StepFailed("NO_CONTRACT_ON_FIELD")
+            if mine.status != "FINISHED":
+                raise StepFailed("CONTRACT_NOT_FINISHED")
+            self.mock_contracts = tuple(c for c in self.mock_contracts if c is not mine)
+            self.field_map.pop(field, None)
+            self.farm_info = replace(self.farm_info, money=self.farm_info.money + (mine.reward or 0))
+            return "CONTRACT_COLLECTED"
+
     # What each implement kind leaves on the field (mock only, never GIANTS').
     MOCK_WORK = {"cultivator": ("CULTIVATED", None), "plow": ("PLOWED", None), "sowing_machine": ("SOWN", "WHEAT"),
                  "sprayer": (None, None)}
@@ -260,6 +294,7 @@ class MockWorld:
                 spray=((1, share + dict(old.spray).get(1, 0) * (1 - share)),) if kind == "sprayer" else old.spray,
                 total_m2=old.total_m2, fruit=((fruit, 9),) if fruit else old.fruit, sampled=old.sampled)
             self.field_map[field_id] = replace(field, coverage=coverage, age_ms=0.0)
+            self._worked = getattr(self, "_worked", set()) | {field_id}
             units = tuple(replace(u, level=max(0.0, u.level - 100.0)) if u.role and u.level else u
                           for u in implement.fill_units)
             self.items[implement.id] = replace(implement, fill_units=units)

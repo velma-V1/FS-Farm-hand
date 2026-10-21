@@ -171,6 +171,12 @@
           "properties": {"id": {"type": "integer", "minimum": 1, "maximum": 100000},
                          "x": {"$ref": "#/$defs/coordinate"}, "z": {"$ref": "#/$defs/coordinate"}}}},
         "fields": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/field"}},
+        "contracts": {"type": "array", "maxItems": 50, "items": {
+          "type": "object", "additionalProperties": false, "required": ["field", "kind", "status", "mine", "reward"],
+          "properties": {"field": {"type": "integer", "minimum": 1, "maximum": 100000},
+                         "kind": {"$ref": "#/$defs/token"}, "status": {"$ref": "#/$defs/token"},
+                         "mine": {"type": "boolean"},
+                         "reward": {"oneOf": [{"type": "number", "minimum": -1e9, "maximum": 1e9}, {"type": "null"}]}}}},
         "farm": {"$ref": "#/$defs/farm"}
       }
     },

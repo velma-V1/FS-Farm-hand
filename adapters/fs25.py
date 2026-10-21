@@ -6,7 +6,7 @@ upstream data is unproven, the mapping fails closed (ineligible equipment).
 """
 from dataclasses import dataclass
 
-from protocol.model import (Destination, Equipment, FarmInfo, Field, FieldCoverage, FillUnit, InputJoint, OutputJoint,
+from protocol.model import (Contract, Destination, Equipment, FarmInfo, Field, FieldCoverage, FillUnit, InputJoint, OutputJoint,
                             Pose, Position)
 
 # AutoDrive treats ``lastSpeedReal * 3600 < 1`` (km/h) as not moving
@@ -60,6 +60,7 @@ class Observation:
     fields: tuple[Field, ...] = ()
     farm: FarmInfo | None = None
     field_places: tuple[Destination, ...] = ()     # every map field: "field N" at GIANTS' position
+    contracts: tuple[Contract, ...] = ()           # field contracts: available and this farm's
 
 
 def _claimed_links(vehicles) -> dict[int, set[int]]:
@@ -244,6 +245,8 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = N
         fields=fields,
         field_places=tuple(Destination(f"field-{f['id']}", (f["x"], f["z"]), f"field {f['id']}")
                            for f in sorted(frame.get("field_places", ()), key=lambda f: f["id"])),
+        contracts=tuple(Contract(c["field"], c["kind"], c["status"], c["mine"], c["reward"])
+                        for c in frame.get("contracts", ())),
         farm=None if farm is None else FarmInfo(farm["money"], farm["helper_buy_seeds"],
                                                 farm["helper_buy_fertilizer"], farm["helper_buy_fuel"], farm.get("savegame_dir")),
     )

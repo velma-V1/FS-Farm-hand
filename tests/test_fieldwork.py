@@ -562,3 +562,111 @@ class CropTests(unittest.TestCase):
         self.assertEqual(ran, [("hitch_pair", None, "barley"), ("field_work", "sow", "barley"),
                                ("move_pair", None, None), ("detach_pair", None, None)])
         self.assertEqual(c.last.state, "COMPLETE")
+
+
+class ContractTests(unittest.TestCase):
+    """"Do a contract": GIANTS' field contracts taken as the menu takes them, the field
+    worked by the field-work plan, collected once GIANTS finished it, complete only when
+    the reward is on the farm's balance."""
+
+    def world(self, contracts, kind="plow"):
+        from protocol.model import Contract
+
+        class World(MockWorld):
+            cancel = None
+
+            def retained(self):
+                return ()
+
+        tractor, plow = rig(kind, at=(120.0, 80.0))
+        world = World([tractor, replace(plow, required_pto_torque=0.0)], PLAYERS, fields=(field(7, 0.4),), farm=FARM)
+        world.mock_contracts = tuple(Contract(*c) for c in contracts)
+        world.mock_contract_fields = {c[0]: field(c[0], 1.5, at=(400.0 + c[0], 500.0)) for c in contracts}
+        return world
+
+    def coordinator(self, world):
+        from companion import coordinator as coordination
+        notices = []
+        c = coordination.Coordinator(world, Executor(world), lambda n, s=False: notices.append(n), lambda: "farm-a",
+                                     lambda: "s1")
+        c.CONTRACT_WAIT_S = 2.0
+        c.SETTLE_S = 2.0
+        return c, notices
+
+    OFFERS = ((20, "harvest", "CREATED", False, 9000.0),       # not a contract Farmhand does
+              (31, "fertilize", "CREATED", False, 5000.0),     # no sprayer on the farm
+              (21, "plow", "CREATED", False, 3000.0),
+              (22, "plow", "CREATED", False, 2000.0))
+
+    def test_the_best_paid_contract_the_farm_can_do_is_taken_worked_and_paid(self):
+        for offers in (self.OFFERS, tuple(reversed(self.OFFERS))):
+            with self.subTest(first=offers[0][0]):
+                world = self.world(offers)
+                c, notices = self.coordinator(world)
+                c.submit({"version": 1, "command": "contract"})
+                c.wait(30)
+                self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "CONTRACT_PAID"), c.last)
+                self.assertEqual(world.farm().money, FARM.money + 3000.0)
+                self.assertEqual({x.field for x in world.contracts()}, {20, 31, 22})   # the rest still offered
+                self.assertEqual(world._worked, {21})                                  # only its field worked
+                self.assertNotIn(21, {f.id for f in world.fields()})          # collected: no longer ours
+                self.assertEqual((notices[0], notices[-1]), ("ACCEPTED_CONTRACT", "COMPLETE_CONTRACT"))
+                self.assertEqual(c.kept, None)
+
+    def test_the_field_or_kind_said_picks_that_contract(self):
+        world = self.world(self.OFFERS)
+        c, _ = self.coordinator(world)
+        c.submit({"version": 1, "command": "contract", "field": 22})
+        c.wait(30)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "CONTRACT_PAID"))
+        self.assertEqual(world.farm().money, FARM.money + 2000.0)
+
+    def test_nothing_is_taken_or_moved_when_no_contract_fits(self):
+        for work, reason in (({"field": 20}, "CONTRACT_NOT_SUPPORTED"), ({"field": 31}, "NO_IMPLEMENT_FOR_FERTILIZE"),
+                             ({"field": 40}, "NO_CONTRACT_ON_FIELD"), ({"kind": "mow"}, "NO_CONTRACT")):
+            with self.subTest(reason=reason):
+                world = self.world(self.OFFERS)
+                c, _ = self.coordinator(world)
+                c.submit({"version": 1, "command": "contract", **work})
+                c.wait(30)
+                self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", reason))
+                self.assertFalse(any(x.mine for x in world.contracts()))
+                self.assertEqual(next(i for i in world.snapshot() if i.id == "t-1").position, (120.0, 80.0))
+
+    def test_not_yet_finished_by_the_game_is_kept_and_continue_only_collects(self):
+        class Slow(type(self.world(()))):
+            finished = False
+
+            def contracts(self):
+                found = super().contracts()
+                if not self.finished:
+                    found = tuple(replace(x, status="RUNNING") if x.mine else x for x in found)
+                    self.mock_contracts = found
+                return found
+
+        world = self.world(((21, "plow", "CREATED", False, 3000.0),))
+        world.__class__ = Slow
+        c, _ = self.coordinator(world)
+        c.submit({"version": 1, "command": "contract"})
+        c.wait(30)
+        self.assertEqual((c.last.state, c.last.reason), ("UNVERIFIED", "CONTRACT_NOT_FINISHED"))
+        self.assertEqual(c.kept.command, "contract")
+        worked = world._worked
+        world.finished = True
+        c.submit({"version": 1, "command": "resume"})
+        c.wait(30)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "CONTRACT_PAID"))
+        self.assertEqual(c.last.states, ("COLLECT",))                       # nothing worked twice
+        self.assertEqual(world._worked, worked)
+        self.assertEqual(world.farm().money, FARM.money + 3000.0)
+
+    def test_the_words(self):
+        from companion.language import RuleInterpreter
+        r = RuleInterpreter()
+        for words, extra in (("do a contract", {}), ("take the best paying contract", {}),
+                             ("do the plow contract on field 12", {"kind": "plow", "field": 12}),
+                             ("collect the contract", {}), ("take a cultivating contract", {"kind": "cultiv"})):
+            with self.subTest(words=words):
+                self.assertEqual(r.interpret(words), {"version": 1, "command": "contract", **extra})
+        self.assertIsNone(r.interpret("do you have a contract"))
+        self.assertIsNone(r.interpret("dont do a contract"))

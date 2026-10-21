@@ -1562,6 +1562,99 @@ class AutoDriveMarkerTests(unittest.TestCase):
         self.assertEqual(len(env.made), 0)
 
 
+class ContractOpTests(unittest.TestCase):
+    """contract: GIANTS' field contracts as the menu takes and collects them. Stubs in
+    the documented shapes only: MissionManager getMissions / missionTypes {name,
+    classObject} / startMission(mission, farmId, spawnVehicles) -> MissionStartState /
+    dismissMission; AbstractMission status, farmId, finishState, getIsRunning, getReward;
+    AbstractFieldMission:getField."""
+
+    ENV = r"""
+        local env = { started = {}, dismissed = {} }
+        env.MissionStatus = { CREATED = 0, PREPARING = 1, RUNNING = 2, FINISHED = 3, DISMISSED = 4 }
+        env.MissionStartState = { OK = 0, LIMIT_REACHED = 1, ALREADY_STARTED = 2 }
+        env.MissionFinishState = { NONE = 0, SUCCESS = 1, FAILED = 2 }
+        local Plow, Harvest = {}, {}
+        local function mission(class, field, reward)
+            local m = { class = class, status = env.MissionStatus.CREATED, farmId = nil,
+                        finishState = env.MissionFinishState.NONE, field = { fieldId = field } }
+            function m:isa(c) return self.class == c end
+            function m:getField() return self.field end
+            function m:getReward() return reward end
+            function m:getIsRunning() return self.status == env.MissionStatus.RUNNING end
+            return m
+        end
+        local missions = { mission(Harvest, 20, 9000), mission(Plow, 21, 3000), mission(Plow, 22, 4000) }
+        env.missions = missions
+        env.startState = env.MissionStartState.OK
+        env.g_missionManager = {
+            missionTypes = { { name = "plow", classObject = Plow }, { name = "harvest", classObject = Harvest } },
+            getMissions = function() return missions end,
+            startMission = function(_, m, farmId, spawn)
+                env.started[#env.started + 1] = { field = m.field.fieldId, farmId = farmId, spawn = spawn }
+                if env.startState ~= env.MissionStartState.OK then return env.startState end
+                m.farmId = farmId; m.status = env.MissionStatus.PREPARING
+                return env.MissionStartState.OK
+            end,
+            dismissMission = function(_, m) env.dismissed[#env.dismissed + 1] = m.field.fieldId; m.status = env.MissionStatus.DISMISSED end,
+        }
+        return env
+    """
+
+    def setUp(self):
+        self.lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        self.lua.globals().print = lambda *a: None
+        observe = self.lua.execute((ROOT / "mod/FarmhandObserve.lua").read_text())
+        self.bridge = self.lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        self.bridge.Observe = observe
+        self.observe = observe
+        self.env = self.lua.execute(self.ENV)
+        self.run = self.lua.eval("""function(B, env, field, direction)
+            local task, code = B.start(env, { op = 'contract', field = field, direction = direction, farmId = 1,
+                                             owned = function() return true end })
+            if task == nil then return nil, code end
+            task.elapsed = 0
+            return task, B.step(env, task, 16) end""")
+
+    def contracts(self):
+        listed = self.observe.contracts(self.env, 1)
+        return [(c.field, c.kind, c.status, c.mine, c.reward) for c in listed.values()]
+
+    def test_contracts_are_listed_best_paid_first_with_their_type_and_state(self):
+        self.assertEqual(self.contracts(), [(20, "harvest", "CREATED", False, 9000), (22, "plow", "CREATED", False, 4000),
+                                            (21, "plow", "CREATED", False, 3000)])
+
+    def test_taking_a_contract_starts_it_with_the_farms_own_equipment_and_waits_for_it_running(self):
+        task, status, code = self.run(self.bridge, self.env, 21, 1)
+        self.assertEqual((self.env.started[1].field, self.env.started[1].farmId, self.env.started[1].spawn), (21, 1, False))
+        self.assertIsNone(status)                                   # PREPARING: not running yet
+        self.env.missions[2].status = self.env.MissionStatus.RUNNING
+        self.assertEqual(self.bridge.step(self.env, task, 16), ("DONE", "CONTRACT_RUNNING"))
+        self.assertIn((21, "plow", "RUNNING", True, 3000), self.contracts())
+        # Its field (another farm's land) is now one Farmhand may work.
+        self.lua.execute("""local env = ...
+            local f = env.missions[2].field
+            f.posX, f.posZ, f.areaHa, f.farmland = 400, 500, 1.5, { id = 9 }
+            env.g_fieldManager = { fields = { f, { fieldId = 22, posX = 1, posZ = 1, areaHa = 2, farmland = { id = 8 } } } }
+            env.g_farmlandManager = { getFarmlandOwner = function() return 0 end }""", self.env)
+        self.assertEqual([f.id for f in self.observe.fields(self.env, 1).values()], [21])
+
+    def test_a_refused_start_or_a_missing_contract_says_why(self):
+        self.env.startState = self.env.MissionStartState.LIMIT_REACHED
+        self.assertEqual(self.run(self.bridge, self.env, 21, 1), (None, "CONTRACT_LIMIT_REACHED"))
+        self.assertEqual(self.run(self.bridge, self.env, 40, 1), (None, "NO_CONTRACT_ON_FIELD"))
+
+    def test_collecting_needs_the_game_to_have_finished_it_successfully(self):
+        m = self.env.missions[2]
+        m.farmId, m.status = 1, self.env.MissionStatus.RUNNING
+        self.assertEqual(self.run(self.bridge, self.env, 21, -1), (None, "CONTRACT_NOT_FINISHED"))
+        m.status, m.finishState = self.env.MissionStatus.FINISHED, self.env.MissionFinishState.SUCCESS
+        task, status, code = self.run(self.bridge, self.env, 21, -1)
+        self.assertEqual((status, code), ("DONE", "CONTRACT_COLLECTED"))
+        self.assertEqual(self.env.dismissed[1], 21)
+        self.assertEqual(self.run(self.bridge, self.env, 22, -1), (None, "NO_CONTRACT_ON_FIELD"))    # not ours
+
+
 class FollowTests(unittest.TestCase):
     """follow: FollowMe's registered vehicle functions (initiateFollowVehicle, getIsFollowVehicleActive,
     getCanStartFollowVehicle; FollowVehicle.lua 38-75, 556-571), the leader the vehicle the player

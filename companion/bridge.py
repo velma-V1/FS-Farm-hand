@@ -31,7 +31,7 @@ from adapters.fs25 import Observation, observation_from_snapshot
 from adapters.world import StepFailed, StepUnverified
 from companion.hitch import STAGING_DISTANCE_M
 from protocol.ipc import MAX_NOTICES, PIPE_PATH, FrameError, FrameReader, encode_command, encode_session
-from protocol.model import Destination, Equipment, FarmInfo, Field, HitchPlan, Pose, Position, StoreItem
+from protocol.model import Contract, Destination, Equipment, FarmInfo, Field, HitchPlan, Pose, Position, StoreItem
 
 log = logging.getLogger("farmhand")
 
@@ -43,7 +43,7 @@ HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
 ALIGN_MAX_DISTANCE_M = 10.0      # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
-DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 55.0, "fold": 30.0, "belts": 15.0, "load": 75.0, "ad_marker": 15.0, "follow": 7300.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
+DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 55.0, "fold": 30.0, "belts": 15.0, "load": 75.0, "ad_marker": 15.0, "follow": 7300.0, "contract": 75.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -391,6 +391,16 @@ class FS25World:
     def block_area(self, x: float, z: float, size: float) -> str:
         """Mark size x size m around (x, z) impassable for GIANTS' navigation."""
         return self._run("block", x=float(x), z=float(z), area=float(size))
+
+    def contracts(self) -> tuple[Contract, ...]:
+        """GIANTS' field contracts: those available and this farm's own."""
+        return self._observe().contracts
+
+    def contract(self, field: int, start: bool) -> str:
+        """CONTRACT: the field's available contract taken (DONE once GIANTS runs it), or this
+        farm's finished one collected (GIANTS pays its reward); mod/FarmhandBridge.lua
+        starters.contract."""
+        return self._run("contract", field=int(field), direction=1 if start else -1)
 
     def save_game(self) -> str:
         """SAVE: the game's own save (mod/FarmhandBridge.lua starters.save); DONE only

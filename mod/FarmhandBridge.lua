@@ -1239,6 +1239,64 @@ end
 
 function aborts.save() end
 
+-- --------------------------------------------------------------- contract
+-- A field contract as the contracts menu takes and collects it. direction 1: the
+-- available (CREATED) contract on `field`, MissionManager:startMission(mission, farmId,
+-- false) (445-488: the farm's own equipment, no leased vehicles), DONE once GIANTS shows
+-- it RUNNING (AbstractMission:getIsRunning 796; PREPARING first while it readies the
+-- field), else FAILED with its MissionStartState name. direction -1: this farm's contract
+-- on `field` that GIANTS finished with MissionFinishState.SUCCESS (AbstractMission:finish
+-- 476-490) is collected with MissionManager:dismissMission (507-515: dismiss pays the
+-- reward to the farm, then deletes it); the companion checks the money arrived.
+Bridge.CONTRACT_TIMEOUT_MS = 60000
+
+local function contractOn(env, field, farmId, mine)
+    for _, m in ipairs(Bridge.Observe.missionList(env)) do
+        if m.id == field and ((mine and m.farmId == farmId) or (not mine and m.status == "CREATED")) then return m end
+    end
+    return nil
+end
+
+function starters.contract(env, spec)
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    if not (finite(spec.field) and spec.field % 1 == 0) then return nil, "INVALID_FIELD" end
+    if spec.direction == 1 then
+        local m = contractOn(env, spec.field, spec.farmId, false)
+        if m == nil then return nil, "NO_CONTRACT_ON_FIELD" end
+        local ok, state = pcall(function() return env.g_missionManager:startMission(m.mission, spec.farmId, false) end)
+        if not ok then return nil, "CONTRACT_ERROR" end
+        if state ~= env.MissionStartState.OK then
+            for name, value in pairs(env.MissionStartState) do
+                if value == state then return nil, "CONTRACT_" .. name end
+            end
+            return nil, "CONTRACT_NOT_STARTED"
+        end
+        log("contract on field %d (%s) started", spec.field, m.kind)
+        return { mission = m.mission, start = true }
+    elseif spec.direction == -1 then
+        local m = contractOn(env, spec.field, spec.farmId, true)
+        if m == nil then return nil, "NO_CONTRACT_ON_FIELD" end
+        local finished = m.status == "FINISHED" and m.mission.finishState == env.MissionFinishState.SUCCESS
+        if not finished then return nil, "CONTRACT_NOT_FINISHED" end
+        local ok = pcall(function() env.g_missionManager:dismissMission(m.mission) end)
+        if not ok then return nil, "CONTRACT_ERROR" end
+        log("contract on field %d (%s) collected", spec.field, m.kind)
+        return { mission = m.mission, start = false }
+    end
+    return nil, "INVALID_DIRECTION"
+end
+
+function steppers.contract(_env, task)
+    if not task.start then return "DONE", "CONTRACT_COLLECTED" end
+    local ok, running = pcall(function() return task.mission:getIsRunning() end)
+    if not ok then running = nil end
+    if running == true then return "DONE", "CONTRACT_RUNNING" end
+    if task.elapsed > Bridge.CONTRACT_TIMEOUT_MS then return "UNVERIFIED", "CONTRACT_NOT_RUNNING" end
+    return nil
+end
+
+function aborts.contract() end
+
 -- -------------------------------------------------------------------- buy
 -- A store purchase through GIANTS' own BuyVehicleData (75/608): new, setStoreItem,
 -- setConfigurations (the item's defaultConfigurationIds, StoreManager 1018),
@@ -1394,7 +1452,7 @@ function aborts.stop() end
 -- --------------------------------------------------------------- runner
 
 Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true, load = true }
-Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true, ad_marker = true }   -- ops that act on no vehicle
+Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true, ad_marker = true, contract = true }   -- ops that act on no vehicle
 
 function Bridge.start(env, spec)
     local starter = starters[spec.op]
@@ -1671,6 +1729,8 @@ Bridge.NOTICES = {
     NOTHING_TO_RESUME = "Farmhand: there is nothing to continue",
     RETARGETED = "Farmhand: new destination; carrying on",
     COMPLETE_HAUL = "Farmhand: delivered and unloaded",
+    ACCEPTED_CONTRACT = "Farmhand: taking on a contract",
+    COMPLETE_CONTRACT = "Farmhand: contract done and the reward collected",
     NO_SUCH_TRACTOR = "no tractor by that name",
     TRACTOR_AMBIGUOUS = "more than one tractor fits; name it",
     COMPLETE_SEQUENCE = "Farmhand: all done and checked",
@@ -1729,6 +1789,8 @@ Bridge.STEPS = {
     FOLLOW = "following you",
     RAMPS_UP = "raising the ramps",
     FIELD_WORK = "working the field (GIANTS helper)",
+    CONTRACT = "taking the contract",
+    COLLECT = "collecting the contract reward",
     VERIFY = "checking the hitch",
     DELIVER = "driving to the destination",
     STOP = "stopping",
@@ -1850,6 +1912,22 @@ Bridge.REASONS = {
     PURCHASE_NOT_OBSERVED = "the purchase did not appear; check the store",
     PAYMENT_NOT_OBSERVED = "the purchase appeared but the payment was not seen; check the finances",
     FIELD_NOT_OWNED = "the farm does not own that field",
+    NO_CONTRACT = "there is no contract to take right now",
+    NO_CONTRACT_ON_FIELD = "there is no contract for that field",
+    CONTRACT_NOT_SUPPORTED = "Farmhand does plow, cultivate and fertilize contracts; none of those is offered",
+    CONTRACT_LIMIT_REACHED = "the farm already runs as many contracts as the game allows",
+    CONTRACT_PENDING_MISSION = "another contract is still being prepared; ask again in a moment",
+    CONTRACT_NOT_AVAILABLE_ANYMORE = "that contract is no longer offered",
+    CONTRACT_CANNOT_BE_STARTED_NOW = "the game cannot start that contract right now",
+    CONTRACT_NOT_RUNNING = "the game did not start the contract; check the contracts menu",
+    CONTRACT_FIELD_NOT_OBSERVED = "the contract started but its field did not appear; check the contracts menu",
+    CONTRACT_NOT_FINISHED = "the work is done but the game has not finished the contract yet; say continue in a while",
+    CONTRACT_LOST = "the contract is gone; check the contracts menu",
+    NO_SEEDER_FOR_CROP = "no seeder on the farm can sow that crop",
+    NO_SEEDER = "no seeder is hitched",
+    SEED_NOT_SUPPORTED = "the seeder cannot sow that crop",
+    SEED_NOT_SET = "the seeder did not take that crop",
+    CROP_NOT_OBSERVED = "the field does not show that crop afterwards; check it",
     NO_FIELD_FOUND = "the helper found no field there",
     FIELD_NOT_READY = "the field needs nothing from this implement",
     PARTIAL_COVERAGE = "the helper stopped before the whole field was done",

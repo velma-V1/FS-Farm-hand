@@ -721,12 +721,45 @@ local function fieldOwned(env, f, farmId)
     end) == true
 end
 
+-- GIANTS' field contracts (MissionManager:getMissions 520; AbstractFieldMission:getField 87):
+-- each mission with a field, its type's registered name (missionTypes entries {name,
+-- classObject}, matched by mission:isa as getMissionsByType 567-576), its MissionStatus
+-- name, getReward (AbstractFieldMission 551-561) and whether this farm runs it (farmId,
+-- set by startMission 478). Unreadable entries are left out.
+local function missionList(env)
+    local missions = try(function() return env.g_missionManager:getMissions() end)
+    local types = try(function() return env.g_missionManager.missionTypes end) or {}
+    local statuses = {}
+    for name, value in pairs(try(function() return env.MissionStatus end) or {}) do statuses[value] = name end
+    local out = {}
+    for _, m in ipairs(type(missions) == "table" and missions or {}) do
+        local f = try(function() return m:getField() end)
+        local id = f and fieldId(f)
+        local kind = nil
+        for _, t in ipairs(types) do
+            if try(function() return m:isa(t.classObject) end) == true then kind = token(string.lower(t.name)) end
+        end
+        local status = statuses[try(function() return m.status end)]
+        if id ~= nil and kind ~= nil and status ~= nil then
+            out[#out + 1] = { mission = m, field = f, id = id, kind = kind, status = status,
+                              farmId = try(function() return m.farmId end) }
+        end
+    end
+    return out
+end
+Observe.missionList = missionList
+
+-- The fields Farmhand may work: the farm's own, and those of a contract it runs.
 local function ownedFields(env, farmId)
     local fields = try(function() return env.g_fieldManager.fields end)
     local out = {}
     if type(fields) ~= "table" then return out end
+    local contracted = {}
+    for _, m in ipairs(missionList(env)) do
+        if m.farmId == farmId and m.status == "RUNNING" then contracted[m.field] = true end
+    end
     for _, f in ipairs(fields) do
-        if fieldId(f) ~= nil and fieldOwned(env, f, farmId) then out[#out + 1] = f end
+        if fieldId(f) ~= nil and (fieldOwned(env, f, farmId) or contracted[f]) then out[#out + 1] = f end
     end
     table.sort(out, function(a, b) return fieldId(a) < fieldId(b) end)
     return out
@@ -838,6 +871,28 @@ function Observe.tickFields(env, farmId, dt)
     local f = fields[Observe.fieldCursor]
     local ok, record = pcall(Observe.fieldCoverage, env, f)
     Observe.fieldCache[fieldId(f)] = { record = ok and record or nil, age = 0 }
+end
+
+-- The contracts the player could take (CREATED) and this farm's own, best paid first.
+Observe.MAX_CONTRACTS = 50
+function Observe.contracts(env, farmId)
+    local list = {}
+    for _, m in ipairs(missionList(env)) do
+        local mine = m.farmId == farmId
+        if (m.status == "CREATED" or mine) and m.status ~= "DISMISSED" then
+            local reward = try(function() return m.mission:getReward() end)
+            list[#list + 1] = { field = m.id, kind = m.kind, status = m.status, mine = mine,
+                                reward = finite(reward) and reward or Observe.NULL }
+        end
+    end
+    table.sort(list, function(a, b)
+        local ra, rb = finite(a.reward) and a.reward or 0, finite(b.reward) and b.reward or 0
+        if ra ~= rb then return ra > rb end
+        return a.field < b.field
+    end)
+    local out = Observe.array()
+    for i = 1, math.min(#list, Observe.MAX_CONTRACTS) do out[i] = list[i] end
+    return out
 end
 
 -- Every field of the map (owned or not), where GIANTS places it (Field posX/posZ, the
@@ -1104,6 +1159,7 @@ function Observe.snapshot(env, seq, session, dt)
         places = places,
         fields = try(function() return Observe.fields(env, farmId) end) or Observe.array(),
         field_places = try(function() return Observe.fieldPlaces(env) end) or Observe.array(),
+        contracts = try(function() return Observe.contracts(env, farmId) end) or Observe.array(),
         farm = farmInfo(env, farmId),
     }), nil
 end

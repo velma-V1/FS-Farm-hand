@@ -127,6 +127,7 @@ COMMAND_ARGS = {
     "load": ("tractor", "wagon", "direction"),   # the tractor alone onto the trailer's deck (1) or off it (-1)
     "ad_marker": ("field",),                     # an AutoDrive destination "Field N" by field N's edge
     "follow": ("tractor",),                      # FollowMe: the vehicle follows the one the player drives
+    "contract": ("field", "direction"),          # the field's contract taken (1) or its reward collected (-1)
     "stop": ("tractor",),
 }
 _ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "x", "z": "z",

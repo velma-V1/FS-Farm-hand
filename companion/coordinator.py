@@ -61,7 +61,8 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "unload_tractor": ("unload_tractor", "ACCEPTED_UNLOAD", "COMPLETE_UNLOAD"),
         "sequence": ("sequence", "ACCEPTED_SEQUENCE", "COMPLETE_SEQUENCE"),
         "haul_tractor": ("haul_tractor", "ACCEPTED_HAUL", "COMPLETE_HAUL"),
-        "follow_me": ("follow_me", "ACCEPTED_FOLLOW", "COMPLETE_FOLLOW")}
+        "follow_me": ("follow_me", "ACCEPTED_FOLLOW", "COMPLETE_FOLLOW"),
+        "contract": ("contract", "ACCEPTED_CONTRACT", "COMPLETE_CONTRACT")}
 # The proposal fields that pass into a job command's intent.
 NAMES = ("tractor_name", "implement_name", "cargo_name")
 
@@ -296,7 +297,39 @@ class Job:
 # Goals that are kept when they do not complete (stopped, taken over, blocked, failed):
 # "continue" re-plans them from the observed state; their ``work`` carries the progress
 # (a haul's observed delivery, a sequence's completed steps), so nothing done repeats.
-GOALS = frozenset({"haul_tractor", "sequence"})
+GOALS = frozenset({"haul_tractor", "sequence", "contract"})
+
+
+# GIANTS' contract types Farmhand works (by the start of their registered name) -> the
+# field operation. Others (sowing: its crop is not readable; harvest, bales, ...) are not taken.
+CONTRACT_WORK = (("plow", "plow"), ("cultiv", "cultivate"), ("fertili", "fertilize"))
+
+
+def contract_operation(kind: str) -> str | None:
+    return next((op for stem, op in CONTRACT_WORK if kind.casefold().startswith(stem)), None)
+
+
+def choose_contract(contracts, items, farm_id: str, field=None, kind=None):
+    """The contract to work: this farm's own first (finish what was taken), else the best
+    paid available one Farmhand can do with the farm's implements, on ``field`` and of
+    ``kind`` (a type-name start, "plow") when the player said so. (contract, None) or
+    (None, why)."""
+    def fits(c):
+        return (field is None or c.field == field) and (kind is None or c.kind.casefold().startswith(kind))
+
+    mine = [c for c in contracts if c.mine and fits(c)]
+    if mine:
+        return mine[0], None
+    offers = [c for c in contracts if c.status == "CREATED" and fits(c)]
+    if not offers:
+        return None, "NO_CONTRACT_ON_FIELD" if field is not None else "NO_CONTRACT"
+    workable = [c for c in offers if contract_operation(c.kind)]
+    if not workable:
+        return None, "CONTRACT_NOT_SUPPORTED"
+    doable = [c for c in workable if implement_kind(items, contract_operation(c.kind), farm_id)[0] is not None]
+    if not doable:
+        return None, implement_kind(items, contract_operation(workable[0].kind), farm_id)[1]
+    return max(doable, key=lambda c: (c.reward or 0.0, -c.field)), None
 
 
 @dataclass
@@ -366,6 +399,8 @@ class Coordinator:
                 work = {"steps": proposal["steps"]}
             elif command == "haul_tractor":
                 work = {"tractor_name": proposal.get("tractor_name"), "target": proposal.get("target", "here")}
+            elif command == "contract":
+                work = {"field": proposal.get("field"), "kind": proposal.get("kind")}
             return self.start(command, proposal.get("target", "here"), spoken, proposal.get("implement"), work)
         return None
 
@@ -470,6 +505,8 @@ class Coordinator:
                 result = self._sequence(job, cancel, entered, work)
             elif command == "haul_tractor":
                 result = self._haul(job, cancel, entered, work)
+            elif command == "contract":
+                result = self._contract(job, cancel, entered, work)
             else:
                 intent = {"version": 1, "request_id": job.owner, "task": task,
                           "farm_id": self.farm(), "target": "player_at_acceptance" if target == "here" else target}
@@ -627,6 +664,8 @@ class Coordinator:
                     "over_crop": step.get("over_crop", False), "crop": step.get("crop")})
             elif command == "buy":
                 result = self._buy(sub, cancel, entered, {"wants": step["wants"]})
+            elif command == "contract":
+                result = self._contract(sub, cancel, entered, {"field": step.get("field"), "kind": step.get("kind")})
             else:
                 target = step.get("target", "here")
                 intent = {"version": 1, "request_id": sub.owner, "task": JOBS[command][0], "farm_id": self.farm(),
@@ -711,6 +750,79 @@ class Coordinator:
             elif step["task"] == "unload_tractor":
                 return Result("COMPLETE", "HAULED_AND_UNLOADED", tuple(used), tuple(states))
         return Result("FAILED", "HAUL_PLAN_TOO_LONG", tuple(used), tuple(states))
+
+    CONTRACT_WAIT_S = 60.0
+
+    def _until(self, check, seconds: float, cancel: threading.Event):
+        """``check()`` once it is truthy within ``seconds`` (observed state), else None."""
+        deadline = time.monotonic() + seconds
+        while not cancel.is_set():
+            found = check()
+            if found or time.monotonic() >= deadline:
+                return found or None
+            time.sleep(1.0)
+        return None
+
+    def _contract(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
+        """A field contract as the player takes it in the menu: chosen (this farm's own
+        first, else the best paid one the farm's implements can do), taken through GIANTS,
+        its field worked by the field-work plan, then collected once GIANTS finished it,
+        complete only when the reward reached the farm's balance. Kept when not complete:
+        "continue" picks it up from GIANTS' own state."""
+        contract, failure = choose_contract(self.world.contracts(), tuple(self.world.snapshot()), self.farm(),
+                                            work.get("field"), work.get("kind"))
+        if contract is None:
+            return Result("BLOCKED", failure)
+        operation = contract_operation(contract.kind)
+        work["field"] = contract.field                 # a resume continues this one
+        log.info("job %d contract: field %s %s (%s) reward %s", job.number, contract.field, contract.kind,
+                 contract.status, contract.reward)
+        states = []
+
+        def mine():
+            return next((c for c in self.world.contracts() if c.field == contract.field and c.mine), None)
+
+        try:
+            if not contract.mine:
+                entered("CONTRACT")
+                states.append("CONTRACT")
+                self.world.contract(contract.field, start=True)
+                # Its field is Farmhand's to work once the snapshot lists it.
+                if self._until(lambda: any(f.id == contract.field for f in self.world.fields()),
+                               self.CONTRACT_WAIT_S, cancel) is None:
+                    return Result("UNVERIFIED", "CONTRACT_FIELD_NOT_OBSERVED", (), tuple(states))
+            current = mine()
+            if current is None:
+                return Result("FAILED", "CONTRACT_LOST", (), tuple(states))
+            used = ()
+            if current.status != "FINISHED":
+                result = self._field_work(job, cancel, entered, {"field": contract.field, "operations": [operation]})
+                states += list(result.states)
+                used = tuple(result.equipment_ids)
+                if result.status != "COMPLETE":
+                    return Result(result.status, result.reason, used, tuple(states))
+                if self._until(lambda: (mine() or contract).status == "FINISHED", self.CONTRACT_WAIT_S, cancel) is None:
+                    return Result("UNVERIFIED", "CONTRACT_NOT_FINISHED", used, tuple(states))
+            farm = self.world.farm()
+            money = farm.money if farm is not None else None
+            entered("COLLECT")
+            states.append("COLLECT")
+            self.world.contract(contract.field, start=False)
+
+            def arrived():
+                now = self.world.farm()
+                return money is not None and now is not None and now.money is not None and now.money > money
+
+            paid = self._until(arrived, 10.0, cancel)
+            if not paid:
+                return Result("UNVERIFIED", "PAYMENT_NOT_OBSERVED", used, tuple(states))
+            log.info("job %d contract field %s paid: %s -> %s", job.number, contract.field, money,
+                     self.world.farm().money)
+            return Result("COMPLETE", "CONTRACT_PAID", used, tuple(states))
+        except StepFailed as failure:
+            return Result("FAILED" if states[-1:] == ["COLLECT"] else "BLOCKED", failure.code, (), tuple(states))
+        except StepUnverified as unknown:
+            return Result("UNVERIFIED", unknown.code, (), tuple(states))
 
     def _buy(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """Each want in turn, one executor purchase each; the first not COMPLETE ends it."""

@@ -4,7 +4,7 @@ FS25World; mock: simulator/world.py.
 See adapters/EVIDENCE.md for which upstream capability backs each operation.
 """
 from typing import Protocol
-from protocol.model import Destination, Equipment, FarmInfo, Field, HitchPlan, Pose, Position
+from protocol.model import Contract, Destination, Equipment, FarmInfo, Field, HitchPlan, Pose, Position
 
 
 class StepFailed(RuntimeError):
@@ -46,6 +46,16 @@ class World(Protocol):
 
     def farm(self) -> FarmInfo | None:
         """Return the farm's money and GIANTS' helper purchase settings, fresh."""
+        ...
+
+    def contracts(self) -> tuple[Contract, ...]:
+        """GIANTS' field contracts: available (CREATED) and this farm's own."""
+        ...
+
+    def contract(self, field: int, start: bool) -> str:
+        """CONTRACT: take the field's available contract (DONE once GIANTS runs it) or
+        collect this farm's finished one (GIANTS pays the reward); never evidence of the
+        money: the caller reads the farm's balance."""
         ...
 
     def open_gates(self, x: float, z: float, radius: float) -> str:

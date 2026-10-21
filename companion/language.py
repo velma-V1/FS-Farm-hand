@@ -418,6 +418,36 @@ _PLANT = re.compile(
 _NOT_CROPS = frozenset(_FIELD_VERBS) | {"a", "an", "the", "it", "field", "small", "test", "area", "and", "then"}
 
 
+# "do a contract", "take the best contract", "do the plow contract on field 12", "finish the
+# contract", "collect the contract": one goal (taken, worked, collected; re-planned from
+# GIANTS' own state). The type by the start of GIANTS' name for it.
+_CONTRACT_KINDS = (("plow", "plow"), ("plough", "plow"), ("cultivat", "cultiv"), ("fertili", "fertili"),
+                   ("spray", "herbici"), ("sow", "sow"), ("seed", "sow"), ("harvest", "harvest"), ("mow", "mow"),
+                   ("bal", "bale"), ("weed", "weed"))
+_CONTRACT = re.compile(
+    r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?:do|take|start|accept|complete|finish|work|get|collect|cash\s+in)\s+"
+    r"(?:(?:me\s+)?(?:a|an|the|one|my|our)\s+)?(?:(?:best\s+paying|highest\s+paying|best|top)\s+)?"
+    r"(?:(?P<kind>[a-z]+)\s+)?(?:contract|mission)s?(?:\s+(?:reward|money|pay))?"
+    rf"(?:\s+(?:on|in|at|for)\s+{_FIELD_N})?(?:\s+please)?$")
+
+
+def contract(words: str) -> dict | None:
+    match = _CONTRACT.match(words)
+    if match is None:
+        return None
+    proposal = {"version": 1, "command": "contract"}
+    if match["kind"]:
+        kind = next((k for word, k in _CONTRACT_KINDS if match["kind"].startswith(word)), None)
+        if kind is None:
+            return None
+        proposal["kind"] = kind
+    if match["number"]:
+        proposal["field"] = int(match["number"])
+        if proposal["field"] < 1:
+            return None
+    return proposal
+
+
 def plant(words: str) -> dict | None:
     """What to plant: cultivate (skipped where the ground is ready) then sow the crop, or
     the preparation the player named first ("plow and plant canola on field 4")."""
@@ -586,6 +616,8 @@ class RuleInterpreter:
             return {"version": 1, "command": "report"}
         if _STATUS.search(words):
             return {"version": 1, "command": "status"}
+        if not _NEGATION.search(words) and contract(words):
+            return contract(words)                    # "do a contract": an order, not a question
         if _NEGATION.search(words) or _QUESTION.match(words):
             return None                               # never an order to move
         if _COME.match(words):

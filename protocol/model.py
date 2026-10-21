@@ -133,6 +133,18 @@ class Field:
 
 
 @dataclass(frozen=True)
+class Contract:
+    """A GIANTS field contract (mod/FarmhandObserve.lua Observe.contracts): the field, its
+    type (plow, cultivate, sow, harvest, ...), MissionStatus name, reward, and whether
+    this farm runs it."""
+    field: int
+    kind: str
+    status: str                  # CREATED (available), PREPARING, RUNNING, FINISHED
+    mine: bool
+    reward: float | None
+
+
+@dataclass(frozen=True)
 class StoreItem:
     """A store vehicle item (GIANTS StoreManager item): what Farmhand may buy."""
     id: int
