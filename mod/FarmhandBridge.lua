@@ -1428,7 +1428,7 @@ function Bridge:openPipe()
     self.pipe = handle
     self:writeLine(self.Observe.hello(self.env))
     local catalog = self.Observe.catalogFrame and self.Observe.catalogFrame()
-    if catalog ~= nil then self:writeLine(catalog) end
+    for _, line in ipairs(catalog or {}) do self:writeLine(line) end
 end
 
 function Bridge:result(session, id, op, status, code)
@@ -1606,7 +1606,7 @@ function Bridge:update(dt)
         local line = self.Observe.snapshot(self.env, self.seq, self.session, elapsed)
         if line ~= nil then self:writeLine(line) end
         local catalog = self.Observe.tickCatalog and self.Observe.tickCatalog(self.env)
-        if catalog ~= nil then self:writeLine(catalog) end
+        for _, line in ipairs(catalog or {}) do self:writeLine(line) end
     end
 end
 

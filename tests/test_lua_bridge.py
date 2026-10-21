@@ -1572,6 +1572,19 @@ class FollowTests(unittest.TestCase):
         self.assertIn("stopAI", list(env.calls.values()))
 
 
+class CatalogFrameTests(unittest.TestCase):
+    def test_the_catalog_goes_in_small_pages(self):
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        observe = lua.execute((ROOT / "mod/FarmhandObserve.lua").read_text())
+        lua.execute("""local O = ...
+            O.catalog = { done = true, truncated = false, items = O.array() }
+            for i = 1, 120 do O.catalog.items[i] = { id = i, name = "item", options = O.array() } end""", observe)
+        lines = list(observe.catalogFrame().values())
+        self.assertEqual(len(lines), 3)                                     # 50, 50, 20
+        frames = [json.loads(line) for line in lines]
+        self.assertEqual([(f["page"], f["pages"], len(f["items"])) for f in frames], [(0, 3, 50), (1, 3, 50), (2, 3, 20)])
+
+
 class SaveTests(unittest.TestCase):
     """The game's own save; complete only once GIANTS' saveSavegame ran to its end."""
 

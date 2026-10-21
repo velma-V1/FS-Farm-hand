@@ -208,7 +208,9 @@
         "event": {"const": "catalog"},
         "protocol": {"const": 3},
         "items": {"type": "array", "maxItems": 1500, "items": {"$ref": "#/$defs/storeItem"}},
-        "truncated": {"type": "boolean"}
+        "truncated": {"type": "boolean"},
+        "page": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "pages": {"type": "integer", "minimum": 1, "maximum": 1000}
       }
     },
     "coverage": {

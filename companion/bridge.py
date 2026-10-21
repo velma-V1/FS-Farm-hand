@@ -59,6 +59,8 @@ class CommandLink:
         self._cond = threading.Condition()
         self._snapshot: dict | None = None
         self.hello: dict | None = None    # the game's latest hello (its mod version and build)
+        self._catalog_pages: dict[int, list] = {}
+        self.catalog: tuple = ()            # the store items of the linked game (complete pages only)
         self._snapshots = 0
         self._last_frame_at: float | None = None
         self._results: dict[int, list[tuple[str, str]]] = {}
@@ -144,16 +146,26 @@ class CommandLink:
                 # after a savegame reload: its request ids restart there.
                 self._last_request = 0
                 self.hello = frame
+                # Its store items come again: never buy from another game's catalog.
+                self.catalog, self._catalog_pages = (), {}
             elif event == "snapshot":
                 self._snapshot, self._snapshots = frame, self._snapshots + 1
                 self._last_session = frame["session"]
             elif event == "catalog":
-                self.catalog = tuple(StoreItem(i["id"], i["name"], i["brand"], tuple(i["categories"]), i["price"],
-                                               i["mod"], i["width"], i["needed_power"], i["power"],
-                                               tuple(i.get("hitches") or ()), tuple(i.get("engines") or ()),
-                                               tuple((o["kind"], o["type"], o["index"], o["name"])
-                                                     for o in i.get("options") or ()))
-                                     for i in frame["items"])
+                # In pages (page 0 starts a catalog); complete only once every page is here.
+                page, pages = frame.get("page", 0), frame.get("pages", 1)
+                if page == 0:
+                    self._catalog_pages = {}
+                self._catalog_pages[page] = frame["items"]
+                if set(self._catalog_pages) == set(range(pages)):
+                    items = [i for n in range(pages) for i in self._catalog_pages[n]]
+                    self.catalog = tuple(StoreItem(i["id"], i["name"], i["brand"], tuple(i["categories"]), i["price"],
+                                                   i["mod"], i["width"], i["needed_power"], i["power"],
+                                                   tuple(i.get("hitches") or ()), tuple(i.get("engines") or ()),
+                                                   tuple((o["kind"], o["type"], o["index"], o["name"])
+                                                         for o in i.get("options") or ()))
+                                         for i in items)
+                    self._catalog_pages = {}
             elif event == "result" and frame["session"] == self.session:
                 self._results.setdefault(frame["id"], []).append((frame["status"], frame["code"]))
             elif event == "request" and frame["session"] == self.session and frame["id"] > self._last_request:

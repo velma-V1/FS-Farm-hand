@@ -1158,3 +1158,25 @@ class OpContractTests(unittest.TestCase):
         # Live 8f95c84618a14e92-1: "buy" had none, a KeyError before anything was sent.
         from protocol.ipc import COMMAND_ARGS
         self.assertEqual(set(COMMAND_ARGS) - set(bridge.DONE_TIMEOUT_S), set())
+
+
+class CatalogPageTests(unittest.TestCase):
+    """The store catalog arrives in pages (live 2026-10-21: one frame with every item's
+    options outgrew the 1 MiB line and was dropped); complete only with every page, and a
+    new game link never keeps another game's catalog."""
+
+    ITEM = {"id": 1, "name": "Titan Vineyard Plow", "brand": "LIZARD", "categories": ["PLOWS"], "price": 3000,
+            "mod": True, "width": None, "needed_power": 65, "power": None,
+            "options": [{"kind": "set", "type": None, "index": 5, "name": "25M Unrealistic"}]}
+
+    def test_pages_make_one_catalog_and_a_new_link_clears_it(self):
+        link = CommandLink(FakeFiles(None))
+        page = lambda n, pages, item_id: {"event": "catalog", "protocol": 3, "truncated": False, "page": n,
+                                          "pages": pages, "items": [dict(self.ITEM, id=item_id)]}
+        link.on_frame(page(0, 2, 1))
+        self.assertEqual(link.catalog, ())                                  # one page of two: not yet
+        link.on_frame(page(1, 2, 2))
+        self.assertEqual([i.id for i in link.catalog], [1, 2])
+        self.assertEqual(link.catalog[0].options, (("set", None, 5, "25M Unrealistic"),))
+        link.on_frame({"event": "hello", "protocol": 3})
+        self.assertEqual(link.catalog, ())                                  # another game: gone

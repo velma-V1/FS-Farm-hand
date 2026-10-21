@@ -969,11 +969,24 @@ function Observe.tickCatalog(env)
     return nil
 end
 
--- The finished catalog frame again (a new companion session needs it too).
+-- The finished catalog as frames of CATALOG_PAGE items each (one frame with every item's
+-- options outgrew the companion's 1 MiB line, live 2026-10-21 LINE_TOO_LONG); a new
+-- companion session needs them too. A list of lines, or nil while it is being built.
+Observe.CATALOG_PAGE = 50
 function Observe.catalogFrame()
     local c = Observe.catalog
     if c == nil or not c.done then return nil end
-    return encode({ event = "catalog", protocol = Observe.PROTOCOL, items = c.items, truncated = c.truncated })
+    local pages = math.max(1, math.ceil(#c.items / Observe.CATALOG_PAGE))
+    local lines = {}
+    for page = 0, pages - 1 do
+        local items = Observe.array()
+        for i = page * Observe.CATALOG_PAGE + 1, math.min(#c.items, (page + 1) * Observe.CATALOG_PAGE) do
+            items[#items + 1] = c.items[i]
+        end
+        lines[#lines + 1] = encode({ event = "catalog", protocol = Observe.PROTOCOL, items = items,
+                                     truncated = c.truncated, page = page, pages = pages })
+    end
+    return lines
 end
 
 -- Money, GIANTS' helper purchase settings (missionInfo helperBuy*, Motorized
