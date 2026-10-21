@@ -49,7 +49,7 @@ APP = "shell:AppsFolder\\" + PureWindowsPath(host.FS25_PROFILE).parts[-3] + "!" 
 class CompanionCase(unittest.TestCase):
     """A FakeGame, the real serve() loop and a LiveTest polling a temporary folder."""
 
-    def start(self, build="abc123", **game_args):
+    def start(self, build="abc123", ai=None, **game_args):
         import logging
         from companion import service
         farmhand = logging.getLogger("farmhand")      # INFO, as companion/service.py configures it
@@ -73,8 +73,8 @@ class CompanionCase(unittest.TestCase):
         self.addCleanup(live.close)
         stop = threading.Event()
         self.addCleanup(stop.set)
-        threading.Thread(target=service.serve, args=(world,), kwargs={"should_stop": stop.is_set, "live": live},
-                         daemon=True).start()
+        threading.Thread(target=service.serve, args=(world,),
+                         kwargs={"should_stop": stop.is_set, "live": live, "ai": ai}, daemon=True).start()
         wait_for(lambda: live.coordinator is not None)
         self.live, self.game = live, game
         return game, live
@@ -158,6 +158,49 @@ class CompanionLiveTestTests(CompanionCase):
         self.assertEqual((record["status"], record["text"]), ("COMPLETE", "hitch the forage wagon"))
         self.assertEqual(record["proposal"], {"version": 1, "command": "hitch_pair"})
         self.assertEqual([c["op"] for c in game.commands], LIVE_HITCH)
+
+    def test_words_the_rules_miss_go_to_the_chosen_model_off_the_serve_thread(self):
+        # The completion plan, stage 2: live tests read words as the player's do (rules,
+        # then the user's AI), so free wording is qualified in game, not only in CI.
+        from companion.language import RuleInterpreter
+        text, refused = "could you rig up the forage wagon for me", "don't touch the forage wagon"
+        self.assertIsNone(RuleInterpreter().interpret(text))
+        asked, threads, release = [], [], threading.Event()
+        release.set()
+
+        class FakeAI:
+            enabled = True
+
+            def interpret(self, words):
+                asked.append(words)
+                threads.append(threading.current_thread().name)
+                release.wait(5)
+                return {"version": 1, "command": "hitch_pair"}
+
+        game, live = self.start(autodrive=False, ai=FakeAI(), faults={"stage_end": (3.44, -12.40, 85.9)})
+        answer = self.request("request", text=text)
+        self.assertEqual((answer["ok"], answer["code"]), (True, "STARTED"), answer)
+        record = self.record(answer["result"]["test_id"])
+        self.assertEqual((record["status"], record["interpreter"]), ("COMPLETE", "model"))
+        self.assertEqual(record["proposal"], {"version": 1, "command": "hitch_pair"})
+        self.assertNotEqual(threads[0], "MainThread")
+        self.assertNotIn("serve", threads[0])
+        self.assertEqual(self.request("request", text=refused)["code"], "NOT_UNDERSTOOD")
+        self.assertEqual(asked, [text])                                     # a negation never reaches it
+        # A live STOP while the model thinks voids its answer: nothing starts.
+        release.clear()
+        commands = len(game.commands)
+        ident = str(time.time_ns())
+        value = {"version": 1, "id": ident, "command": "request", "session": game.link.session,
+                 "created": time.time(), "text": text}
+        (self.folder / f"request-{ident}.json").write_text(json.dumps(value))
+        wait_for(lambda: len(asked) == 2)
+        self.assertEqual(self.request("stop")["code"], "STOP_SENT")
+        release.set()
+        wait_for(lambda: (self.folder / f"response-{ident}.json").exists())
+        late = json.loads((self.folder / f"response-{ident}.json").read_text())
+        self.assertEqual((late["ok"], late["code"]), (False, "STOPPED_BEFORE_START"))
+        self.assertEqual([c["op"] for c in game.commands[commands:]], [])
 
     def test_typed_words_that_are_not_a_job_or_not_understood_start_nothing(self):
         game, live = self.start(autodrive=False)

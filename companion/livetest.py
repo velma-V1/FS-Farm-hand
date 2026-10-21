@@ -40,6 +40,7 @@ from adapters.world import StepUnverified
 from companion.buildinfo import BUILD
 from companion.executor import compatible, rejections, usable
 from companion.hitch import joint_error, plan_hitch
+from companion.language import refuses
 
 log = logging.getLogger("farmhand")
 
@@ -182,6 +183,8 @@ class LiveTest:
         self._lock = threading.Lock()
         self.active: dict | None = None
         self._stopped = threading.Event()
+        self.model = None
+        self._stops = 0                       # live STOPs: a model answer asked before one is void
 
     # ---------------------------------------------------------------- lifecycle
     def start(self) -> None:
@@ -200,9 +203,10 @@ class LiveTest:
         except OSError:
             pass
 
-    def attach(self, coordinator, interpret=None) -> None:
-        """``interpret``: the production rules' text interpreter (companion/service.py)."""
-        self.coordinator, self.interpret = coordinator, interpret
+    def attach(self, coordinator, interpret=None, model=None) -> None:
+        """``interpret``: the production rules' text interpreter; ``model``: the user's AI
+        for words the rules miss, or None (companion/service.py, as the player's words)."""
+        self.coordinator, self.interpret, self.model = coordinator, interpret, model
 
     # ---------------------------------------------------------------- files
     def _write(self, name: str, value: dict) -> None:
@@ -272,6 +276,7 @@ class LiveTest:
     def run(self, request: dict, coordinator) -> None:
         """On the serve thread (companion/service.py): never waits for a job."""
         if request["command"] == "stop":
+            self._stops += 1
             coordinator.submit(dict(STOP))
             with self._lock:
                 active = self.active and self.active["test_id"]
@@ -281,9 +286,23 @@ class LiveTest:
             if self.active is not None:
                 self.respond(request, False, "TEST_ACTIVE", test_id=self.active["test_id"])
                 return
+        interpreter = None
         if request["command"] == "request":
-            proposal = self.interpret(request["text"]) if self.interpret is not None else None
-            log.info("live test request %s text %r -> %s", request["id"], request["text"], json.dumps(proposal))
+            if "model_proposal" in request:            # the model's answer, back on this thread
+                if request["stops"] != self._stops:
+                    self.respond(request, False, "STOPPED_BEFORE_START")
+                    return
+                proposal, interpreter = request["model_proposal"], "model"
+            else:
+                proposal = self.interpret(request["text"]) if self.interpret is not None else None
+                interpreter = "rules"
+                log.info("live test request %s text %r -> %s", request["id"], request["text"], json.dumps(proposal))
+                if proposal is None and self.model is not None and not refuses(request["text"]):
+                    # As the player's words (companion/service.py ask_model): off this thread,
+                    # so STOP is never held up while the model thinks.
+                    threading.Thread(target=self._ask_model, args=(request, self._stops), daemon=True,
+                                     name="farmhand-livetest-model").start()
+                    return
             if proposal is None:
                 self.respond(request, False, "NOT_UNDERSTOOD")
                 return
@@ -304,13 +323,19 @@ class LiveTest:
                   "proposal": proposal, "text": request.get("text"), "companion_build": BUILD, "mod_build": self.mod_build(),
                   "started": _local(at), "started_unix": at, "ended": None, "ended_unix": None,
                   "status": "WORKING", "reason": None, "steps": [], "states": [], "equipment": [],
-                  "final_observation": None, "companion_log": [], "configuration": self.configuration()}
+                  "final_observation": None, "companion_log": [], "configuration": self.configuration(),
+                  "interpreter": interpreter}
         with self._lock:
             self.active = record
         self._save(record, capture)
         self.respond(request, True, "STARTED", test_id=job.owner)
         threading.Thread(target=self._monitor, args=(job, record, capture, coordinator), daemon=True,
                          name="farmhand-livetest-monitor").start()
+
+    def _ask_model(self, request: dict, stops: int) -> None:
+        proposal = self.model(request["text"])
+        log.info("live test request %s model %r -> %s", request["id"], request["text"], json.dumps(proposal))
+        self.link.inject({"live": dict(request, model_proposal=proposal, stops=stops)})
 
     def _save(self, record: dict, capture: _Capture) -> None:
         record["companion_log"] = list(capture.lines)
