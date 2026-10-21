@@ -50,7 +50,7 @@ class FakeOllama:
                 if outer.reject_think and "think" in body:
                     return self.reply(400, {"error": "unknown field think"})
                 text = body["messages"][-1]["content"]
-                content = outer.answers.get(text, '{"command": "unknown", "place": "", "field": 0}')
+                content = outer.answers.get(text, '{"command": "unknown", "say": ""}')
                 self.reply(200, {"message": {"role": "assistant", "content": content}})
 
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -62,8 +62,13 @@ class FakeOllama:
         self.httpd.server_close()
 
 
-def answer(command, place="", field=0):
-    return json.dumps({"command": command, "place": place, "field": field})
+# The rules' wording for each command (companion/model.py PROMPT).
+SAY = {"fetch_pair": "bring a tractor and the forage wagon here", "move_pair": "take this to the barn",
+       "field_work": "plow field 3", "buy": "buy a large plow", "hitch_pair": "hitch the forage wagon"}
+
+
+def answer(command, say=None):
+    return json.dumps({"command": command, "say": SAY.get(command, "") if say is None else say})
 
 
 GOOD = {text: answer(expected) for text, expected in ai.VALIDATION}
@@ -141,7 +146,7 @@ class DiscoveryTests(Fixture):
 
 class OllamaTests(Fixture):
     def test_requests_are_constrained_local_and_use_ollamas_own_runtime(self):
-        fake, client = self.ollama(answers={"bring that back to the shed": answer("move_pair", "shed")})
+        fake, client = self.ollama(answers={"bring that back to the shed": answer("move_pair", "take this to the shed")})
         proposal = client.interpreter("qwen3:4b").interpret("bring that back to the shed")
         self.assertEqual(proposal, {"version": 1, "command": "move_pair", "target": {"type": "place", "name": "shed"}})
         body = fake.chats[0]
@@ -174,7 +179,7 @@ class ValidationTests(Fixture):
         self.assertIsNone(cold.interpreter("big:7b").interpret(ai.VALIDATION[0][0]))   # the cold load times out
         fake.loaded.clear()
         brain = self.make_ai(ai.Ollama(fake.url, timeout=0.5))
-        self.assertEqual(brain._validate(brain.ollama.interpreter("big:7b")), (True, "6_OF_6"))
+        self.assertEqual(brain._validate(brain.ollama.interpreter("big:7b")), (True, "7_OF_7"))
         self.assertEqual(fake.loads[-1]["keep_alive"], ai.KEEP_ALIVE)
         self.assertTrue(all(c["keep_alive"] == ai.KEEP_ALIVE for c in fake.chats))
 
@@ -185,14 +190,14 @@ class ValidationTests(Fixture):
 
     def test_validation_checks_only_what_farmhand_needs(self):
         _, client = self.ollama(answers=GOOD)
-        self.assertEqual(ai.validate(client.interpreter("qwen3:4b")), (True, "6_OF_6"))
+        self.assertEqual(ai.validate(client.interpreter("qwen3:4b")), (True, "7_OF_7"))
         wrong = dict(GOOD, **{ai.VALIDATION[0][0]: answer("status"), ai.VALIDATION[1][0]: answer("status")})
         _, client = self.ollama(answers=wrong)
-        self.assertEqual(ai.validate(client.interpreter("qwen3:4b")), (False, "ONLY_4_OF_6"))
-        unsafe = dict(GOOD, **{"plow field 3": answer("move_pair", "", 3)})
+        self.assertEqual(ai.validate(client.interpreter("qwen3:4b")), (False, "ONLY_5_OF_7"))
+        unsafe = dict(GOOD, **{"tell me a joke about cows": answer("move_pair", "take this to field 3")})
         _, client = self.ollama(answers=unsafe)
         self.assertEqual(ai.validate(client.interpreter("qwen3:4b")), (False, "UNSAFE_ANSWER"))
-        unsafe = dict(GOOD, **{"plow field 3": answer("hitch_pair")})     # hitching moves equipment too
+        unsafe = dict(GOOD, **{"tell me a joke about cows": answer("hitch_pair")})   # hitching moves equipment too
         _, client = self.ollama(answers=unsafe)
         self.assertEqual(ai.validate(client.interpreter("qwen3:4b")), (False, "UNSAFE_ANSWER"))
         ticks = iter(range(0, 1000, 30))
@@ -259,7 +264,7 @@ class ChoiceTests(Fixture):
                              installer=lambda folder, choice: installs.append(choice))
         brain.open_menu()
         lightweight = next(n for n, c in enumerate(brain.menu, 1) if c.provider == "install" and c.model == "lightweight")
-        with unittest.mock.patch.object(ai, "validate", lambda interpreter: (True, "6_OF_6")):
+        with unittest.mock.patch.object(ai, "validate", lambda interpreter: (True, "7_OF_7")):
             brain.choose(lightweight)
             self.wait(lambda: self.notices[-1:] == ["AI_READY"])
         self.assertEqual(installs, ["lightweight"])
@@ -323,7 +328,7 @@ class ChoiceTests(Fixture):
         self.assertEqual(len(used), 1)                            # never the candidate
         release.set()
         self.wait(lambda: not brain.busy)
-        self.assertEqual(self.notices[-1], "AI_INCOMPATIBLE")      # it said fetch for "plow field 3"
+        self.assertEqual(self.notices[-1], "AI_INCOMPATIBLE")      # it said fetch for the joke
         self.assertEqual(self.settings.ai(), {"provider": "ollama", "model": "good:1b"})
 
     def test_continue_without_ai_during_a_download_wins_and_busy_picks_are_reported(self):

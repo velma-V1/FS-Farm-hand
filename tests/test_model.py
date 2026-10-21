@@ -57,7 +57,7 @@ class ModelInterpreterTests(unittest.TestCase):
         return server, model.ModelInterpreter(server.url, timeout=2)
 
     def test_request_is_constrained_deterministic_and_local(self):
-        server, interpreter = self.serve(lambda body: chat('{"command": "status", "place": "", "field": 0}'))
+        server, interpreter = self.serve(lambda body: chat('{"command": "status", "say": ""}'))
         self.assertEqual(interpreter.interpret("how far along are you"), {"version": 1, "command": "status"})
         path, body = server.requests[0]
         self.assertEqual(path, "/v1/chat/completions")
@@ -66,34 +66,56 @@ class ModelInterpreterTests(unittest.TestCase):
         self.assertEqual(body["messages"][-1], {"role": "user", "content": "how far along are you"})
         self.assertIn("fetch_pair", body["messages"][0]["content"])      # the schema is described
 
-    def test_answers_map_to_validated_proposals(self):
-        cases = [({"command": "fetch_pair", "place": "", "field": 0}, {"version": 1, "command": "fetch_pair"}),
-                 ({"command": "fetch_pair", "place": " cow barn ", "field": 0},
-                  {"version": 1, "command": "fetch_pair", "target": {"type": "place", "name": "cow barn"}}),
-                 ({"command": "move_pair", "place": "", "field": 7},
-                  {"version": 1, "command": "move_pair", "target": {"type": "field_entrance", "field": 7}}),
-                 ({"command": "hitch_pair", "place": "", "field": 0}, {"version": 1, "command": "hitch_pair"}),
-                 # "hitch it and bring it to the barn": a fetch to that place, never a dropped target
-                 ({"command": "hitch_pair", "place": "barn", "field": 0},
-                  {"version": 1, "command": "fetch_pair", "target": {"type": "place", "name": "barn"}}),
-                 ({"command": "hitch_pair", "place": "", "field": 4},
-                  {"version": 1, "command": "fetch_pair", "target": {"type": "field_entrance", "field": 4}}),
-                 ({"command": "stop", "place": "barn", "field": 3}, {"version": 1, "command": "stop"}),
-                 ({"command": "unknown", "place": "", "field": 0}, None)]
-        for answer, expected in cases:
+    def test_every_capability_is_reached_through_the_rules_wording(self):
+        # The completion plan, stage 2: different phrasings reach the same supported
+        # workflow. The model only rewrites; the rules read the result.
+        rules = RuleInterpreter()
+        cases = [("fetch_pair", "bring a tractor and the forage wagon here"),
+                 ("fetch_pair", "bring the cultivator to the cow barn"),
+                 ("fetch_pair", "bring the plow to field 3"),
+                 ("fetch_pair", "bring the 1124 trailer here with the gmc"),
+                 ("move_pair", "take this to the farm silo"),
+                 ("move_pair", "come here"),
+                 ("hitch_pair", "hitch the 980 plow"),
+                 ("hitch_pair", "hitch the gooseneck with the gmc"),
+                 ("detach_pair", "unhitch the seeder"),
+                 ("field_work", "plow and seed a small area of field 1 anyway"),
+                 ("field_work", "cultivate the smallest field"),
+                 ("buy", "buy the gmc truck and a gooseneck"),
+                 ("save_game", "save the game")]
+        for command, say in cases:
+            with self.subTest(say=say):
+                _, interpreter = self.serve(lambda body, c=command, w=say: chat(json.dumps({"command": c, "say": w})))
+                proposal = interpreter.interpret("whatever the player said")
+                self.assertEqual(proposal, rules.interpret(say))
+                self.assertEqual(proposal["command"], command)
+                self.assertTrue(COMMAND_VALIDATOR.is_valid(proposal))
+        for command in ("stop", "status"):
+            _, interpreter = self.serve(lambda body, c=command: chat(json.dumps({"command": c, "say": "bring it here"})))
+            self.assertEqual(interpreter.interpret("x"), {"version": 1, "command": command})
+        # "hitch it and bring it to the barn": the rules make it a fetch to that place.
+        _, interpreter = self.serve(lambda body: chat(json.dumps({"command": "hitch_pair",
+                                                                  "say": "bring the cultivator to the barn"})))
+        self.assertEqual(interpreter.interpret("x")["command"], "fetch_pair")
+
+    def test_a_rewrite_the_rules_cannot_read_or_read_otherwise_is_not_understood(self):
+        answers = [{"command": "buy", "say": "plow field 3"},                 # the rules read field work
+                   {"command": "field_work", "say": "plough the north bit"},   # not a form the rules know
+                   {"command": "fetch_pair", "say": "don't bring the tractor"},
+                   {"command": "move_pair", "say": "what are you doing"},
+                   {"command": "unknown", "say": "come here"},
+                   {"command": "fetch_pair", "say": ""}]
+        for answer in answers:
             with self.subTest(answer=answer):
                 _, interpreter = self.serve(lambda body, a=answer: chat(json.dumps(a)))
-                proposal = interpreter.interpret("something")
-                self.assertEqual(proposal, expected)
-                if proposal is not None:
-                    self.assertTrue(COMMAND_VALIDATOR.is_valid(proposal))
+                self.assertIsNone(interpreter.interpret("something"))
 
     def test_anything_off_schema_or_broken_is_not_understood(self):
-        replies = [chat("not json"), chat('{"command": "plow", "place": "", "field": 0}'),
+        replies = [chat("not json"), chat('{"command": "plow", "say": "plow field 3"}'),
                    chat('{"command": "fetch_pair"}'),
-                   chat('{"command": "fetch_pair", "place": "", "field": 0, "vehicle_id": 11}'),
-                   chat('{"command": "move_pair", "place": "' + "x" * 65 + '", "field": 0}'),
-                   chat('{"command": "move_pair", "place": "bad\\u0007name", "field": 0}'),
+                   chat('{"command": "fetch_pair", "say": "come here", "vehicle_id": 11}'),
+                   chat('{"command": "move_pair", "say": "' + "x" * 161 + '"}'),
+                   chat('{"command": "move_pair", "place": "barn", "field": 0}'),
                    (200, {"choices": []}), (200, b"<html>"), (500, {"error": "boom"})]
         for reply in replies:
             with self.subTest(reply=reply):
@@ -103,7 +125,7 @@ class ModelInterpreterTests(unittest.TestCase):
     def test_slow_down_or_unready_model_is_not_understood_quickly(self):
         def slow(body):
             time.sleep(1.5)
-            return chat('{"command": "status", "place": "", "field": 0}')
+            return chat('{"command": "status", "say": ""}')
 
         server = FakeServer(slow)
         self.addCleanup(server.close)
@@ -111,13 +133,13 @@ class ModelInterpreterTests(unittest.TestCase):
         self.assertIsNone(model.ModelInterpreter(server.url, timeout=0.3).interpret("hm"))
         self.assertLess(time.monotonic() - started, 1.2)
         self.assertIsNone(model.ModelInterpreter("http://127.0.0.1:9", timeout=0.3).interpret("hm"))
-        server2, interpreter = self.serve(lambda body: chat('{"command": "status", "place": "", "field": 0}'))
+        server2, interpreter = self.serve(lambda body: chat('{"command": "status", "say": ""}'))
         interpreter.ready = lambda: False
         self.assertIsNone(interpreter.interpret("hm"))
         self.assertEqual(server2.requests, [])
 
     def test_rules_answer_before_the_model_and_stop_never_reaches_it(self):
-        server, interpreter = self.serve(lambda body: chat('{"command": "status", "place": "", "field": 0}'))
+        server, interpreter = self.serve(lambda body: chat('{"command": "status", "say": ""}'))
         chain = ChainInterpreter(RuleInterpreter(), interpreter)
         self.assertEqual(chain.interpret("STOP"), {"version": 1, "command": "stop"})
         self.assertEqual(chain.interpret("bring me a tractor and forage wagon")["command"], "fetch_pair")

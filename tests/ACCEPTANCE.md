@@ -366,8 +366,11 @@ Executable mapping (`python scripts/check.py`):
   [Farmhand]/error lines, settings and a fresh snapshot.
 - `tests/test_model.py` (fake llama-server, no model): requests are local,
   temperature 0 and schema-constrained with the schema described in the prompt;
-  answers map to validated proposals; malformed, off-schema, extra-field, too-long,
-  control-character, empty, HTML and error replies, a slow or unreachable server and
+  every capability (fetch, move, hitch, unhitch, field work with areas and "anyway",
+  buy, save, names and model numbers) is reached from the model's rewrite exactly as
+  the rules read that wording; a rewrite the rules read as another command, cannot
+  read, or read as a negation or question is not understood; malformed, off-schema,
+  extra-field, too-long, empty, HTML and error replies, a slow or unreachable server and
   an unready one are all "not understood"; rules answer first and STOP never
   reaches the model; the server command is CPU-only (-ngl 0, no device), local,
   one slot, at most 4 threads; not installed means rules only; downloads are

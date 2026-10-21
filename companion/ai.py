@@ -40,10 +40,11 @@ VALIDATION = [
     ("drag that combo back to the barn", "move_pair"),
     ("how far along are you", "status"),
     ("kill the engine and stay put", "stop"),
-    ("plow field 3", "unknown"),
-    ("could you rig up a tractor with the forage wagon for me", "fetch_pair"),
+    ("could you get field 3 plowed", "field_work"),
+    ("pick up a big plow from the dealer for us", "buy"),
+    ("tell me a joke about cows", "unknown"),
 ]
-NEEDED_CORRECT = 5                   # of 6; "plow field 3" must never become a movement
+NEEDED_CORRECT = 6                   # of 7; the joke must never become an order
 UNREACHABLE_REPEAT_S = 300.0
 MAX_MENU = 9                         # protocol.ipc MAX_MENU: one in-game list         # remind at most every five minutes
 

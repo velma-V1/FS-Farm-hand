@@ -9,10 +9,13 @@ game's CPU time first. Models: the user picks one of two (MANAGED; Apache-2.0),
 each pinned by URL and sha256 (adapters/EVIDENCE.md, "Local language model"). A
 model the user already has in Ollama is used through companion/ai.py instead.
 
-The model only classifies a sentence into MODEL_SCHEMA (a flat schema llama.cpp
-can enforce while decoding); the result is mapped to a command proposal and
-validated against protocol/command.schema.json. Anything else is None: the
-coordinator then answers NOT_UNDERSTOOD. STOP never waits for the model (rules
+The model only rewrites a sentence into MODEL_SCHEMA (a flat schema llama.cpp can
+enforce while decoding): the command it means and the same request in the wording
+the deterministic rules know ("plow field 3", "buy a large plow"). The rules then
+read that wording (companion/language.py, the one parser for every capability), and
+the result counts only if they reach the same command; it is validated against
+protocol/command.schema.json. Anything else is None: the coordinator then answers
+NOT_UNDERSTOOD. STOP never waits for the model (rules
 decide it first), and every executor path works without it. Standard library
 only; no network beyond 127.0.0.1 at runtime.
 """
@@ -34,6 +37,7 @@ import zipfile
 from jsonschema import Draft202012Validator
 
 from companion.coordinator import COMMAND_VALIDATOR
+from companion.language import RuleInterpreter
 
 log = logging.getLogger("farmhand")
 
@@ -80,54 +84,70 @@ LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({})).open
 
 # What llama.cpp enforces while decoding: flat, no oneOf mixed with properties
 # (grammars/README.md "Can't mix properties w/ anyOf / oneOf").
+# The commands a sentence can be rewritten into; "unknown" for anything else.
+MODEL_COMMANDS = ["fetch_pair", "move_pair", "hitch_pair", "detach_pair", "field_work", "buy", "save_game",
+                  "stop", "status", "unknown"]
 MODEL_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["command", "place", "field"],
+    "required": ["command", "say"],
     "properties": {
-        "command": {"enum": ["fetch_pair", "move_pair", "hitch_pair", "stop", "status", "unknown"]},
-        "place": {"type": "string", "maxLength": 64},
-        "field": {"type": "integer", "minimum": 0, "maximum": 9999},
+        "command": {"enum": MODEL_COMMANDS},
+        "say": {"type": "string", "maxLength": 160},
     },
 }
 MODEL_VALIDATOR = Draft202012Validator(MODEL_SCHEMA)
+RULES = RuleInterpreter()
 
 # The schema is not shown to the model by llama.cpp, so the prompt describes it.
-PROMPT = """You turn one sentence from a Farming Simulator player into JSON for Farmhand, a farmhand that can only:
-- fetch_pair: bring an available tractor and forage wagon, hitched together.
-- move_pair: move the tractor and forage wagon that are already hitched ("this", "it") somewhere.
-- hitch_pair: hitch an available tractor to the forage wagon where it stands, without moving it anywhere.
+PROMPT = """You rewrite one sentence from a Farming Simulator player for Farmhand, a farmhand that can:
+- fetch_pair: bring a tractor with an implement (forage wagon, cultivator, plow, seeder, sprayer, trailer), hitched.
+- move_pair: move the tractor and implement that are already hitched ("this", "it") somewhere.
+- hitch_pair: hitch a tractor to an implement where it stands.
+- detach_pair: unhitch an implement where it stands.
+- field_work: plow, cultivate, seed or fertilize a field (or a small test area of one).
+- buy: buy a plow, a named truck or a gooseneck trailer from the store.
+- save_game: save the game.
 - stop: stop or cancel what it is doing.
 - status: say what it is doing.
-Answer with JSON only: {"command": one of fetch_pair, move_pair, hitch_pair, stop, status, unknown, "place": the destination \
-in the player's own words, or "" for here/me/none, "field": a field number, or 0}.
-Use "unknown" for anything else, including other machines, fieldwork, buying or selling. Never invent a place.
+Answer with JSON only: {"command": one of fetch_pair, move_pair, hitch_pair, detach_pair, field_work, buy, save_game, \
+stop, status, unknown, "say": the same request in Farmhand's own words, exactly in one of these forms}:
+bring a tractor and the forage wagon here | bring the <implement> here | bring the <implement> to <place> | \
+bring the <implement> to field <n> | ... with the <vehicle name> | come here | take this to <place> | \
+take this to field <n> | hitch the <implement> | hitch the <model number> <implement> | unhitch the <implement> | \
+unhitch it | <plow|cultivate|seed|fertilize> [and ...] field <n> | ... a small area of field <n> | \
+... the smallest field | ... anyway (only if the player says to work over a crop) | buy a large plow | \
+buy the <name> truck | buy a gooseneck | save the game. For stop and status "say" is "".
+Use "unknown" with "say" "" for anything else, and for questions or negations. Keep the player's own place and \
+vehicle names; never invent a place, a field number, a name or an amount.
 Examples:
-"get me the tractor and the forage wagon" -> {"command": "fetch_pair", "place": "", "field": 0}
-"could you bring the tractor with the wagon over to the cow barn" -> {"command": "fetch_pair", "place": "cow barn", "field": 0}
-"bring that back to the shed" -> {"command": "move_pair", "place": "shed", "field": 0}
-"go hitch a tractor up to the forage wagon" -> {"command": "hitch_pair", "place": "", "field": 0}
-"get over here with it" -> {"command": "move_pair", "place": "", "field": 0}
-"drive it to field 7" -> {"command": "move_pair", "place": "", "field": 7}
-"how far along are you" -> {"command": "status", "place": "", "field": 0}
-"hold it right there" -> {"command": "stop", "place": "", "field": 0}
-"plow field 3" -> {"command": "unknown", "place": "", "field": 0}"""
+"get the forage wagon hooked up and over to me" -> {"command": "fetch_pair", "say": "bring a tractor and the forage wagon here"}
+"could you bring the cultivator over to the cow barn" -> {"command": "fetch_pair", "say": "bring the cultivator to the cow barn"}
+"drag that combo back to the shed" -> {"command": "move_pair", "say": "take this to the shed"}
+"go hook a tractor up to the 980 plow" -> {"command": "hitch_pair", "say": "hitch the 980 plow"}
+"drop the seeder off" -> {"command": "detach_pair", "say": "unhitch the seeder"}
+"could you get field 3 plowed and seeded" -> {"command": "field_work", "say": "plow and seed field 3"}
+"pick up a big plow from the dealer for us" -> {"command": "buy", "say": "buy a large plow"}
+"put the farm on disk" -> {"command": "save_game", "say": "save the game"}
+"how far along are you" -> {"command": "status", "say": ""}
+"hold it right there" -> {"command": "stop", "say": ""}
+"tell me a joke about cows" -> {"command": "unknown", "say": ""}"""
 
 
 def to_proposal(answer) -> dict | None:
-    """The command proposal for a schema-valid model answer, or None."""
+    """The command proposal for a schema-valid model answer, or None: stop and status as
+    they are; anything else is what the rules read from the answer's wording, and only
+    if they reach the model's command (hitching to a place is a fetch to it)."""
     if not MODEL_VALIDATOR.is_valid(answer) or answer["command"] == "unknown":
         return None
-    proposal = {"version": 1, "command": answer["command"]}
-    if answer["command"] == "hitch_pair" and (answer["place"].strip() or answer["field"] > 0):
-        proposal["command"] = "fetch_pair"           # hitch and bring it there: a fetch to that place
-    if proposal["command"] in ("fetch_pair", "move_pair"):
-        place = answer["place"].strip()
-        if answer["field"] > 0:
-            proposal["target"] = {"type": "field_entrance", "field": answer["field"]}
-        elif place:
-            proposal["target"] = {"type": "place", "name": place}
-    return proposal if COMMAND_VALIDATOR.is_valid(proposal) else None
+    if answer["command"] in ("stop", "status"):
+        return {"version": 1, "command": answer["command"]}
+    proposal = RULES.interpret(answer["say"])
+    if proposal is None:
+        return None
+    agrees = proposal["command"] == answer["command"] or (answer["command"], proposal["command"]) == (
+        "hitch_pair", "fetch_pair")
+    return proposal if agrees and COMMAND_VALIDATOR.is_valid(proposal) else None
 
 
 class ModelInterpreter:
@@ -142,7 +162,7 @@ class ModelInterpreter:
             return None
         body = json.dumps({
             "messages": [{"role": "system", "content": PROMPT}, {"role": "user", "content": text[:200]}],
-            "temperature": 0, "max_tokens": 64,
+            "temperature": 0, "max_tokens": 96,
             # Hybrid "thinking" models answer directly; others ignore the flag.
             "chat_template_kwargs": {"enable_thinking": False},
             "response_format": {"type": "json_schema", "schema": MODEL_SCHEMA},
