@@ -726,13 +726,47 @@ local function gateCandidates(env)
     return found
 end
 
+-- Live bfbc32565ecb4472-1: opening the Large Shed's animated wall was followed by the
+-- Super-Liner rig moving about 12.5 m with no AI job and no Farmhand motion (cause
+-- unproven). So a door opens only while every vehicle within DOOR_WATCH_M of it is
+-- observed at rest, they are all watched until it has opened and settled, and any of
+-- them moving DOOR_MOVED_M ends the op FAILED DOOR_MOVED_VEHICLE (the companion then
+-- stops: no retry, no UNPARK). The door itself is left as it is.
+Bridge.DOOR_WATCH_M, Bridge.DOOR_MOVED_M = 25, 0.25
+Bridge.DOOR_OPEN_MS, Bridge.DOOR_SETTLE_MS = 6000, 2000
+
+-- Every vehicle whose root is within `radius` of one of `points` (GIANTS' vehicle list,
+-- as FarmhandHitch surroundings). Errors on an unreadable position.
+local function vehiclesNear(env, points, radius)
+    local mission = env.g_currentMission
+    local vehicles = (mission.vehicleSystem and mission.vehicleSystem.vehicles) or mission.vehicles
+    assert(type(vehicles) == "table")
+    local near = {}
+    for _, v in pairs(vehicles) do
+        local x, _, z = env.getWorldTranslation(v.rootNode)
+        assert(finite(x) and finite(z))
+        for _, p in ipairs(points) do
+            if math.sqrt((x - p[1]) ^ 2 + (z - p[2]) ^ 2) <= radius then
+                near[#near + 1] = { vehicle = v, x = x, z = z }
+                break
+            end
+        end
+    end
+    return near
+end
+
+local function vehicleName(env, v)
+    local ok, id = pcall(function() return env.NetworkUtil.getObjectId(v) end)
+    return ok and tostring(id) or "?"
+end
+
 function starters.open_gates(env, spec)
     if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
     if not (finite(spec.x) and finite(spec.z) and finite(spec.area)) or spec.area <= 0
             or spec.area > Bridge.MAX_GATE_RADIUS_M then
         return nil, "INVALID_AREA"
     end
-    local opened, closest, near = 0, nil, nil
+    local doors, points, closest, near = {}, {}, nil, nil
     for _, o in ipairs(gateCandidates(env)) do
         pcall(function()
             local gx, _, gz = env.getWorldTranslation(o.nodeId)
@@ -744,22 +778,69 @@ function starters.open_gates(env, spec)
             end
             closest = math.min(closest or d, d)
             if d <= spec.area and o.isEnabled ~= false and (o.animation.time or 0) < 1 then
-                o.animation.direction = 1
-                o:raiseActive()
-                opened = opened + 1
-                log("opening gate %s at (%.1f, %.1f), %.1f m away", tostring(o.saveId), gx, gz, d)
+                doors[#doors + 1] = { o = o, x = gx, z = gz, d = d }
+                points[#points + 1] = { gx, gz }
             end
         end)
     end
-    log("open_gates near (%.1f, %.1f): %d opened; nearest gate %s m%s", spec.x, spec.z, opened,
+    log("open_gates near (%.1f, %.1f): %d closed; nearest gate %s m%s", spec.x, spec.z, #doors,
         closest and string.format("%.1f", closest) or "none", near and (": " .. near) or "")
-    if opened == 0 then return nil, "NO_CLOSED_GATE" end
-    return { opened = opened }
+    if #doors == 0 then return nil, "NO_CLOSED_GATE" end
+    local ok, watched = pcall(vehiclesNear, env, points, Bridge.DOOR_WATCH_M)
+    if not ok then return nil, "DOOR_AREA_UNKNOWN" end
+    for _, w in ipairs(watched) do
+        local okSpeed, still = pcall(stopped, w.vehicle)
+        if not okSpeed then return nil, "DOOR_AREA_UNKNOWN" end
+        if not still then
+            log("open_gates refused: vehicle %s near the door is moving", vehicleName(env, w.vehicle))
+            return nil, "DOOR_NEAR_MOVING_VEHICLE"
+        end
+    end
+    for _, door in ipairs(doors) do
+        door.o.animation.direction = 1
+        door.o:raiseActive()
+        log("opening gate %s at (%.1f, %.1f), %.1f m away; watching %d vehicle(s) within %d m",
+            tostring(door.o.saveId), door.x, door.z, door.d, #watched, Bridge.DOOR_WATCH_M)
+    end
+    return { opened = #doors, watched = watched, doors = doors }
 end
 
--- DONE once the gates had their animation time (a gate opens in a few seconds).
-function steppers.open_gates(_env, task)
-    if task.elapsed < 6000 then return nil end
+-- DONE once the doors had their animation time and every watched vehicle is still where
+-- it was and at rest; any of them moving is DOOR_MOVED_VEHICLE at once.
+function steppers.open_gates(env, task)
+    -- Diagnostics only, once a second: how far each door has opened and how far and how
+    -- fast each watched vehicle has moved (a push and a roll look different here).
+    if task.elapsed >= (task.noteAt or 0) then
+        task.noteAt = task.elapsed + 1000
+        local parts = {}
+        for _, door in ipairs(task.doors) do
+            parts[#parts + 1] = string.format("%s %.2f", tostring(door.o.saveId),
+                tonumber(door.o.animation and door.o.animation.time) or -1)
+        end
+        for _, w in ipairs(task.watched) do
+            pcall(function()
+                local x, _, z = env.getWorldTranslation(w.vehicle.rootNode)
+                parts[#parts + 1] = string.format("%s %.2f m %.1f km/h", vehicleName(env, w.vehicle),
+                    math.sqrt((x - w.x) ^ 2 + (z - w.z) ^ 2), w.vehicle:getLastSpeed())
+            end)
+        end
+        log("open_gates t=%dms: %s", task.elapsed, table.concat(parts, "; "))
+    end
+    for _, w in ipairs(task.watched) do
+        local ok, x, _, z = pcall(env.getWorldTranslation, w.vehicle.rootNode)
+        if not ok or not (finite(x) and finite(z)) then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
+        local moved = math.sqrt((x - w.x) ^ 2 + (z - w.z) ^ 2)
+        if moved > Bridge.DOOR_MOVED_M then
+            log("open_gates: vehicle %s moved %.2f m while the door opened", vehicleName(env, w.vehicle), moved)
+            return "FAILED", "DOOR_MOVED_VEHICLE"
+        end
+    end
+    if task.elapsed < Bridge.DOOR_OPEN_MS + Bridge.DOOR_SETTLE_MS then return nil end
+    for _, w in ipairs(task.watched) do
+        local ok, still = pcall(stopped, w.vehicle)
+        if not ok then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
+        if not still then return "FAILED", "DOOR_MOVED_VEHICLE" end
+    end
     return "DONE", "GATES_OPENED"
 end
 
@@ -1355,6 +1436,9 @@ Bridge.REASONS = {
     UNPARK_ARTICULATED_UNSUPPORTED = "Farmhand does not drive articulated vehicles out of buildings",
     UNPARK_QUERY_UNVERIFIED = "the game's collision check could not be confirmed, so Farmhand did not move it",
     UNPARK_QUERY_UNKNOWN = "the way out could not be checked, so Farmhand did not move it",
+    DOOR_MOVED_VEHICLE = "a vehicle moved while the door opened, so Farmhand stopped; check it",
+    DOOR_NEAR_MOVING_VEHICLE = "a vehicle near the door is moving, so Farmhand did not open it",
+    DOOR_AREA_UNKNOWN = "the vehicles near the door could not be checked, so Farmhand did not open it",
     UNPARK_HANDOFF_BLOCKED = "it drove out of the building, but the helper still cannot start from there",
     UNPARK_ALREADY_USED = "it was already driven out once in this job and the helper still cannot start",
     SEATED_DURING_UNPARK = "step out of the vehicle so Farmhand can drive it out of the building",

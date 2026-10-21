@@ -62,6 +62,29 @@ class DeliverFromAShedTests(unittest.TestCase):
         self.assertEqual(world.opened, (door,))
         self.assertEqual(world.unparked, (tractor.id,))
 
+    def test_a_door_that_moved_a_vehicle_ends_the_job_without_retry_or_unpark(self):
+        # Live bfbc32565ecb4472-1: the rig moved after the Large Shed's wall opened.
+        for code in ("DOOR_MOVED_VEHICLE", "DOOR_NEAR_MOVING_VEHICLE", "DOOR_AREA_UNKNOWN"):
+            with self.subTest(code):
+                class Shoving(MockWorld):
+                    navigations = 0
+
+                    def open_gates(self, x, z, radius, code=code):
+                        raise StepFailed(code)
+
+                    def navigate(self, tractor_id, pose, owner):
+                        self.navigations += 1
+                        return super().navigate(tractor_id, pose, owner)
+
+                tractor, wagon = hitched_pair("t1", "w1", (130.0, 260.0))
+                world = Shoving([tractor, wagon], PLAYERS, ())
+                world.boxed = {"t1": dict(SHED)}
+                result = Executor(world).execute(move())
+                self.assertEqual((result.status, result.reason), ("FAILED", code))
+                self.assertEqual(world.navigations, 1)
+                self.assertEqual(world.unparked, ())
+                self.assertEqual(result.states[-2:], ("STOP", "RELEASE"))
+
     def test_a_hand_off_giants_still_cannot_start_fails_without_a_second_extraction(self):
         world, (tractor, wagon) = boxed_pair(3, {"exit": 9.0, "still": True})
         result = Executor(world).execute(move())

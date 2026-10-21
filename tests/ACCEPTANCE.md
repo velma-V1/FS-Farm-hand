@@ -249,13 +249,17 @@ Executable mapping (`python scripts/check.py`):
   only; refusals (UNPARK_EXIT_BLOCKED, _TOO_TIGHT, _QUERY_UNVERIFIED) move nothing; a
   vehicle in the open keeps GIANTS' reason; an invalid target, a stall on the way or a
   timeout never opens doors or unparks; an UNPARK DONE without motion is UNVERIFIED; a
-  stop before it cancels it; one extraction per vehicle per job across its steps (a new
+  stop before it cancels it; a door that moved a vehicle (or a moving or unreadable
+  vehicle near it) ends the job with one GOTO and no UNPARK; one extraction per vehicle per job across its steps (a new
   job has its own); a boxed lone tractor is unparked then hitches; one that cannot be
   hands over to the next tractor unmoved; after UNPARK the first GOTO GIANTS takes must
   move it. Mod side (`test_lua_bridge`): `unpark` is DONE only CLEAR and at rest,
   refusals and failures are FAILED, AI blocks it, a stop pre-empts it braked; a
   navigate or stage whose agent stays BLOCKED 90 s never 2 m from its start ends
-  *_BLOCKED_AT_START, one that drove off first never does. `test_lua_unpark` (the real
+  *_BLOCKED_AT_START (also when it planned first and the stall watch ends it), one that
+  drove off first never does; `open_gates` opens a door only with every vehicle within
+  25 m at rest and readable, and fails DOOR_MOVED_VEHICLE when one moves 0.25 m while it
+  opens or is not at rest after it, never watching a vehicle farther off. `test_lua_unpark` (the real
   Hitch.newUnpark / unparkStep on a kinematic stub answering GIANTS' overlapBox call
   shape): straight out of an open-front shed to the nearest exit at 3 km/h; nose-in
   backs out with nothing attached; a towed rig never reverses; the Super-Liner and

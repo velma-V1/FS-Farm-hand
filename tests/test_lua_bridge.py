@@ -1040,8 +1040,94 @@ class LuaBridgeTests(unittest.TestCase):
         self.beating(12000)                                         # only the stage's own 120 s bound
         self.assertEqual(self.results(1)[-1], (1, "FAILED", "STAGE_TIMEOUT"))
 
+    # ---------------------------------------------------------- open_gates
+    def doors_world(self):
+        """A closed door (GIANTS AnimatedObject via a placeable) at (944.1, 772.0), the
+        reserved truck 13.8 m from it, a parked trailer 4 m from it, a car 40 m off."""
+        self.adopt()
+        return self.lua.execute(r"""
+            local w = ...
+            local door = { animation = { time = 0 }, nodeId = "door", saveId = "wallUp", raised = 0 }
+            function door:raiseActive() self.raised = self.raised + 1 end
+            w.door = door
+            w.env.g_currentMission.placeableSystem = { placeables = {
+                { spec_animatedObjects = { animatedObjects = { door } } } } }
+            w.speeds = { tractorRoot = 0 }
+            local function vehicle(node)
+                local v = { rootNode = node }
+                function v:getLastSpeed() return w.speeds[node] end
+                w.speeds[node] = 0
+                return v
+            end
+            w.pos = { door = { 944.1, 772.0 }, tractorRoot = { 955.6, 779.6 }, trailer = { 948.1, 772.0 },
+                      car = { 984.1, 772.0 } }
+            w.env.g_currentMission.vehicleSystem = { vehicles = { w.tractor, vehicle("trailer"), vehicle("car") } }
+            w.tractor.getLastSpeed = function() return w.speeds.tractorRoot end
+            w.env.getWorldTranslation = function(n)
+                local p = w.pos[n]
+                if p == nil then error("unreadable " .. tostring(n)) end
+                return p[1], 0, p[2]
+            end
+            return w
+        """, self.w)
+
+    GATES = {"x": 955.6, "z": 779.6, "area": 15.0}
+
+    def test_a_door_opens_only_with_the_vehicles_near_it_at_rest_and_unmoved(self):
+        w = self.doors_world()
+        self.send(1, "open_gates", self.GATES)
+        self.assertEqual(w.door.animation.direction, 1)
+        self.W.run(self.w, 7000)
+        self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])       # still settling
+        self.W.run(self.w, 1200)
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "GATES_OPENED"))
+
+    def test_a_vehicle_moving_near_the_door_keeps_it_closed(self):
+        w = self.doors_world()
+        w.speeds.trailer = 2.0
+        self.send(1, "open_gates", self.GATES)
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "DOOR_NEAR_MOVING_VEHICLE"))
+        self.assertIsNone(w.door.animation.direction)
+        self.assertEqual(w.door.raised, 0)
+        self.w = self.W.new()
+        w = self.doors_world()
+        w.speeds.car = 9.0                                                       # 40 m off: not watched
+        self.send(1, "open_gates", self.GATES)
+        self.assertEqual(w.door.animation.direction, 1)
+
+    def test_a_vehicle_moving_while_the_door_opens_fails_the_op(self):
+        # Live bfbc32565ecb4472-1: the rig moved after the Large Shed's wall opened.
+        def pushed(w):
+            w.pos.tractorRoot[2] = 777.0
+
+        def rolling(w):
+            w.speeds.tractorRoot = 1.5
+
+        for name, change in (("pushed", pushed), ("rolling at the end", rolling)):
+            with self.subTest(name):
+                self.w = self.W.new()
+                w = self.doors_world()
+                self.send(1, "open_gates", self.GATES)
+                self.W.run(self.w, 3000)
+                change(w)
+                self.W.run(self.w, 6000)
+                self.assertEqual(self.results(1)[-1], (1, "FAILED", "DOOR_MOVED_VEHICLE"))
+
+    def test_an_unreadable_vehicle_near_the_door_keeps_it_closed(self):
+        w = self.doors_world()
+        w.pos.trailer = None
+        self.send(1, "open_gates", self.GATES)
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "DOOR_AREA_UNKNOWN"))
+        self.assertIsNone(w.door.animation.direction)
+
+    def test_no_closed_door_in_reach(self):
+        w = self.doors_world()
+        w.door.animation.time = 1
+        self.send(1, "open_gates", self.GATES)
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "NO_CLOSED_GATE"))
+
     # ------------------------------------------------------------ maneuver
-    MANEUVER ={"tractor": 11, "wagon": 12, "tractorJoint": 4, "wagonJoint": 1}
+    MANEUVER = {"tractor": 11, "wagon": 12, "tractorJoint": 4, "wagonJoint": 1}
 
     def scripted_maneuver(self, codes, refuse=None):
         """Bridge.Hitch with a scripted LOCAL_MANEUVER (FarmhandHitch's own is covered by
