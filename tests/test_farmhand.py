@@ -855,10 +855,10 @@ class GiantsNavigationTests(unittest.TestCase):
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, status, result)
                 if fault == "false_arrival":
-                    # Ended with nothing moved, as GIANTS ends a GOTO it cannot start: doors
-                    # first, then UNPARK, which finds it in the open and moves nothing; the
-                    # arrival observation decides as before.
-                    self.assertEqual(result.states[-5:], ("DELIVER", "OPEN_DOORS", "UNPARK", "STOP", "RELEASE"))
+                    # Ended with nothing moved, as GIANTS ends a GOTO it cannot start: UNPARK,
+                    # which finds it in the open and moves nothing; the arrival observation
+                    # decides as before.
+                    self.assertEqual(result.states[-4:], ("DELIVER", "UNPARK", "STOP", "RELEASE"))
                     self.assertEqual(world.unparked, (tractor_id,))
                 else:
                     self.assertEqual(result.states[-3:], ("DELIVER", "STOP", "RELEASE"))

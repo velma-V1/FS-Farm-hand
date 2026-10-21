@@ -1120,6 +1120,19 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertEqual(self.results(1)[-1], (1, "FAILED", "DOOR_AREA_UNKNOWN"))
         self.assertIsNone(w.door.animation.direction)
 
+    def test_unpark_never_drives_round_a_closed_door_and_never_opens_it(self):
+        # The user, 2026-10-20 (roads only): the Large Shed's wall 13.8 m from the truck.
+        w = self.doors_world()
+        self.scripted_unpark(["CLEAR"])
+        self.send(1, "unpark", {"tractor": 11})
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "UNPARK_DOOR_CLOSED"))
+        self.assertNotIn("newUnpark", self.calls())
+        self.assertIsNone(w.door.animation.direction)
+        w.door.animation.time = 1                                          # open: nothing in the way
+        self.send(2, "unpark", {"tractor": 11})
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(2)[-1], (2, "DONE", "UNPARKED"))
+
     def test_no_closed_door_in_reach(self):
         w = self.doors_world()
         w.door.animation.time = 1

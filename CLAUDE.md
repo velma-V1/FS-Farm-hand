@@ -108,7 +108,7 @@ alignment, routing, IPC on Windows, or game integration — say so when reportin
 The only self-driven motion allowed is HITCH's capped LOCAL_MANEUVER (forward, inside
 25 m of the wagon's joint), ALIGN_REVERSE (the final reverse), DETACH's PULL_CLEAR
 (straight forward, at most 8 m at 3 km/h, straight after Farmhand's own detach) and UNPARK
-(straight, at most 20 m at 3 km/h, only after GIANTS could not start a vehicle and its doors
-were opened; AGENTS.md exception 4); all other travel is
+(straight, at most 20 m at 3 km/h, only after GIANTS could not start a vehicle and no closed
+door is near it; AGENTS.md exception 4); all other travel is
 delegated to AutoDrive (optional; marker destinations only) or GIANTS GOTO
 (`navigate`, `stage`), whose navigation agent plans for the attached wagon.

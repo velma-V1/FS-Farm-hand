@@ -48,9 +48,11 @@ have precedence; report conflicts instead of silently changing the scope.
      never weakened.
   4. UNPARK (authorized 2026-10-20 after GIANTS' agent stayed BLOCKED from the first
      frame inside the Large Shed, live 53c77d1e809645b3-3): only after GIANTS accepted
-     a target, its agent could not start the vehicle from where it stands (blocked, or
-     ended not_reachable, unmoved) and the closed doors near it were opened first;
-     never for an invalid destination, a door left closed, or a vehicle already in
+     a target and its agent could not start the vehicle from where it stands (blocked,
+     or ended not_reachable, unmoved); never for an invalid destination, with a closed
+     door or gate within 15 m of the rig (refused UNPARK_DOOR_CLOSED: building doors are
+     never opened by Farmhand, the user 2026-10-20 after the Large Shed's wall shoved
+     four vehicles up to 11.7 m, live bfbc32565ecb4472-1), or for a vehicle already in
      the open. Straight only, no turning: forward with whatever is attached, back only
      with nothing attached; at most 20 m total, 3 km/h, 40 s; to the nearest exit only.
      Before moving, GIANTS' own collision query (overlapBox, proven on the rig by its

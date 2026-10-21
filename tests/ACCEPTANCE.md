@@ -243,18 +243,18 @@ Executable mapping (`python scripts/check.py`):
   cruise control off and releases forceIsActive.
 - UNPARK (AGENTS.md exception 4; mock world, `test_unpark`): a hitched pair GIANTS
   cannot start from (agent blocked at its start; IDs and order varied) is driven out
-  (OPEN_DOORS, UNPARK) and delivered with GIANTS' same target; a closed door near it is
-  opened and nothing is driven; a door that did not free it leaves UNPARK next; a
+  (UNPARK) and delivered with GIANTS' same target; a closed door near it is never opened
+  nor driven round (UNPARK_DOOR_CLOSED, nothing moved); a
   hand-off GIANTS still cannot start fails UNPARK_HANDOFF_BLOCKED with one extraction
   only; refusals (UNPARK_EXIT_BLOCKED, _TOO_TIGHT, _QUERY_UNVERIFIED) move nothing; a
   vehicle in the open keeps GIANTS' reason; an invalid target, a stall on the way or a
   timeout never opens doors or unparks; an UNPARK DONE without motion is UNVERIFIED; a
-  stop before it cancels it; a door that moved a vehicle (or a moving or unreadable
-  vehicle near it) ends the job with one GOTO and no UNPARK; one extraction per vehicle per job across its steps (a new
+  stop before it cancels it; one extraction per vehicle per job across its steps (a new
   job has its own); a boxed lone tractor is unparked then hitches; one that cannot be
   hands over to the next tractor unmoved; after UNPARK the first GOTO GIANTS takes must
   move it. Mod side (`test_lua_bridge`): `unpark` is DONE only CLEAR and at rest,
-  refusals and failures are FAILED, AI blocks it, a stop pre-empts it braked; a
+  refusals and failures are FAILED, AI blocks it, a stop pre-empts it braked, a closed
+  door within 15 m refuses it without opening it; a
   navigate or stage whose agent stays BLOCKED 90 s never 2 m from its start ends
   *_BLOCKED_AT_START (also when it planned first and the stall watch ends it), one that
   drove off first never does; `open_gates` opens a door only with every vehicle within

@@ -126,11 +126,13 @@ PULL_CLEAR_TOLERANCE_M = 0.25
 # its agent cannot start from where the vehicle stands (mod/FarmhandBridge.lua
 # BLOCKED_START_MS; live 53c77d1e809645b3-3: the Super-Liner inside the Large Shed, BLOCKED
 # from the first frame, unmoved; 2026-10-20 the X8 and Puma behind closed Farm Barn doors,
-# every aim not_reachable). The closed doors near the vehicle and its partner are opened
-# first, the way GIANTS opens one; only with no door to open does Farmhand's bounded
-# straight extraction (mod/FarmhandHitch.lua Hitch.newUnpark) take it to the nearest exit,
-# and then GIANTS gets the same target once more, which must move it. Each at most once
-# per vehicle per job (a plan's steps and the next-tractor attempts are one job).
+# every aim not_reachable). Building doors are never opened (live bfbc32565ecb4472-1:
+# opening the Large Shed's wall shoved four vehicles up to 11.7 m; the user, 2026-10-20:
+# gates on roads only) and never driven round: UNPARK refuses with a closed door near the
+# rig (UNPARK_DOOR_CLOSED). Otherwise Farmhand's bounded straight extraction
+# (mod/FarmhandHitch.lua Hitch.newUnpark) takes it to the nearest exit, and GIANTS gets the
+# same target once more, which must move it. At most once per vehicle per job (a plan's
+# steps and the next-tractor attempts are one job).
 START_BLOCKED_CODES = frozenset({"NAVIGATE_BLOCKED_AT_START", "STAGE_BLOCKED_AT_START"})
 # UNPARK's cap (= mod/FarmhandHitch.lua Hitch.UNPARK_LIMITS.maxDistanceM; a test checks it)
 # and how much more a snapshot of the root may show.
@@ -141,9 +143,9 @@ UNPARK_REFUSALS = frozenset({
     "UNPARK_EXIT_BLOCKED", "UNPARK_TOO_TIGHT", "UNPARK_EXIT_TOO_FAR", "UNPARK_BLOCKED", "UNPARK_PERSON",
     "UNPARK_START_NOT_CLEAR", "UNPARK_REVERSE_NOT_ALLOWED", "UNPARK_RIG_NOT_STRAIGHT", "UNPARK_GEOMETRY_UNKNOWN",
     "UNPARK_ARTICULATED_UNSUPPORTED", "UNPARK_QUERY_UNVERIFIED", "UNPARK_QUERY_UNKNOWN", "SEATED_DURING_UNPARK",
-    "LOCAL_AREA_UNKNOWN", "NOT_STOPPED", "NOT_ROOT_VEHICLE"})
+    "LOCAL_AREA_UNKNOWN", "NOT_STOPPED", "NOT_ROOT_VEHICLE", "UNPARK_DOOR_CLOSED"})
 
-CANCELLABLE_STEPS = frozenset({"RESERVE", "FIELD_WORK", "PULL_CLEAR", "OPEN_DOORS", "UNPARK", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
+CANCELLABLE_STEPS = frozenset({"RESERVE", "FIELD_WORK", "PULL_CLEAR", "UNPARK", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
                                "DETACH", "DELIVER"})
 
 
@@ -548,10 +550,10 @@ class Executor:
         # {"type": "origin"} takes it back there (the user: "you can't just leave it
         # in the field"). Never coordinates from words.
         self._origins: dict[str, Pose] = {}
-        # What freed a vehicle GIANTS could not start ("doors", "unpark"), this job only,
-        # and the vehicles whose next GOTO is UNPARK's hand-off (it must move them).
+        # The vehicles UNPARK was asked for, this job only, and those whose next GOTO is
+        # its hand-off (it must move them).
         self._job: str | None = None
-        self._freeing: dict[str, set[str]] = {}
+        self._unparked: set[str] = set()
         self._handoff: set[str] = set()
         self._enter = lambda state: None
 
@@ -573,7 +575,7 @@ class Executor:
                 old, result = self._results[request_id]
                 return result if old == command else Result("BLOCKED", "REQUEST_ID_CONFLICT")
             if (job or request_id) != self._job:
-                self._job, self._freeing, self._handoff = job or request_id, {}, set()
+                self._job, self._unparked, self._handoff = job or request_id, set(), set()
             result = self._with_other_tractors(command, cancel, on_state)
             self._results[request_id] = (command, result)
             return result
@@ -858,8 +860,8 @@ class Executor:
         """GIANTS GOTO to ``pose``, routing around what physically stops it (see
         MAX_DETOURS): the stuck spot just ahead of the vehicle is blocked for GIANTS'
         planner and the same GOTO asked again. With ``free``, a GOTO GIANTS took that
-        could not start the vehicle from where it stands frees it once (_free_start)
-        and is asked again."""
+        could not start the vehicle from where it stands is answered by UNPARK once
+        (_free_start) and asked again."""
         detours = 0
         while True:
             start = self._position(tractor_id)
@@ -882,42 +884,21 @@ class Executor:
                 raise failed
             log.info("navigate to %s: GIANTS did not start %s from %s (%s)", pose, tractor_id, start,
                      failed.code if failed is not None else "ended unmoved")
-            if self._free_start(tractor_id, partner_id, owner) is None:
+            if self._free_start(tractor_id, owner) is None:
                 if failed is not None:
                     raise failed
                 return                     # ended: the caller's observation decides, as before
 
-    def _open_doors(self, ids) -> bool:
-        """Open the closed doors and gates near each of ``ids`` the way GIANTS opens one."""
-        opened = False
-        for item in self.world.snapshot():
-            if item.id in ids and valid_position(item.position):
-                try:
-                    self.world.open_gates(item.position[0], item.position[1], GATE_RADIUS_M)
-                    log.info("opened the closed door(s) within %.0f m of %s", GATE_RADIUS_M, item.id)
-                    opened = True
-                except StepFailed as failure:
-                    if failure.code != "NO_CLOSED_GATE":
-                        raise
-        return opened
-
-    def _free_start(self, vehicle_id, partner_id, owner):
+    def _free_start(self, vehicle_id, owner):
         """GIANTS took a target but cannot start ``vehicle_id`` from where it stands. Once
-        per vehicle per job each: the closed doors near it and its partner are opened
-        ("DOORS"); else UNPARK takes it (and what is attached) to the nearest exit
+        per vehicle per job, UNPARK takes it (and what is attached) to the nearest exit
         ("UNPARKED"), verified at rest and within its cap, and its next GOTO is the
         hand-off. None when UNPARK finds it not boxed in (GIANTS refused for another
-        reason: never compensated). UNPARK's refusals and failures raise; so does a
-        spent budget (UNPARK_ALREADY_USED)."""
-        used = self._freeing.setdefault(vehicle_id, set())
-        if "doors" not in used:
-            used.add("doors")
-            self._enter("OPEN_DOORS")
-            if self._open_doors({vehicle_id, partner_id}):
-                return "DOORS"
-        if "unpark" in used:
+        reason: never compensated). UNPARK's refusals (a closed door near it among them)
+        and failures raise; so does a spent budget (UNPARK_ALREADY_USED)."""
+        if vehicle_id in self._unparked:
             raise StepFailed("UNPARK_ALREADY_USED")
-        used.add("unpark")
+        self._unparked.add(vehicle_id)
         start = self._position(vehicle_id)
         self._enter("UNPARK")
         try:
@@ -1285,8 +1266,7 @@ class Executor:
                     once NOT_REACHABLE) costs no drive; one after the tractor got stuck
                     that cannot move it is TRAPPED. When no aim GIANTS took moved it (or
                     GIANTS' agent was blocked at its start, which no other aim changes),
-                    the tractor is freed once (_free_start: doors, else UNPARK) and the
-                    aims are tried again."""
+                    UNPARK frees it once (_free_start) and the aims are tried again."""
                     while True:
                         while more():
                             pose = aims[aim["next"]]
@@ -1327,7 +1307,7 @@ class Executor:
                             if stalled:
                                 log.info("%s to aim %s stalled after driving; observing", step, pose)
                             return "stalled" if stalled else "ended"
-                        if aim["drives"] or not aim["unmoved"] or self._free_start(ids[0], ids[1], owner) is None:
+                        if aim["drives"] or not aim["unmoved"] or self._free_start(ids[0], owner) is None:
                             return None
                         aim.update(next=0, unmoved=0, stuck=False)
 

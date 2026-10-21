@@ -114,6 +114,7 @@ local function settle(task, code)
 end
 
 local starters, steppers, aborts = {}, {}, {}
+local gateCandidates          -- (open_gates) also read by unpark
 Bridge.pendingGoto = {}       -- tractor -> ms left to watch an aborted, unseen GOTO
 
 -- ------------------------------------------------------------------ drive
@@ -479,10 +480,51 @@ end
 -- straight out of the building GIANTS' agent could not start from (Hitch.newUnpark). The
 -- companion asks for it only after GIANTS refused to start and no closed door was found;
 -- DONE UNPARKED once it is clear and at rest. Every refusal leaves it where it stood.
+-- Building doors are never opened and never driven round (live bfbc32565ecb4472-1:
+-- opening the Large Shed's wall shoved four vehicles up to 11.7 m; the user, 2026-10-20:
+-- gates on roads only): a closed door or gate within UNPARK_DOOR_M of any unit of the
+-- rig refuses it (UNPARK_DOOR_CLOSED), read only.
+Bridge.UNPARK_DOOR_M = 15
+
+-- The first closed door within UNPARK_DOOR_M of the vehicle or what is attached to it, as
+-- "name at (x, z) d m", or nil. Errors on an unreadable unit position.
+local function closedDoorNear(env, v)
+    local points = {}
+    local function add(u)
+        local x, _, z = env.getWorldTranslation(u.rootNode)
+        assert(finite(x) and finite(z))
+        points[#points + 1] = { x, z }
+        if type(u.getAttachedImplements) == "function" then
+            for _, implement in ipairs(u:getAttachedImplements() or {}) do add(implement.object) end
+        end
+    end
+    add(v)
+    for _, o in ipairs(gateCandidates(env)) do
+        local ok, found = pcall(function()
+            if o.isEnabled == false or (o.animation.time or 0) >= 1 then return nil end
+            local gx, _, gz = env.getWorldTranslation(o.nodeId)
+            for _, p in ipairs(points) do
+                local d = math.sqrt((gx - p[1]) ^ 2 + (gz - p[2]) ^ 2)
+                if d <= Bridge.UNPARK_DOOR_M then
+                    return string.format("%s at (%.1f, %.1f) %.1f m", tostring(o.saveId), gx, gz, d)
+                end
+            end
+        end)
+        if ok and found ~= nil then return found end
+    end
+    return nil
+end
+
 function starters.unpark(env, spec)
     local denied = idle(env, spec.tractor, spec.farmId)
     if denied ~= nil then return nil, denied end
     if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local okDoor, door = pcall(closedDoorNear, env, spec.tractor)
+    if not okDoor then return nil, "UNPARK_QUERY_UNKNOWN" end
+    if door ~= nil then
+        log("unpark refused UNPARK_DOOR_CLOSED: closed %s", door)
+        return nil, "UNPARK_DOOR_CLOSED"
+    end
     local session, reason, refused = Bridge.Hitch.newUnpark(env, {
         tractor = spec.tractor, farmId = spec.farmId, isReserved = spec.owned,
     })
@@ -700,7 +742,7 @@ aborts.fieldwork = abortGoto
 -- registered object that is an AnimatedObject. Enabled, not yet open ones only.
 Bridge.MAX_GATE_RADIUS_M = 30
 
-local function gateCandidates(env)
+function gateCandidates(env)
     local found, seen = {}, {}
     local function add(o)
         if type(o) == "table" and o.animation ~= nil and o.nodeId ~= nil and not seen[o] then
@@ -1355,7 +1397,6 @@ Bridge.STEPS = {
     ATTACH = "hitching the implement",
     DETACH = "unhitching the implement",
     PULL_CLEAR = "pulling clear of the unhitched implement",
-    OPEN_DOORS = "opening the doors in the way",
     UNPARK = "driving out of the building",
     FIELD_WORK = "working the field (GIANTS helper)",
     VERIFY = "checking the hitch",
@@ -1439,6 +1480,7 @@ Bridge.REASONS = {
     DOOR_MOVED_VEHICLE = "a vehicle moved while the door opened, so Farmhand stopped; check it",
     DOOR_NEAR_MOVING_VEHICLE = "a vehicle near the door is moving, so Farmhand did not open it",
     DOOR_AREA_UNKNOWN = "the vehicles near the door could not be checked, so Farmhand did not open it",
+    UNPARK_DOOR_CLOSED = "a closed door or wall of the building is in the way; open it and ask again",
     UNPARK_HANDOFF_BLOCKED = "it drove out of the building, but the helper still cannot start from there",
     UNPARK_ALREADY_USED = "it was already driven out once in this job and the helper still cannot start",
     SEATED_DURING_UNPARK = "step out of the vehicle so Farmhand can drive it out of the building",

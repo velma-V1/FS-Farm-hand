@@ -1,8 +1,8 @@
 """The executor's answer to a GOTO GIANTS took but could not start (UNPARK, AGENTS.md
 exception 4) on the mock world (simulator/world.py: a "boxed" vehicle is a mock-only
-stand-in for GIANTS' agent staying BLOCKED; nothing here is GIANTS behaviour). Closed
-doors first, then the bounded extraction, then GIANTS once more, which must move it;
-each at most once per vehicle per job. The extraction itself is tests/test_lua_unpark.py.
+stand-in for GIANTS' agent staying BLOCKED; nothing here is GIANTS behaviour). Never a
+closed door (Farmhand does not open building doors), else the bounded extraction, then
+GIANTS once more, which must move it; at most once per vehicle per job. The extraction itself is tests/test_lua_unpark.py.
 """
 from dataclasses import replace
 import math
@@ -39,51 +39,22 @@ class DeliverFromAShedTests(unittest.TestCase):
                 world, (tractor, wagon) = boxed_pair(seed)
                 result = Executor(world).execute(move())
                 self.assertEqual(result.status, "COMPLETE", result)
-                self.assertEqual(result.states, ("FIND", "RESERVE", "DELIVER", "OPEN_DOORS", "UNPARK", "STOP",
-                                                 "RELEASE"))
+                self.assertEqual(result.states, ("FIND", "RESERVE", "DELIVER", "UNPARK", "STOP", "RELEASE"))
                 self.assertEqual(world.unparked, (tractor.id,))
                 self.assertEqual(world.items[tractor.id].attached_to, wagon.id)
 
-    def test_a_closed_door_is_opened_and_nothing_is_driven_by_farmhand(self):
+    def test_a_closed_door_near_it_is_never_opened_nor_driven_round(self):
+        # Live bfbc32565ecb4472-1 / the user, 2026-10-20: opening the Large Shed's wall shoved
+        # four vehicles up to 11.7 m; building doors are not Farmhand's to open, and UNPARK
+        # never makes up for one left closed.
         door = (131.0, 266.0)
-        world, (tractor, _) = boxed_pair(1, {"door": door}, gates=(door,))
+        world, (tractor, wagon) = boxed_pair(1, gates=(door,))
+        before = {i: world.items[i].position for i in (tractor.id, wagon.id)}
         result = Executor(world).execute(move())
-        self.assertEqual(result.status, "COMPLETE", result)
-        self.assertEqual(result.states, ("FIND", "RESERVE", "DELIVER", "OPEN_DOORS", "STOP", "RELEASE"))
-        self.assertEqual(world.opened, (door,))
-        self.assertEqual(world.unparked, ())
-
-    def test_a_door_that_did_not_free_it_leaves_unpark_next(self):
-        door = (131.0, 266.0)
-        world, (tractor, _) = boxed_pair(2, gates=(door,))
-        result = Executor(world).execute(move())
-        self.assertEqual(result.status, "COMPLETE", result)
-        self.assertEqual(result.states[2:5], ("DELIVER", "OPEN_DOORS", "UNPARK"))
-        self.assertEqual(world.opened, (door,))
-        self.assertEqual(world.unparked, (tractor.id,))
-
-    def test_a_door_that_moved_a_vehicle_ends_the_job_without_retry_or_unpark(self):
-        # Live bfbc32565ecb4472-1: the rig moved after the Large Shed's wall opened.
-        for code in ("DOOR_MOVED_VEHICLE", "DOOR_NEAR_MOVING_VEHICLE", "DOOR_AREA_UNKNOWN"):
-            with self.subTest(code):
-                class Shoving(MockWorld):
-                    navigations = 0
-
-                    def open_gates(self, x, z, radius, code=code):
-                        raise StepFailed(code)
-
-                    def navigate(self, tractor_id, pose, owner):
-                        self.navigations += 1
-                        return super().navigate(tractor_id, pose, owner)
-
-                tractor, wagon = hitched_pair("t1", "w1", (130.0, 260.0))
-                world = Shoving([tractor, wagon], PLAYERS, ())
-                world.boxed = {"t1": dict(SHED)}
-                result = Executor(world).execute(move())
-                self.assertEqual((result.status, result.reason), ("FAILED", code))
-                self.assertEqual(world.navigations, 1)
-                self.assertEqual(world.unparked, ())
-                self.assertEqual(result.states[-2:], ("STOP", "RELEASE"))
+        self.assertEqual((result.status, result.reason), ("FAILED", "UNPARK_DOOR_CLOSED"))
+        self.assertEqual(world.opened, ())
+        self.assertEqual({i: world.items[i].position for i in before}, before)
+        self.assertNotIn("OPEN_DOORS", result.states)
 
     def test_a_hand_off_giants_still_cannot_start_fails_without_a_second_extraction(self):
         world, (tractor, wagon) = boxed_pair(3, {"exit": 9.0, "still": True})
@@ -127,7 +98,7 @@ class DeliverFromAShedTests(unittest.TestCase):
                 world = Refusing(hitched_pair("t1", "w1", (130.0, 260.0)), PLAYERS, ())
                 result = Executor(world).execute(move())
                 self.assertEqual((result.status, result.reason), ("FAILED", code))
-                self.assertNotIn("OPEN_DOORS", result.states)
+                self.assertNotIn("UNPARK", result.states)
                 self.assertEqual(world.unparked, ())
 
     def test_an_unpark_that_reports_done_without_moving_is_unverified(self):
@@ -146,7 +117,7 @@ class DeliverFromAShedTests(unittest.TestCase):
         cancel = threading.Event()
 
         def entered(state):
-            if state == "OPEN_DOORS":
+            if state == "DELIVER":
                 cancel.set()
 
         result = Executor(world).execute(move(), cancel=cancel, on_state=entered)
@@ -181,7 +152,7 @@ class HitchFromAShedTests(unittest.TestCase):
         world, tractor, wagon = self.hitch_world()
         result = Executor(world).execute(dict(intent(), task="hitch_pair"))
         self.assertEqual((result.status, result.reason), ("COMPLETE", "HITCH_OBSERVED"), result)
-        self.assertEqual(result.states[:5], ("FIND", "RESERVE", "STAGE", "OPEN_DOORS", "UNPARK"))
+        self.assertEqual(result.states[:4], ("FIND", "RESERVE", "STAGE", "UNPARK"))
         self.assertEqual(result.states.count("UNPARK"), 1)
         self.assertEqual(world.items[tractor.id].attached_to, wagon.id)
 

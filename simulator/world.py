@@ -67,9 +67,9 @@ class MockWorld:
 
     gates = ()                    # mock closed gates: positions
     opened = ()
-    # Mock-only: vehicles GIANTS' agent cannot start from (a shed), id -> {"door": a gate
-    # position whose opening frees it, "exit": metres straight ahead UNPARK takes it (and
-    # what is attached), "refuse": an UNPARK refusal code, "still": blocked after UNPARK}.
+    # Mock-only: vehicles GIANTS' agent cannot start from (a shed), id -> {"exit": metres
+    # straight ahead UNPARK takes it (and what is attached), "refuse": an UNPARK refusal
+    # code, "still": blocked after UNPARK}. A closed gate within 15 m refuses UNPARK.
     boxed = None
     unparked = ()
 
@@ -79,7 +79,6 @@ class MockWorld:
             raise StepFailed("NO_CLOSED_GATE")
         self.gates = tuple(g for g in self.gates if g not in near)
         self.opened = self.opened + tuple(near)
-        self.boxed = {i: b for i, b in (self.boxed or {}).items() if b.get("door") not in near}
         return "GATES_OPENED"
 
     def _start_blocked(self, tractor_id, prefix):
@@ -97,6 +96,8 @@ class MockWorld:
                 raise StepFailed("UNPARK_NOT_BOXED")
             if box.get("refuse"):
                 raise StepFailed(box["refuse"])
+            if any(math.dist(g, tractor.position) <= 15.0 for g in self.gates):
+                raise StepFailed("UNPARK_DOOR_CLOSED")
             root = tractor.ai_root
             ahead = box.get("exit", 8.0)
             if ahead > MOCK_UNPARK_MAX_M:
