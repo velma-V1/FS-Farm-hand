@@ -88,8 +88,9 @@ class TailgateTests(unittest.TestCase):
         self.assertEqual(result.states[result.states.index("ALIGN_REVERSE") - 1], "TAILGATE")
 
     def test_a_trailer_still_settling_after_the_attach_is_waited_for_not_left_unconfirmed(self):
-        # Live d6701ca959d044c0-1: GIANTS' attach pulled the Deckover's nose 0.44 m onto the
-        # ball; the cleanup's at-rest check came 0.5 s later. Mock-only motion.
+        # Live d6701ca959d044c0-1 / 31365e0476674ed6-1: GIANTS' attach pulled the Deckover's
+        # nose 0.44 m onto the ball and both units rocked; the at-rest checks (VERIFY, the
+        # cleanup) came 0.5 s later. Mock-only motion.
         class Settling(MockWorld):
             moving = 0
 
@@ -102,7 +103,7 @@ class TailgateTests(unittest.TestCase):
                 items = super().snapshot()
                 if self.moving:
                     self.moving -= 1
-                    items = [replace(i, stopped=False) if i.id == deck.id else i for i in items]
+                    items = [replace(i, stopped=False) if i.id in (truck.id, deck.id) else i for i in items]
                 return items
 
         truck, deck = rig()

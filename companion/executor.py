@@ -983,8 +983,9 @@ class Executor:
 
     def _at_rest(self, ids):
         """A fresh snapshot by ID once every unit is at rest, waiting at most
-        ARRIVAL_SETTLE_S: a trailer still settles after GIANTS' attach (live
-        d6701ca959d044c0-1: the Deckover's nose pulled 0.44 m onto the ball)."""
+        ARRIVAL_SETTLE_S: the pair still rocks after GIANTS' attach (live
+        d6701ca959d044c0-1, 31365e0476674ed6-1: the Deckover's nose pulled 0.44 m onto
+        the ball)."""
         deadline = time.monotonic() + ARRIVAL_SETTLE_S
         while True:
             observed = {item.id: item for item in self.world.snapshot()}
@@ -1455,6 +1456,7 @@ class Executor:
                 enter("ATTACH")
                 self.world.attach(tractor.id, wagon.id, (plan.tractor_joint, plan.wagon_joint), owner)
                 enter("VERIFY")
+                self._at_rest(ids)                  # the attach rocks the pair (bounded)
                 tractor, _ = self._pair(ids, farm_id, owner, attached=True)
                 if not tractor.stopped:
                     raise ObservationMismatch("EQUIPMENT_MOVING")
