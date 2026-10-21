@@ -835,7 +835,7 @@ class HostRunnerLifecycleTests(RunnerCase):
         self.system.fs25 = [999]
         answer = self.send("screen")
         self.assertEqual(answer["code"], "SCREEN")
-        self.assertTrue(answer["result"]["file"].endswith("host/screen.png"))
+        self.assertTrue(answer["result"]["file"].replace("\\", "/").endswith("host/screen.png"))  # Windows: host\screen.png
         self.assertEqual(self.send("click", {"x": 0.25, "y": 0.75})["code"], "CLICKED")
         self.assertEqual(self.send("key", {"name": "enter"})["code"], "PRESSED")
         self.assertEqual([c[0] for c in self.system.calls], ["screen", "click", "key"])

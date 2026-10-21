@@ -600,7 +600,7 @@ end
 -- current task (1 drive-to, 2 field work; AIJob:update 117-164), field work active
 -- (getIsFieldWorkActive), the AI preparing its tools (getIsAIPreparingToDrive,
 -- AIDrivable 636-648), each attached tool lowered / turned on, the speed.
-function Bridge.logFieldWork(env, v, what)
+function Bridge.logFieldWork(_env, v, what)
     local function read(f) local ok, value = pcall(f); return ok and tostring(value) or "?" end
     local tools = {}
     pcall(function()
@@ -685,8 +685,8 @@ function steppers.fieldwork(env, task, dt)
         task.sinceTrack = (task.sinceTrack or 0) + (dt or 0)
         if task.sinceTrack >= 2000 and #task.track < 200 then
             task.sinceTrack = 0
-            local active = pcall(function() assert(v:getIsFieldWorkActive() == true) end)
-            if active then task.track[#task.track + 1] = { x, z } end
+            local working = pcall(function() assert(v:getIsFieldWorkActive() == true) end)
+            if working then task.track[#task.track + 1] = { x, z } end
         end
         if not task.sampled and task.elapsed > 60000 then
             task.sampled = true
@@ -951,7 +951,7 @@ function starters.save(env, spec)
     return { before = before }
 end
 
-function steppers.save(env, task)
+function steppers.save(_env, task)
     if Bridge.savesDone > task.before then
         log("save done")
         return "DONE", "SAVED"
