@@ -1,7 +1,8 @@
 """UNPARK in mod/FarmhandHitch.lua (Lua 5.1 and 5.4) on a kinematic stub (NOT GIANTS
 physics): oriented boxes stand in for collision shapes, answered in GIANTS' overlapBox
-call shape (GDN engine Physics: synchronous, half extents, the callback per shape, true
-ends the query). It proves the bounded state machine: straight only, at most 20 m and
+call shape (GDN engine Physics: synchronous, half extents, the callback per shape). As
+GIANTS' own TensionBelts:objectOverlapCallback relies on (it returns true and collects
+every object), true continues the query and anything else ends it. It proves the bounded state machine: straight only, at most 20 m and
 3 km/h, back only with nothing attached, the whole rig's swept volume clear with the
 margin before it moves, the nearest exit, every guard while moving, and the
 vehicle-control state restored on every exit.
@@ -128,7 +129,8 @@ function W.new(o)
     env.getTerrainHeightAtWorldPos = function() return w.ground end
     env.getName = function(id) return w.names[id] or ("node" .. tostring(id)) end
     -- GIANTS' overlapBox call shape: every overlapping shape the mask lets through gets a
-    -- callback (the terrain first), until one returns true; the count is returned.
+    -- callback (the terrain first) while the callback returns true (continueChecking, as
+    -- TensionBelts:objectOverlapCallback relies on); the count of callbacks is returned.
     env.overlapBox = function(x, y, z, rx, ry, rz, ex, ey, ez, cb, target, mask, dyn, kin, stat, exact)
         w.queries = (w.queries or 0) + 1
         local q = { x = x, z = z, yaw = ry, hx = ex, hz = ez, y0 = y - ey, y1 = y + ey }
@@ -137,7 +139,7 @@ function W.new(o)
             n = n + 1
             local ret = target[cb](target, id, 0)
             table.insert(w.returns, ret)
-            return ret == true
+            return ret ~= true                -- stop unless asked to continue
         end
         if has(mask, F.TERRAIN) and not w.noTerrain and q.y0 <= w.ground and w.ground <= q.y1 then
             if report(1) then return n + (w.countSkew or 0) end
@@ -325,7 +327,7 @@ class LuaUnparkTests(unittest.TestCase):
         self.assert_ended_braked_and_restored(w)
         self.assertEqual(self.hitch.unparkStep(w.env, session, 50), "CLEAR")   # latched: brakes only
         self.assertFalse(self.drives(w)[-1]["allowed"])
-        self.assertNotIn(True, list(w.returns.values()))          # never ends GIANTS' query early
+        self.assertEqual(set(w.returns.values()), {True})          # never ends GIANTS' query early
 
     def test_a_vehicle_parked_nose_in_backs_out_when_nothing_is_attached(self):
         w = self.world(yaw=-2.1, x=-75.0, z=301.4)
@@ -390,6 +392,15 @@ class LuaUnparkTests(unittest.TestCase):
                 self.assertEqual(why, "UNPARK_EXIT_BLOCKED")
                 self.assertEqual(self.drives(w), [])
                 self.assertIn("UNPARK_EXIT_BLOCKED", self.hitch.describeUnpark(refused))
+
+    def test_an_obstacle_reported_after_the_rigs_own_body_is_still_seen(self):
+        # GIANTS reports the rig's own shapes too (here first); a query that stopped at
+        # the first shape would call a post inside the margin beside the rig clear.
+        w = self.world()
+        w.shed(-9, 6, 4, 4.5)
+        w.box(-1.0, 1.0, 1.4, 1.7, 0, 2, self.W.F.STATIC_OBJECT, "post")       # beside it, in the margin
+        session, why, refused = self.start(w)
+        self.assertEqual(why, "UNPARK_TOO_TIGHT", self.hitch.describeUnpark(refused))
 
     def test_a_beam_above_the_rig_and_its_margin_lets_it_pass(self):
         w = self.world()

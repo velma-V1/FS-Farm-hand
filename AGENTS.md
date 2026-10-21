@@ -75,6 +75,18 @@ have precedence; report conflicts instead of silently changing the scope.
      with no GOTO, beyond it the one hand-off GOTO. One extraction per vehicle per parent job (its plan's
      steps and next-tractor attempts included). Nothing is made passable, collisions
      are never disabled, nothing is teleported, and no safety distance is loosened.
+  5. LOAD / UNLOAD (authorized 2026-10-20 for tractor transport; no GIANTS job or
+     installed mod drives a vehicle onto a deck: Universal Autoload moves pallets,
+     bales and bags only). LOAD: only with the transport trailer's ramps verified
+     down through GIANTS' own Foldable state; the tractor alone (nothing attached),
+     straight along the trailer's axis up its rear ramps, at most 3 km/h, at most the
+     ramp plus deck length; checked with the same GIANTS collision query, guards and
+     restore-on-every-exit as UNPARK; it stops when the tractor's body is inside the
+     deck box and at rest; the belts are then fastened through GIANTS' TensionBelts
+     and the tractor must be observed belted (fastened by the trailer) and at rest.
+     UNLOAD: belts released and observed released, ramps down, straight reverse off
+     the ramps under the same guards and caps. Nothing is teleported, no collision is
+     disabled, and travel with the load stays GIANTS' or AutoDrive's.
 - Keep Python orchestration in companion/, pure contracts in protocol/ and
   adapters/, game-side Lua in mod/, synthetic state in simulator/, tests in tests/.
   Never import simulator into companion or mod. No simulated success in real adapters.

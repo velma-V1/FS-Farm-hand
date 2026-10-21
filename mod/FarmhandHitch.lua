@@ -1237,7 +1237,8 @@ end
 -- most 20 m, 3 km/h and 40 s, to the nearest exit, steered by GIANTS' driveToPoint with
 -- PULL_CLEAR's guards; then GIANTS' GOTO takes over once. Static geometry is checked
 -- with GIANTS' own collision query, overlapBox (GDN engine Physics: synchronous, every
--- callback performed before it returns, a callback returning true ends the query;
+-- callback performed before it returns; the callback returns true to go on, as GIANTS'
+-- TensionBelts:objectOverlapCallback does;
 -- half extents and the yaw rotation as AutoDrive calls it, Specialization.lua:1909,
 -- PathFinderModule.lua:2535), over the whole rig's swept volume: its length, width and
 -- height from GIANTS' size boxes (AIDrivable:setAIRootNodeDirty 526-531 reads them),
@@ -1383,7 +1384,10 @@ local function overlap(env, s, a0, a1, l0, l1, h0, h1, mask)
                 q.hits[#q.hits + 1] = nodeId
             end
         end
-        return false                 -- true would end GIANTS' query before every shape is seen
+        -- true: go on (continueChecking). GIANTS' own synchronous use relies on it
+        -- (TensionBelts:objectOverlapCallback returns true and collects every object);
+        -- with false a query can end at its first shape (often the rig itself).
+        return true
     end
     local n = env.overlapBox(x, ground + (h0 + h1) / 2, z, 0, s.yaw, 0, (l1 - l0) / 2, (h1 - h0) / 2, (a1 - a0) / 2,
                              "onUnparkOverlap", q, mask, true, true, true, true)

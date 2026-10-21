@@ -136,6 +136,8 @@ All OPEN; rows are added as each capability lands.
 | Same (re-plan from the exit) | a65b3e6338e347d3-1 | 979b119 | UNPARK PASS again; hitch FAILED STALLED (LOCAL_MANEUVER, open) | UNPARK 8.5 m forward again (lateral 0.00, 3.03 km/h, 10.5 s, CLEAR); the re-plan took no GOTO: LOCAL_MANEUVER from the exit (gap 6.21 m, ahead 2.18, lateral 5.82) chose a 41.5 m curve of radius 5.5 m and STALLED 17 m along it in LOCAL_TURN, heading turned ~180 deg, at (933.1, 803.0): LOCAL_MANEUVER does not observe static objects (a collision shows as STALLED), so it most likely touched a building; stopped and released. Next: check LOCAL_MANEUVER's curve with the same GIANTS collision query UNPARK uses |
 | X8, Puma (Farm Barn bays) | user, 2026-10-20 | — | cause found | every staging aim `not_reachable`: the barn doors in front of them were closed (the user opened them by hand) |
 
+**Note (2026-10-20, after these rows):** until build after 875454e the UNPARK collision callback returned false; GIANTS' own code (TensionBelts) shows true is "continue", so those live queries may have stopped at their first shape. The 7R exits above happened without incident, but their "clear" verdicts were weaker than designed; UNPARK is re-qualified with the fix.
+
 ## Language to every capability (stage 2), save 2, build 781426c (2026-10-20)
 
 Configuration: map FS25_fourFields, save slot 2, 109 mods (from FS25's log of the load; now in every record),
