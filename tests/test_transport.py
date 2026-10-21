@@ -56,6 +56,59 @@ class TailgateTests(unittest.TestCase):
         self.assertEqual(world.items[truck.id].fold, 1.0)             # stays down while hitched
         self.assertEqual(world.items[deck.id].fold, 0.0)              # the trailer's ramps untouched
 
+    def test_a_tailgate_giants_ai_raised_on_the_way_is_lowered_again_before_reversing_under(self):
+        # GIANTS' Foldable folds a part for transport whenever an AI job starts
+        # (onAIImplementPrepareForTransport, allowUnfoldingByAI defaults true): live
+        # d6701ca959d044c0-1 reversed under with the tailgate up after the GOTO stages.
+        calls = []
+
+        class GotoRaises(MockWorld):
+            def _raised(self, vehicle_id):
+                self.items[vehicle_id] = replace(self.items[vehicle_id], fold=0.0)
+
+            def navigate(self, tractor_id, pose, owner):
+                outcome = super().navigate(tractor_id, pose, owner)
+                self._raised(tractor_id)
+                return outcome
+
+            def stage(self, tractor_id, wagon_id, pose, owner):
+                outcome = super().stage(tractor_id, wagon_id, pose, owner)
+                self._raised(tractor_id)
+                return outcome
+
+            def align(self, *args, **kwargs):
+                calls.append(self.items[args[0]].fold)
+                return super().align(*args, **kwargs)
+
+        truck, deck = rig()
+        world = GotoRaises([truck, deck], PLAYERS, ())
+        result = Executor(world).execute(hitch())
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "HITCH_OBSERVED"), result)
+        self.assertEqual(calls, [1.0])
+        self.assertEqual(result.states[result.states.index("ALIGN_REVERSE") - 1], "TAILGATE")
+
+    def test_a_trailer_still_settling_after_the_attach_is_waited_for_not_left_unconfirmed(self):
+        # Live d6701ca959d044c0-1: GIANTS' attach pulled the Deckover's nose 0.44 m onto the
+        # ball; the cleanup's at-rest check came 0.5 s later. Mock-only motion.
+        class Settling(MockWorld):
+            moving = 0
+
+            def attach(self, *args, **kwargs):
+                outcome = super().attach(*args, **kwargs)
+                self.moving = 3                                       # three snapshots in motion
+                return outcome
+
+            def snapshot(self):
+                items = super().snapshot()
+                if self.moving:
+                    self.moving -= 1
+                    items = [replace(i, stopped=False) if i.id == deck.id else i for i in items]
+                return items
+
+        truck, deck = rig()
+        result = Executor(Settling([truck, deck], PLAYERS, ())).execute(hitch())
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "HITCH_OBSERVED"), result)
+
     def test_no_tailgate_step_without_a_gooseneck_or_a_foldable_bed(self):
         for name, (truck, deck) in {"bumper pull": rig(joint="trailerCar"), "flatbed": rig(truck_fold=None)}.items():
             with self.subTest(name):

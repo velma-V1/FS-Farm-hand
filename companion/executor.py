@@ -981,6 +981,17 @@ class Executor:
         return (point is not None and valid_position(point)
                 and math.dist(point, route_position(route)) <= TRACTOR_ARRIVAL_TOLERANCE_M)
 
+    def _at_rest(self, ids):
+        """A fresh snapshot by ID once every unit is at rest, waiting at most
+        ARRIVAL_SETTLE_S: a trailer still settles after GIANTS' attach (live
+        d6701ca959d044c0-1: the Deckover's nose pulled 0.44 m onto the ball)."""
+        deadline = time.monotonic() + ARRIVAL_SETTLE_S
+        while True:
+            observed = {item.id: item for item in self.world.snapshot()}
+            if all(i in observed and observed[i].stopped for i in ids) or time.monotonic() >= deadline:
+                return observed
+            time.sleep(0.5)
+
     def _arrival(self, ids, farm_id, owner, route, check=None):
         # GIANTS ends GOTO while the tractor still rolls (live 84f4df027cb445bc-3:
         # 0.4 m from the pose, moving 0.17 s after GOTO_ENDED): at rest first, bounded.
@@ -1423,6 +1434,12 @@ class Executor:
                     if problem is not None:
                         raise StepFailed(problem)
                     break
+                # GIANTS' AI folds a Foldable part for transport whenever a job starts
+                # (Foldable: onAIImplementPrepareForTransport; allowUnfoldingByAI defaults
+                # true): a GOTO on the way raised the tailgate again (live
+                # d6701ca959d044c0-1). Down and verified once more right before reversing under.
+                tractor, wagon = self._hitch_state(ids, farm_id, owner, plan)
+                self._tailgate_down(tractor, plan.tractor_joint, owner)
                 enter("ALIGN_REVERSE")
                 try:
                     if at_hitch:
@@ -1487,7 +1504,7 @@ class Executor:
                         enter("STOP")
                         if not self.world.stop(ids[0], owner):
                             raise ObservationMismatch("STOP_NOT_CONFIRMED")
-                        stopped = {item.id: item for item in self.world.snapshot()}
+                        stopped = self._at_rest(ids)
                         if any(identifier not in stopped or not stopped[identifier].stopped
                                or stopped[identifier].reserved_by != owner for identifier in ids):
                             raise ObservationMismatch("STOP_NOT_OBSERVED")
@@ -1517,7 +1534,8 @@ class Executor:
                         raise ObservationMismatch("RELEASE_NOT_OBSERVED")
                 except _CleanupFailed as error:
                     status, reason = "UNVERIFIED", str(error)
-                except Exception:
+                except Exception as error:
+                    log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
                     status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, ids, tuple(states))

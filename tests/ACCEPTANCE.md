@@ -419,6 +419,14 @@ Executable mapping (`python scripts/check.py`):
   Soil work or sowing over a crop standing on most of the field is BLOCKED
   (CROP_READY_TO_HARVEST / CROP_GROWING) before anything is hitched, unless the
   player says "... anyway" (`StandingCropTests`, `OverCropTests`).
+- `tests/test_transport.py` (truck and gooseneck, stage 3; mock fold state): a regular
+  bed's tailgate is lowered and verified before anything moves and again right before
+  ALIGN_REVERSE (GIANTS' AI raises it on every GOTO), stays down while hitched and is
+  down before unhitching; a tailgate never observed down moves nothing; no step without
+  a gooseneck or a Foldable bed; a trailer still settling after the attach is waited for
+  (bounded) instead of leaving the cleanup unconfirmed. Mod side (`test_lua_maneuver`):
+  a gooseneck ball over the truck's steering axle lines up from the live 45 deg aims on
+  the 8 m fallback line-up point.
 
 Synthetic movement sets coordinates and coupling sets relations. The simulator
 has no physics, terrain, route graph, collision, trigger, animation, network or
