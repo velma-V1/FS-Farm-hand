@@ -544,7 +544,7 @@ end
 -- The reference is the shortest forward curve (two arcs of the tractor's own
 -- turning radius and a straight: Dubins' CSC words) from the observed tractor to
 -- that line-up, in the frame of the observed wagon joint. It is chosen once, from
--- at most 30 closed-form candidates (5 line-up points x at most 6 words), so that
+-- at most 36 closed-form candidates (5 line-up points, then a farther fallback, x at most 6 words), so that
 -- it keeps a margin from the work radius, from the wagon's body, from every other
 -- vehicle's root and from the player; there is no search around obstacles: no
 -- such curve, no motion. Every frame re-observes, steers at a point LOOKAHEAD
@@ -557,6 +557,10 @@ Hitch.LOCAL = {
     timeoutMs = 120000,       -- the whole maneuver: 70 m at 3 km/h is 84 s
     turnMargin = 1.1,         -- plan 10% wider than the tractor's own minimum radius
     lineupAheadM = { 3.5, 4.5, 5.5, 6.5, 7 },  -- candidate line-up points (planned joint ahead)
+    -- Only when none of those keeps the margins: a joint over the steering axle (a gooseneck
+    -- ball, live 170ee44249ca4fab-1) swept the cab through the wagon box's corner on every
+    -- last arc ending 7 m ahead. At doneMaxAheadM it ends inside the reverse's envelope.
+    lineupFallbackAheadM = 8,
     lookaheadM = 3,
     sampleM = 0.5,            -- envelope check spacing along a candidate
     planMarginM = 1.5,        -- a candidate keeps this clearance from the radius and the wagon's box
@@ -690,10 +694,12 @@ local PLAN_REASON = { KEEP_OUT = "LOCAL_PATH_HITS_WAGON", ENVELOPE_EXCEEDED = "L
 -- The shortest candidate that keeps the margin, or nil and why none does: the
 -- reason of the shortest candidate refused (live 3da28a3f24dd450b-1 named the
 -- longest one's, the work radius, when a parked vehicle blocked every short one).
+-- The fallback line-up point is tried only when no other keeps the margin.
 function Hitch.chooseCurve(s, x, y, p)
     local D = Hitch.LOCAL
     local best, why, whyLength = nil, "LOCAL_NO_PATH", math.huge
-    for _, ahead in ipairs(D.lineupAheadM) do
+    -- false when GIANTS' collision query could not be read
+    local function try(ahead)
         for _, c in ipairs(Hitch.curves(x, y, p, ahead + s.back, s.turnRadius)) do
             if c.length > Hitch.LOCAL_LIMITS.maxPathM then
                 if why == "LOCAL_NO_PATH" then why = "LOCAL_PATH_TOO_LONG" end
@@ -710,7 +716,7 @@ function Hitch.chooseCurve(s, x, y, p)
             end
             if bad == nil and s.staticCheck ~= nil then
                 local blocked, names = s.staticCheck(c)
-                if blocked == "UNKNOWN" then return nil, "LOCAL_AREA_UNKNOWN" end
+                if blocked == "UNKNOWN" then return false end
                 if blocked ~= nil then
                     bad = "STATIC"
                     if c.length < whyLength then s.staticHits = names end
@@ -723,7 +729,12 @@ function Hitch.chooseCurve(s, x, y, p)
             end
             if c.length < whyLength then why, whyLength = PLAN_REASON[bad], c.length end
         end
+        return true
     end
+    for _, ahead in ipairs(D.lineupAheadM) do
+        if not try(ahead) then return nil, "LOCAL_AREA_UNKNOWN" end
+    end
+    if best == nil and not try(D.lineupFallbackAheadM) then return nil, "LOCAL_AREA_UNKNOWN" end
     return best, why
 end
 

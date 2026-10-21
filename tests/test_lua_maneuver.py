@@ -340,7 +340,8 @@ class LuaManeuverTests(unittest.TestCase):
                 self.assertTrue(all(d["forwards"] for d in self.drives(w) if d["allowed"]))
                 self.assertLessEqual(w.maxRadius, self.hitch.LOCAL_LIMITS.workRadiusM)
                 self.assertFalse(w.inBody)
-                self.assert_lined_up(w)
+                # The fallback line-up point ends inside the reverse's envelope.
+                self.assert_lined_up(w, tight=session.curve.lineupAheadM != self.hitch.LOCAL.lineupFallbackAheadM)
                 self.assert_braked_last(w)
                 self.assertEqual(self.W.reverse(w), "CANDIDATE")
 
@@ -657,6 +658,22 @@ class LuaManeuverTests(unittest.TestCase):
                 self.assertIsNotNone(session, why)
                 self.assertEqual(self.run_to_end(w, session)[0], "LINED_UP")
                 self.assertFalse(w.inBody)
+
+    def test_a_gooseneck_ball_over_the_axle_lines_up_from_the_live_aims(self):
+        # Live 170ee44249ca4fab-1 (GMC 3500HD, gooseneck joint 0.02 m from its steering
+        # node, Deckover): every line-up point up to 7 m ahead swept the cab through the
+        # wagon box's corner, so all four aims were refused LOCAL_PATH_HITS_WAGON.
+        for ahead, lateral, heading in ((-2.03, -9.88, 44.4), (-2.39, 9.64, -45.6)):
+            with self.subTest(lateral=lateral):
+                w = self.world(ahead=ahead, lateral=lateral, heading=math.radians(heading), back=0.02,
+                               radius=5.8627, minRadius=5.8627)
+                session, why = self.start(w)
+                self.assertIsNotNone(session, why)
+                self.assertEqual(self.run_to_end(w, session)[0], "LINED_UP")
+                self.assertEqual(session.curve.lineupAheadM, self.hitch.LOCAL.lineupFallbackAheadM)
+                self.assertFalse(w.inBody)
+                self.assert_lined_up(w, tight=False)        # ends inside the reverse's envelope
+                self.assertEqual(self.W.reverse(w), "CANDIDATE")
 
     def test_a_curve_past_another_vehicle_is_refused_unmoved(self):
         w = self.world(**CASE_A)
