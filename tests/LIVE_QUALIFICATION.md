@@ -121,3 +121,11 @@ refusal), FAIL (a defect; see the row), OPEN (not yet run).
 ## Navigation, supplies, jobs
 
 All OPEN; rows are added as each capability lands.
+
+## Boxed starts: doors and UNPARK, FourFields save 2 (2026-10-20)
+
+| Case | Test id | Build | Result | Observed |
+| --- | --- | --- | --- | --- |
+| "move it to the farm silo" (Super-Liner 93 + hopper 94, Large Shed) | fc25907b61fb402f-1 | 55ac157 | FAILED NAVIGATE_STALLED (fixed) | agent `planning` first, then `blocked`; the 90 s stall watch fired before 90 s of uninterrupted BLOCKED, so the door/UNPARK path never ran; unmoved, stopped, released. A stall that never left its start with the agent BLOCKED is now BLOCKED_AT_START (a3242ba) |
+| Same | bfbc32565ecb4472-1 | a3242ba | UNVERIFIED CLEANUP_NOT_CONFIRMED (SAFETY: open) | NAVIGATE_BLOCKED_AT_START (93.8 m from the target) -> OPEN_DOORS opened the Large Shed's animated `wallUp` at (944.1, 772.0), closed (0.00), 13.8 m from the truck. Within 6 s the truck moved with no AI job and no Farmhand motion (retry `navigate` refused NOT_STOPPED); STOP saw it at rest at 20:06:53, the snapshot right after did not; the rig then went on about 12.5 m forward in all and came to rest at (956.7, 792.0) / hopper (959.6, 784.8). The same cancelled GOTO without a door (fc25907b61fb402f-1) left the rig still. UNPARK never ran (a door was found). Cause unproven (the wall's animation pushing the rig, or the rig rolling once something it rested on moved). Opening doors next to a vehicle stays suspended until guarded |
+| X8, Puma (Farm Barn bays) | user, 2026-10-20 | — | cause found | every staging aim `not_reachable`: the barn doors in front of them were closed (the user opened them by hand) |
