@@ -201,13 +201,42 @@ README = """FS25 Farmhand
 
 Install: double-click Setup.cmd. Nothing else is needed: this folder carries its
 own Python. Setup puts the mod into Farming Simulator 25, installs the companion
-for this Windows user and starts it now and at every logon.
+for this Windows user and starts it now and at every logon. It works on any map.
 
-Use, in FS25 on foot: Left Alt + K to tell Farmhand what to do ("bring me a tractor
-and forage wagon", "come here", "take this back to the barn", "what are you
-doing?", "stop"); Left Alt + L to stop; Left Alt + J to bring the pair here;
-Left Alt + N to choose an optional AI model; hold Left Alt + V to speak (needs a
-microphone).
+KEYS (in game, on foot)
+  Left Alt + K   tell Farmhand what to do (type it)
+  Left Alt + L   stop whatever Farmhand is doing, at once
+  Left Alt + J   bring a tractor and forage wagon here
+  Left Alt + N   choose an optional local AI model (plain commands work without)
+  Left Alt + V   hold to speak (optional, needs a microphone)
+
+WHAT YOU CAN SAY (examples; plain words, one job or several in one sentence)
+  Pairs        "bring me a tractor and forage wagon", "hitch the deckover with the gmc",
+               "unhitch the trailer", "move this here", "take it back"
+  Field work   "plow field 1", "cultivate and sow field 7", "plow a small area of field 3"
+  Buying       "buy a large plow", "buy the gmc truck and the 1124 deckover",
+               "buy a deutz series 9 with a boss hoss engine",
+               "buy a lizard titan vineyard plow with the 25m unrealistic width and the 25 mph speed"
+  Transport    "load the deutz on the deckover", "load the tractor and plow on the gooseneck",
+               "unload it", "take the deutz to field 3 and unload it"
+  Several      "take the gmc, hitch the deckover, load the tractor, deliver it to field 3, and unload it"
+  Control      "what are you doing?", "stop", "continue", "take it to field 2 instead",
+               "follow me" (sit in the vehicle it should follow), "save the game"
+
+GOOD TO KNOW
+  - Stop is always immediate. A stopped, taken-over or blocked job is kept: say
+    "continue" and Farmhand picks it up from what is already done, also after a
+    restart. Nothing already done is repeated (nothing is bought twice).
+  - Farmhand only unloads where it observes the rig has arrived.
+  - A trailer carrying a belted tractor cannot be driven by the game's helper or by
+    AutoDrive (they stop for the cargo). Farmhand then asks you to drive it (or say
+    "follow me" from another vehicle) and "continue" when you are there.
+  - Destinations: fields by number, owned buildings by name ("the farm", "the cow
+    barn"), AutoDrive markers by name. For a loaded delivery to a field Farmhand may add
+    an AutoDrive destination there, after backing up AutoDrive's network into
+    modSettings\\FS25_Farmhand\\backup.
+  - Messages say what really happens: "could not start", "stopped short", "unsure,
+    check it". Farmhand's log: modSettings\\FS25_Farmhand\\companion.log.
 
 Remove: double-click Uninstall.cmd.
 """

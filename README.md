@@ -10,12 +10,21 @@ recognition, and TTS components.
 GitHub is used only for source control, development, CI, review, and packaging.
 It is not part of the farmhand's runtime architecture.
 
-Current vertical slice: select an available compatible tractor and forage wagon,
-attach them, and bring them to the requester.
+It is a coordinator: GIANTS' own jobs (GOTO, field work, buying, Foldable,
+TensionBelts) and installed mods (AutoDrive, FollowMe) do the work, with Farmhand's
+own bounded motions only where nothing else can (the final hitch reverse, pulling
+clear, leaving a shed, driving a tractor onto a transport). Plain words in game
+become jobs: fetching and hitching pairs, field work, buying with configuration
+options, truck and gooseneck hitching, loading, belting, hauling and unloading
+tractors, several jobs in one sentence, stop / continue / change of destination.
 
-**Status: AC-001 is implemented end to end and tested off-PC only; it has never
-run inside FS25.** Upstream capabilities are recorded with source evidence in
-[adapters/EVIDENCE.md](adapters/EVIDENCE.md).
+**Status:** many of these are qualified live on the user's PC (FourFields save 2;
+see [tests/LIVE_QUALIFICATION.md](tests/LIVE_QUALIFICATION.md)); the rest pass the
+automated suite only, and one working combination is never taken to mean all
+equipment works. Open items are listed in
+[tests/ACCEPTANCE.md](tests/ACCEPTANCE.md) (completion criteria) and
+[BUILD_SPEC.md](BUILD_SPEC.md) (completion plan). Upstream capabilities are recorded
+with source evidence in [adapters/EVIDENCE.md](adapters/EVIDENCE.md).
 
 How it is used: install once by double-clicking `Setup.cmd` in the Farmhand package
 (it carries its own Python; nothing else to install), then in

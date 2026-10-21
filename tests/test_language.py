@@ -299,3 +299,25 @@ class ModelNumberTests(unittest.TestCase):
         for words in ("bring the plow to the farm house", "bring the big plow to the farm house"):
             self.assertNotIn("implement_name", rules.interpret(words))
         self.assertEqual(rules.interpret("unhitch the 980 plow")["command"], "detach_pair")
+
+
+class GuideExamplesTests(unittest.TestCase):
+    """Every example the player guide (the package's README.txt) offers is understood."""
+
+    def test_every_example_in_the_guide_is_a_command(self):
+        import importlib.util
+        import re
+        from pathlib import Path
+        spec = importlib.util.spec_from_file_location("package_probe",
+                                                      Path(__file__).resolve().parents[1] / "scripts/package_probe.py")
+        probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(probe)
+        section = probe.README.split("WHAT YOU CAN SAY")[1].split("GOOD TO KNOW")[0]
+        examples = re.findall(r'"([^"]+)"', section)
+        self.assertGreater(len(examples), 15)
+        rules = RuleInterpreter()
+        for words in examples:
+            with self.subTest(words=words):
+                proposal = rules.interpret(words)
+                self.assertIsNotNone(proposal)
+                self.assertNotEqual(proposal["command"], "unsupported")
