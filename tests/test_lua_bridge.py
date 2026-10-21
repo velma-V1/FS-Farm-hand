@@ -780,7 +780,7 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertEqual(self.results(1)[-1], (1, "UNVERIFIED", "DETACH_TIMEOUT"))
 
     # ----------------------------------------------------------- fieldwork
-    FIELD = {"tractor": 11, "field": 7, "x": 200.0, "z": 300.0, "yaw": 0.5, "area": 0.0}
+    FIELD = {"tractor": 11, "field": 7, "x": 200.0, "z": 300.0, "yaw": 0.5, "area": 0.0, "seed": 0}
 
     def fieldwork_stubs(self, available=True):
         """GIANTS' FIELDWORK job shape (AIJobFieldWork 22-49, 134-224) on the GOTO stub."""
@@ -822,6 +822,57 @@ class LuaBridgeTests(unittest.TestCase):
                 self.end_job(message)
                 self.W.run(self.w, 300)
                 self.assertEqual(self.results(1)[-1], (1, "DONE", code))         # never "worked": measured
+
+    def seeder(self, seeds, current=1, honest=True):
+        """A hitched seeder: SowingMachine spec.seeds / currentSeed and setSeedFruitType as
+        GIANTS (432-440 -> setSeedIndex 398-414); `honest=False` ignores the call."""
+        return self.lua.execute(r"""
+            local w, seeds, current, honest = ...
+            local list = {}
+            for i = 1, #seeds do list[i] = seeds[i] end
+            local o = { spec_sowingMachine = { seeds = list, currentSeed = current } }
+            function o:setSeedFruitType(fruit)
+                table.insert(w.calls, "setSeedFruitType:" .. tostring(fruit))
+                if not honest then return end
+                for i, v in ipairs(self.spec_sowingMachine.seeds) do
+                    if v == fruit then self.spec_sowingMachine.currentSeed = i; break end
+                end
+            end
+            function w.tractor:getAttachedImplements() return { { object = o } } end
+            return o
+        """, self.w, self.lua.table_from(seeds), current, honest)
+
+    def test_fieldwork_sets_the_crop_chosen_before_giants_starts(self):
+        for seeds, seed in (((7, 3, 9), 3), ((4, 12), 1)):
+            with self.subTest(seeds=seeds, seed=seed):
+                self.w = self.W.new()
+                self.adopt()
+                self.fieldwork_stubs()
+                self.w.gotoStarts = True
+                seeder = self.seeder(seeds)
+                self.send(1, "fieldwork", {**self.FIELD, "seed": seed})
+                calls = self.calls()
+                self.assertIn(f"setSeedFruitType:{seeds[seed - 1]}", calls)
+                self.assertLess(calls.index(f"setSeedFruitType:{seeds[seed - 1]}"), calls.index("startJob"))
+                self.assertEqual(seeder.spec_sowingMachine.currentSeed, seed)
+                self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])
+
+    def test_a_crop_the_seeder_cannot_sow_or_does_not_take_starts_nothing(self):
+        for seed, honest, code in ((4, True, "SEED_NOT_SUPPORTED"), (2, False, "SEED_NOT_SET")):
+            with self.subTest(code=code):
+                self.w = self.W.new()
+                self.adopt()
+                self.fieldwork_stubs()
+                self.seeder((7, 3, 9), honest=honest)
+                self.send(1, "fieldwork", {**self.FIELD, "seed": seed})
+                self.assertEqual(self.results(1)[-1], (1, "FAILED", code))
+                self.assertNotIn("startJob", self.calls())
+        self.w = self.W.new()
+        self.adopt()
+        self.fieldwork_stubs()
+        self.lua.execute("local w = ...; function w.tractor:getAttachedImplements() return {} end", self.w)
+        self.send(1, "fieldwork", {**self.FIELD, "seed": 1})
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "NO_SEEDER"))
 
     def test_changed_area_is_the_share_that_moved_times_the_field(self):
         f = self.lua.eval("""function(B)

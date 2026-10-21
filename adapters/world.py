@@ -58,10 +58,12 @@ class World(Protocol):
         believes open). Never makes anything passable."""
         ...
 
-    def fieldwork(self, tractor_id: str, field_id: int, pose: Pose, owner: str, area_m2: float = 0.0) -> str:
+    def fieldwork(self, tractor_id: str, field_id: int, pose: Pose, owner: str, area_m2: float = 0.0,
+                  seed: int = 0) -> str:
         """FIELD_WORK: GIANTS' own field-work helper (AIJobFieldWork) for the reserved
         tractor and what is hitched to it, driving to ``pose`` inside the field first;
-        with ``area_m2`` the mod stops it once that much of the field changed (AREA_REACHED).
+        with ``area_m2`` the mod stops it once that much of the field changed (AREA_REACHED);
+        ``seed`` (a position in the hitched seeder's ``seeds``, 0: as set) chooses the crop first.
         Returns GIANTS' end reason (FINISHED, FIELD_NOT_READY, ...); never evidence
         that the field was worked: the executor measures the field."""
         ...

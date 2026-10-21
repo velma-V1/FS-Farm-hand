@@ -867,6 +867,29 @@ function Bridge.logFieldWork(_env, v, what)
         read(function() return v:getIsAIActive() end), table.concat(tools, "; "))
 end
 
+-- The crop to sow: position `seed` in the hitched seeder's own list (spec.seeds, as
+-- Observe reports it), set by GIANTS' SowingMachine:setSeedFruitType (432-440, which
+-- calls setSeedIndex 398-414: currentSeed and the AI parameters); confirmed read back.
+function Bridge.chooseSeed(v, seed)
+    if not (finite(seed) and seed % 1 == 0 and seed >= 1) then return "INVALID_SEED" end
+    local ok, reason = pcall(function()
+        local seeders = {}
+        for _, impl in ipairs(v:getAttachedImplements() or {}) do
+            if impl.object ~= nil and impl.object.spec_sowingMachine ~= nil then seeders[#seeders + 1] = impl.object end
+        end
+        if #seeders ~= 1 then return "NO_SEEDER" end
+        local o = seeders[1]
+        local spec = o.spec_sowingMachine
+        local fruit = spec.seeds[seed]
+        if fruit == nil then return "SEED_NOT_SUPPORTED" end
+        o:setSeedFruitType(fruit)
+        if spec.seeds[spec.currentSeed] ~= fruit then return "SEED_NOT_SET" end
+        return nil
+    end)
+    if not ok then return "SEED_ERROR" end
+    return reason
+end
+
 function starters.fieldwork(env, spec)
     local v = spec.tractor
     local denied = idle(env, v, spec.farmId)
@@ -876,6 +899,11 @@ function starters.fieldwork(env, spec)
     if spec.area == 0 then spec.area = nil end              -- 0: the whole field
     if spec.area ~= nil and not (finite(spec.area) and spec.area > 0 and spec.area <= Bridge.FIELDWORK_MAX_AREA_M2) then
         return nil, "INVALID_AREA"
+    end
+    if spec.seed == 0 then spec.seed = nil end              -- 0: the crop the seeder is set to
+    if spec.seed ~= nil then
+        local denied = Bridge.chooseSeed(v, spec.seed)
+        if denied ~= nil then return nil, denied end
     end
     local ok, reason = pcall(function()
         local mission = env.g_currentMission
@@ -1508,7 +1536,7 @@ function Bridge:checkSession()
 end
 
 local ATTRS = { tractor = "tractor", wagon = "wagon", marker = "marker", x = "x", z = "z", yaw = "yaw",
-                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", item = "item", hitch = "hitch", engine = "eng", opt1 = "o1", opt2 = "o2", opt3 = "o3", opt4 = "o4",
+                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", seed = "seed", item = "item", hitch = "hitch", engine = "eng", opt1 = "o1", opt2 = "o2", opt3 = "o3", opt4 = "o4",
                 direction = "fd" }
 
 function Bridge:pollCommand()

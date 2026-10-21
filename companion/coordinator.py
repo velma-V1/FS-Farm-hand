@@ -26,7 +26,8 @@ from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified
 from companion import hitch as transport   # its tractor-transport section
-from companion.executor import OPERATIONS, already_done, crop_problem, named, of_kind, resolve_field, usable
+from companion.executor import (OPERATIONS, already_done, crop_problem, named, of_kind, resolve_field, seed_position,
+                                usable)
 from protocol.model import Equipment, Result
 
 log = logging.getLogger("farmhand")
@@ -227,10 +228,15 @@ def haul_step(items: tuple[Equipment, ...], farm_id: str, name: str | None, targ
 # verifies every step. For each operation: hitch an implement that does it (unless one
 # is already hitched to a tractor), work the field, then unhitch it where it stands
 # (PULL_CLEAR included) so the next operation's tool change has a tractor.
-def implement_kind(items: tuple[Equipment, ...], operation: str, farm_id: str) -> tuple[str | None, str | None]:
+def implement_kind(items: tuple[Equipment, ...], operation: str, farm_id: str,
+                   crop: str | None = None) -> tuple[str | None, str | None]:
     """The implement kind to use for ``operation``: the first of its kinds the farm
     has (owned, available); a cultivator stands in for a plow only when the farm has
-    no plow (said in the note). None and why when the farm has none."""
+    no plow (said in the note). None and why when the farm has none; with ``crop``,
+    a seeder that can sow it."""
+    if crop is not None and not any(of_kind(i, "sowing_machine") and usable(i, farm_id) and "ai_implement" in i.kinds
+                                    and seed_position(i, crop) is not None for i in items):
+        return None, "NO_SEEDER_FOR_CROP"
     kinds = OPERATIONS[operation].kinds
     if operation == "plow" and not _have(items, "plow", farm_id):
         kinds = OPERATIONS["cultivate"].kinds
@@ -246,24 +252,27 @@ def _have(items, kind, farm_id) -> bool:
     return any(of_kind(i, kind) and usable(i, farm_id) and "ai_implement" in i.kinds for i in items)
 
 
-def _hitched(items, kind) -> bool:
+def _hitched(items, kind, crop=None) -> bool:
     observed = {i.id: i for i in items}
     return any(i.category == "tractor" and observed.get(i.attached_to) is not None
-               and of_kind(observed[i.attached_to], kind) for i in items)
+               and of_kind(observed[i.attached_to], kind)
+               and (crop is None or seed_position(observed[i.attached_to], crop) is not None) for i in items)
 
 
-def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: str, area_m2=None):
+def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: str, area_m2=None, crop=None):
     """The steps for one operation on ``field`` (an id or "smallest"), as executor
-    intent fragments, or (None, why)."""
-    kind, note = implement_kind(items, operation, farm_id)
+    intent fragments, or (None, why). ``crop`` (sowing only): the player's crop."""
+    crop = crop if operation == "sow" else None
+    kind, note = implement_kind(items, operation, farm_id, crop)
     if kind is None:
         return None, note
     work_op = "cultivate" if note == "NO_PLOW_CULTIVATING" else operation
+    with_crop = {"crop": crop} if crop else {}
     steps = []
-    if not _hitched(items, kind):
-        steps.append({"task": "hitch_pair", "implement": kind})
+    if not _hitched(items, kind, crop):
+        steps.append({"task": "hitch_pair", "implement": kind, **with_crop})
     steps.append({"task": "field_work", "field": field, "operation": work_op, "implement": kind,
-                  **({"area_m2": area_m2} if area_m2 else {})})
+                  **({"area_m2": area_m2} if area_m2 else {}), **with_crop})
     # Back where it was taken from, then unhitched there: never left in the field.
     steps.append({"task": "move_pair", "implement": kind, "target": {"type": "origin"}})
     steps.append({"task": "detach_pair", "implement": kind})
@@ -346,7 +355,8 @@ class Coordinator:
             return self.retarget(proposal["target"], spoken)
         else:
             work = ({"field": proposal["field"], "operations": proposal["operations"],
-                     "area_m2": proposal.get("area_m2"), "over_crop": proposal.get("over_crop", False)}
+                     "area_m2": proposal.get("area_m2"), "over_crop": proposal.get("over_crop", False),
+                     "crop": proposal.get("crop")}
                     if command == "field_work"
                     else {"wants": proposal["wants"]} if command == "buy" else None)
             if command in ("fetch_pair", "hitch_pair", "move_pair", "load_tractor", "unload_tractor", "follow_me"):
@@ -614,7 +624,7 @@ class Coordinator:
             elif command == "field_work":
                 result = self._field_work(sub, cancel, entered, {
                     "field": step["field"], "operations": step["operations"], "area_m2": step.get("area_m2"),
-                    "over_crop": step.get("over_crop", False)})
+                    "over_crop": step.get("over_crop", False), "crop": step.get("crop")})
             elif command == "buy":
                 result = self._buy(sub, cancel, entered, {"wants": step["wants"]})
             else:
@@ -759,7 +769,7 @@ class Coordinator:
                 log.info("job %d %s: field %s %s", job.number, operation, field.id, crop)
                 return Result("BLOCKED", crop, tuple(equipment), tuple(states))
             steps, note = field_steps(tuple(self.world.snapshot()), operation, field.id, self.farm(),
-                                      work.get("area_m2"))
+                                      work.get("area_m2"), work.get("crop"))
             if steps is None:
                 return Result("BLOCKED", note, tuple(equipment), tuple(states))
             if note is not None:

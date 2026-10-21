@@ -198,6 +198,7 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
         belted_to=None if vehicle.get("belted_to") is None else str(vehicle["belted_to"]),
         belt_markers=tuple(tuple(m) for m in (vehicle.get("belts") or {}).get("markers", ())),
         brand=vehicle.get("brand"),
+        seeds=tuple(vehicle.get("seeds") or ()),
         size=None if vehicle.get("size") is None else tuple(
             vehicle["size"][k] for k in ("length", "width", "height", "length_offset")),
     )

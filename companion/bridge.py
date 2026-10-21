@@ -406,10 +406,11 @@ class FS25World:
         return self._run("buy", item=int(item_id), hitch=int(hitch), engine=int(engine), opt1=int(chosen[0]),
                          opt2=int(chosen[1]), opt3=int(chosen[2]), opt4=int(chosen[3]))
 
-    def fieldwork(self, tractor_id: str, field_id: int, pose: Pose, owner: str, area_m2: float = 0.0) -> str:
+    def fieldwork(self, tractor_id: str, field_id: int, pose: Pose, owner: str, area_m2: float = 0.0,
+                  seed: int = 0) -> str:
         self._reserved(tractor_id, owner)
         return self._run("fieldwork", tractor=int(tractor_id), field=int(field_id), x=pose.x, z=pose.z,
-                         yaw=pose.yaw, area=float(area_m2))
+                         yaw=pose.yaw, area=float(area_m2), seed=int(seed))
 
     def travel(self, tractor_id: str, destination_id: str, owner: str) -> None:
         self._reserved(tractor_id, owner)

@@ -455,3 +455,110 @@ class FieldDetourTests(unittest.TestCase):
         result = Executor(world).execute(work("cultivate", area_m2=400))
         self.assertEqual((result.status, result.reason), ("FAILED", "STUCK_ON_OBSTACLE"), result)
         self.assertEqual(world.blocked, ())
+
+
+class CropTests(unittest.TestCase):
+    """"Plant barley on field 7": the player says what, the seeder's own crop list says
+    whether it can, GIANTS' seeder is set to it, and the field shows it afterwards."""
+    SEEDS = ("WHEAT", "BARLEY", "CANOLA", "MAIZE", "SUGARBEET", "SOYBEAN", "OAT", "POTATO")
+    READY = FieldCoverage((("CULTIVATED", 1.0),), (), 4000.0, (("NONE", 9),), 9)
+
+    def seeded(self, seeds, at=(100.0, 100.0)):
+        tractor, seeder = rig("sowing_machine", 500.0, at)
+        return [tractor, replace(seeder, seeds=tuple(seeds))]
+
+    def test_the_players_words_name_the_seeders_own_crops(self):
+        from companion.executor import seed_position
+        seeder = replace(rig("sowing_machine")[1], seeds=self.SEEDS)
+        for words, crop in (("wheat", "WHEAT"), ("corn", "MAIZE"), ("sugar beets", "SUGARBEET"),
+                            ("soybeans", "SOYBEAN"), ("oats", "OAT"), ("potatoes", "POTATO"), ("rapeseed", "CANOLA"),
+                            ("Barley", "BARLEY")):
+            with self.subTest(words=words):
+                self.assertEqual(self.SEEDS[seed_position(seeder, words) - 1], crop)
+        self.assertIsNone(seed_position(seeder, "rice"))
+        self.assertIsNone(seed_position(replace(seeder, seeds=()), "wheat"))
+        self.assertIsNone(seed_position(seeder, None))
+
+    def test_the_seeder_is_set_to_the_crop_and_the_field_shows_it(self):
+        for seeds in (self.SEEDS, tuple(reversed(self.SEEDS))):
+            with self.subTest(order=seeds[0]):
+                world = MockWorld(self.seeded(seeds), PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
+                result = Executor(world).execute(work("sow", crop="barley"))
+                self.assertEqual((result.status, result.reason), ("COMPLETE", "FIELD_WORK_OBSERVED"), result)
+                self.assertEqual(dict(world.field_map[7].coverage.fruit), {"BARLEY": 9})
+
+    def test_a_seeder_that_cannot_sow_it_is_never_taken(self):
+        world = MockWorld(self.seeded(("WHEAT", "OAT")), PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
+        result = Executor(world).execute(work("sow", crop="canola"))
+        self.assertEqual(result.status, "BLOCKED", result)
+        self.assertNotIn("FIELD_WORK", result.states)
+        self.assertEqual(world.field_map[7].coverage, self.READY)
+
+    def test_another_crop_on_the_field_afterwards_is_not_complete(self):
+        class Ignores(MockWorld):
+            def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0, seed=0):
+                return super().fieldwork(tractor_id, field_id, pose, owner, area_m2)    # the seeder's first crop
+
+        world = Ignores(self.seeded(("WHEAT", "BARLEY")), PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
+        result = Executor(world).execute(work("sow", crop="barley"))
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "CROP_NOT_OBSERVED"), result)
+
+    def test_the_plan_takes_a_seeder_that_can_sow_it(self):
+        from companion.coordinator import field_steps
+        tractor = Equipment("t-1", "tractor", "farm-a", (0.0, 0.0), kinds=frozenset({"ai_field_worker"}))
+        oats = Equipment("i-0", "implement", "farm-a", (5.0, 5.0), kinds=frozenset({"sowing_machine", "ai_implement"}),
+                         seeds=("OAT",), attached_to="t-1")
+        canola = replace(oats, id="i-1", seeds=("WHEAT", "CANOLA"), attached_to=None, position=(15.0, 5.0))
+        items = (replace(tractor, attached_to="i-0"), oats, canola)
+        steps, note = field_steps(items, "sow", 7, "farm-a", crop="canola")
+        self.assertEqual(steps[:2], [{"task": "hitch_pair", "implement": "sowing_machine", "crop": "canola"},
+                                     {"task": "field_work", "field": 7, "operation": "sow",
+                                      "implement": "sowing_machine", "crop": "canola"}])
+        self.assertEqual(field_steps(items, "sow", 7, "farm-a", crop="oats")[0][0]["task"], "field_work")
+        self.assertEqual(field_steps(items, "sow", 7, "farm-a", crop="rice"), (None, "NO_SEEDER_FOR_CROP"))
+        # The crop is for sowing only: cultivating asks for a cultivator, not a seeder.
+        self.assertEqual(field_steps(items, "cultivate", 7, "farm-a", crop="rice"), (None, "NO_IMPLEMENT_FOR_CULTIVATE"))
+
+    def test_plant_prepares_the_ground_then_sows_what_was_said(self):
+        from companion.language import RuleInterpreter
+        r = RuleInterpreter()
+        for words, field_id, operations, crop in (
+                ("plant wheat on field 3", 3, ["cultivate", "sow"], "wheat"),
+                ("Sow sugar beets in field 12", 12, ["cultivate", "sow"], "sugar beets"),
+                ("plant field 5 with corn", 5, ["cultivate", "sow"], "corn"),
+                ("plow and plant canola on field 4", 4, ["plow", "sow"], "canola")):
+            with self.subTest(words=words):
+                self.assertEqual(r.interpret(words), {"version": 1, "command": "field_work", "field": field_id,
+                                                      "operations": operations, "crop": crop})
+        self.assertEqual(r.interpret("sow field 3"), {"version": 1, "command": "field_work", "field": 3,
+                                                      "operations": ["sow"]})          # as the seeder is set
+
+    def test_the_coordinator_skips_ready_ground_and_sows_the_crop(self):
+        from companion import coordinator as coordination
+        from protocol.model import Result
+
+        class World(MockWorld):
+            cancel = None
+
+            def retained(self):
+                return ()
+
+        items = [*self.seeded(("WHEAT", "BARLEY"), at=(30.0, 0.0)),
+                 Equipment("i-9", "implement", "farm-a", (60.0, 0.0), kinds=frozenset({"cultivator", "ai_implement"}))]
+        items[0] = replace(items[0], attached_to=None)
+        items[1] = replace(items[1], attached_to=None)
+        world = World(items, PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
+        ran = []
+
+        class Scripted:
+            def execute(self, intent, cancel=None, on_state=None, job=None):
+                ran.append((intent["task"], intent.get("operation"), intent.get("crop")))
+                return Result("COMPLETE", "OK", ("t-1",), ("FIND",))
+
+        c = coordination.Coordinator(world, Scripted(), lambda n, s=False: None, lambda: "farm-a", lambda: "s1")
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["cultivate", "sow"],
+                  "crop": "barley"})
+        c.wait(10)
+        self.assertEqual(ran, [("hitch_pair", None, "barley"), ("field_work", "sow", "barley"),
+                               ("move_pair", None, None), ("detach_pair", None, None)])
+        self.assertEqual(c.last.state, "COMPLETE")

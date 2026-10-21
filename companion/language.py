@@ -405,6 +405,37 @@ def field_work(words: str) -> dict | None:
     return work
 
 
+# "plant wheat on field 3", "sow sugar beets in field 12", "plant field 3 with corn": the
+# player says what to plant; Farmhand prepares the ground first where it is not ready.
+_SOW_VERB = r"(?:plant|sow|seed|drill)"
+_FIELD_N = r"(?:the\s+|our\s+|my\s+)?field\s+(?:number\s+)?(?P<number>\d{1,5})"
+_CROP = r"(?:some\s+)?(?P<crop>[a-z]{2,15}(?:\s+[a-z]{2,15})?)"
+_PLANT = re.compile(
+    rf"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?:(?P<prep>{_FIELD_VERB})\s+(?:and\s+(?:then\s+)?|then\s+)?)?(?:"
+    rf"{_SOW_VERB}\s+{_CROP}\s+(?:on|in)\s+{_FIELD_N}"
+    rf"|{_SOW_VERB}\s+{_FIELD_N.replace('number>', 'number2>')}\s+with\s+{_CROP.replace('crop>', 'crop2>')}"
+    r")(?:\s+please)?$")
+_NOT_CROPS = frozenset(_FIELD_VERBS) | {"a", "an", "the", "it", "field", "small", "test", "area", "and", "then"}
+
+
+def plant(words: str) -> dict | None:
+    """What to plant: cultivate (skipped where the ground is ready) then sow the crop, or
+    the preparation the player named first ("plow and plant canola on field 4")."""
+    match = _PLANT.match(words)
+    if match is None:
+        return None
+    crop = match["crop"] or match["crop2"]
+    if set(crop.split()) & _NOT_CROPS:
+        return None
+    field = int(match["number"] or match["number2"])
+    if field < 1:
+        return None
+    prep = _FIELD_VERBS[match["prep"]] if match["prep"] else "cultivate"
+    if prep in ("sow", "fertilize"):
+        return None
+    return {"version": 1, "command": "field_work", "field": field, "operations": [prep, "sow"], "crop": crop}
+
+
 _WITH = re.compile(r"\s+(?:with|using)\s+(?:the|my|our)\s+([a-z0-9][a-z0-9-]{0,20}(?:\s+[a-z0-9][a-z0-9-]{0,20})?)$")
 _GOOSENECK = re.compile(r"\bgoosenecks?\b")
 _DECKOVER = re.compile(r"\bdeckovers?\b")
@@ -561,7 +592,7 @@ class RuleInterpreter:
             return {"version": 1, "command": "move_pair"}
         if re.fullmatch(r"(?:please\s+)?save(?:\s+the)?(?:\s+(?:game|farm|progress))?(?:\s+now)?", words):
             return {"version": 1, "command": "save_game"}
-        work = field_work(words) or buy(words) or transport(words)
+        work = field_work(words) or plant(words) or buy(words) or transport(words)
         if work is not None:
             return work
         # "... with the gmc": the towing vehicle by its name.

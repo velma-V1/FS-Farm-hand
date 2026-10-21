@@ -311,11 +311,15 @@ def of_kind(item: Equipment, kind: str) -> bool:
     return item.category in IMPLEMENT_CATEGORIES and kind in item.kinds
 
 
-def compatible(tractor: Equipment, wagon: Equipment, kind: str = "forage_wagon", name: str | None = None) -> bool:
+def compatible(tractor: Equipment, wagon: Equipment, kind: str = "forage_wagon", name: str | None = None,
+               crop: str | None = None) -> bool:
     """Pair-level checks. Joint type and PTO are checked per planned joint pair in
     plan_hitch, which every HITCH step re-runs. With ``name`` (the player named the
-    implement, "the gooseneck") any implement of that name will do, whatever its kind."""
+    implement, "the gooseneck") any implement of that name will do, whatever its kind;
+    with ``crop``, only a seeder that can sow it."""
     fits = (wagon.category in IMPLEMENT_CATEGORIES and named(wagon, name)) if name else of_kind(wagon, kind)
+    if crop is not None and seed_position(wagon, crop) is None:
+        return False
     return (tractor.category == "tractor" and fits
             and power_sufficient(tractor, wagon)
             and {"move", "attach", "stop"} <= tractor.capabilities)
@@ -585,11 +589,29 @@ def named(item: Equipment, name: str | None) -> bool:
     return bool(text) and all(w in text.split() or w in text for w in name.split())
 
 
-def workable(tractor: Equipment, implement: Equipment, kinds: tuple[str, ...] = ()) -> bool:
+# The player's word for a crop where it is not GIANTS' fruit name.
+CROP_WORDS = {"corn": "maize", "rapeseed": "canola", "rape": "canola", "soy": "soybean", "beans": "soybean",
+              "beets": "sugarbeet", "beet": "sugarbeet", "oats": "oat"}
+
+
+def seed_position(implement: Equipment, crop: str | None) -> int | None:
+    """The 1-based position of ``crop`` (the player's words, "sugar beets") in the
+    seeder's own crops (GIANTS fruit names, SUGARBEET), or None if it cannot sow it."""
+    if not crop:
+        return None
+    word = re.sub(r"[^a-z0-9]", "", CROP_WORDS.get(crop.casefold(), crop.casefold()))
+    wanted = {word, word[:-1] if word.endswith("s") else word, word[:-2] if word.endswith("es") else word}
+    wanted |= {re.sub(r"[^a-z0-9]", "", CROP_WORDS[w]) for w in tuple(wanted) if w in CROP_WORDS}
+    return next((n for n, name in enumerate(implement.seeds, 1) if name.casefold() in wanted), None)
+
+
+def workable(tractor: Equipment, implement: Equipment, kinds: tuple[str, ...] = (), crop: str | None = None) -> bool:
     """field_work: a tractor GIANTS' field-work helper can run (AIFieldWorker) with an
-    AI-usable implement (AIImplement) of one of ``kinds`` hitched to it."""
+    AI-usable implement (AIImplement) of one of ``kinds`` hitched to it; with ``crop``,
+    a seeder that can sow it."""
     return (detachable(tractor, implement) and "ai_field_worker" in tractor.kinds
-            and "ai_implement" in implement.kinds and any(of_kind(implement, k) for k in kinds))
+            and "ai_implement" in implement.kinds and any(of_kind(implement, k) for k in kinds)
+            and (crop is None or seed_position(implement, crop) is not None))
 
 
 def _material(implement: Equipment, role: str | None):
@@ -1422,13 +1444,14 @@ class Executor:
         if working:
             kinds = (command["implement"],) if command.get("implement") else operation.kinds
             self._kind = kinds[0]
-            self._compatible = functools.partial(workable, kinds=kinds)
+            self._compatible = functools.partial(workable, kinds=kinds, crop=command.get("crop"))
         elif detaching:
             self._kind = command.get("implement")
             self._compatible = functools.partial(detachable, kind=self._kind)
         else:
             self._kind = command.get("implement", "forage_wagon")
-            self._compatible = functools.partial(compatible, kind=self._kind, name=command.get("implement_name"))
+            self._compatible = functools.partial(compatible, kind=self._kind, name=command.get("implement_name"),
+                                                 crop=command.get("crop"))
         check = movable if moving else self._compatible
         delivery = None
         try:
@@ -1573,10 +1596,11 @@ class Executor:
                 enter("FIELD_WORK")
                 yaw = math.atan2(field.center[0] - tractor.position[0], field.center[1] - tractor.position[1])
                 area = command.get("area_m2")
+                seed = seed_position(implement, command.get("crop")) or 0      # the player's crop, else as set
                 for detour in range(MAX_DETOURS + 1):
                     try:
                         ended = self.world.fieldwork(tractor.id, field.id, Pose(field.center[0], field.center[1], yaw),
-                                                     owner, area or 0.0)
+                                                     owner, area or 0.0, **({"seed": seed} if seed else {}))
                         break
                     except StepFailed as failure:
                         # Stuck on the way while GIANTS still drives: as _navigate.
@@ -1601,6 +1625,13 @@ class Executor:
                 elif done < COVERAGE_REQUIRED:
                     # GIANTS' own reason when it stopped early (OUT_OF_FILL, FIELD_NOT_READY, ...).
                     raise StepFailed(ended if ended != "FINISHED" else "PARTIAL_COVERAGE")
+                if seed:
+                    # The crop asked for is what now grows where the samples fell.
+                    grown = max(after.coverage.fruit or (), key=lambda f: f[1], default=(None, 0))[0]
+                    log.info("FIELD_WORK crop %r: seeder %s, field shows %s", command["crop"],
+                             implement.seeds[seed - 1], grown)
+                    if grown != implement.seeds[seed - 1]:
+                        raise ObservationMismatch("CROP_NOT_OBSERVED")
                 if operation.material is not None:
                     used = _material(implement, operation.material)
                     farm = self.world.farm()

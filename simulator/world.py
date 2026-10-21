@@ -227,7 +227,7 @@ class MockWorld:
     MOCK_WORK = {"cultivator": ("CULTIVATED", None), "plow": ("PLOWED", None), "sowing_machine": ("SOWN", "WHEAT"),
                  "sprayer": (None, None)}
 
-    def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0):
+    def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0, seed=0):
         # Mock-only: the hitched implement's kind turns the whole field into its result
         # and uses 100 l of its material; the tractor ends inside the field.
         with self._lock:
@@ -243,6 +243,14 @@ class MockWorld:
             if kind is None:
                 raise RuntimeError("FIELDWORK_UNAVAILABLE")
             ground, fruit = self.MOCK_WORK[kind]
+            if seed:                          # the crop chosen from the seeder's own list
+                if kind != "sowing_machine":
+                    raise StepFailed("NO_SEEDER")
+                if not 1 <= seed <= len(implement.seeds):
+                    raise StepFailed("SEED_NOT_SUPPORTED")
+                fruit = implement.seeds[seed - 1]
+            elif kind == "sowing_machine" and implement.seeds:
+                fruit = implement.seeds[0]
             old = field.coverage or FieldCoverage((), (), 10000.0, None, 9)
             share = min(1.0, area_m2 / old.total_m2) if area_m2 else 1.0     # a bounded test area
             rest = tuple((n, s * (1 - share)) for n, s in old.ground if n != ground)

@@ -21,6 +21,7 @@ Observe.MAX_VEHICLES = 200
 Observe.MAX_DESTINATIONS = 2000
 Observe.MAX_PLACES = 500
 Observe.MAX_JOINTS = 32
+Observe.MAX_SEEDS = 64            -- crops one seeder can sow (FS25 base seeders: up to about 20)
 Observe.JOINT_DRIFT_M = 1.0     -- a joint node this far from its load-time AI offset is not used
 Observe.NULL = setmetatable({}, { __tostring = function() return "null" end })
 
@@ -583,6 +584,20 @@ function Observe.vehicle(env, v)
                and finite(sz.height) and sz.height > 0 and finite(sz.lengthOffset or 0))
         return { length = sz.length, width = sz.width, height = sz.height, length_offset = sz.lengthOffset or 0 }
     end)
+    -- The crops a seeder can sow, in its own order (SowingMachine spec.seeds: fruit
+    -- type indexes; setSeedFruitType picks one of them): "plant wheat" chooses by name.
+    local seeds = try(function()
+        local spec = v.spec_sowingMachine
+        if spec == nil or type(spec.seeds) ~= "table" then return nil end
+        local out = Observe.array()
+        for _, index in ipairs(spec.seeds) do
+            local desc = env.g_fruitTypeManager:getFruitTypeByIndex(index)
+            local name = token(desc and desc.name)
+            if name == nil or #out >= Observe.MAX_SEEDS then return nil end
+            out[#out + 1] = name
+        end
+        return out
+    end)
     local beltedTo = try(function()
         if v.tensionMountObject == nil then return nil end
         local mountId = env.NetworkUtil.getObjectId(v.tensionMountObject)
@@ -602,6 +617,7 @@ function Observe.vehicle(env, v)
         fill_units = Observe.fillUnits(env, v),
         name = nullable(text(storeName)),
         brand = nullable(text(brand)),
+        seeds = nullable(seeds),
         x = x,
         z = z,
         speed_kmh = nullable(speed),
