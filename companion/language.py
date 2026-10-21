@@ -68,7 +68,7 @@ _IMPLEMENT_NOUNS = [(re.compile(p), kind) for p, kind in (
     (r"\btedders?\b", "tedder"),
     (r"\b(?:windrowers?|rakes?|swathers?)\b", "windrower"),
     (r"\bbalers?\b", "baler"),
-    (r"\b(?:trailers?|tippers?|grain carts?|grain trailers?|goosenecks?)\b", "trailer"),
+    (r"\b(?:trailers?|tippers?|grain carts?|grain trailers?|goosenecks?|deckovers?)\b", "trailer"),
     (r"\brollers?\b", "roller"),
     (r"\bweeders?\b", "weeder"),
     (r"\bmulchers?\b", "mulcher"),
@@ -171,6 +171,7 @@ _BUY = re.compile(r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?:buy|purchase|get us|o
 _BUY_ITEM = re.compile(
     r"\s*(?:(?:and|plus|also)\s+)?(?:(?:a|an|the|one|new)\s+)?(?:new\s+)?(?P<size>large|big|biggest|largest)?\s*"
     r"(?:(?P<plow>plows?|ploughs?)|(?P<goose>gooseneck)(?:\s+trailer)?"
+    r"|(?P<deck>(?:[a-z0-9-]*[0-9][a-z0-9-]*\s+)?deckover)(?:\s+trailer)?"
     r"|(?P<name>[a-z0-9][a-z0-9-]{0,20}(?:\s+[a-z0-9][a-z0-9-]{0,20})?)\s+(?:truck|pickup))\b")
 
 
@@ -187,6 +188,8 @@ def buy(words: str) -> dict | None:
             want = {"kind": "plow"}
         elif item["goose"]:
             want = {"kind": "trailer", "name": "gooseneck"}
+        elif item["deck"]:
+            want = {"kind": "trailer", "name": item["deck"]}
         else:
             if re.search(r"\b(?:a|an|the|and|plus)\b", item["name"]):
                 return None
@@ -232,6 +235,7 @@ def field_work(words: str) -> dict | None:
 
 _WITH = re.compile(r"\s+(?:with|using)\s+(?:the|my|our)\s+([a-z0-9][a-z0-9-]{0,20}(?:\s+[a-z0-9][a-z0-9-]{0,20})?)$")
 _GOOSENECK = re.compile(r"\bgoosenecks?\b")
+_DECKOVER = re.compile(r"\bdeckovers?\b")
 
 
 def model_name(words: str) -> str | None:
@@ -284,16 +288,17 @@ class RuleInterpreter:
         model = model_name(words)
         if proposal is not None and proposal.get("command") not in ("fetch_pair", "hitch_pair"):
             model = None                              # a model number only picks among candidates
-        if proposal is None or (towing is None and not _GOOSENECK.search(words) and model is None):
+        named_kind = "gooseneck" if _GOOSENECK.search(words) else "deckover" if _DECKOVER.search(words) else None
+        if proposal is None or (towing is None and named_kind is None and model is None):
             return proposal
         if proposal.get("command") not in ("fetch_pair", "hitch_pair"):
             return None                               # a name only where a pair is chosen
         if towing is not None:
             proposal["tractor_name"] = towing.group(1)
-        if _GOOSENECK.search(words):
-            proposal["implement_name"] = "gooseneck"
-        elif model is not None:
-            proposal["implement_name"] = model         # "the 980 plow": that one, not any plow
+        if model is not None:
+            proposal["implement_name"] = model         # "the 980 plow", "the 1124 deckover": that one
+        elif named_kind is not None:
+            proposal["implement_name"] = named_kind
         return proposal
 
     def _interpret_rest(self, text: str, words: str) -> dict | None:

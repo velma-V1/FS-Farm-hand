@@ -276,9 +276,10 @@ class Coordinator:
         """Each want in turn, one executor purchase each; the first not COMPLETE ends it."""
         states, bought = [], []
         wants = [dict(w) for w in work["wants"]]
-        # A truck bought with a gooseneck trailer gets a gooseneck hitch (live: the GMC's
+        # A truck bought with a gooseneck trailer (a deckover is one) gets a gooseneck hitch (live: the GMC's
         # default is "No Attachments").
-        if any(w["kind"] == "trailer" and "gooseneck" in (w.get("name") or "") for w in wants):
+        if any(w["kind"] == "trailer" and any(k in (w.get("name") or "") for k in ("gooseneck", "deckover"))
+               for w in wants):
             for w in wants:
                 if w["kind"] == "truck":
                     w.setdefault("hitch", "gooseneck")

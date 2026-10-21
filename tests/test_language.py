@@ -57,6 +57,13 @@ class RuleInterpreterTests(unittest.TestCase):
             ("take the seeder off at the barn", None),
         ])
 
+    def test_the_deckover_by_name(self):
+        # The final acceptance request: "Take the GMC, hitch the Deckover, ..."
+        rules = RuleInterpreter()
+        hitch = {"version": 1, "command": "hitch_pair", "implement": "trailer", "tractor_name": "gmc"}
+        self.assertEqual(rules.interpret("hitch the deckover with the gmc"), {**hitch, "implement_name": "deckover"})
+        self.assertEqual(rules.interpret("hitch the 1124 deckover with the gmc"), {**hitch, "implement_name": "1124"})
+
     def test_other_implements_by_their_names(self):
         def hitch(kind):
             return {"version": 1, "command": "hitch_pair", "implement": kind}

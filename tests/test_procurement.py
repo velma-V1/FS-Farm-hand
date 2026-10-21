@@ -27,6 +27,7 @@ CATALOG = (
     item(6, "Series 9", ["TRACTORSL"], 300000, power=340),
     item(7, "MF 5700 S", ["TRACTORSM"], 90000, power=105),
     item(11, "Pickup 2017", ["CARS"], 50000, power=600),
+    item(12, "1124 Deckover Trailer", ["TRAILERS"], 28000, brand="BRANDT"),
 )
 THREE_POINT = (OutputJoint(1, "implement", 0.0, -2.0, True),)
 TRACTORS = (Equipment("t-1", "tractor", "farm-a", (0.0, 0.0), name="Series 9", output_joints=THREE_POINT),
@@ -56,6 +57,12 @@ class ChoiceTests(unittest.TestCase):
                          {"version": 1, "command": "buy", "wants": [
                              {"kind": "plow", "size": "large"}, {"kind": "truck", "name": "gmc"},
                              {"kind": "trailer", "name": "gooseneck"}]})
+        # The final acceptance request's rig (the user's completion plan).
+        self.assertEqual(rules.interpret("buy the gmc truck and the 1124 deckover"),
+                         {"version": 1, "command": "buy", "wants": [
+                             {"kind": "truck", "name": "gmc"}, {"kind": "trailer", "name": "1124 deckover"}]})
+        self.assertEqual(rules.interpret("buy a deckover trailer")["wants"], [{"kind": "trailer", "name": "deckover"}])
+        self.assertEqual(choose_store_item(CATALOG, {"kind": "trailer", "name": "1124 deckover"}, 1e6, None)[0].id, 12)
         self.assertIsNone(rules.interpret("buy a large plow and a cow"))
         self.assertIsNone(rules.interpret("don't buy a plow"))
 
@@ -169,5 +176,10 @@ class HitchOptionTests(unittest.TestCase):
         c = coordination.Coordinator(World([], {}), Scripted(), lambda *a: None, lambda: "farm-a", lambda: "s")
         c.submit({"version": 1, "command": "buy", "wants": [
             {"kind": "truck", "name": "gmc"}, {"kind": "trailer", "name": "gooseneck"}]})
+        c.wait(5)
+        self.assertEqual(sent[0], {"kind": "truck", "name": "gmc", "hitch": "gooseneck"})
+        sent.clear()
+        c.submit({"version": 1, "command": "buy", "wants": [                 # a deckover is a gooseneck too
+            {"kind": "truck", "name": "gmc"}, {"kind": "trailer", "name": "1124 deckover"}]})
         c.wait(5)
         self.assertEqual(sent[0], {"kind": "truck", "name": "gmc", "hitch": "gooseneck"})
