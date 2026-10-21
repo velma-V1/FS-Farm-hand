@@ -44,7 +44,7 @@ def token(text: str) -> str:
 # rest is visible on request (STATUS_WORKING_<step>).
 # Steps that move equipment: STATUS says "driving" only when it is observed moving.
 MOTION_STEPS = frozenset({"TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "PULL_CLEAR", "UNPARK",
-                          "DELIVER", "FIELD_WORK", "APPROACH", "LOAD", "UNLOAD"})
+                          "DELIVER", "FIELD_WORK", "APPROACH", "LOAD", "UNLOAD", "FOLLOW"})
 MILESTONES = frozenset({"FIELD_WORK", "PULL_CLEAR", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "DELIVER",
                         "RAMPS_DOWN", "LOAD", "BELTS", "RAMPS_UP", "UNLOAD"})
 # The executor task and the player-facing notices of each job command.
@@ -58,7 +58,8 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "load_tractor": ("load_tractor", "ACCEPTED_LOAD", "COMPLETE_LOAD"),
         "unload_tractor": ("unload_tractor", "ACCEPTED_UNLOAD", "COMPLETE_UNLOAD"),
         "sequence": ("sequence", "ACCEPTED_SEQUENCE", "COMPLETE_SEQUENCE"),
-        "haul_tractor": ("haul_tractor", "ACCEPTED_HAUL", "COMPLETE_HAUL")}
+        "haul_tractor": ("haul_tractor", "ACCEPTED_HAUL", "COMPLETE_HAUL"),
+        "follow_me": ("follow_me", "ACCEPTED_FOLLOW", "COMPLETE_FOLLOW")}
 # The proposal fields that pass into a job command's intent.
 NAMES = ("tractor_name", "implement_name")
 
@@ -261,7 +262,7 @@ class Coordinator:
                      "area_m2": proposal.get("area_m2"), "over_crop": proposal.get("over_crop", False)}
                     if command == "field_work"
                     else {"wants": proposal["wants"]} if command == "buy" else None)
-            if command in ("fetch_pair", "hitch_pair", "move_pair", "load_tractor", "unload_tractor"):
+            if command in ("fetch_pair", "hitch_pair", "move_pair", "load_tractor", "unload_tractor", "follow_me"):
                 names = {k: proposal[k] for k in NAMES if k in proposal}
                 work = names or None
             elif command == "sequence":

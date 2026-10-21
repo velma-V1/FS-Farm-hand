@@ -593,6 +593,63 @@ function aborts.load(env, task)
     Bridge.Hitch.abort(env, task.session, "STOPPED")
 end
 
+-- ----------------------------------------------------------------- follow
+-- "Follow me", only when the player asks (AGENTS.md): FollowMe's own start, its registered
+-- vehicle function initiateFollowVehicle(leader) (FollowVehicle.lua 556-571: FollowMe's job
+-- MOD_FOLLOW_VEHICLE created, validated and started with GIANTS' aiSystem:startJob), the leader
+-- being the vehicle the player sits in (it carries FollowMe too). Runs while FollowMe says it
+-- follows (getIsFollowVehicleActive); DONE when it ends (the player's FollowMe key or Farmhand's
+-- stop, which ends the AI job as GIANTS' own toggle does). Never unloads or does anything else.
+Bridge.FOLLOW_START_MS = 10000
+Bridge.FOLLOW_TIMEOUT_MS = 7200000
+
+local function playersVehicle(env, except)
+    local vehicles = env.g_currentMission.vehicleSystem and env.g_currentMission.vehicleSystem.vehicles
+        or env.g_currentMission.vehicles
+    for _, v in pairs(vehicles or {}) do
+        if v ~= except and type(v.getIsEntered) == "function" and v:getIsEntered() == true then return v end
+    end
+    return nil
+end
+
+function starters.follow(env, spec)
+    local v = spec.tractor
+    if v.ownerFarmId ~= spec.farmId then return nil, "NOT_OWNED" end
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    if type(v.initiateFollowVehicle) ~= "function" or type(v.getIsFollowVehicleActive) ~= "function"
+            or type(v.getCanStartFollowVehicle) ~= "function" then
+        return nil, "FOLLOWME_UNAVAILABLE"
+    end
+    if v:getIsEntered() == true then return nil, "SEATED_IN_FOLLOWER" end
+    local leader = playersVehicle(env, v)
+    if leader == nil then return nil, "PLAYER_NOT_IN_VEHICLE" end
+    if type(leader.addTrailDrop) ~= "function" then return nil, "LEADER_UNSUPPORTED" end
+    if v:getCanStartFollowVehicle() ~= true then return nil, "FOLLOW_NOT_ALLOWED" end
+    v:initiateFollowVehicle(leader)
+    return { leader = leader }
+end
+
+function steppers.follow(_env, task)
+    local v = task.spec.tractor
+    if task.spec.owned() ~= true then return "FAILED", "RESERVATION_LOST" end
+    local active = v:getIsFollowVehicleActive()
+    if active == true then task.seen = true end
+    if not task.seen then
+        if task.elapsed > Bridge.FOLLOW_START_MS then return "FAILED", "FOLLOW_NOT_STARTED" end
+        return nil
+    end
+    if active == true then
+        if task.elapsed > Bridge.FOLLOW_TIMEOUT_MS then return "FAILED", "TIMEOUT" end
+        return nil
+    end
+    return settle(task, "FOLLOW_ENDED")
+end
+
+function aborts.follow(env, task)
+    local v = task.spec.tractor
+    if v:getIsFollowVehicleActive() == true then Bridge.Hitch.cancelStaging(env, v) end
+end
+
 -- -------------------------------------------------------------- ad_marker
 -- An AutoDrive destination "Field N" made AutoDrive's own way, so a loaded transport can be
 -- delivered there (GIANTS GOTO does not start one, AGENTS.md): ADGraphManager:createMapMarker
@@ -1279,8 +1336,8 @@ function steppers.stop(env, task)
     end
     local ownMotion = Bridge.pendingGoto[v] ~= nil or (target ~= nil
         and ((target.op == "drive" and v.ad.stateModule:isActive() ~= false)
-        or ((target.op == "stage" or target.op == "navigate" or target.op == "fieldwork") and target.seen
-            and v:getIsAIActive() ~= false)))
+        or ((target.op == "stage" or target.op == "navigate" or target.op == "fieldwork" or target.op == "follow")
+            and target.seen and v:getIsAIActive() ~= false)))
     if not ownMotion and stopped(v) then
         Bridge.Hitch.disarm(v)                    -- the job's motion is over: stop watching
         return "DONE", "STOPPED"
@@ -1562,6 +1619,10 @@ Bridge.NOTICES = {
     COMPLETE_MOVE = "Farmhand: arrived",
     ACCEPTED_SEQUENCE = "Farmhand: on it, one step at a time",
     ACCEPTED_HAUL = "Farmhand: taking the tractor there on the trailer",
+    ACCEPTED_FOLLOW = "Farmhand: following you (FollowMe); stop it with FollowMe or Farmhand: stop",
+    COMPLETE_FOLLOW = "Farmhand: stopped following",
+    PLAYER_NOT_IN_VEHICLE = "get into the vehicle it should follow first",
+    FOLLOWME_UNAVAILABLE = "FollowMe is not available for that vehicle",
     PAUSED = "Farmhand: stopped; say continue to pick up where I left off",
     RESUMING = "Farmhand: picking up where I left off",
     NOTHING_TO_RESUME = "Farmhand: there is nothing to continue",
@@ -1622,6 +1683,7 @@ Bridge.STEPS = {
     BELTS = "fastening the belts",
     UNBELT = "releasing the belts",
     UNLOAD = "backing off the trailer",
+    FOLLOW = "following you",
     RAMPS_UP = "raising the ramps",
     FIELD_WORK = "working the field (GIANTS helper)",
     VERIFY = "checking the hitch",

@@ -154,7 +154,7 @@ UNPARK_REFUSALS = frozenset({
 
 CANCELLABLE_STEPS = frozenset({"RESERVE", "FIELD_WORK", "PULL_CLEAR", "UNPARK", "TAILGATE", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
                                "DETACH", "DELIVER", "RAMPS_DOWN", "APPROACH", "LOAD", "BELTS", "UNBELT", "UNLOAD",
-                               "RAMPS_UP"})
+                               "RAMPS_UP", "FOLLOW"})
 
 
 def valid_position(position: Position) -> bool:
@@ -997,6 +997,62 @@ class Executor:
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, ids, tuple(states))
 
+    def _follow(self, command, enter, states) -> Result:
+        """"Follow me" (only when the player asks): FIND the hitched rig named (else the one
+        nearest the player that they do not ride) -> RESERVE -> FOLLOW (FollowMe, until it
+        ends) -> STOP -> RELEASE. It never delivers, unloads or does anything else."""
+        owner, farm_id = command["request_id"], command["farm_id"]
+        ids, reserved, status, reason = (), False, "BLOCKED", "NO_RIG_TO_FOLLOW"
+        try:
+            enter("FIND")
+            player = self.world.player_position(farm_id)
+            items = sorted(self.world.snapshot(), key=lambda i: i.id)
+            observed = {i.id: i for i in items}
+            rigs = []
+            for tractor in items:
+                wagon = observed.get(tractor.attached_to)
+                if (tractor.category == "tractor" and wagon is not None and wagon.attached_to == tractor.id
+                        and not tractor.ridden and named(tractor, command.get("tractor_name"))
+                        and all(usable(x, farm_id) and x.stopped for x in (tractor, wagon))):
+                    distance = math.dist(tractor.position, player) if valid_position(player) else 0.0
+                    rigs.append((distance, tractor.id, tractor, wagon))
+            if not rigs:
+                return Result("BLOCKED", "NO_RIG_TO_FOLLOW", states=tuple(states))
+            _, _, tractor, wagon = min(rigs, key=lambda r: (r[0], r[1]))
+            ids = (tractor.id, wagon.id)
+            enter("RESERVE")
+            if not self.world.reserve(ids, owner):
+                return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
+            reserved = True
+            self.active = ids
+            enter("FOLLOW")
+            self.world.follow(tractor.id, owner)
+            status, reason = "COMPLETE", "FOLLOW_ENDED"
+        except Cancelled:
+            status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
+        except StepUnverified as error:
+            status, reason = "UNVERIFIED", error.code
+        except StepFailed as error:
+            status, reason = "FAILED", error.code
+        except (RuntimeError, ValueError, KeyError) as error:
+            status, reason = "FAILED", getattr(error, "code", None) or type(error).__name__
+        finally:
+            if reserved:
+                try:
+                    enter("STOP")
+                    if not self.world.stop(ids[0], owner):
+                        raise ObservationMismatch("STOP_NOT_CONFIRMED")
+                    if not self._at_rest(ids)[ids[0]].stopped:
+                        raise ObservationMismatch("STOP_NOT_OBSERVED")
+                    enter("RELEASE")
+                    self.world.release(owner)
+                except Exception as error:
+                    log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
+                    status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        self.active = ()
+        log.info("result %s %s states %s", status, reason, ",".join(states))
+        return Result(status, reason, ids, tuple(states))
+
     def _transport_pair(self, ids):
         observed = {i.id: i for i in self.world.snapshot()}
         if any(i not in observed for i in ids):
@@ -1277,6 +1333,8 @@ class Executor:
             return self._buy(command, enter, states)
         if command["task"] in ("load_tractor", "unload_tractor"):
             return self._transport(command, enter, states)
+        if command["task"] == "follow_me":
+            return self._follow(command, enter, states)
         if command["task"] == "save_game":
             try:
                 enter("SAVE")

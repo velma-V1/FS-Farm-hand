@@ -169,6 +169,11 @@ TEST_AREA_M2 = 400        # "a small area of field 7": about a minute of work fo
 # tractor to the forage wagon then take it to the barn" is one fetch).
 _COVERS = {"fetch_pair": {"hitch_pair", "fetch_pair", "move_pair"}, "buy": {"buy"},
            "load_tractor": {"load_tractor"}, "field_work": {"field_work"}}
+# "Follow me" (FollowMe), only ever on these words: "follow me (with the gmc)", "have the gmc
+# follow me", "gmc, follow me".
+_FOLLOW = re.compile(r"(?:please\s+)?(?:(?:have|let|make)\s+(?:the\s+|my\s+)?(?P<a>[a-z0-9 ]{1,40}?)\s+follow\s+me"
+                     r"|follow\s+me(?:\s+with\s+(?:the\s+|my\s+)?(?P<b>[a-z0-9 ]{1,40}?))?"
+                     r"|(?:the\s+|my\s+)?(?P<c>[a-z0-9 ]{1,40}?)\s+follow\s+me)(?:\s+please)?")
 # Continue the kept goal; a new destination for it.
 _RESUME = re.compile(r"(?:please\s+)?(?:continue|resume|carry on|keep going|go on|go ahead|pick up where you left off"
                      r"|finish (?:it|the job))(?:\s+(?:please|the job|with it|now))?")
@@ -374,6 +379,15 @@ class RuleInterpreter:
         words = normalize(text)
         if _RESUME.fullmatch(words):
             return {"version": 1, "command": "resume"}
+        follow = _FOLLOW.fullmatch(_DEUTZ.sub("deutz", words))
+        if follow is not None:
+            proposal = {"version": 1, "command": "follow_me"}
+            name = _vehicle_name(follow.group("a") or follow.group("b") or follow.group("c"))
+            if name and not re.search(r"\b(?:me|us)\b", name):
+                proposal["tractor_name"] = re.sub(r"\s*\b(?:truck|rig|pickup)\b\s*", " ", name).strip() or None
+                if not proposal["tractor_name"]:
+                    del proposal["tractor_name"]
+            return proposal
         instead = _INSTEAD.match(words)
         if instead is not None:
             place = instead.group(1) or instead.group(2)

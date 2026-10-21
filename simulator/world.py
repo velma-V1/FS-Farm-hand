@@ -60,6 +60,20 @@ class MockWorld:
     mock_ad_fields = {}           # mock-only: field N -> where AutoDrive's network passes its edge
     ad_markers_made = ()
 
+    mock_follow_to = None         # mock-only: where following the player ends; None: FollowMe absent
+
+    def follow(self, tractor_id, owner):
+        # Mock-only: the rig (and what is belted on it) ends where the player led it.
+        with self._lock:
+            tractor = self._owned(tractor_id, owner)
+            if self.mock_follow_to is None:
+                raise StepFailed("FOLLOWME_UNAVAILABLE")
+            wagon = self.items.get(tractor.attached_to)
+            self._place(tractor, Pose(*self.mock_follow_to, tractor.heading or 0.0))
+            if wagon is not None:
+                self._move_wagon(wagon, self.mock_follow_to)
+            return "FOLLOW_ENDED"
+
     def ad_marker(self, field):
         # Mock-only: AutoDrive's own marker "Field N" where its network meets field N.
         with self._lock:

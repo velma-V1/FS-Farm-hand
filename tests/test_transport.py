@@ -833,5 +833,43 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual(c.status(), "STATUS_WORKING_BELTS")                   # not a motion step
 
 
+class FollowMeTests(unittest.TestCase):
+    """"Follow me" only on the player's words; it never unloads (requirement 12, C13)."""
+
+    def test_follow_then_continue_unloads_only_where_it_was_led(self):
+        from companion import coordinator as coordination
+        from companion.language import RuleInterpreter
+        world, truck, deck, series9 = haul_world(loaded=True)
+        world.cancel, world.retained = None, (lambda: ())
+        world.mock_follow_to = (895.0, 895.0)                                # led to "Field 3"
+        c = coordination.Coordinator(world, Executor(world), lambda n, s=False: None, lambda: "farm-a", lambda: "s1")
+        rules = RuleInterpreter()
+
+        def run(words):
+            c.submit(rules.interpret(words))
+            for _ in range(300):
+                c.wait(0.1)
+                if not c.busy:
+                    break
+            return c.last
+
+        with unittest.mock.patch.object(coordination.Coordinator, "SETTLE_S", 0.0):
+            self.assertEqual(run("take the deutz to field 3 and unload it").reason, "LOADED_NO_DRIVER")
+            followed = run("have the gmc follow me")
+            self.assertEqual((followed.state, followed.reason), ("COMPLETE", "FOLLOW_ENDED"), followed.states)
+            self.assertEqual(world.items[series9.id].belted_to, deck.id)    # following never unloads
+            self.assertIsNotNone(c.kept)                                     # the haul is still kept
+            done = run("continue")
+        self.assertEqual((done.state, done.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), done.states)
+
+    def test_nothing_follows_without_followme_or_a_rig(self):
+        world, truck, deck, series9 = haul_world()
+        result = Executor(world).execute(dict(intent("f-1"), task="follow_me"))
+        self.assertEqual(result.reason, "NO_RIG_TO_FOLLOW")                 # nothing hitched yet
+        world, *_ = haul_world(hitched=True)
+        result = Executor(world).execute(dict(intent("f-2"), task="follow_me"))
+        self.assertEqual((result.status, result.reason), ("FAILED", "FOLLOWME_UNAVAILABLE"))
+
+
 if __name__ == "__main__":
     unittest.main()

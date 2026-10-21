@@ -475,5 +475,5 @@ never imply live qualification, and one live combination never implies others.
 | C10 | Progress notices and STATUS from observed state only | `test_transport.ProgressTests`, `test_bridge.ServiceTests.test_while_a_job_runs_presses_are_busy_and_status_and_stop_answer_at_once` (STATUS_WAITING_ while nothing moves); failure texts by outcome (could not start / stopped short / unsure) | pending |
 | C11 | Spending limit, preferences, buy/sell permission checked before buying | pending | pending |
 | C12 | Queued and recurring jobs with explicit completion and stop conditions | pending | pending |
-| C13 | FollowMe only on an explicit "follow me" | pending | pending |
+| C13 | FollowMe only on an explicit "follow me" | `test_transport.FollowMeTests`, `test_lua_bridge.FollowTests` (following never unloads; the kept haul unloads on "continue" only where it was led) | pending |
 | C14 | The final acceptance request as one command | `test_transport.SequenceTests` (planning and order) | pending |

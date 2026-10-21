@@ -126,6 +126,7 @@ COMMAND_ARGS = {
     "belts": ("tractor", "direction"),           # a transport's TensionBelts fastened (1) or released (-1)
     "load": ("tractor", "wagon", "direction"),   # the tractor alone onto the trailer's deck (1) or off it (-1)
     "ad_marker": ("field",),                     # an AutoDrive destination "Field N" by field N's edge
+    "follow": ("tractor",),                      # FollowMe: the vehicle follows the one the player drives
     "stop": ("tractor",),
 }
 _ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "x", "z": "z",

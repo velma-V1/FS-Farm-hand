@@ -1484,6 +1484,67 @@ class AutoDriveMarkerTests(unittest.TestCase):
         self.assertEqual(len(env.made), 0)
 
 
+class FollowTests(unittest.TestCase):
+    """follow: FollowMe's registered vehicle functions (initiateFollowVehicle, getIsFollowVehicleActive,
+    getCanStartFollowVehicle; FollowVehicle.lua 38-75, 556-571), the leader the vehicle the player
+    sits in; ended by FollowMe or by GIANTS' stopCurrentAIJob (AIJobVehicle 431). Stubs only."""
+
+    ENV = r"""
+        local env = { calls = {} }
+        local follower = { ownerFarmId = 1, active = false, can = true, entered = false }
+        function follower:getIsEntered() return self.entered end
+        function follower:getIsFollowVehicleActive() return self.active end
+        function follower:getCanStartFollowVehicle() return self.can end
+        function follower:initiateFollowVehicle(leader) env.calls[#env.calls + 1] = "follow"; self.leader = leader; self.active = true end
+        function follower:stopCurrentAIJob() env.calls[#env.calls + 1] = "stopAI"; self.active = false end
+        function follower:getLastSpeed() return 0 end
+        local car = { entered = true }
+        function car:getIsEntered() return self.entered end
+        function car:addTrailDrop() end
+        env.follower, env.car = follower, car
+        env.g_currentMission = { vehicleSystem = { vehicles = { follower, car } } }
+        env.AIMessageSuccessStoppedByUser = { new = function() return {} end }
+        return env
+    """
+
+    def setUp(self):
+        self.lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        self.bridge = self.lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        self.bridge.Hitch = self.lua.execute((ROOT / "mod/FarmhandHitch.lua").read_text())
+        self.start = self.lua.eval("""function(B, env)
+            local task, code = B.start(env, { op = 'follow', tractor = env.follower, farmId = 1,
+                                              owned = function() return true end })
+            if task ~= nil then task.elapsed = 0 end
+            return task, code end""")
+        self.step = self.lua.eval("function(B, env, task, ms) task.elapsed = task.elapsed + ms; return B.step(env, task, ms) end")
+
+    def test_it_follows_the_players_vehicle_until_followme_ends(self):
+        env = self.lua.execute(self.ENV)
+        task, code = self.start(self.bridge, env)
+        self.assertIsNotNone(task, code)
+        self.assertEqual(list(env.calls.values()), ["follow"])
+        self.assertTrue(self.lua.eval("function(a, b) return a == b end")(env.follower.leader, env.car))
+        self.assertIsNone(self.step(self.bridge, env, task, 1000)[0])            # following
+        env.follower.active = False                                          # the player ended it
+        self.assertEqual(tuple(self.step(self.bridge, env, task, 100)), ("DONE", "FOLLOW_ENDED"))
+
+    def test_refusals_and_stop(self):
+        for spoil, reason in (("env.car.entered = false", "PLAYER_NOT_IN_VEHICLE"),
+                              ("env.car.addTrailDrop = nil", "LEADER_UNSUPPORTED"),
+                              ("env.follower.can = false", "FOLLOW_NOT_ALLOWED"),
+                              ("env.follower.initiateFollowVehicle = nil", "FOLLOWME_UNAVAILABLE"),
+                              ("env.follower.entered = true", "SEATED_IN_FOLLOWER")):
+            with self.subTest(reason):
+                env = self.lua.execute(self.ENV)
+                self.lua.execute("local env = ...; " + spoil, env)
+                self.assertEqual(self.start(self.bridge, env)[1], reason)
+                self.assertNotIn("follow", list(env.calls.values()))
+        env = self.lua.execute(self.ENV)
+        task, _ = self.start(self.bridge, env)
+        self.lua.eval("function(B, env, task) B.abort(env, task) end")(self.bridge, env, task)
+        self.assertIn("stopAI", list(env.calls.values()))
+
+
 class SaveTests(unittest.TestCase):
     """The game's own save; complete only once GIANTS' saveSavegame ran to its end."""
 

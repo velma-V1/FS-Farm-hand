@@ -43,7 +43,7 @@ HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
 ALIGN_MAX_DISTANCE_M = 10.0      # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
-DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 55.0, "fold": 30.0, "belts": 15.0, "load": 75.0, "ad_marker": 15.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
+DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 55.0, "fold": 30.0, "belts": 15.0, "load": 75.0, "ad_marker": 15.0, "follow": 7300.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -457,6 +457,12 @@ class FS25World:
         UNLOADED only braked at rest where planned. The companion verifies from a snapshot."""
         self._reserved(tractor_id, owner, trailer_id)
         return self._run("load", tractor=int(tractor_id), wagon=int(trailer_id), direction=int(direction))
+
+    def follow(self, tractor_id: str, owner: str) -> str:
+        """FollowMe: the reserved vehicle follows the one the player drives, until that ends
+        (mod/FarmhandBridge.lua starters.follow). Only when the player asked."""
+        self._reserved(tractor_id, owner)
+        return self._run("follow", tractor=int(tractor_id))
 
     def ad_marker(self, field: int) -> str:
         """An AutoDrive destination "Field N" made AutoDrive's own way (mod/FarmhandBridge.lua
