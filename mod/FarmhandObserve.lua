@@ -535,10 +535,45 @@ function Observe.vehicle(env, v)
         end)
     end
 
+    -- Folding parts (a pickup's tailgate, a deckover's ramps): GIANTS' fold progress 0..1 and
+    -- whether it still moves (Foldable:getFoldAnimTime 962-964; onUpdate 552-611 sets
+    -- foldAnimTime and stops foldMoveDirection at either end). Unreadable is unknown.
+    local fold = try(function()
+        local spec = v.spec_foldable
+        if spec == nil or next(spec.foldingParts or {}) == nil then return nil end
+        local t = v:getFoldAnimTime()
+        assert(finite(t) and t >= 0 and t <= 1 and finite(spec.foldMoveDirection))
+        return { time = t, moving = spec.foldMoveDirection ~= 0 }
+    end)
+    -- Tension belts: all fastened (TensionBelts:updateFastenState 925-935) and the vehicles
+    -- they hold (objectsToJoint; setTensionBeltsActive 875-879 also sets each one's
+    -- tensionMountObject, read below for the vehicle that is held).
+    local belts = try(function()
+        local spec = v.spec_tensionBelts
+        if spec == nil or not spec.hasTensionBelts then return nil end
+        assert(type(spec.areAllBeltsFastened) == "boolean")
+        local held = {}
+        for _, data in pairs(spec.objectsToJoint) do
+            local heldId = data.object ~= nil and env.NetworkUtil.getObjectId(data.object) or nil
+            if integer(heldId) then held[#held + 1] = heldId end
+        end
+        table.sort(held)
+        return { fastened = spec.areAllBeltsFastened, held = Observe.array(held) }
+    end)
+    local beltedTo = try(function()
+        if v.tensionMountObject == nil then return nil end
+        local mountId = env.NetworkUtil.getObjectId(v.tensionMountObject)
+        assert(integer(mountId))
+        return mountId
+    end)
+
     return {
         id = id,
         farm_id = farmId,
         category = nullable(token(category)),
+        fold = nullable(fold),
+        belts = nullable(belts),
+        belted_to = nullable(beltedTo),
         kinds = Observe.kinds(v),
         fill_units = Observe.fillUnits(env, v),
         name = nullable(text(storeName)),

@@ -83,6 +83,14 @@ class Equipment:
     # tractor is preferred, so "bring a forage wagon" uses the one you are riding.
     ridden: bool = False
     attached_to: str | None = None
+    # GIANTS Foldable progress 0..1 (tailgate, ramps) and whether it still moves; TensionBelts
+    # all fastened and the vehicles they hold; the transport this vehicle is belted to.
+    # None: nothing of the kind, or unreadable.
+    fold: float | None = None
+    folding: bool | None = None
+    belts_fastened: bool | None = None
+    belted: tuple[str, ...] = ()
+    belted_to: str | None = None
     stopped: bool = True
     # Hitch geometry; unknown values are None/empty and make a vehicle unhitchable.
     # Joint types are compared per joint pair (companion/hitch.py), as GIANTS does.

@@ -190,6 +190,11 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
                                       _pto_names(j["pto_names"]))
                            for j in vehicle["input_joint_poses"]),
         stopped=speed is not None and abs(speed) < STOPPED_BELOW_KMH,
+        fold=(vehicle.get("fold") or {}).get("time"),
+        folding=(vehicle.get("fold") or {}).get("moving"),
+        belts_fastened=(vehicle.get("belts") or {}).get("fastened"),
+        belted=tuple(str(i) for i in (vehicle.get("belts") or {}).get("held", ())),
+        belted_to=None if vehicle.get("belted_to") is None else str(vehicle["belted_to"]),
     )
 
 

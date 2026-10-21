@@ -81,6 +81,33 @@ class MockWorld:
         self.opened = self.opened + tuple(near)
         return "GATES_OPENED"
 
+    def fold(self, vehicle_id, direction, owner):
+        # Mock-only: the fold time jumps to the asked end.
+        with self._lock:
+            vehicle = self._owned(vehicle_id, owner)
+            if vehicle.fold is None:
+                raise StepFailed("NOT_FOLDABLE")
+            self.items[vehicle_id] = replace(vehicle, fold=1.0 if direction > 0 else 0.0, folding=False)
+            return "FOLDED"
+
+    def belts(self, vehicle_id, fasten, owner):
+        # Mock-only: belts hold every vehicle standing on the transport (mock_on_deck).
+        with self._lock:
+            transport = self._owned(vehicle_id, owner)
+            if transport.belts_fastened is None:
+                raise StepFailed("NO_BELTS")
+            held = tuple(i for i in self.mock_on_deck.get(vehicle_id, ())) if fasten else ()
+            self.items[vehicle_id] = replace(transport, belts_fastened=fasten, belted=held)
+            for other in held:
+                self.items[other] = replace(self.items[other], belted_to=vehicle_id)
+            if not fasten:
+                for other in self.items.values():
+                    if other.belted_to == vehicle_id:
+                        self.items[other.id] = replace(other, belted_to=None)
+            return "BELTS_FASTENED" if fasten else "BELTS_RELEASED"
+
+    mock_on_deck = {}             # mock-only: transport id -> ids standing on its deck
+
     def _start_blocked(self, tractor_id, prefix):
         # Mock-only: GIANTS accepts the target, its agent stays BLOCKED, nothing moves.
         if tractor_id in (self.boxed or {}):

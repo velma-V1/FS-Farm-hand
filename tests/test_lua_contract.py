@@ -135,6 +135,23 @@ function stubs.vehicle(world, t)
     end
     -- GIANTS specialization tables by name (e.g. "spec_plow"), as each class reads them.
     for _, name in ipairs(t.specs or {}) do v[name] = {} end
+    -- Foldable (GDN 674: getFoldAnimTime 962-964, spec.foldMoveDirection, foldingParts).
+    if t.fold then
+        v.spec_foldable = { foldingParts = t.fold.parts or { {} }, foldMoveDirection = t.fold.moving and -1 or 0 }
+        function v:getFoldAnimTime()
+            if t.fold.broken then error("engine error") end
+            return t.fold.time
+        end
+    end
+    -- TensionBelts (GDN 808: hasTensionBelts, areAllBeltsFastened, objectsToJoint) and the
+    -- belted object's tensionMountObject (setTensionBeltsActive 875-879).
+    if t.belts then
+        local joints = {}
+        for i, other in ipairs(t.belts.held or {}) do joints[1000 + i] = { object = world.byId[other] } end
+        v.spec_tensionBelts = { hasTensionBelts = true, areAllBeltsFastened = t.belts.fastened,
+                                objectsToJoint = joints }
+    end
+
     -- FillUnit (GDN 672): getFillUnits L822 and per-index getters; fill types by index.
     if t.fillUnits then
         function v:getFillUnits()
@@ -418,6 +435,33 @@ class LuaContractTests(unittest.TestCase):
             with self.subTest(broken=broken):
                 record, _ = self.vehicle_record('{ id = 45, file = "STUB_WAGONS", fillUnits = {}, %s }' % broken)
                 self.assertEqual(record["fill_units"], [])
+
+    def test_folding_parts_and_belts_are_observed_from_giants_specializations(self):
+        # Tailgates, ramps and belts (the user's completion plan, stage 6): what GIANTS reports.
+        world = self.stubs.world()
+        for spec in ('{ id = 61, file = "STUB_TRACTORS", motorized = true }',
+                     '{ id = 62, file = "STUB_WAGONS", forageWagon = false, fold = { time = 1, moving = false },'
+                     '  belts = { fastened = true, held = { 61 } } }',
+                     '{ id = 63, file = "STUB_WAGONS", forageWagon = false, fold = { time = 0.4, moving = true },'
+                     '  belts = { fastened = false } }',
+                     '{ id = 64, file = "STUB_WAGONS", forageWagon = false, fold = { time = 0, broken = true } }'):
+            self.stubs.vehicle(world, self.lua.eval(spec))
+        self.lua.execute("local w = ...; w.byId[61].tensionMountObject = w.byId[62]", world)
+        frame = self.snapshot(world)
+        records = {r["id"]: r for r in frame["vehicles"]}
+        self.assertEqual(records[62]["fold"], {"time": 1, "moving": False})
+        self.assertEqual(records[62]["belts"], {"fastened": True, "held": [61]})
+        self.assertEqual(records[61]["belted_to"], 62)
+        self.assertEqual(records[63]["fold"], {"time": 0.4, "moving": True})
+        self.assertEqual(records[63]["belts"], {"fastened": False, "held": []})
+        self.assertIsNone(records[64]["fold"])                       # unreadable: unknown, never a state
+        self.assertIsNone(records[61]["fold"])                       # nothing that folds
+        self.assertIsNone(records[64]["belted_to"])
+        items = {i.id: i for i in observation_from_snapshot(frame, CATEGORIES).equipment}
+        self.assertEqual((items["62"].fold, items["62"].folding), (1, False))
+        self.assertEqual((items["62"].belts_fastened, items["62"].belted), (True, ("61",)))
+        self.assertEqual(items["61"].belted_to, "62")
+        self.assertEqual((items["64"].fold, items["64"].belts_fastened, items["64"].belted_to), (None, None, None))
 
     def test_autodrive_scratch_table_on_a_towed_wagon_is_not_an_autodrive_driver(self):
         # Live 2026-10-18: after one attach/detach with an AutoDrive tractor the wagon

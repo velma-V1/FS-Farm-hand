@@ -1040,6 +1040,95 @@ class LuaBridgeTests(unittest.TestCase):
         self.beating(12000)                                         # only the stage's own 120 s bound
         self.assertEqual(self.results(1)[-1], (1, "FAILED", "STAGE_TIMEOUT"))
 
+    # --------------------------------------------------------- fold, belts
+    def transport(self):
+        """Vehicle 12, a deckover with GIANTS Foldable ramps (setFoldDirection 811,
+        getIsFoldAllowed 987-1009, onUpdate 552-611 moving foldAnimTime to the end and
+        stopping foldMoveDirection) and TensionBelts (setAllTensionBeltsActive 912-920,
+        updateFastenState 925-935); stepped 25% per 100 ms frame."""
+        self.adopt()
+        return self.lua.execute(r"""
+            local w = ...
+            local deck = { ownerFarmId = 1, rootNode = "tractorRoot", allowed = true, speed = 0,
+                           spec_foldable = { foldingParts = { {} }, foldMoveDirection = 0, foldAnimTime = 0 },
+                           spec_tensionBelts = { hasTensionBelts = true, areAllBeltsFastened = false, objectsToJoint = {} } }
+            function deck:getLastSpeed() return self.speed end
+            function deck:getFoldAnimTime() return self.spec_foldable.foldAnimTime end
+            function deck:getIsFoldAllowed(direction, onAiTurnOn) return self.allowed end
+            function deck:setFoldDirection(direction)
+                table.insert(w.calls, "setFoldDirection:" .. direction)
+                self.spec_foldable.foldMoveDirection = direction
+            end
+            function deck:setAllTensionBeltsActive(isActive)
+                table.insert(w.calls, "setAllTensionBeltsActive:" .. tostring(isActive))
+                if not self.beltsStuck then self.spec_tensionBelts.areAllBeltsFastened = isActive end
+            end
+            w.deck = deck
+            local getObject = w.env.NetworkUtil.getObject
+            w.env.NetworkUtil.getObject = function(id) if id == 12 then return deck end return getObject(id) end
+            -- GIANTS' Foldable:onUpdate, coarsely: the fold time runs to its end, then stops.
+            local update = w.step
+            w.foldFrame = function()
+                local f = deck.spec_foldable
+                if f.foldMoveDirection ~= 0 and not deck.foldStuck then
+                    f.foldAnimTime = math.max(0, math.min(1, f.foldAnimTime + 0.25 * f.foldMoveDirection))
+                    if f.foldAnimTime == 0 or f.foldAnimTime == 1 then f.foldMoveDirection = 0 end
+                end
+            end
+            return w
+        """, self.w)
+
+    def run_folding(self, ms):
+        for _ in range(ms // 100):
+            self.w.foldFrame()
+            self.W.run(self.w, 100)
+
+    def test_fold_moves_giants_folding_parts_to_the_asked_end_and_waits_for_it(self):
+        w = self.transport()
+        self.send(1, "fold", {"tractor": 12, "direction": 1})
+        self.assertIn("setFoldDirection:1", self.calls())
+        self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])
+        self.run_folding(1000)
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "FOLDED"))
+        self.assertEqual(w.deck.spec_foldable.foldAnimTime, 1)
+        self.send(2, "fold", {"tractor": 12, "direction": -1})
+        self.run_folding(1000)
+        self.assertEqual(self.results(2)[-1], (2, "DONE", "FOLDED"))
+        self.assertEqual(w.deck.spec_foldable.foldAnimTime, 0)
+
+    def test_fold_refusals_and_a_fold_that_never_ends(self):
+        cases = {"FOLD_NOT_ALLOWED": lambda w: setattr(w.deck, "allowed", False),
+                 "NOT_STOPPED": lambda w: setattr(w.deck, "speed", 4.0),
+                 "NOT_FOLDABLE": lambda w: setattr(w.deck, "spec_foldable", None)}
+        for code, spoil in cases.items():
+            with self.subTest(code):
+                self.w = self.W.new()
+                w = self.transport()
+                spoil(w)
+                self.send(1, "fold", {"tractor": 12, "direction": 1})
+                self.assertEqual(self.results(1)[-1], (1, "FAILED", code))
+                self.assertNotIn("setFoldDirection:1", self.calls())
+        self.w = self.W.new()
+        w = self.transport()
+        w.deck.foldStuck = True
+        self.send(1, "fold", {"tractor": 12, "direction": 1})
+        self.beating(21000)
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "FOLD_TIMEOUT"))
+
+    def test_belts_are_fastened_and_released_through_giants_tension_belts(self):
+        w = self.transport()
+        self.send(1, "belts", {"tractor": 12, "direction": 1})
+        self.W.run(self.w, 200)
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "BELTS_FASTENED"))
+        self.assertIn("setAllTensionBeltsActive:true", self.calls())
+        self.send(2, "belts", {"tractor": 12, "direction": -1})
+        self.W.run(self.w, 200)
+        self.assertEqual(self.results(2)[-1], (2, "DONE", "BELTS_RELEASED"))
+        w.deck.beltsStuck = True
+        self.send(3, "belts", {"tractor": 12, "direction": 1})
+        self.W.run(self.w, 6000)
+        self.assertEqual(self.results(3)[-1], (3, "FAILED", "BELTS_NOT_OBSERVED"))
+
     # ---------------------------------------------------------- open_gates
     def doors_world(self):
         """A closed door (GIANTS AnimatedObject via a placeable) at (944.1, 772.0), the

@@ -552,6 +552,76 @@ function aborts.unpark(env, task)
     Bridge.Hitch.abort(env, task.session, "STOPPED")
 end
 
+-- ------------------------------------------------------------------- fold
+-- A reserved vehicle's own folding parts (a pickup's tailgate, a deckover's ramps) to one
+-- end through GIANTS' Foldable, never its animations directly: getIsFoldAllowed 987-1009,
+-- then setFoldDirection 811 (-> setFoldState 817-..., which sends GIANTS' own event).
+-- DONE once getFoldAnimTime (962-964) is at that end and foldMoveDirection is 0
+-- (onUpdate 552-611 stops it there); which end is "down" is the companion's to know.
+Bridge.FOLD_TIMEOUT_MS = 20000
+
+function starters.fold(env, spec)
+    if spec.owned() ~= true or spec.tractor.ownerFarmId ~= spec.farmId then return nil, "RESERVATION_LOST" end
+    local v = spec.tractor
+    local direction = (spec.direction == 1 and 1) or (spec.direction == -1 and -1) or nil
+    if direction == nil then return nil, "INVALID_DIRECTION" end
+    local foldable = v.spec_foldable
+    if foldable == nil or next(foldable.foldingParts or {}) == nil then return nil, "NOT_FOLDABLE" end
+    if not stopped(v) then return nil, "NOT_STOPPED" end
+    if v:getIsFoldAllowed(direction, false) ~= true then return nil, "FOLD_NOT_ALLOWED" end
+    v:setFoldDirection(direction)
+    local okId, id = pcall(function() return env.NetworkUtil.getObjectId(v) end)
+    log("fold %s towards %d from %s", okId and tostring(id) or "?", direction, tostring(v:getFoldAnimTime()))
+    return { target = direction > 0 and 1 or 0 }
+end
+
+function steppers.fold(_env, task)
+    local v = task.spec.tractor
+    if task.spec.owned() ~= true then return "FAILED", "RESERVATION_LOST" end
+    local t = v:getFoldAnimTime()
+    if not finite(t) then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
+    if v.spec_foldable.foldMoveDirection == 0 and math.abs(t - task.target) < 0.001 then return "DONE", "FOLDED" end
+    if task.elapsed > Bridge.FOLD_TIMEOUT_MS then return "FAILED", "FOLD_TIMEOUT" end
+    return nil
+end
+
+function aborts.fold() end          -- GIANTS finishes the fold it started; nothing drives
+
+-- ------------------------------------------------------------------ belts
+-- A reserved transport's tension belts through GIANTS' TensionBelts: setAllTensionBeltsActive
+-- (912-920; each belt's setTensionBeltsActive 851-907 mounts or frees what lies under it and
+-- sets its tensionMountObject). DONE once areAllBeltsFastened (updateFastenState 925-935)
+-- says so; what is held is the companion's to verify from the snapshot.
+Bridge.BELTS_TIMEOUT_MS = 5000
+
+function starters.belts(env, spec)
+    if spec.owned() ~= true or spec.tractor.ownerFarmId ~= spec.farmId then return nil, "RESERVATION_LOST" end
+    local v = spec.tractor
+    local direction = (spec.direction == 1 and 1) or (spec.direction == -1 and -1) or nil
+    if direction == nil then return nil, "INVALID_DIRECTION" end
+    local belts = v.spec_tensionBelts
+    if belts == nil or not belts.hasTensionBelts then return nil, "NO_BELTS" end
+    if not stopped(v) then return nil, "NOT_STOPPED" end
+    v:setAllTensionBeltsActive(direction > 0)
+    return { fasten = direction > 0 }
+end
+
+function steppers.belts(env, task)
+    local belts = task.spec.tractor.spec_tensionBelts
+    if belts.areAllBeltsFastened == task.fasten then
+        local held = {}
+        for _, data in pairs(belts.objectsToJoint) do
+            held[#held + 1] = tostring(data.object and env.NetworkUtil.getObjectId(data.object))
+        end
+        log("belts %s: holding %s", task.fasten and "fastened" or "released", table.concat(held, ","))
+        return "DONE", task.fasten and "BELTS_FASTENED" or "BELTS_RELEASED"
+    end
+    if task.elapsed > Bridge.BELTS_TIMEOUT_MS then return "FAILED", "BELTS_NOT_OBSERVED" end
+    return nil
+end
+
+function aborts.belts() end
+
 -- -------------------------------------------------------------- fieldwork
 -- GIANTS' field-work job, started like GOTO (Hitch.startStaging; AutoDrive
 -- Specialization.lua:1518-1527): AIJobTypeManager registers "FIELDWORK" ->
@@ -1234,7 +1304,8 @@ function Bridge:checkSession()
 end
 
 local ATTRS = { tractor = "tractor", wagon = "wagon", marker = "marker", x = "x", z = "z", yaw = "yaw",
-                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", item = "item", hitch = "hitch" }
+                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", item = "item", hitch = "hitch",
+                direction = "fd" }
 
 function Bridge:pollCommand()
     local env, path = self.env, self.dir .. Bridge.COMMAND_FILE

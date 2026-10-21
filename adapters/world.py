@@ -121,6 +121,17 @@ class World(Protocol):
         clear. Not evidence of the separation: the executor observes it."""
         ...
 
+    def fold(self, vehicle_id: str, direction: int, owner: str) -> str:
+        """One of the reserved units' own folding parts (a pickup's tailgate, a deckover's
+        ramps) moved to one end (+1: fold time 1, -1: 0) by GIANTS' Foldable, where GIANTS
+        allows it. Not evidence: the executor reads the fold time from a fresh snapshot."""
+        ...
+
+    def belts(self, vehicle_id: str, fasten: bool, owner: str) -> str:
+        """The reserved transport's tension belts fastened or released (GIANTS
+        TensionBelts). Not evidence: the executor reads what they hold."""
+        ...
+
     def unpark(self, tractor_id: str, owner: str) -> None:
         """UNPARK: only after GIANTS' agent could not start from where the reserved vehicle
         stands and no closed door explains it, Farmhand's bounded straight extraction
