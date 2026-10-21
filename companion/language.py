@@ -169,6 +169,10 @@ TEST_AREA_M2 = 400        # "a small area of field 7": about a minute of work fo
 # tractor to the forage wagon then take it to the barn" is one fetch).
 _COVERS = {"fetch_pair": {"hitch_pair", "fetch_pair", "move_pair"}, "buy": {"buy"},
            "load_tractor": {"load_tractor"}, "field_work": {"field_work"}}
+# "Take it back", "put the deckover back (where it was)": back to where Farmhand took it from.
+_BACK = re.compile(r"(?:please\s+)?(?:take|put|bring|drive|move|return)\s+(?:it|them|that|this|everything"
+                   r"|(?:the|that|my)\s+(?P<thing>[a-z0-9 ]{1,40}?))\s+back"
+                   r"(?:\s+(?:where|to where)\s+(?:it|they)\s+(?:was|were|came from|belongs?))?")
 # "Follow me" (FollowMe), only ever on these words: "follow me (with the gmc)", "have the gmc
 # follow me", "gmc, follow me".
 _FOLLOW = re.compile(r"(?:please\s+)?(?:(?:have|let|make)\s+(?:the\s+|my\s+)?(?P<a>[a-z0-9 ]{1,40}?)\s+follow\s+me"
@@ -379,6 +383,17 @@ class RuleInterpreter:
         words = normalize(text)
         if _RESUME.fullmatch(words):
             return {"version": 1, "command": "resume"}
+        back = _BACK.fullmatch(_DEUTZ.sub("deutz", words))
+        if back is not None:
+            proposal = {"version": 1, "command": "move_pair", "target": {"type": "origin"}}
+            thing = back.group("thing")
+            if thing and (implement_kind(thing) or _TRAILER_WORDS.search(thing)):
+                name = _trailer_name(thing) if _TRAILER_WORDS.search(thing) else None
+                if name or model_name(thing):
+                    proposal["implement_name"] = model_name(thing) or name
+            elif thing and _vehicle_name(thing):
+                proposal["tractor_name"] = _vehicle_name(thing)
+            return proposal
         follow = _FOLLOW.fullmatch(_DEUTZ.sub("deutz", words))
         if follow is not None:
             proposal = {"version": 1, "command": "follow_me"}

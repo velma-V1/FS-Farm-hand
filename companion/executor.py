@@ -726,7 +726,7 @@ class Executor:
         return (marker or standoff_pose(target, origin, fallback_yaw)), None
 
     def _choose_hitched(self, items, farm_id, requester, target, markers, origins=None, kind=None, name=None,
-                        cargo=None):
+                        cargo=None, implement_name=None):
         """move_pair: the hitched tractor and implement nearest the requester ("this"),
         ties by opaque ID, and its route; decided before reservation. With ``origins``
         (target origin): only an implement this companion took (of ``kind``), routed
@@ -736,7 +736,8 @@ class Executor:
         for tractor in items:
             wagon = observed.get(tractor.attached_to)
             if origins is not None and (wagon is None or wagon.id not in origins
-                                        or (kind is not None and not of_kind(wagon, kind))):
+                                        or (kind is not None and not of_kind(wagon, kind))
+                                        or not named(wagon, implement_name)):
                 continue
             if (wagon is not None and wagon.attached_to == tractor.id and movable(tractor, wagon)
                     and named(tractor, name)       # "move the gmc here": that vehicle's rig only
@@ -1437,7 +1438,7 @@ class Executor:
                                                                self.world.destinations(),
                                                                self._origins if to_origin else None,
                                                                command.get("implement"), command.get("tractor_name"),
-                                                               command.get("cargo_name"))
+                                                               command.get("cargo_name"), command.get("implement_name"))
                 plan = travel = None
                 aims = ()
             elif detaching or working:

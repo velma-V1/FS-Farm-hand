@@ -871,5 +871,44 @@ class FollowMeTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("FAILED", "FOLLOWME_UNAVAILABLE"))
 
 
+class ReferenceTests(unittest.TestCase):
+    """"Take it back", "take the deckover back": where Farmhand took it from (requirement 6, C9)."""
+
+    def test_take_it_back_returns_the_rig_to_where_farmhand_took_it(self):
+        from companion import coordinator as coordination
+        from companion.language import RuleInterpreter
+        world, truck, deck, series9 = haul_world()
+        world.cancel, world.retained = None, (lambda: ())
+        c = coordination.Coordinator(world, Executor(world), lambda n, s=False: None, lambda: "farm-a", lambda: "s1")
+        rules = RuleInterpreter()
+
+        def run(words):
+            c.submit(rules.interpret(words))
+            for _ in range(300):
+                c.wait(0.1)
+                if not c.busy:
+                    break
+            return c.last
+
+        with unittest.mock.patch.object(coordination.Coordinator, "SETTLE_S", 0.0):
+            self.assertEqual(run("take the deckover back").reason, "NO_ORIGIN_KNOWN")       # never taken
+            self.assertEqual(run("hitch the deckover with the gmc").state, "COMPLETE")
+            taken = world.items[truck.id].ai_root
+            self.assertEqual(run("move this here").state, "COMPLETE")                     # the player at (100, 200)
+            self.assertGreater(math.dist(world.items[truck.id].position, (taken.x, taken.z)), 50)
+            back = run("take the deckover back")
+        self.assertEqual(back.state, "COMPLETE", back.states)
+        root = world.items[truck.id].ai_root
+        self.assertLess(math.dist((root.x, root.z), (taken.x, taken.z)), 3.5)
+
+    def test_the_words(self):
+        from companion.language import RuleInterpreter
+        rules = RuleInterpreter()
+        self.assertEqual(rules.interpret("take it back"), {"version": 1, "command": "move_pair", "target": {"type": "origin"}})
+        self.assertEqual(rules.interpret("put the deckover back where it was")["implement_name"], "deckover")
+        self.assertEqual(rules.interpret("take the gmc back")["tractor_name"], "gmc")
+        self.assertNotEqual(rules.interpret("take the deckover back")["command"], "hitch_pair")
+
+
 if __name__ == "__main__":
     unittest.main()
