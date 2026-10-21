@@ -168,7 +168,7 @@ TEST_AREA_M2 = 400        # "a small area of field 7": about a minute of work fo
 # What one command already does: a sequence of only these is that command ("hitch the
 # tractor to the forage wagon then take it to the barn" is one fetch).
 _COVERS = {"fetch_pair": {"hitch_pair", "fetch_pair", "move_pair"}, "buy": {"buy"},
-           "load_tractor": {"load_tractor"}, "field_work": {"field_work"}}
+           "load_tractor": {"load_tractor"}, "field_work": {"field_work", "sell"}}
 # "Take it back", "put the deckover back (where it was)": back to where Farmhand took it from.
 _BACK = re.compile(r"(?:please\s+)?(?:take|put|bring|drive|move|return)\s+(?:it|them|that|this|everything"
                    r"|(?:the|that|my)\s+(?P<thing>[a-z0-9 ]{1,40}?))\s+back(?:\s+(?:up|over))?"
@@ -189,7 +189,7 @@ _TRACTOR_TO = re.compile(r"^(?:please\s+)?(?:take|bring|haul|deliver|transport|m
 # "... and unload it (there)": the end of a haul goal.
 _UNLOAD_TAIL = re.compile(r"\s+(?:and\s+)?(?:then\s+)?unload\s+(?:it|him|that|the tractor)(?:\s+there)?$")
 # Clause breaks of a sequence: commas, "then", "and then", ", and", semicolons.
-_VERB = r"(?:load|unload|buy|purchase|deliver|bring|take|haul|hitch|unhitch|detach|move|drive|park|follow|save)\b"
+_VERB = r"(?:load|unload|buy|purchase|deliver|bring|take|haul|hitch|unhitch|detach|move|drive|park|follow|save|use|sell)\b"
 _CLAUSE_BREAK = re.compile(r"\s*,\s*(?:and\s+)?(?:then\s+)?|\s+(?:and\s+)?then\s+|\s*;\s*"
                            # "... and load the tractor": "and" before a command verb
                            r"|\s+and\s+(?=" + _VERB + r")"
@@ -294,13 +294,20 @@ _BUY = re.compile(r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?:buy|purchase|get us|o
                   r"(?:\s+from\s+the\s+(?:store|shop|dealer))?$")
 _BUY_ITEM = re.compile(
     r"\s*(?:(?:and|plus|also)\s+)?(?:(?:a|an|the|one|new)\s+)?(?:new\s+)?(?P<size>large|big|biggest|largest)?\s*"
-    r"(?:(?P<plow>plows?|ploughs?)|(?P<pname>[a-z0-9]{1,20}(?:\s+[a-z0-9]{1,20}){0,4}?)\s+(?:plows?|ploughs?)|(?P<goose>gooseneck)(?:\s+trailer)?"
+    # A tractor by its maker ("a deutz series 9", "a john deere 8r"): the store's brand words,
+    # never followed by another kind's noun ("a john deere plow" is a plow).
+    r"(?:(?P<bname>(?:deutz|fendt|john\s+deere|case(?:\s+ih)?|new\s+holland|massey(?:\s+ferguson)?|claas|valtra"
+    r"|kubota|mccormick|lindner|steyr|landini|zetor|jcb|same|lamborghini|antonio\s+carraro|rigitrac)"
+    r"(?:\s+(?!(?:plows?|ploughs?|gooseneck|deckover|trailer|truck|pickup|tractor|with|and|plus)\b)[a-z0-9]{1,20}){0,3}?)"
+    r"(?=\s+(?:and|plus|also)\b|$)"
+    r"|(?P<plow>plows?|ploughs?)|(?P<pname>[a-z0-9]{1,20}(?:\s+[a-z0-9]{1,20}){0,4}?)\s+(?:plows?|ploughs?)|(?P<goose>gooseneck)(?:\s+trailer)?"
     r"|(?P<deck>(?:[a-z0-9-]*[0-9][a-z0-9-]*\s+)?deckover)(?:\s+trailer)?"
     # A named tractor, with the engine option ("... with a boss hoss engine setup") or the word.
     r"|(?P<tractor>[a-z0-9]{1,20}(?:\s+[a-z0-9]{1,20}){0,3}?)(?:\s+tractor)?\s+with\s+(?:a|an|the)\s+"
     r"(?P<engine>[a-z0-9]{1,20}(?:\s+[a-z0-9]{1,20}){0,2}?)\s+(?:engine|motor)"
     r"(?:\s+(?:setup|set\s+up|option|configuration|package))?"
     r"|(?P<tname>[a-z0-9]{1,20}(?:\s+[a-z0-9]{1,20}){0,3}?)\s+tractor"
+
     r"|(?P<name>[a-z0-9][a-z0-9-]{0,20}(?:\s+[a-z0-9][a-z0-9-]{0,20})?)\s+(?:truck|pickup))\b")
 # GIANTS spells the brand as one word (DEUTZFAHR): the player's "deutz-fahr" (and its
 # slips, live "Deutz-Farhr") is matched by "deutz".
@@ -339,8 +346,8 @@ def buy(words: str) -> dict | None:
             want = {"kind": "trailer", "name": "gooseneck"}
         elif item["deck"]:
             want = {"kind": "trailer", "name": item["deck"]}
-        elif item["tractor"] or item["tname"]:
-            name = item["tractor"] or item["tname"]
+        elif item["tractor"] or item["tname"] or item["bname"]:
+            name = item["tractor"] or item["tname"] or item["bname"]
             if re.search(r"\b(?:a|an|the|and|plus|with)\b", name):
                 return None
             want = {"kind": "tractor", "name": name}
@@ -466,6 +473,42 @@ def sell(words: str) -> dict | None:
     return {"version": 1, "command": "sell"}
 
 
+# "hitch them together", "hook them up": the tractor and implement just bought (the
+# sequence's context names them); "hitch the plow to the deutz": that implement to that tractor.
+_TOGETHER = re.compile(r"^(?:please\s+)?(?:hitch|hook|couple|attach|connect)\s+(?:them|those|these|both)"
+                       r"(?:\s+(?:together|up))?(?:\s+please)?$")
+_HITCH_TO = re.compile(r"^(?:please\s+)?(?:hitch|hook|couple|attach|connect)\s+(?:up\s+)?(?:the|my|our)\s+"
+                       r"(?P<a>[a-z0-9-]+(?:\s+[a-z0-9-]+){0,3}?)\s+(?:to|on|onto|behind)\s+(?:the|my|our)\s+"
+                       r"(?P<b>[a-z0-9-]+(?:\s+[a-z0-9-]+){0,3}?)(?:\s+please)?$")
+# A vehicle as the player names one: its maker, or "tractor" / "truck" (never a place).
+_VEHICLE_WORDS = re.compile(r"\b(?:tractor|truck|pickup|deutz|fendt|john\s+deere|case|new\s+holland|massey|claas"
+                            r"|valtra|kubota|mccormick|lindner|steyr|landini|zetor|jcb|lamborghini|gmc|ram|ford"
+                            r"|chevrolet|dodge)\b")
+# "use the gmc to take them to the farm": the rest of the sentence, done with that vehicle.
+_USE = re.compile(r"^(?:please\s+)?(?:and\s+)?use\s+(?:the|my|our)\s+(?P<name>[a-z0-9][a-z0-9-]{0,20}"
+                  r"(?:\s+[a-z0-9][a-z0-9-]{0,20})?)\s+to\s+(?P<rest>.+)$")
+
+
+def hitch_named(words: str) -> dict | None:
+    if _TOGETHER.match(words):
+        return {"version": 1, "command": "hitch_pair", "together": True}
+    match = _HITCH_TO.match(_DEUTZ.sub("deutz", words))
+    if match is None:
+        return None
+    for implement, tractor in ((match["a"], match["b"]), (match["b"], match["a"])):
+        kind = implement_kind(implement)
+        if kind and not implement_kind(tractor) and not _TRAILER_WORDS.search(tractor) \
+                and _VEHICLE_WORDS.search(tractor) and not re.search(r"\b(?:and|then|it|them)\b", implement):
+            proposal = {"version": 1, "command": "hitch_pair", "implement": kind,
+                        "tractor_name": re.sub(r"\s*\btractor\b\s*", " ", tractor).strip() or None}
+            if not proposal["tractor_name"]:
+                del proposal["tractor_name"]
+            if model_name(implement):
+                proposal["implement_name"] = model_name(implement)
+            return proposal
+    return None
+
+
 def plant(words: str) -> dict | None:
     """What to plant: cultivate (skipped where the ground is ready) then sow the crop, or
     the preparation the player named first ("plow and plant canola on field 4")."""
@@ -522,6 +565,15 @@ class RuleInterpreter:
     def _clause(self, text: str) -> dict | None:
         """One command: the goal and reference rules first, then the plain rules."""
         words = normalize(text)
+        use = _USE.match(words)
+        if use is not None and not implement_kind(use["name"]):
+            rest = self._clause(use["rest"])
+            if rest is None or rest.get("command") not in ("move_pair", "haul_tractor", "fetch_pair", "hitch_pair",
+                                                            "follow_me", "sell"):
+                return None
+            if rest["command"] == "haul_tractor":
+                return None                       # its vehicle is the tractor carried, not the one used
+            return {**rest, "tractor_name": use["name"]}
         if _RESUME.fullmatch(words):
             return {"version": 1, "command": "resume"}
         back = _BACK.fullmatch(_DEUTZ.sub("deutz", words))
@@ -642,7 +694,7 @@ class RuleInterpreter:
             return {"version": 1, "command": "move_pair"}
         if re.fullmatch(r"(?:please\s+)?save(?:\s+the)?(?:\s+(?:game|farm|progress))?(?:\s+now)?", words):
             return {"version": 1, "command": "save_game"}
-        work = field_work(words) or plant(words) or sell(words) or buy(words) or transport(words)
+        work = field_work(words) or plant(words) or sell(words) or hitch_named(words) or buy(words) or transport(words)
         if work is not None:
             return work
         # "... with the gmc": the towing vehicle by its name.

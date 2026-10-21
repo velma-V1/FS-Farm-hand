@@ -100,6 +100,22 @@ def owned_like(items: tuple[Equipment, ...], farm_id: str, wants) -> int:
 # so a reload's new IDs do not matter), the rig carrying it, and what was just bought.
 def with_context(step: dict, context: dict) -> dict:
     step = dict(step)
+    if step.get("together"):
+        # "hitch them together": the tractor and the implement just bought.
+        bought = context.get("bought", {})
+        implement = next((k for k in bought if k not in ("tractor", "truck", "trailer")), None)
+        if "tractor" in bought and implement:
+            step.pop("together")
+            step["implement"] = implement
+            if bought["tractor"]:
+                step["tractor_name"] = bought["tractor"]
+            if bought[implement]:
+                step["implement_name"] = bought[implement]
+    if step["command"] == "load_tractor" and not step.get("carry") and context.get("hitched"):
+        # "load them": the tractor with the implement hitched to it in this sequence.
+        step["carry"] = context["hitched"]["kind"]
+        if context["hitched"].get("name"):
+            step["carry_name"] = context["hitched"]["name"]
     tractor = context.get("tractor")
     if tractor and step["command"] in ("haul_tractor", "load_tractor", "unload_tractor") and not step.get("tractor_name"):
         step["tractor_name"] = tractor
@@ -127,8 +143,12 @@ def remember(context: dict, step: dict, result: Result, items) -> None:
         context["loaded"] = step["command"] == "load_tractor"
     elif step["command"] == "buy":
         for want in step["wants"]:
-            if want.get("name"):
-                context.setdefault("bought", {})[want["kind"]] = _words(want["name"])
+            context.setdefault("bought", {})[want["kind"]] = _words(want["name"]) if want.get("name") else ""
+    elif step["command"] == "hitch_pair" and step.get("implement") and len(result.equipment_ids) == 2:
+        tractor = observed.get(result.equipment_ids[0])
+        if tractor is not None and _words(tractor.name):
+            context["tractor"] = _words(tractor.name)
+        context["hitched"] = {"kind": step["implement"], "name": step.get("implement_name")}
 
 
 def _carry_kind(words: str) -> str | None:
@@ -418,6 +438,8 @@ class Coordinator:
             self.notify(token(f"UNSUPPORTED_{proposal['reason'].upper()}"), spoken)
         elif command == "resume":
             return self.resume(spoken)
+        elif proposal.get("together"):                 # "hitch them together" alone: which ones?
+            self.notify("NOTHING_TO_HITCH_TOGETHER", spoken)
         elif command == "retarget":
             return self.retarget(proposal["target"], spoken)
         else:
@@ -789,6 +811,8 @@ class Coordinator:
                 self._save_goal()
             sub = Job(number=job.number, owner=f"{job.owner}-s{n}", spoken=job.spoken)
             step = with_context(step, work.setdefault("context", {}))
+            if step.get("together"):
+                return Result("BLOCKED", "NOTHING_TO_HITCH_TOGETHER", (), tuple(states))
             if command == "haul_tractor":
                 result = self._haul(sub, cancel, entered, {"tractor_name": step.get("tractor_name"),
                                                            "target": step.get("target", "here")})

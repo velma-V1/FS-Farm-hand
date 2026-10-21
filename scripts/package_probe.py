@@ -222,7 +222,9 @@ WHAT YOU CAN SAY (examples; plain words, one job or several in one sentence)
                "buy a lizard titan vineyard plow with the 25m unrealistic width and the 25 mph speed"
   Transport    "load the deutz on the deckover", "load the tractor and plow on the gooseneck",
                "unload it", "take the deutz to field 3 and unload it"
-  Several      "take the gmc, hitch the deckover, load the tractor, deliver it to field 3, and unload it"
+  Several      "take the gmc, hitch the deckover, load the tractor, deliver it to field 3, and unload it",
+               "buy a deutz series 9 and a plow, hitch them together, load them on the gooseneck,
+               and use the gmc to take them to the farm"
   Control      "what are you doing?", "stop", "continue", "take it to field 2 instead",
                "follow me" (sit in the vehicle it should follow), "save the game"
 

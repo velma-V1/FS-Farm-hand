@@ -1010,3 +1010,55 @@ class WholeRequestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BuyHitchLoadHaulTests(unittest.TestCase):
+    """The user (2026-10-21): "buy y and z and hitch them together and load them on the
+    trailer use the gmc to take them to the farm/field/...": one sequence, "them" the
+    things just bought, the load carrying the implement hitched in it, the truck named."""
+
+    WORDS = ("buy a deutz series 9 and a plow and hitch them together and load them on the gooseneck "
+             "and use the gmc to take them to the farm")
+
+    def test_the_words_are_the_steps_in_order(self):
+        from companion.language import RuleInterpreter
+        self.assertEqual(RuleInterpreter().interpret(self.WORDS), {"version": 1, "command": "sequence", "steps": [
+            {"version": 1, "command": "buy", "wants": [{"kind": "tractor", "name": "deutz series 9"}, {"kind": "plow"}]},
+            {"version": 1, "command": "hitch_pair", "together": True},
+            {"version": 1, "command": "load_tractor", "implement_name": "gooseneck"},
+            {"version": 1, "command": "move_pair", "target": {"type": "place", "name": "farm"}, "tractor_name": "gmc"}]})
+
+    def test_them_is_what_was_just_bought_and_then_what_was_hitched(self):
+        from companion.coordinator import remember, with_context
+        from companion.language import RuleInterpreter
+        from protocol.model import Result
+        steps = RuleInterpreter().interpret(self.WORDS)["steps"]
+        context = {}
+        remember(context, steps[0], Result("COMPLETE", "BOUGHT", (), ()), ())
+        hitch = with_context(steps[1], context)
+        self.assertEqual({k: hitch.get(k) for k in ("together", "implement", "tractor_name")},
+                         {"together": None, "implement": "plow", "tractor_name": "deutz series 9"})
+        tractor = Equipment("t-9", "tractor", "farm-a", (0.0, 0.0), name="Series 9 2019", brand="DEUTZFAHR")
+        remember(context, hitch, Result("COMPLETE", "ATTACH_OBSERVED", ("t-9", "p-1"), ()), (tractor,))
+        load = with_context(steps[2], context)
+        self.assertEqual((load["carry"], load["tractor_name"], load["implement_name"]), ("plow", "series 9 2019", "gooseneck"))
+        context["loaded"] = True
+        self.assertEqual(with_context(steps[3], context)["tractor_name"], "gmc")      # the truck, not the cargo
+
+    def test_hitch_them_together_with_nothing_bought_asks_which(self):
+        from companion import coordinator as coordination
+        notices = []
+        c = coordination.Coordinator(MockWorld([], {"farm-a": (0.0, 0.0)}), None, lambda n, s=False: notices.append(n),
+                                     lambda: "farm-a", lambda: "s1")
+        self.assertIsNone(c.submit({"version": 1, "command": "hitch_pair", "together": True}))
+        self.assertEqual(notices, ["NOTHING_TO_HITCH_TOGETHER"])
+
+    def test_hitch_one_to_the_other_by_name_and_a_tractor_by_its_brand(self):
+        from companion.language import RuleInterpreter
+        r = RuleInterpreter()
+        for words in ("hitch the plow to the deutz", "hitch the deutz to the plow"):
+            self.assertEqual(r.interpret(words), {"version": 1, "command": "hitch_pair", "implement": "plow",
+                                                  "tractor_name": "deutz"})
+        self.assertEqual(r.interpret("buy a fendt 942 and the 1124 deckover")["wants"],
+                         [{"kind": "tractor", "name": "fendt 942"}, {"kind": "trailer", "name": "1124 deckover"}])
+        self.assertEqual(r.interpret("buy a john deere plow")["wants"], [{"kind": "plow", "name": "john deere"}])
