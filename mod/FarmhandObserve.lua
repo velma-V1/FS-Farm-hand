@@ -948,30 +948,37 @@ local function specNumber(v, key)
 end
 
 -- Every option a buyer chooses from, in one fixed order the companion's choice refers to by
--- position (1-based): each configuration type with more than one choice (StoreManager
--- item.configurations, ConfigurationUtil items with .name), types by name, choices in
--- GIANTS' order; then the configuration sets (item.configurationSets, each .name and the
--- configurations it selects). Live: the Titan Vineyard Plow's "25M Unrealistic" is a set,
+-- position (1-based): the configuration sets (item.configurationSets, each .name and the
+-- configurations it selects), then each configuration type with more than one choice
+-- (StoreManager item.configurations, ConfigurationUtil items with .name), types by name with
+-- colours last, choices in GIANTS' order. Live: the Titan Vineyard Plow's "25M Unrealistic" is a set,
 -- its "25MPH / 41KPH" a design16 choice.
-Observe.MAX_OPTIONS = 48
+Observe.MAX_OPTIONS = 96
 function Observe.itemOptions(item)
     local out = {}
     local configurations = type(item.configurations) == "table" and item.configurations or {}
-    local types = {}
-    for name, choices in pairs(configurations) do
-        if type(name) == "string" and type(choices) == "table" and #choices > 1 then types[#types + 1] = name end
-    end
-    table.sort(types)
-    for _, name in ipairs(types) do
-        for i, choice in ipairs(configurations[name]) do
-            if #out >= Observe.MAX_OPTIONS then return out end
-            out[#out + 1] = { kind = "config", type = name, index = i, name = type(choice) == "table" and choice.name or nil }
-        end
-    end
+    -- Sets first, then the configuration types, colours last (live 2026-10-21: the Titan
+    -- Vineyard Plow's colour lists filled the cap before its speed option and its
+    -- "25M Unrealistic" set were listed).
     for i, set in ipairs(type(item.configurationSets) == "table" and item.configurationSets or {}) do
         if #out >= Observe.MAX_OPTIONS then return out end
         if type(set) == "table" and type(set.configurations) == "table" then
             out[#out + 1] = { kind = "set", index = i, name = set.name, configurations = set.configurations }
+        end
+    end
+    local types = {}
+    for name, choices in pairs(configurations) do
+        if type(name) == "string" and type(choices) == "table" and #choices > 1 then types[#types + 1] = name end
+    end
+    local function colour(name) return name:lower():find("colo") ~= nil end
+    table.sort(types, function(a, b)
+        if colour(a) ~= colour(b) then return not colour(a) end
+        return a < b
+    end)
+    for _, name in ipairs(types) do
+        for i, choice in ipairs(configurations[name]) do
+            if #out >= Observe.MAX_OPTIONS then return out end
+            out[#out + 1] = { kind = "config", type = name, index = i, name = type(choice) == "table" and choice.name or nil }
         end
     end
     return out

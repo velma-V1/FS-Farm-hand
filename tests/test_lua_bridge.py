@@ -1500,8 +1500,9 @@ class BuyTests(unittest.TestCase):
         self.assertEqual((env.bought[1].configs.motor, env.bought[1].configs.attacherJoint), (1, None))
 
     def test_other_options_by_their_place_in_the_catalog_order(self):
-        # Observe.itemOptions: configuration types by name (attacherJoint, then motor), each
-        # choice in order, then the sets; a set selects its configurations.
+        # Observe.itemOptions: the sets first, then configuration types by name (attacherJoint,
+        # then motor), colours last (live: the plow's colours filled the cap), each choice in
+        # order; a set selects its configurations.
         lua = self.lua
         observe = lua.execute((ROOT / "mod/FarmhandObserve.lua").read_text())
         self.bridge.Observe = observe
@@ -1509,17 +1510,18 @@ class BuyTests(unittest.TestCase):
         lua.execute("""local env = ...
             local item = env.g_storeManager:getItems()[21]
             item.configurationSets = { { name = "Default", configurations = { wheel = 1 } },
-                                       { name = "25M Unrealistic", configurations = { design7 = 5, wheel = 3 } } }""", env)
+                                       { name = "25M Unrealistic", configurations = { design7 = 5, wheel = 3 } } }
+            item.configurations.baseColor = { { name = "Claas Yellow" }, { name = "Kubota Orange" } }""", env)
         options = [dict(o) for o in observe.itemOptions(env.g_storeManager.getItems(env.g_storeManager)[21]).values()]
         names = [o["name"] for o in options]
-        self.assertEqual(names[:2], ["Standard", "Hitch"])                           # attacherJoint first
-        self.assertEqual(names[-1], "25M Unrealistic")
+        self.assertEqual(names[:4], ["Default", "25M Unrealistic", "Standard", "Hitch"])
+        self.assertEqual(names[-2:], ["Claas Yellow", "Kubota Orange"])
         start = lua.eval("""function(B, env, o1, o2)
             local spec = { op = 'buy', item = 21, hitch = 0, engine = 0, opt1 = o1, opt2 = o2, farmId = 1,
                            owned = function() return true end }
             local task, code = B.start(env, spec)
             return task, code end""")
-        task, code = start(self.bridge, env, len(names), 2)                          # the set, and "Hitch"
+        task, code = start(self.bridge, env, 2, 4)                                   # the set, and "Hitch"
         self.assertIsNotNone(task, code)
         configs = env.bought[1].configs
         self.assertEqual((configs.design7, configs.wheel, configs.attacherJoint), (5, 3, 2))
