@@ -76,6 +76,24 @@ table.insert(vehicles, truck)
 table.insert(vehicles, trailer)
 """
 
+# A plow on the tractor's three-point joint (GIANTS AttacherJoints.JOINTTYPE_IMPLEMENT), lifted,
+# folded (Foldable getIsUnfolded false); o.joint, o.lowered, o.unfolded spoil it.
+MOUNTED = r"""
+local w, o = ...
+w.env.AttacherJoints = { JOINTTYPE_IMPLEMENT = 3, JOINTTYPE_TRAILER = 5 }
+w.attached[1].jointDescIndex = 1
+function w.tractor:getAttacherJointByJointDescIndex(i)
+    if i == 1 then return { jointType = o.joint or 3 } end
+end
+local plow = w.trailer
+plow.lowered, plow.unfolded = o.lowered or false, o.unfolded or false
+function plow:getIsLowered() return self.lowered end
+plow.spec_foldable = { foldingParts = { {} } }
+function plow:getIsUnfolded() return self.unfolded end
+"""
+
+PLOW = dict(back=3.6, width=1.7, length=2.4, height=1.35)
+
 RUN = r"""
 local Hitch = ...
 return function(w, s, maxSteps, hook)
@@ -100,10 +118,14 @@ class LuaLoadTests(unittest.TestCase):
             if self.runtime is lua54 else self.lua.eval("function(src, H, W, w, o) return loadstring(src)(H, W, w, o) end")
         self.runner = self.lua.execute(RUN, self.hitch)
 
-    def world(self, size=None, **opts):
+    def world(self, size=None, plow=None, **opts):
         o = {"size": self.lua.table(**size)} if size else {}
+        if plow:
+            o["trailer"] = self.lua.table(**plow)       # the stub's towed unit stands in for a mounted plow
         w = self.W.new(self.lua.table(**o))
         self.transport(TRANSPORT, self.hitch, self.W, w, self.lua.table(**opts))
+        if plow:
+            self.lua.execute(MOUNTED, w, self.lua.table(**{k: v for k, v in plow.items() if k in ("joint", "lowered", "unfolded")}))
         return w
 
     def start(self, w, direction=1, **overrides):
@@ -253,6 +275,42 @@ class LuaLoadTests(unittest.TestCase):
         self.assertEqual(code, "TIMEOUT")
         self.assertAlmostEqual(steps * 50, 3000, delta=100)
         self.assert_ended_braked_and_restored(w)
+
+    # -------------------------------------------- a mounted implement along (2026-10-21)
+    def test_a_lifted_folded_mounted_plow_comes_along_and_the_rig_stops_forward(self):
+        w = self.world(plow=PLOW)
+        x0, z0 = w.steer.x, w.steer.z
+        session, why, refused = self.start(w)
+        self.assertIsNotNone(session, self.hitch.describeLoad(refused) + " " + str(why))
+        # The rig's front (2.6 m ahead of the node, at -6.5 of the trailer frame) to the belt
+        # area's front (3) less 0.3 m: 9.2 m.
+        self.assertAlmostEqual(session.travelM, 9.2, places=6)
+        code, _ = self.drive(w, session)
+        self.assertEqual(code, "LOADED", self.hitch.describeLoad(session))
+        along, _ = self.along(w, x0, z0)
+        self.assertGreaterEqual(along, 9.2)
+        self.assert_ended_braked_and_restored(w)
+
+    def test_a_mounted_implement_comes_along_only_lifted_folded_on_three_points_and_fitting(self):
+        for plow, reason in ((dict(PLOW, lowered=True), "LOAD_IMPLEMENT_LOWERED"),
+                             (dict(PLOW, unfolded=True), "LOAD_IMPLEMENT_UNFOLDED"),
+                             (dict(PLOW, joint=5), "LOAD_IMPLEMENT_NOT_MOUNTED"),
+                             (dict(PLOW, back=4.2), "LOAD_DOES_NOT_FIT")):        # its rear off the deck
+            with self.subTest(reason=reason):
+                self.assert_refused(self.world(plow=plow), reason)
+
+    def test_the_rig_moves_together_or_stops(self):
+        w = self.world(plow=PLOW)
+        session, _, _ = self.start(w)
+        code, _ = self.drive(w, session, hook=lambda i: i == 40 and setattr(w.trailer, "lowered", True))
+        self.assertEqual(code, "IMPLEMENT_CHANGED")
+        self.assert_ended_braked_and_restored(w)
+
+    def test_unload_backs_the_whole_rig_off(self):
+        w = self.world(plow=PLOW, ahead=0.0)          # on the deck: tractor [-2.6, 2.6], plow [-4.8, -2.4]
+        session, why, refused = self.start(w, direction=-1)
+        self.assertIsNotNone(session, self.hitch.describeLoad(refused) + " " + str(why))
+        self.assertEqual(self.drive(w, session)[0], "UNLOADED")
 
     # ---------------------------------------------------------------- UNLOAD
     def test_unload_reverses_straight_off_the_ramps(self):

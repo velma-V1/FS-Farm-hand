@@ -150,7 +150,9 @@ class CommandLink:
             elif event == "catalog":
                 self.catalog = tuple(StoreItem(i["id"], i["name"], i["brand"], tuple(i["categories"]), i["price"],
                                                i["mod"], i["width"], i["needed_power"], i["power"],
-                                               tuple(i.get("hitches") or ()), tuple(i.get("engines") or ()))
+                                               tuple(i.get("hitches") or ()), tuple(i.get("engines") or ()),
+                                               tuple((o["kind"], o["type"], o["index"], o["name"])
+                                                     for o in i.get("options") or ()))
                                      for i in frame["items"])
             elif event == "result" and frame["session"] == self.session:
                 self._results.setdefault(frame["id"], []).append((frame["status"], frame["code"]))
@@ -292,7 +294,8 @@ class FS25World:
                    for e in pair):
                 return False
             if transport:
-                if pair[0].attached_to is not None or pair[1].attached_to == pair[0].id:
+                # The tractor alone or carrying its own implement; never towing the transport.
+                if pair[0].attached_to == pair[1].id or pair[1].attached_to == pair[0].id:
                     return False
             elif (any(e.attached_to not in (None, partners[e.id]) for e in pair)
                   or (pair[0].attached_to is None) != (pair[1].attached_to is None)):
@@ -382,12 +385,14 @@ class FS25World:
         once the game's save stamp changed."""
         return self._run("save")
 
-    def buy(self, item_id: int, hitch: int = 0, engine: int = 0) -> str:
+    def buy(self, item_id: int, hitch: int = 0, engine: int = 0, options: tuple[int, ...] = ()) -> str:
         """BUY: GIANTS' own BuyVehicleData for the store item (mod/FarmhandBridge.lua
         starters.buy), with attacherJoint configuration ``hitch`` and motor configuration
         ``engine`` (1-based; 0 = the default). DONE BOUGHT names no vehicle: the executor
         finds it."""
-        return self._run("buy", item=int(item_id), hitch=int(hitch), engine=int(engine))
+        chosen = list(options)[:4] + [0] * (4 - min(len(options), 4))
+        return self._run("buy", item=int(item_id), hitch=int(hitch), engine=int(engine), opt1=int(chosen[0]),
+                         opt2=int(chosen[1]), opt3=int(chosen[2]), opt4=int(chosen[3]))
 
     def fieldwork(self, tractor_id: str, field_id: int, pose: Pose, owner: str, area_m2: float = 0.0) -> str:
         self._reserved(tractor_id, owner)

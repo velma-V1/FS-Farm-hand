@@ -494,6 +494,40 @@ def choose_engine(item: StoreItem, want: dict) -> int:
     return next((n for n, name in enumerate(item.engines, 1) if all(w in name.lower() for w in words)), 0)
 
 
+def _compact(text: str) -> str:
+    return "".join(c for c in (text or "").casefold() if c.isalnum())
+
+
+def _covers(phrase: str, name: str) -> bool:
+    """The phrase's letters and digits, run together, are whole words of the name run
+    together ("25 mph" is "25MPH" of "25MPH / 41KPH"; "25m" is not part of "25MPH")."""
+    key = _compact(phrase)
+    tokens = [_compact(t) for t in re.split(r"[^0-9A-Za-z]+", name or "") if t]
+    for i in range(len(tokens)):
+        run = ""
+        for token in tokens[i:]:
+            run += token
+            if run == key:
+                return True
+            if len(run) >= len(key):
+                break
+    return False
+
+
+def choose_options(item: StoreItem, want: dict) -> tuple[int, ...] | None:
+    """The positions (1-based, the mod's Observe.itemOptions order) of the options the
+    want names, each the one option whose name it covers word for word ("25 mph":
+    "25MPH / 41KPH", not "15MPH / 25KPH"); None when one matches none or several."""
+    chosen = []
+    for phrase in want.get("options") or ():
+        hits = [n for n, option in enumerate(item.options, 1) if _compact(phrase) and _covers(phrase, option[3])]
+        if len(hits) != 1:
+            log.info("option %r: %d matches among %s", phrase, len(hits), [o[3] for o in item.options])
+            return None
+        chosen.append(hits[0])
+    return tuple(chosen)
+
+
 def choose_store_item(catalog, want: dict, money: float | None, tractor_power: float | None):
     """(item, None) or (None, why). Large: the widest the farm's strongest tractor can
     power (needed power known and within it); else the cheapest that matches."""
@@ -524,6 +558,14 @@ def _name_fit(item: StoreItem, want: dict) -> int:
     if not words or not all(w in name for w in words):
         return 0
     return 2 if want["kind"].upper() in name else 1
+
+
+def named_trailer(item: Equipment, name: str | None) -> bool:
+    """A trailer the player named: by its name, or "the gooseneck" for one with a gooseneck
+    input (GIANTS' semitrailer joint types; live, the 1124 Deckover is one)."""
+    if name and name.strip() in ("gooseneck", "goosenecks", "gooseneck trailer"):
+        return named(item, name) or any("semitrailer" in (j.joint_type or "").lower() for j in item.input_joints)
+    return named(item, name)
 
 
 def named(item: Equipment, name: str | None) -> bool:
@@ -748,13 +790,17 @@ class Executor:
             return None, None, "NO_ORIGIN_KNOWN" if origins is not None else "NO_HITCHED_PAIR"
         _, _, tractor, wagon = min(pairs, key=lambda p: (p[0], p[1]))
         if origins is not None:
-            return (tractor, wagon), origins[wagon.id], None
+            route = origins[wagon.id]
+            if any(item.belted_to == wagon.id for item in items) \
+                    and math.dist(tractor.position, route_position(route)) > ARRIVED_BY_HAND_M:
+                return None, None, "LOADED_NO_DRIVER"          # "bring it back": the player drives it there
+            return (tractor, wagon), route, None
         route, failure = self._route(target, tractor, tractor.position, tractor.heading or 0.0, markers)
         if route is None:
             return None, None, failure
-        # GIANTS' agent does not start a rig whose trailer carries a belted vehicle (live
-        # d14230aa9fb24d30-3: BLOCKED from the first frame by its own cargo); AutoDrive counts
-        # belt-mounted objects as its own (AutoDriveUtilFuncs checkIsConnected 61-64).
+        # Where it starts from, for "bring it back" (kept if Farmhand took it from elsewhere),
+        # recorded before a loaded rig is left for the player to drive.
+        self._origins.setdefault(wagon.id, _pose_of(tractor))
         if any(item.belted_to == wagon.id for item in items):
             # Cargo belted on the towed trailer: neither GIANTS GOTO nor AutoDrive moves it
             # (AutoDrive ignores only what is mounted on the vehicle itself, AutoDriveUtilFuncs
@@ -853,8 +899,12 @@ class Executor:
                 log.info("buy: no engine option %r among %s", want["engine"], item.engines)
                 return Result("BLOCKED", "NO_ENGINE_OPTION", states=tuple(states))
             log.info("buy: engine option %d %r", engine, item.engines[engine - 1] if engine else "default")
+            options = choose_options(item, want)
+            if options is None:
+                return Result("BLOCKED", "NO_SUCH_OPTION", states=tuple(states))
+            log.info("buy: options %s", [item.options[n - 1] for n in options])
             enter("BUY")
-            self.world.buy(item.id, hitch, engine)
+            self.world.buy(item.id, hitch, engine, options)
             enter("VERIFY")
             after = {i.id: i for i in self.world.snapshot()}
             new = [i for i in after.values() if i.id not in before and i.name == item.name]
@@ -894,7 +944,7 @@ class Executor:
             items = sorted(self.world.snapshot(), key=lambda i: i.id)
             observed = {i.id: i for i in items}
             trailers = [i for i in items if usable(i, farm_id) and i.stopped and transport.is_transport(i)
-                        and named(i, command.get("implement_name"))
+                        and named_trailer(i, command.get("implement_name"))
                         and (i.attached_to is None or (observed.get(i.attached_to) is not None
                                                        and observed[i.attached_to].stopped))]
             if not trailers:
@@ -902,8 +952,14 @@ class Executor:
             pairs = []
             for trailer in trailers:
                 for tractor in items:
+                    implement = observed.get(tractor.attached_to)
                     if (tractor.category != "tractor" or tractor.id == trailer.id or tractor.id == trailer.attached_to
-                            or not usable(tractor, farm_id) or not tractor.stopped or tractor.attached_to is not None
+                            or not usable(tractor, farm_id) or not tractor.stopped
+                            # Alone, or with what it carries (a mounted implement: the mod decides
+                            # whether it may come along); never towing the transport or a trailer.
+                            or (tractor.attached_to is not None and (implement is None or implement.id == trailer.id
+                                                                     or implement.attached_to != tractor.id
+                                                                     or transport.is_transport(implement)))
                             or not named(tractor, command.get("tractor_name"))):
                         continue
                     aboard = tractor.belted_to == trailer.id or transport.on_deck(tractor, trailer)
@@ -1482,6 +1538,8 @@ class Executor:
                 tractor, wagon = self._pair(ids, farm_id, owner, attached=True, check=movable)
                 if not tractor.stopped:
                     raise ObservationMismatch("EQUIPMENT_MOVING")
+                # Where it came from, for "bring it back" (unless Farmhand took it from elsewhere).
+                self._origins.setdefault(wagon.id, _pose_of(tractor))
                 if (any(i.belted_to == wagon.id for i in self.world.snapshot())
                         and math.dist(tractor.position, route_position(delivery)) <= ARRIVED_BY_HAND_M):
                     log.info("loaded rig already at %s (driven there): no drive", delivery)

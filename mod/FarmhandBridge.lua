@@ -1261,6 +1261,21 @@ function starters.buy(env, spec)
             if type(options) ~= "table" or options[spec.engine] == nil then return nil, "UNKNOWN_CONFIGURATION" end
             configs.motor = spec.engine
         end
+        -- The buyer's other options, by their position in Observe.itemOptions (the catalog's
+        -- order): a configuration choice, or a configuration set's configurations.
+        local list = (Bridge.Observe and Bridge.Observe.itemOptions) and Bridge.Observe.itemOptions(item) or {}
+        for _, key in ipairs({ "opt1", "opt2", "opt3", "opt4" }) do
+            local n = spec[key]
+            if finite(n) and n > 0 then
+                local o = list[n]
+                if o == nil then return nil, "UNKNOWN_CONFIGURATION" end
+                if o.kind == "config" then
+                    configs[o.type] = o.index
+                else
+                    for name, index in pairs(o.configurations) do configs[name] = index end
+                end
+            end
+        end
         local price = env.g_currentMission.economyManager:getBuyPrice(item, configs, nil)
         local before = balance(env, spec.farmId)
         if not finite(price) or price <= 0 then return nil, "PRICE_UNKNOWN" end
@@ -1493,7 +1508,7 @@ function Bridge:checkSession()
 end
 
 local ATTRS = { tractor = "tractor", wagon = "wagon", marker = "marker", x = "x", z = "z", yaw = "yaw",
-                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", item = "item", hitch = "hitch", engine = "eng",
+                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", item = "item", hitch = "hitch", engine = "eng", opt1 = "o1", opt2 = "o2", opt3 = "o3", opt4 = "o4",
                 direction = "fd" }
 
 function Bridge:pollCommand()

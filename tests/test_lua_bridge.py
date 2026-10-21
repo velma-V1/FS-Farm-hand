@@ -1411,6 +1411,33 @@ class BuyTests(unittest.TestCase):
         task, code = self.start(self.bridge, env, 0, 0)                   # the defaults
         self.assertEqual((env.bought[1].configs.motor, env.bought[1].configs.attacherJoint), (1, None))
 
+    def test_other_options_by_their_place_in_the_catalog_order(self):
+        # Observe.itemOptions: configuration types by name (attacherJoint, then motor), each
+        # choice in order, then the sets; a set selects its configurations.
+        lua = self.lua
+        observe = lua.execute((ROOT / "mod/FarmhandObserve.lua").read_text())
+        self.bridge.Observe = observe
+        env = lua.execute(self.ENV)
+        lua.execute("""local env = ...
+            local item = env.g_storeManager:getItems()[21]
+            item.configurationSets = { { name = "Default", configurations = { wheel = 1 } },
+                                       { name = "25M Unrealistic", configurations = { design7 = 5, wheel = 3 } } }""", env)
+        options = [dict(o) for o in observe.itemOptions(env.g_storeManager.getItems(env.g_storeManager)[21]).values()]
+        names = [o["name"] for o in options]
+        self.assertEqual(names[:2], ["Standard", "Hitch"])                           # attacherJoint first
+        self.assertEqual(names[-1], "25M Unrealistic")
+        start = lua.eval("""function(B, env, o1, o2)
+            local spec = { op = 'buy', item = 21, hitch = 0, engine = 0, opt1 = o1, opt2 = o2, farmId = 1,
+                           owned = function() return true end }
+            local task, code = B.start(env, spec)
+            return task, code end""")
+        task, code = start(self.bridge, env, len(names), 2)                          # the set, and "Hitch"
+        self.assertIsNotNone(task, code)
+        configs = env.bought[1].configs
+        self.assertEqual((configs.design7, configs.wheel, configs.attacherJoint), (5, 3, 2))
+        env = lua.execute(self.ENV)
+        self.assertEqual(start(self.bridge, env, 99, 0)[1], "UNKNOWN_CONFIGURATION")
+
     def test_an_option_the_item_lacks_or_the_engine_price_unpaid_buys_nothing(self):
         for hitch, engine, balance, reason in ((0, 9, 1e6, "UNKNOWN_CONFIGURATION"), (3, 0, 1e6, "UNKNOWN_CONFIGURATION"),
                                                (0, 6, 240000, "NOT_ENOUGH_MONEY")):

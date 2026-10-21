@@ -1854,7 +1854,28 @@ Hitch.LOAD = {
     minLookaheadM = 2, reactionS = 1, decelMs2 = 1,
     rampsDownTime = 1,        -- Foldable fold time of ramps down (FS25_UGR1124 brandtTrailer.xml 283-337)
     movedM = 0.25,            -- the truck or trailer moving this far: TRANSPORT_MOVED
+    -- A mounted implement along (the user, 2026-10-21): the rig as far forward as the belt
+    -- area's front less this; the implement may overhang the belt area only onto the
+    -- trailer's own deck, at least this inside its rear.
+    frontMarginM = 0.3, rearMarginM = 0.25,
 }
+
+-- The one implement a LOAD may carry: mounted on the tractor's three-point joint (GIANTS
+-- AttacherJoints.JOINTTYPE_IMPLEMENT through getAttacherJointByJointDescIndex), lifted
+-- (getIsLowered false) and, if it folds, folded (Foldable:getIsUnfolded false: an unfolded
+-- implement is wider than its size box). nil, or the reason it may not come along.
+local function mountedProblem(env, tractor, implement)
+    local entry = (tractor:getAttachedImplements() or {})[1]
+    if entry == nil or entry.object ~= implement then return "LOAD_TRACTOR_NOT_ALONE" end
+    local joint = tractor:getAttacherJointByJointDescIndex(entry.jointDescIndex)
+    if joint == nil or joint.jointType ~= env.AttacherJoints.JOINTTYPE_IMPLEMENT then return "LOAD_IMPLEMENT_NOT_MOUNTED" end
+    if type(implement.getIsLowered) ~= "function" or implement:getIsLowered() ~= false then return "LOAD_IMPLEMENT_LOWERED" end
+    local fold = implement.spec_foldable
+    if fold ~= nil and next(fold.foldingParts or {}) ~= nil and implement:getIsUnfolded() ~= false then
+        return "LOAD_IMPLEMENT_UNFOLDED"
+    end
+    return nil
+end
 
 -- The deck box in the trailer's frame from its belts: { aMin, aMax, lMin, lMax, height }
 -- (height: the belts above the terrain). Errors on fewer than two belts.
@@ -1910,7 +1931,7 @@ end
 local function loadVolume(env, s, a0, a1)
     local D = Hitch.LOAD
     return clearVolume(env, s, a0, a1, D.lateralMarginM, D.stepM, D.floorClearanceM,
-                       s.tractorBox.height + s.deck.height + D.topMarginM, s.masks.obstacles)
+                       s.rigBox.height + s.deck.height + D.topMarginM, s.masks.obstacles)
 end
 
 -- Prepare LOAD (direction 1) or UNLOAD (-1). `args`: tractor, trailer, direction, farmId,
@@ -1944,7 +1965,12 @@ function Hitch.newLoad(env, args)
         if axis ~= nil and axis.componentJoint ~= nil then return "LOAD_ARTICULATED_UNSUPPORTED" end
         local okUnits, units = pcall(rigUnits, tractor)
         if not okUnits then return "LOAD_GEOMETRY_UNKNOWN" end
-        if #units ~= 1 then return "LOAD_TRACTOR_NOT_ALONE" end
+        if #units > 2 then return "LOAD_TRACTOR_NOT_ALONE" end
+        if #units == 2 then
+            local problem = mountedProblem(env, tractor, units[2])
+            if problem ~= nil then return problem end
+        end
+        s.units = units
         if not rampsDown(trailer) then return "LOAD_RAMPS_NOT_DOWN" end
         local belts = trailer.spec_tensionBelts
         if belts == nil or not belts.hasTensionBelts then return "LOAD_NO_BELTS" end
@@ -1958,12 +1984,24 @@ function Hitch.newLoad(env, args)
         s.yaw = atan2(s.dirX, s.dirZ)
         s.last = { wx = s.ox, wz = s.oz }
         s.transport = transportSet(trailer)
-        s.rig = { [tractor] = true, [trailer] = true }     -- never the truck
+        s.rig = { [trailer] = true }                       -- never the truck
+        for _, unit in ipairs(units) do s.rig[unit] = true end
         local okTrailer, trailerBox = pcall(unitBox, env, s, trailer)
         local okTractor, tractorBox = pcall(unitBox, env, s, tractor)
         local okDeck, deck = pcall(deckBox, env, s, trailer)
         if not (okTrailer and okTractor and okDeck) then return "LOAD_GEOMETRY_UNKNOWN" end
         s.trailerBox, s.tractorBox, s.deck = trailerBox, tractorBox, deck
+        -- The rig: the tractor and what is mounted on it, one box over them all.
+        local rigBox = { aMin = tractorBox.aMin, aMax = tractorBox.aMax, lMin = tractorBox.lMin, lMax = tractorBox.lMax,
+                         height = tractorBox.height }
+        for i = 2, #units do
+            local okUnit, box = pcall(unitBox, env, s, units[i])
+            if not okUnit then return "LOAD_GEOMETRY_UNKNOWN" end
+            rigBox.aMin, rigBox.aMax = math.min(rigBox.aMin, box.aMin), math.max(rigBox.aMax, box.aMax)
+            rigBox.lMin, rigBox.lMax = math.min(rigBox.lMin, box.lMin), math.max(rigBox.lMax, box.lMax)
+            rigBox.height = math.max(rigBox.height, box.height)
+        end
+        s.rigBox = rigBox
         -- The steering node on the axis, the tractor facing along the trailer.
         local node = tractor:getAISteeringNode()
         local sx, _, sz = world(env, node)
@@ -1974,24 +2012,34 @@ function Hitch.newLoad(env, args)
         end
         local length = tractorBox.aMax - tractorBox.aMin
         if length > deck.aMax - deck.aMin then return "LOAD_DOES_NOT_FIT" end
-        -- Where it goes: LOAD from behind the ramps to its body centred on the deck;
-        -- UNLOAD from the deck back until its leading (front) end is behind the ramps.
+        -- Where it goes: LOAD from behind the ramps to its body centred on the deck (a mounted
+        -- implement along: the rig forward to the belt area's front); UNLOAD from the deck back
+        -- until its leading end is behind the ramps.
         if sign > 0 then
-            if tractorBox.aMax > trailerBox.aMin or tractorBox.aMax < trailerBox.aMin - D.rampM then
+            if rigBox.aMax > trailerBox.aMin or rigBox.aMax < trailerBox.aMin - D.rampM then
                 return "LOAD_NOT_BEHIND_RAMPS"
             end
-            s.travelM = (deck.aMin + deck.aMax) / 2 - (tractorBox.aMin + tractorBox.aMax) / 2
-            s.sweepFrom, s.sweepTo = tractorBox.aMax, tractorBox.aMax + s.travelM + D.aheadEndM
+            if #units == 1 then
+                s.travelM = (deck.aMin + deck.aMax) / 2 - (tractorBox.aMin + tractorBox.aMax) / 2
+            else
+                s.travelM = deck.aMax - D.frontMarginM - rigBox.aMax
+                if tractorBox.aMin + s.travelM < deck.aMin or tractorBox.aMax + s.travelM > deck.aMax
+                        or rigBox.aMin + s.travelM < trailerBox.aMin + D.rearMarginM then
+                    return "LOAD_DOES_NOT_FIT"
+                end
+            end
+            s.sweepFrom, s.sweepTo = rigBox.aMax, rigBox.aMax + s.travelM + D.aheadEndM
         else
-            if tractorBox.aMin < deck.aMin - 0.25 or tractorBox.aMax > deck.aMax + 0.25 then
+            if tractorBox.aMin < deck.aMin - 0.25 or tractorBox.aMax > deck.aMax + 0.25
+                    or rigBox.aMin < trailerBox.aMin then
                 return "UNLOAD_NOT_ON_DECK"
             end
-            s.travelM = tractorBox.aMax - (trailerBox.aMin - D.rampM)
-            s.sweepFrom, s.sweepTo = tractorBox.aMin, tractorBox.aMin - s.travelM - D.aheadEndM
+            s.travelM = rigBox.aMax - (trailerBox.aMin - D.rampM)
+            s.sweepFrom, s.sweepTo = rigBox.aMin, rigBox.aMin - s.travelM - D.aheadEndM
         end
         -- Never more than the ramps plus the trailer.
         if s.travelM <= 0 or s.travelM > D.rampM + (trailerBox.aMax - trailerBox.aMin) then return "LOAD_TOO_FAR" end
-        s.lMin, s.lMax = tractorBox.lMin, tractorBox.lMax
+        s.lMin, s.lMax = rigBox.lMin, rigBox.lMax
         local okMasks, masks = pcall(collisionMasks, env)
         if not okMasks then return "LOAD_QUERY_UNKNOWN" end
         s.masks = masks
@@ -2042,7 +2090,12 @@ local function loadDrive(env, s, dt)
     local progress = s.sign * (along - s.startAlong)
     s.lastAlong, s.lastLateral = along, lateral
     pcall(function() s.lastSpeed = s.tractor:getLastSpeed() end)
-    if #rigUnits(s.tractor) ~= 1 then return "RIG_CHANGED" end
+    local units = rigUnits(s.tractor)
+    if #units ~= #s.units then return "RIG_CHANGED" end
+    for i, unit in ipairs(units) do
+        if unit ~= s.units[i] then return "RIG_CHANGED" end
+    end
+    if #units == 2 and mountedProblem(env, s.tractor, units[2]) ~= nil then return "IMPLEMENT_CHANGED" end
     for _, w in ipairs(s.watched) do
         local ux, _, uz = world(env, w.vehicle.rootNode)
         if distance(ux, uz, w.wx, w.wz) > D.movedM then return "TRANSPORT_MOVED" end
@@ -2063,7 +2116,7 @@ local function loadDrive(env, s, dt)
     -- Past the leading end: the stopping distance, never past the planned volume's end.
     local v = math.abs(s.lastSpeed or 0) / 3.6
     local reach = math.max(D.minLookaheadM, v * D.reactionS + v * v / (2 * D.decelMs2) + 0.5)
-    local lead = (s.sign > 0 and s.tractorBox.aMax or s.tractorBox.aMin) + s.sign * progress
+    local lead = (s.sign > 0 and s.rigBox.aMax or s.rigBox.aMin) + s.sign * progress
     local stop = s.sweepTo
     local far = s.sign > 0 and math.min(lead + reach, stop) or math.max(lead - reach, stop)
     if s.sign * (far - lead) > 0.05 then

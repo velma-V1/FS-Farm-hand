@@ -165,8 +165,7 @@ class MockWorld:
                 a = t_offset - t_length / 2 - 3.5 - (offset + length / 2)
                 self.mock_on_deck = {k: tuple(i for i in v if i != tractor_id) for k, v in self.mock_on_deck.items()}
             x, z = trailer.position[0] + fx * a, trailer.position[1] + fz * a
-            self.items[tractor_id] = replace(tractor, position=(x, z), heading=trailer.heading,
-                                             ai_root=Pose(x, z, trailer.heading), stopped=True)
+            self._carry(tractor, Pose(x, z, trailer.heading))
             return "LOADED" if direction > 0 else "UNLOADED"
 
     def _start_blocked(self, tractor_id, prefix):
@@ -208,14 +207,14 @@ class MockWorld:
         self.saved += 1
         return "SAVED"
 
-    def buy(self, item_id, hitch=0, engine=0):
+    def buy(self, item_id, hitch=0, engine=0, options=()):
         # Mock-only: spawns a copy of mock_bought named as the item, and charges it.
         with self._lock:
             item = next((i for i in self.store_items if i.id == item_id), None)
             if item is None or self.mock_bought is None:
                 raise RuntimeError("UNKNOWN_STORE_ITEM")
             n = len(self.items) + 1
-            self.items[f"new-{n}"] = replace(self.mock_bought, id=f"new-{n}", name=item.name)
+            self.items[f"new-{n}"] = replace(self.mock_bought, id=f"new-{n}", name=item.name, brand=item.brand)
             if self.farm_info is not None and self.farm_info.money is not None:
                 self.farm_info = replace(self.farm_info, money=self.farm_info.money - item.price)
             return "BOUGHT"
@@ -276,7 +275,8 @@ class MockWorld:
                    or not item.available or not item.stopped for item in pair):
                 return False
             if transport:                 # only the trailer may hang on its truck
-                if pair[0].attached_to is not None or pair[1].attached_to == pair[0].id:
+                # The tractor alone or carrying its own implement; never towing the transport.
+                if pair[0].attached_to == pair[1].id or pair[1].attached_to == pair[0].id:
                     return False
             elif (any(item.attached_to not in (None, partners[item.id]) for item in pair)
                   or (pair[0].attached_to is None) != (pair[1].attached_to is None)):
@@ -328,10 +328,22 @@ class MockWorld:
             raise ValueError("Hitch steps require an unattached pair")
         return tractor, wagon
 
+    def _carry(self, tractor, pose):
+        # Mock-only: the tractor placed; a mounted implement keeps its offset to it.
+        implement = self.items.get(tractor.attached_to)
+        before = tractor.position
+        self._place(tractor, pose)
+        if implement is not None and implement.attached_to == tractor.id:
+            dx, dz = pose.x - before[0], pose.z - before[1]
+            self.items[implement.id] = replace(implement, position=(implement.position[0] + dx, implement.position[1] + dz),
+                                               stopped=True)
+
     def _move_wagon(self, wagon, position):
         # Mock-only: what is belted on it rides along (GIANTS' tension-belt mount joint).
         dx, dz = position[0] - wagon.position[0], position[1] - wagon.position[1]
-        self.items[wagon.id] = replace(wagon, position=tuple(position), stopped=True)
+        # Its belt markers are its own nodes (GIANTS): they move with it.
+        markers = tuple((m[0] + dx, m[1], m[2] + dz, m[3] + dx, m[4], m[5] + dz) for m in wagon.belt_markers)
+        self.items[wagon.id] = replace(wagon, position=tuple(position), stopped=True, belt_markers=markers)
         for item in list(self.items.values()):
             if item.belted_to == wagon.id:
                 moved = (item.position[0] + dx, item.position[1] + dz)
@@ -360,12 +372,12 @@ class MockWorld:
         # MOCK_TRAILER_OFFSET_M behind the tractor's AI root.
         with self._lock:
             ids = self._reservations.get(owner, (None, (None, None)))[1]
-            if owner in self._transports:         # the lone tractor beside its transport
+            if owner in self._transports:         # the tractor (and what it carries) beside its transport
                 tractor = self._owned(tractor_id, owner)
-                if ids[0] != tractor_id or tractor.attached_to is not None:
+                if ids[0] != tractor_id or tractor.attached_to == ids[1]:
                     raise ValueError("Not the reserved tractor")
                 self._start_blocked(tractor_id, "NAVIGATE_")
-                self._place(tractor, pose)
+                self._carry(tractor, pose)
                 return
             tractor, wagon = self._reserved_pair(tractor_id, ids[1], owner)
             coupled = (tractor.attached_to, wagon.attached_to) == (wagon.id, tractor.id)

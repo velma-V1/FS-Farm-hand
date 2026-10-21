@@ -188,6 +188,12 @@
         "mod": {"type": "boolean"},
         "hitches": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 128}},
         "engines": {"type": "array", "maxItems": 12, "items": {"type": "string", "maxLength": 128}},
+        "options": {"type": "array", "maxItems": 48, "items": {"type": "object", "additionalProperties": false,
+                    "required": ["kind", "type", "index", "name"],
+                    "properties": {"kind": {"enum": ["config", "set"]},
+                                   "type": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},
+                                   "index": {"type": "integer", "minimum": 1, "maximum": 1000},
+                                   "name": {"type": "string", "maxLength": 128}}}},
         "width": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 1000}, {"type": "null"}]},
         "needed_power": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 100000}, {"type": "null"}]},
         "power": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 100000}, {"type": "null"}]}

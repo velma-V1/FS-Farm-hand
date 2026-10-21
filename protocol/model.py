@@ -145,6 +145,7 @@ class StoreItem:
     power: float | None
     hitches: tuple[str, ...] = ()       # attacherJoint configuration names, in GIANTS' order (1-based)
     engines: tuple[str, ...] = ()       # motor configuration names, in GIANTS' order (1-based)
+    options: tuple[tuple[str, str | None, int, str], ...] = ()   # (kind, type, index, name), the mod's order
 
 
 @dataclass(frozen=True)

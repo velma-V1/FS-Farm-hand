@@ -873,6 +873,36 @@ local function specNumber(v, key)
     return nil
 end
 
+-- Every option a buyer chooses from, in one fixed order the companion's choice refers to by
+-- position (1-based): each configuration type with more than one choice (StoreManager
+-- item.configurations, ConfigurationUtil items with .name), types by name, choices in
+-- GIANTS' order; then the configuration sets (item.configurationSets, each .name and the
+-- configurations it selects). Live: the Titan Vineyard Plow's "25M Unrealistic" is a set,
+-- its "25MPH / 41KPH" a design16 choice.
+Observe.MAX_OPTIONS = 48
+function Observe.itemOptions(item)
+    local out = {}
+    local configurations = type(item.configurations) == "table" and item.configurations or {}
+    local types = {}
+    for name, choices in pairs(configurations) do
+        if type(name) == "string" and type(choices) == "table" and #choices > 1 then types[#types + 1] = name end
+    end
+    table.sort(types)
+    for _, name in ipairs(types) do
+        for i, choice in ipairs(configurations[name]) do
+            if #out >= Observe.MAX_OPTIONS then return out end
+            out[#out + 1] = { kind = "config", type = name, index = i, name = type(choice) == "table" and choice.name or nil }
+        end
+    end
+    for i, set in ipairs(type(item.configurationSets) == "table" and item.configurationSets or {}) do
+        if #out >= Observe.MAX_OPTIONS then return out end
+        if type(set) == "table" and type(set.configurations) == "table" then
+            out[#out + 1] = { kind = "set", index = i, name = set.name, configurations = set.configurations }
+        end
+    end
+    return out
+end
+
 function Observe.storeItem(env, item)
     local ok, vehicle = pcall(env.StoreItemUtil.getIsVehicle, item)
     if not ok or vehicle ~= true or item.showInStore == false or not integer(item.id) then return nil end
@@ -903,6 +933,14 @@ function Observe.storeItem(env, item)
     return { id = item.id, name = text(item.name) or Observe.NULL, brand = text(item.brandNameRaw) or Observe.NULL,
              categories = categories, price = item.price, mod = item.isMod == true, hitches = hitches,
              engines = engines,
+             options = (function()
+                 local list = Observe.array()
+                 for _, o in ipairs(Observe.itemOptions(item)) do
+                     list[#list + 1] = { kind = o.kind, type = o.type and (token(o.type) and o.type) or Observe.NULL,
+                                         index = o.index, name = text(o.name) or "" }
+                 end
+                 return list
+             end)(),
              width = nullable(specNumber(specs.workingWidth, "width")),
              needed_power = nullable(specNumber(specs.neededPower, "base")),
              power = nullable(specNumber(specs.power, "power")) }

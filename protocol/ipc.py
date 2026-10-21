@@ -112,7 +112,7 @@ COMMAND_ARGS = {
     "stage": ("tractor", "x", "z", "yaw"),
     "navigate": ("tractor", "x", "z", "yaw"),
     "fieldwork": ("tractor", "field", "x", "z", "yaw", "area"),
-    "buy": ("item", "hitch", "engine"),
+    "buy": ("item", "hitch", "engine", "opt1", "opt2", "opt3", "opt4"),
     "save": (),
     "block": ("x", "z", "area"),
     "open_gates": ("x", "z", "area"),
@@ -131,8 +131,10 @@ COMMAND_ARGS = {
 }
 _ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "x", "z": "z",
               "yaw": "yaw", "tractorJoint": "tj", "wagonJoint": "wj", "maxDistanceM": "dist", "field": "field", "area": "area", "item": "item", "hitch": "hitch",
-              "engine": "eng", "direction": "fd"}
-_INTEGER = {"tractor", "wagon", "marker", "tractorJoint", "wagonJoint", "field", "item", "hitch", "engine"}
+              "engine": "eng", "opt1": "o1", "opt2": "o2", "opt3": "o3", "opt4": "o4",
+              "direction": "fd"}
+_INTEGER = {"tractor", "wagon", "marker", "tractorJoint", "wagonJoint", "field", "item", "hitch", "engine",
+            "opt1", "opt2", "opt3", "opt4"}
 _TOKEN = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 MAX_COMMAND_ID = 2147483647
 

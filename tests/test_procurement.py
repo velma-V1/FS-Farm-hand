@@ -90,13 +90,13 @@ class PurchaseTests(unittest.TestCase):
 
     def test_an_unseen_purchase_or_payment_is_never_complete(self):
         class Vanishing(MockWorld):
-            def buy(self, item_id, hitch=0, engine=0):
+            def buy(self, item_id, hitch=0, engine=0, options=()):
                 return "BOUGHT"                                  # said bought, nothing appeared
 
         class Free(MockWorld):
-            def buy(self, item_id, hitch=0, engine=0):
+            def buy(self, item_id, hitch=0, engine=0, options=()):
                 money = self.farm_info.money
-                super().buy(item_id, hitch, engine)
+                super().buy(item_id, hitch, engine, options)
                 self.farm_info = replace(self.farm_info, money=money)   # not charged
 
         for cls, reason in ((Vanishing, "PURCHASE_NOT_OBSERVED"), (Free, "PAYMENT_NOT_OBSERVED")):
@@ -147,9 +147,9 @@ class EngineOptionTests(unittest.TestCase):
         bought = []
 
         class Recording(MockWorld):
-            def buy(self, item_id, hitch=0, engine=0):
+            def buy(self, item_id, hitch=0, engine=0, options=()):
                 bought.append((item_id, hitch, engine))
-                return super().buy(item_id, hitch, engine)
+                return super().buy(item_id, hitch, engine, options)
 
         for engines, expected in ((self.SERIES9.engines, ("COMPLETE", "BOUGHT")), ((), ("BLOCKED", "NO_ENGINE_OPTION"))):
             with self.subTest(engines=engines):
@@ -160,6 +160,53 @@ class EngineOptionTests(unittest.TestCase):
                 result = Executor(world).execute(buy(self.WANT))
                 self.assertEqual((result.status, result.reason), expected, result)
                 self.assertEqual(bought, [(21, 0, 6)] if expected[0] == "COMPLETE" else [])
+
+
+class ConfigurationOptionTests(unittest.TestCase):
+    """The user's 2026-10-21 plow: LIZARD's Titan Vineyard Plow (FS25_colossusPack) with its
+    "25M Unrealistic" working-width set and its "25MPH / 41KPH" work speed, chosen by words."""
+
+    TITAN = StoreItem(31, "Titan Vineyard Plow", "LIZARD", ("PLOWS",), 3000, True, None, 65, None,
+                      options=(("config", "design16", 1, "11MPH / 18KPH"), ("config", "design16", 2, "15MPH / 25KPH"),
+                               ("config", "design16", 3, "20MPH / 33KPH"), ("config", "design16", 4, "25MPH / 41KPH"),
+                               ("set", None, 1, "Default"), ("set", None, 2, "1 Row"), ("set", None, 5, "25M Unrealistic"),
+                               ("set", None, 6, "50M Unrealistic")))
+
+    def test_the_words(self):
+        rules = RuleInterpreter()
+        for words in ("buy a lizard titan vineyard plow with the 25m unrealistic working width and the 25/mph speed selection",
+                      "buy a 25m lizard titan vineyard plow with the 25 mph speed"):
+            with self.subTest(words=words):
+                want, = rules.interpret(words)["wants"]
+                self.assertEqual((want["kind"], want["name"]), ("plow", "lizard titan vineyard"))
+                self.assertEqual(sorted(want["options"]), sorted(["25m unrealistic" if "unrealistic" in words else "25m",
+                                                                  "25 mph"]))
+
+    def test_each_option_is_the_one_it_names(self):
+        from companion.executor import choose_options
+        self.assertEqual(choose_options(self.TITAN, {"options": ["25m unrealistic", "25 mph"]}), (7, 4))
+        self.assertEqual(choose_options(self.TITAN, {"options": ["25m"]}), (7,))           # not 15MPH / 25KPH
+        self.assertIsNone(choose_options(self.TITAN, {"options": ["100m"]}))
+        self.assertIsNone(choose_options(self.TITAN, {"options": ["mph"]}))                # four of them
+        self.assertEqual(choose_options(self.TITAN, {}), ())
+
+    def test_bought_with_its_options_or_not_at_all(self):
+        bought = []
+
+        class Recording(MockWorld):
+            def buy(self, item_id, hitch=0, engine=0, options=()):
+                bought.append((item_id, tuple(options)))
+                return super().buy(item_id, hitch, engine, options)
+
+        for options, expected in ((["25m unrealistic", "25 mph"], ("COMPLETE", "BOUGHT")), (["75 mph"], ("BLOCKED", "NO_SUCH_OPTION"))):
+            with self.subTest(options=options):
+                bought.clear()
+                world = Recording(list(TRACTORS), {"farm-a": (0.0, 0.0)}, farm=FarmInfo(1e6, True, True, True))
+                world.store_items = CATALOG + (self.TITAN,)
+                world.mock_bought = Equipment("x", "implement", "farm-a", (500.0, 500.0), kinds=frozenset({"plow"}))
+                result = Executor(world).execute(buy({"kind": "plow", "name": "lizard titan vineyard", "options": options}))
+                self.assertEqual((result.status, result.reason), expected, result)
+                self.assertEqual(bought, [(31, (7, 4))] if expected[0] == "COMPLETE" else [])
 
 
 if __name__ == "__main__":

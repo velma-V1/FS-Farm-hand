@@ -86,7 +86,13 @@ have precedence; report conflicts instead of silently changing the scope.
      and the tractor must be observed belted (fastened by the trailer) and at rest.
      UNLOAD: belts released and observed released, ramps down, straight reverse off
      the ramps under the same guards and caps. Nothing is teleported, no collision is
-     disabled, and travel with the load stays GIANTS' or AutoDrive's.
+     disabled, and travel with the load stays GIANTS' or AutoDrive's. Extended (the user,
+     2026-10-21, "load the tractor and plow on the gooseneck"): the tractor may carry one
+     implement mounted on its three-point joint, lifted and, if it folds, folded; only if the
+     whole rig fits (the tractor inside the belt area, the rig forward to its front, the
+     implement over the trailer's own deck), with the swept volume and every check covering
+     the rig, refused unmoved otherwise; it stops if the implement is lowered or unfolded
+     on the way. Nothing towed comes along.
 - Keep Python orchestration in companion/, pure contracts in protocol/ and
   adapters/, game-side Lua in mod/, synthetic state in simulator/, tests in tests/.
   Never import simulator into companion or mod. No simulated success in real adapters.

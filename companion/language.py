@@ -171,7 +171,7 @@ _COVERS = {"fetch_pair": {"hitch_pair", "fetch_pair", "move_pair"}, "buy": {"buy
            "load_tractor": {"load_tractor"}, "field_work": {"field_work"}}
 # "Take it back", "put the deckover back (where it was)": back to where Farmhand took it from.
 _BACK = re.compile(r"(?:please\s+)?(?:take|put|bring|drive|move|return)\s+(?:it|them|that|this|everything"
-                   r"|(?:the|that|my)\s+(?P<thing>[a-z0-9 ]{1,40}?))\s+back"
+                   r"|(?:the|that|my)\s+(?P<thing>[a-z0-9 ]{1,40}?))\s+back(?:\s+(?:up|over))?"
                    r"(?:\s+(?:where|to where)\s+(?:it|they)\s+(?:was|were|came from|belongs?))?")
 # "Follow me" (FollowMe), only ever on these words: "follow me (with the gmc)", "have the gmc
 # follow me", "gmc, follow me".
@@ -183,10 +183,19 @@ _RESUME = re.compile(r"(?:please\s+)?(?:continue|resume|carry on|keep going|go o
                      r"|finish (?:it|the job))(?:\s+(?:please|the job|with it|now))?")
 _INSTEAD = re.compile(r"^(?:no\s+|actually\s+|wait\s+)?(?:(?:(?:take|bring|deliver|move|haul|send|drive)\s+(?:it|them|everything|the tractor|the rig|the truck)\s+|go\s+)(to\s+.+?)\s+instead"
                       r"|change\s+(?:the\s+)?destination\s+(to\s+.+?))$")
+# "take the tractor to the farm", "bring the deutz to field 3": a tractor by itself to a place.
+_TRACTOR_TO = re.compile(r"^(?:please\s+)?(?:take|bring|haul|deliver|transport|move)\s+(?:the|my|our)\s+(?:tractor|deutz[a-z0-9 ]*?|series\s+\d+)"
+                         r"\s+(?:to|over\s+to)\s+\S")
 # "... and unload it (there)": the end of a haul goal.
 _UNLOAD_TAIL = re.compile(r"\s+(?:and\s+)?(?:then\s+)?unload\s+(?:it|him|that|the tractor)(?:\s+there)?$")
 # Clause breaks of a sequence: commas, "then", "and then", ", and", semicolons.
-_CLAUSE_BREAK = re.compile(r"\s*,\s*(?:and\s+)?(?:then\s+)?|\s+(?:and\s+)?then\s+|\s*;\s*")
+_VERB = r"(?:load|unload|buy|purchase|deliver|bring|take|haul|hitch|unhitch|detach|move|drive|park|follow|save)\b"
+_CLAUSE_BREAK = re.compile(r"\s*,\s*(?:and\s+)?(?:then\s+)?|\s+(?:and\s+)?then\s+|\s*;\s*"
+                           # "... and load the tractor": "and" before a command verb
+                           r"|\s+and\s+(?=" + _VERB + r")"
+                           # "load it back up bring it back up": one command running into the next
+                           r"|(?<=\bup)\s+(?=" + _VERB + r")|(?<=\bback)\s+(?=" + _VERB + r")"
+                           r"|(?<=\bhere)\s+(?=" + _VERB + r")|(?<=\bthere)\s+(?=" + _VERB + r")")
 # Tractor transport (AGENTS.md exception 5): "load the tractor onto the trailer", "load the
 # deutz on the deckover and secure it", "unload it", "take the tractor off the trailer".
 # Belting it and raising the ramps are part of every load ("secure it", "raise the ramps").
@@ -234,6 +243,9 @@ def _trailer_name(words: str | None) -> str | None:
 
 def transport(words: str) -> dict | None:
     words = _DEUTZ.sub("deutz", words)
+    # "load it back up", "put it back on": load it again.
+    words = re.sub(r"^((?:please\s+)?(?:load|put)\s+(?:it|him|that|the tractor|the deutz))\s+back(?:\s+(?:up|on))?\b",
+                   r"\1", words)
     load, unload = _LOAD.match(words), _UNLOAD.match(words)
     if load is not None:
         trailer = load["trailer"]
@@ -242,7 +254,14 @@ def transport(words: str) -> dict | None:
         if _TRANSPORT_NOT.search(load["tractor"]) or (trailer and _TRANSPORT_NOT.search(trailer)):
             return None                   # a wagon or a load of goods: not a tractor transport
         proposal = {"version": 1, "command": "load_tractor"}
-        tractor = _vehicle_name(load["tractor"])
+        # "load the tractor and (the) plow on the gooseneck": the tractor with that implement on it.
+        carried = re.match(r"^(?P<t>.+?)\s+(?:and|with)\s+(?:the\s+|its\s+|a\s+|his\s+)?(?P<i>.+)$", load["tractor"])
+        if carried is not None and (implement_kind(carried["i"]) or re.search(r"\bplows?\b|\bploughs?\b", carried["i"])):
+            proposal["carry"] = carried["i"][:40]
+            load_tractor_words = carried["t"]
+        else:
+            load_tractor_words = load["tractor"]
+        tractor = _vehicle_name(load_tractor_words)
         if tractor is not None and _TRAILER_WORDS.search(tractor):
             return None
         if tractor is not None:
@@ -275,7 +294,7 @@ _BUY = re.compile(r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?:buy|purchase|get us|o
                   r"(?:\s+from\s+the\s+(?:store|shop|dealer))?$")
 _BUY_ITEM = re.compile(
     r"\s*(?:(?:and|plus|also)\s+)?(?:(?:a|an|the|one|new)\s+)?(?:new\s+)?(?P<size>large|big|biggest|largest)?\s*"
-    r"(?:(?P<plow>plows?|ploughs?)|(?P<goose>gooseneck)(?:\s+trailer)?"
+    r"(?:(?P<plow>plows?|ploughs?)|(?P<pname>[a-z0-9]{1,20}(?:\s+[a-z0-9]{1,20}){0,4}?)\s+(?:plows?|ploughs?)|(?P<goose>gooseneck)(?:\s+trailer)?"
     r"|(?P<deck>(?:[a-z0-9-]*[0-9][a-z0-9-]*\s+)?deckover)(?:\s+trailer)?"
     # A named tractor, with the engine option ("... with a boss hoss engine setup") or the word.
     r"|(?P<tractor>[a-z0-9]{1,20}(?:\s+[a-z0-9]{1,20}){0,3}?)(?:\s+tractor)?\s+with\s+(?:a|an|the)\s+"
@@ -293,12 +312,29 @@ def buy(words: str) -> dict | None:
     if match is None:
         return None
     text, wants, at = _DEUTZ.sub("deutz", match["items"]), [], 0
+    # "... plow with the 25m unrealistic working width and the 25 mph speed selection": the
+    # item's configuration choices, by their own words (an engine is its own rule).
+    options = None
+    split = re.match(r"^(?P<item>.+?)\s+with\s+(?P<options>.+)$", text)
+    if split is not None and not re.search(r"\b(?:engine|motor)\b", split["options"]):
+        options = [_option_words(o) for o in re.split(r"\s*,\s*|\s+and\s+", split["options"]) if o.strip()]
+        if not options or not all(options) or len(options) > 4:
+            return None
+        text = split["item"]
     while at < len(text):
         item = _BUY_ITEM.match(text, at)
         if item is None or item.end() == at:
             return None                               # not something Farmhand knows how to choose
         if item["plow"]:
             want = {"kind": "plow"}
+        elif item["pname"]:
+            if re.search(r"\b(?:a|an|the|and|plus|with)\b", item["pname"]):
+                return None
+            name = item["pname"]
+            width = re.match(r"^(\d{1,3}(?:\.\d)?\s?m)\s+(.+)$", name)        # "a 25m titan ...": its width option
+            want = {"kind": "plow", "name": width.group(2) if width else name}
+            if width:
+                want["options"] = [width.group(1).replace(" ", "")]
         elif item["goose"]:
             want = {"kind": "trailer", "name": "gooseneck"}
         elif item["deck"]:
@@ -320,7 +356,23 @@ def buy(words: str) -> dict | None:
         at = item.end()
     if not wants or len(wants) > 4:
         return None
+    if options is not None:
+        if len(wants) != 1:
+            return None                       # whose options? said for one item only
+        wants[0]["options"] = (wants[0].get("options") or []) + [o for o in options if o not in wants[0].get("options", [])]
     return {"version": 1, "command": "buy", "wants": wants}
+
+
+_OPTION_FILLER = re.compile(r"^(?:(?:the|a|an)\s+)|\s+(?:working\s+width|work\s+width|width|speed\s+(?:selection|section|setting|option)"
+                            r"|speed|selection|setting|option|configuration|setup|config)$")
+
+
+def _option_words(phrase: str) -> str | None:
+    """An option as the player said it, without articles and kind words ("25m unrealistic")."""
+    words, previous = phrase.strip(), None
+    while previous != words:
+        previous, words = words, _OPTION_FILLER.sub("", words).strip()
+    return words[:40] if re.fullmatch(r"[a-z0-9][a-z0-9 -]*", words or "") else None
 
 
 def field_work(words: str) -> dict | None:
@@ -380,6 +432,16 @@ class RuleInterpreter:
         # Several commands in one go win over one reading of the whole sentence (live words
         # of the final acceptance request read as a single fetch); a clause not understood
         # leaves the whole sentence to the single reading ("buy a plow, the gmc truck ...").
+        single = self._clause(text)
+        if _CLAUSE_BREAK.search(text.casefold()):
+            several = self._sequence(text)
+            if several is not None and not (single is not None and {s["command"] for s in several["steps"]}
+                                            <= _COVERS.get(single["command"], set())):
+                return several
+        return single
+
+    def _clause(self, text: str) -> dict | None:
+        """One command: the goal and reference rules first, then the plain rules."""
         words = normalize(text)
         if _RESUME.fullmatch(words):
             return {"version": 1, "command": "resume"}
@@ -413,13 +475,7 @@ class RuleInterpreter:
         haul = self._haul(text)
         if haul is not None:
             return haul
-        single = self._interpret_one(text)
-        if _CLAUSE_BREAK.search(text.casefold()):
-            several = self._sequence(text)
-            if several is not None and not (single is not None and {s["command"] for s in several["steps"]}
-                                            <= _COVERS.get(single["command"], set())):
-                return several
-        return single
+        return self._interpret_one(text)
 
     def _haul(self, text: str) -> dict | None:
         """"Take the Deutz to field 3 and unload it": one goal (haul_tractor), the move part
@@ -427,8 +483,14 @@ class RuleInterpreter:
         words = normalize(text)
         unload = _UNLOAD_TAIL.search(words)
         if unload is None:
-            return None
-        prefix = _DEUTZ.sub("deutz", words[:unload.start()])
+            # "take the tractor to the farm": a tractor alone is taken on a transport (the
+            # user, 2026-10-21: haul it on the Deckover), so it is the same haul.
+            if not _TRACTOR_TO.match(words):
+                return None
+            end = len(words)
+        else:
+            end = unload.start()
+        prefix = _DEUTZ.sub("deutz", words[:end])
         move = self._interpret_one(prefix)
         if move is not None and move.get("command") == "unsupported" and move.get("reason") == "tractor_only":
             # "take the tractor to field 3 and unload it": the tractor on the transport.
@@ -465,8 +527,9 @@ class RuleInterpreter:
                 if not lowering and not any(s["command"] == "load_tractor" for s in steps):
                     return None               # securing or raising with nothing loaded
                 continue
-            step = self._interpret_one(clause)
-            if step is None or step["command"] in ("stop", "status", "settings", "report", "unsupported", "sequence"):
+            step = self._clause(clause)
+            if step is None or step["command"] in ("stop", "status", "settings", "report", "unsupported", "sequence",
+                                                   "resume", "retarget"):
                 return None
             if step["command"] in ("hitch_pair", "fetch_pair", "move_pair") and towing and "tractor_name" not in step:
                 step["tractor_name"] = towing

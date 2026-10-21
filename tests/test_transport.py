@@ -193,6 +193,22 @@ class TractorTransportTests(unittest.TestCase):
         self.assertEqual(after[truck.id].position, truck.position)                 # the truck never moved
         self.assertTrue(all(i.reserved_by is None for i in after.values()))
 
+    def test_the_tractor_is_loaded_with_its_mounted_plow_on(self):
+        # The user, 2026-10-21: "load the tractor and plow on the gooseneck" (AGENTS.md exception 5,
+        # a mounted implement along; the mod checks it is lifted, folded and fits).
+        world, tractor, deck, truck = transport_world()
+        plow = Equipment("p-41", "implement", "farm-a", (tractor.position[0] + 1.0, tractor.position[1] - 3.0),
+                         name="Titan Vineyard Plow", kinds=frozenset({"plow"}), attached_to=tractor.id)
+        world.items[tractor.id] = replace(world.items[tractor.id], attached_to=plow.id)
+        world.items[plow.id] = plow
+        result = Executor(world).execute(load())
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+        after = world.items
+        self.assertEqual(after[tractor.id].attached_to, plow.id)                     # still on it
+        moved = (after[tractor.id].position[0] - tractor.position[0], after[tractor.id].position[1] - tractor.position[1])
+        self.assertAlmostEqual(after[plow.id].position[0], plow.position[0] + moved[0])
+        self.assertAlmostEqual(after[plow.id].position[1], plow.position[1] + moved[1])
+
     def test_approach_aims_put_the_front_right_behind_the_ramps_on_the_axis(self):
         from companion import hitch as transport
         world, tractor, deck, _ = transport_world()
@@ -435,11 +451,13 @@ def haul_world(hitched=False, loaded=False, ramps_down=False, marker=True):
 
 
 def drive_by_hand(world, truck_id, deck_id, position):
-    """The player drives the loaded rig there (mock-only; the belted cargo rides along)."""
-    truck = world.items[truck_id]
+    """The player drives the loaded rig there (mock-only; the belted cargo rides along): the
+    truck stands at ``position``, the trailer where it was relative to it."""
+    truck, deck = world.items[truck_id], world.items[deck_id]
+    offset = (deck.position[0] - truck.position[0], deck.position[1] - truck.position[1])
     world.items[truck_id] = replace(truck, position=tuple(position), ai_root=Pose(*position, truck.heading or 0.0),
                                     stopped=True)
-    world._move_wagon(world.items[deck_id], position)
+    world._move_wagon(deck, (position[0] + offset[0], position[1] + offset[1]))
 
 
 class HaulGoalTests(unittest.TestCase):
@@ -908,6 +926,86 @@ class ReferenceTests(unittest.TestCase):
         self.assertEqual(rules.interpret("put the deckover back where it was")["implement_name"], "deckover")
         self.assertEqual(rules.interpret("take the gmc back")["tractor_name"], "gmc")
         self.assertNotEqual(rules.interpret("take the deckover back")["command"], "hitch_pair")
+
+
+class WholeRequestTests(unittest.TestCase):
+    """The user's request of 2026-10-21 as one command (each piece a Farmhand function):
+    "take the tractor to the farm then load it back up bring it back up buy a 25m lizard
+    titan vineyard plow (with the 25/mph speed selection) and load the tractor and plow on
+    the gooseneck and deliver it to the farm". Mock world; the player drives the loaded rig
+    where no installed driver can (LOADED_NO_DRIVER), then says "continue"."""
+
+    WORDS = ("take the tractor to the farm then load it back up bring it back up buy a 25m lizard titan vineyard "
+             "plow with the 25/mph speed selection and load the tractor and plow on the gooseneck and deliver it to the farm")
+
+    def test_the_whole_request_runs_in_order_and_nothing_done_is_redone(self):
+        from companion import coordinator as coordination
+        from companion import hitch as transport
+        from companion.executor import PLACE_STANDOFF_M
+        from companion.language import RuleInterpreter
+        from protocol.model import Destination, FarmInfo, InputJoint, OutputJoint, StoreItem
+        world, truck, deck, series9 = haul_world(hitched=True)
+        three_point = (OutputJoint(1, "implement", 0.0, -2.0, True),)
+        world.items[series9.id] = replace(world.items[series9.id], output_joints=three_point, pto_torque_capacity=2000.0)
+        farm = Destination("place-farm", (-400.0, 700.0), "Farm Barn")
+        world.place_list = (farm,)
+        world.farm_info = FarmInfo(1e6, True, True, True)
+        world.store_items = (StoreItem(31, "Titan Vineyard Plow", "LIZARD", ("PLOWS",), 3000, True, 1.7, 65, None,
+                                       options=(("config", "design16", 4, "25MPH / 41KPH"),
+                                                ("set", None, 5, "25M Unrealistic"))),
+                             StoreItem(21, "Series 9 2019", "DEUTZFAHR", ("TRACTORSL",), 200000, True, None, None, 3100))
+        world.mock_bought = Equipment("x", "implement", "farm-a", (60.0, 60.0), kinds=frozenset({"plow"}),
+                                      required_pto_torque=0.0, heading=0.0,
+                                      input_joints=(InputJoint(1, "implement", (60.0, 61.0), True, frozenset()),))
+        world.cancel, world.retained = None, (lambda: ())
+        bought = []
+        original_buy = world.buy
+
+        def buy(item_id, hitch=0, engine=0, options=()):
+            bought.append((item_id, tuple(options)))
+            return original_buy(item_id, hitch, engine, options)
+        world.buy = buy
+        c = coordination.Coordinator(world, Executor(world), lambda n, s=False: None, lambda: "farm-a", lambda: "s1")
+        rules = RuleInterpreter()
+
+        def run(proposal):
+            c.submit(proposal)
+            for _ in range(600):
+                c.wait(0.1)
+                if not c.busy:
+                    break
+            return c.last
+
+        # The farm's GOTO point is PLACE_STANDOFF_M short of its building, toward the rig.
+        def farm_point():
+            here = world.items[truck.id].position
+            d = math.dist(here, farm.position)
+            t = (d - PLACE_STANDOFF_M) / d
+            return (here[0] + (farm.position[0] - here[0]) * t, here[1] + (farm.position[1] - here[1]) * t)
+
+        start = world.items[truck.id].position
+        with unittest.mock.patch.object(coordination.Coordinator, "SETTLE_S", 0.0):
+            job = run(rules.interpret(self.WORDS))
+            self.assertEqual(job.reason, "LOADED_NO_DRIVER", job.states)               # to the farm: the player drives
+            drive_by_hand(world, truck.id, deck.id, farm_point())
+            job = run({"version": 1, "command": "resume"})
+            self.assertEqual(job.reason, "LOADED_NO_DRIVER", job.states)               # unloaded, loaded; back: drive
+            self.assertIn("haul_tractor:unload_tractor:UNLOAD", job.states)            # unloaded at the farm
+            self.assertIn("load_tractor:LOAD", job.states)                             # and loaded back up
+            drive_by_hand(world, truck.id, deck.id, start)
+            job = run({"version": 1, "command": "resume"})
+            self.assertEqual(job.reason, "LOADED_NO_DRIVER", job.states)               # bought, loaded with the plow; to the farm
+            self.assertEqual(job.states[:2], ("haul_tractor:ALREADY_DONE", "load_tractor:ALREADY_DONE"))
+            plow = next(i for i in world.items.values() if i.name == "Titan Vineyard Plow")
+            self.assertEqual(world.items[series9.id].attached_to, plow.id)
+            self.assertEqual(world.items[series9.id].belted_to, deck.id)
+            drive_by_hand(world, truck.id, deck.id, farm_point())
+            job = run({"version": 1, "command": "resume"})
+        self.assertEqual((job.state, job.reason), ("COMPLETE", "SEQUENCE_DONE"), job.states)
+        self.assertEqual(bought, [(31, (2, 1))])                                        # once, with both options
+        self.assertLess(math.dist(world.items[truck.id].position, farm_point()), 1.0)
+        self.assertEqual(world.items[series9.id].belted_to, deck.id)                   # delivered loaded
+        self.assertIsNone(c.kept)
 
 
 if __name__ == "__main__":

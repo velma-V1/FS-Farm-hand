@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -61,7 +62,7 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "haul_tractor": ("haul_tractor", "ACCEPTED_HAUL", "COMPLETE_HAUL"),
         "follow_me": ("follow_me", "ACCEPTED_FOLLOW", "COMPLETE_FOLLOW")}
 # The proposal fields that pass into a job command's intent.
-NAMES = ("tractor_name", "implement_name")
+NAMES = ("tractor_name", "implement_name", "cargo_name")
 
 
 def result_notice(status: str, reason: str, complete: str = "COMPLETE") -> str:
@@ -88,6 +89,97 @@ def owned_like(items: tuple[Equipment, ...], farm_id: str, wants) -> int:
     return count
 
 
+# ------------------------------------------------------------- sequence context
+# What "it" is in a sequence: the tractor a transport step worked with (by its store name,
+# so a reload's new IDs do not matter), the rig carrying it, and what was just bought.
+def with_context(step: dict, context: dict) -> dict:
+    step = dict(step)
+    tractor = context.get("tractor")
+    if tractor and step["command"] in ("haul_tractor", "load_tractor", "unload_tractor") and not step.get("tractor_name"):
+        step["tractor_name"] = tractor
+    if tractor and step["command"] == "move_pair" and not step.get("tractor_name") and not step.get("cargo_name") \
+            and context.get("loaded"):
+        step["cargo_name"] = tractor                      # "bring it back", "deliver it": the rig carrying it
+    if step.get("carry") and not step.get("carry_name"):
+        kind = _carry_kind(step["carry"])
+        if kind and context.get("bought", {}).get(kind):
+            step["carry_name"] = context["bought"][kind]  # "load the tractor and plow": the plow just bought
+    return step
+
+
+def remember(context: dict, step: dict, result: Result, items) -> None:
+    observed = {i.id: i for i in items}
+    if step["command"] in ("haul_tractor", "load_tractor", "unload_tractor") and result.equipment_ids:
+        # The carried tractor, never the truck towing the transport (a resumed haul's first
+        # unit may be the truck).
+        cargo = [observed[i] for i in result.equipment_ids if i in observed and observed[i].category == "tractor"
+                 and not transport.is_transport(observed[i])
+                 and not (observed.get(observed[i].attached_to) is not None
+                          and transport.is_transport(observed[observed[i].attached_to]))]
+        if cargo and _words(cargo[0].name):
+            context["tractor"] = _words(cargo[0].name)
+        context["loaded"] = step["command"] == "load_tractor"
+    elif step["command"] == "buy":
+        for want in step["wants"]:
+            if want.get("name"):
+                context.setdefault("bought", {})[want["kind"]] = _words(want["name"])
+
+
+def _carry_kind(words: str) -> str | None:
+    from companion.language import implement_kind
+    return implement_kind(words) or ("plow" if re.search(r"\bplows?\b|\bploughs?\b", words or "") else None)
+
+
+def _tractor_for(items, farm_id: str, name: str | None, transports):
+    """The tractor a transport goal means: named, else the one on a transport, else the free
+    tractor nearest a transport (within 50 m; "the tractor" beside the deckover)."""
+    towing = {t.attached_to for t in transports}          # the truck towing a transport is never it
+    if name:
+        found = [i for i in items if i.category == "tractor" and i.farm_id == farm_id and named(i, name)
+                 and not transport.is_transport(i) and i.id not in towing]
+    else:
+        found = [i for i in items if i.category == "tractor" and i.farm_id == farm_id and i.id not in towing
+                 and any(i.belted_to == t.id or transport.on_deck(i, t) for t in transports)]
+        if not found:
+            near = sorted((min(math.dist(i.position, t.position) for t in transports), i.id, i) for i in items
+                          if i.category == "tractor" and i.farm_id == farm_id and i.id not in towing and transports
+                          and not transport.is_transport(i))
+            found = [near[0][2]] if near and near[0][0] <= 50.0 else []
+    return found
+
+
+def load_with_step(items, farm_id: str, work: dict):
+    """The next step of "load the tractor and plow": (intent fragment, None) or (None, why)."""
+    observed = {i.id: i for i in items}
+    transports = [i for i in items if transport.is_transport(i) and i.farm_id == farm_id]
+    tractors = _tractor_for(items, farm_id, work.get("tractor_name"), transports)
+    if len(tractors) != 1:
+        return None, "NO_SUCH_TRACTOR" if not tractors else "TRACTOR_AMBIGUOUS"
+    tractor = tractors[0]
+    kind = _carry_kind(work.get("carry"))
+    if kind is None:
+        return None, "UNKNOWN_IMPLEMENT"
+    words = work.get("tractor_name") or _words(tractor.name)
+    implement = observed.get(tractor.attached_to)
+    carrying = implement is not None and of_kind(implement, kind) and named(implement, work.get("carry_name"))
+    aboard = tractor.belted_to is not None or any(transport.on_deck(tractor, t) for t in transports)
+    if carrying and aboard and tractor.belted_to is not None:
+        return None, "LOADED"
+    if carrying:
+        step = {"task": "load_tractor", "tractor_name": words}
+        if work.get("implement_name"):
+            step["implement_name"] = work["implement_name"]
+        return step, None
+    if aboard:
+        return {"task": "unload_tractor", "tractor_name": words}, None
+    if implement is not None:
+        return None, "TRACTOR_CARRIES_SOMETHING_ELSE"
+    step = {"task": "hitch_pair", "implement": kind, "tractor_name": words}
+    if work.get("carry_name"):
+        step["implement_name"] = work["carry_name"]
+    return step, None
+
+
 # ------------------------------------------------------------- haul planning
 def _words(name: str | None) -> str | None:
     """A store name as intent words (lower case, letters, digits, spaces, hyphens)."""
@@ -101,12 +193,7 @@ def haul_step(items: tuple[Equipment, ...], farm_id: str, name: str | None, targ
     NO_TRANSPORT when it cannot go on."""
     observed = {i.id: i for i in items}
     transports = [i for i in items if transport.is_transport(i) and i.farm_id == farm_id]
-    if name:
-        tractors = [i for i in items if i.category == "tractor" and i.farm_id == farm_id and named(i, name)
-                    and not transport.is_transport(i)]
-    else:                                   # "the tractor": the one on a transport, if just one
-        tractors = [i for i in items if i.category == "tractor" and i.farm_id == farm_id
-                    and any(i.belted_to == t.id or transport.on_deck(i, t) for t in transports)]
+    tractors = _tractor_for(items, farm_id, name, transports)
     if not tractors:
         return None, "NO_SUCH_TRACTOR"
     if len(tractors) > 1:
@@ -518,7 +605,13 @@ class Coordinator:
                 baseline.setdefault(str(n), count)
                 self._save_goal()
             sub = Job(number=job.number, owner=f"{job.owner}-s{n}", spoken=job.spoken)
-            if command == "field_work":
+            step = with_context(step, work.setdefault("context", {}))
+            if command == "haul_tractor":
+                result = self._haul(sub, cancel, entered, {"tractor_name": step.get("tractor_name"),
+                                                           "target": step.get("target", "here")})
+            elif command == "load_tractor" and step.get("carry"):
+                result = self._load_with(sub, cancel, entered, step)
+            elif command == "field_work":
                 result = self._field_work(sub, cancel, entered, {
                     "field": step["field"], "operations": step["operations"], "area_m2": step.get("area_m2"),
                     "over_crop": step.get("over_crop", False)})
@@ -539,9 +632,39 @@ class Coordinator:
             log.info("job %d step %d %s result %s %s", job.number, n, command, result.status, result.reason)
             if result.status != "COMPLETE":
                 return Result(result.status, result.reason, tuple(used), tuple(states))
+            remember(work["context"], step, result, tuple(self.world.snapshot()))
             work["done"] = n
             self._save_goal()
         return Result("COMPLETE", "SEQUENCE_DONE", tuple(used), tuple(states))
+
+    MAX_LOAD_WITH_STEPS = 6
+
+    def _load_with(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
+        """"Load the tractor and plow on the gooseneck", planned from observed state before every
+        step: a tractor on the deck without the implement is unloaded, the implement hitched to
+        it, then the two loaded together (AGENTS.md exception 5, a mounted implement along)."""
+        states, used = [], []
+        for n in range(1, self.MAX_LOAD_WITH_STEPS + 1):
+            if cancel.is_set():
+                return Result("CANCELLED", "CANCELLED_BY_REQUESTER", tuple(used), tuple(states))
+            self._settle()
+            step, failure = load_with_step(tuple(self.world.snapshot()), self.farm(), work)
+            if step is None:
+                if failure == "LOADED":
+                    return Result("COMPLETE", "LOADED_AND_SECURED", tuple(used), tuple(states))
+                return Result("BLOCKED", failure, tuple(used), tuple(states))
+            intent = {"version": 1, "request_id": f"{job.owner}-w{n}", "farm_id": self.farm(),
+                      "target": "player_at_acceptance", **step}
+            log.info("job %d load-with step %d intent %s", job.number, n, json.dumps(intent))
+            self.running = intent["request_id"]
+            result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
+            states += [f"{step['task']}:{s}" for s in result.states]
+            used += [i for i in result.equipment_ids if i not in used]
+            if result.status != "COMPLETE":
+                return Result(result.status, result.reason, tuple(used), tuple(states))
+            if step["task"] == "load_tractor":
+                return Result("COMPLETE", "LOADED_AND_SECURED", tuple(used), tuple(states))
+        return Result("FAILED", "LOAD_WITH_PLAN_TOO_LONG", tuple(used), tuple(states))
 
     MAX_HAUL_STEPS = 8
 
