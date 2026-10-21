@@ -247,7 +247,9 @@
         "helper_buy_fertilizer": {"$ref": "#/$defs/nullableBool"},
         "helper_buy_fuel": {"$ref": "#/$defs/nullableBool"},
         "savegame": {"description": "The loaded savegame slot (missionInfo.savegameIndex).",
-                     "oneOf": [{"type": "integer", "minimum": 1, "maximum": 99}, {"type": "null"}]}
+                     "oneOf": [{"type": "integer", "minimum": 1, "maximum": 99}, {"type": "null"}]},
+        "savegame_dir": {"description": "The loaded save's folder (missionInfo.savegameDirectory).",
+                         "oneOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]}
       }
     },
     "result": {

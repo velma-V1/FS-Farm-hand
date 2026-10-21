@@ -153,6 +153,7 @@ class FarmInfo:
     helper_buy_seeds: bool | None
     helper_buy_fertilizer: bool | None
     helper_buy_fuel: bool | None
+    savegame_dir: str | None = None       # the loaded save's folder (AutoDrive's network is saved there)
 
 
 @dataclass(frozen=True)

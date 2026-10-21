@@ -593,6 +593,87 @@ function aborts.load(env, task)
     Bridge.Hitch.abort(env, task.session, "STOPPED")
 end
 
+-- -------------------------------------------------------------- ad_marker
+-- An AutoDrive destination "Field N" made AutoDrive's own way, so a loaded transport can be
+-- delivered there (GIANTS GOTO does not start one, AGENTS.md): ADGraphManager:createMapMarker
+-- (GraphManager.lua 360-381, which its HUD and name dialog call; it broadcasts
+-- AutoDriveCreateMapMarkerEvent and AutoDrive saves it with the game) on the network waypoint
+-- nearest field N's own boundary (GIANTS Field polygonPoints, as Observe samples them), at
+-- most AD_FIELD_EDGE_M from it and connected (incoming and outgoing). AutoDrive keeps
+-- ADGraphManager in its own environment: it is the environment of its own
+-- GetAvailableDestinations (ExternalInterface.lua 84-94 reads it), reached with getfenv, which
+-- AutoDrive itself uses in FS25 (register.lua 329). DONE once AutoDrive lists the marker.
+Bridge.AD_FIELD_EDGE_M = 30
+Bridge.AD_MARKER_TIMEOUT_MS = 5000
+
+local function adGraph(env)
+    local AD = (Bridge.Observe and Bridge.Observe.autoDrive and Bridge.Observe.autoDrive(env)) or env.AutoDrive
+    if type(AD) ~= "table" or type(AD.GetAvailableDestinations) ~= "function" or type(env.getfenv) ~= "function" then
+        return nil
+    end
+    local ok, adEnv = pcall(env.getfenv, AD.GetAvailableDestinations)
+    local graph = ok and type(adEnv) == "table" and adEnv.ADGraphManager or nil
+    if type(graph) ~= "table" or type(graph.createMapMarker) ~= "function" or type(graph.getMapMarkerByName) ~= "function"
+            or type(graph.getWayPoints) ~= "function" then
+        return nil
+    end
+    return graph
+end
+
+local function segmentDistance(px, pz, ax, az, bx, bz)
+    local dx, dz = bx - ax, bz - az
+    local l2 = dx * dx + dz * dz
+    local t = l2 > 0 and math.max(0, math.min(1, ((px - ax) * dx + (pz - az) * dz) / l2)) or 0
+    local cx, cz = ax + t * dx, az + t * dz
+    return math.sqrt((px - cx) ^ 2 + (pz - cz) ^ 2)
+end
+
+function starters.ad_marker(env, spec)
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local graph = adGraph(env)
+    if graph == nil then return nil, "AD_MARKER_UNSUPPORTED" end
+    local n = spec.field
+    if not finite(n) or n < 1 or n ~= math.floor(n) then return nil, "INVALID_FIELD" end
+    local name = string.format("Field %d", n)
+    if graph:getMapMarkerByName(name) ~= nil then return { name = name, existed = true } end
+    local field
+    for _, f in ipairs(env.g_fieldManager.fields or {}) do
+        local id = (type(f.getId) == "function" and f:getId()) or f.fieldId
+        if id == n then field = f end
+    end
+    if field == nil or type(field.polygonPoints) ~= "table" or #field.polygonPoints < 3 then return nil, "FIELD_NOT_FOUND" end
+    local corners = {}
+    for i, node in ipairs(field.polygonPoints) do
+        local x, _, z = env.getWorldTranslation(node)
+        if not (finite(x) and finite(z)) then return nil, "FIELD_NOT_FOUND" end
+        corners[i] = { x, z }
+    end
+    local best, bestD
+    for id, wp in pairs(graph:getWayPoints() or {}) do
+        if type(wp) == "table" and finite(wp.x) and finite(wp.z) and #(wp.out or {}) > 0 and #(wp.incoming or {}) > 0 then
+            local d = math.huge
+            for i = 1, #corners do
+                local a, b = corners[i], corners[i % #corners + 1]
+                d = math.min(d, segmentDistance(wp.x, wp.z, a[1], a[2], b[1], b[2]))
+            end
+            if d <= Bridge.AD_FIELD_EDGE_M and (bestD == nil or d < bestD) then best, bestD = id, d end
+        end
+    end
+    if best == nil then return nil, "AD_NO_WAYPOINT_AT_FIELD" end
+    log("ad_marker %s on waypoint %s, %.1f m from field %d's edge", name, tostring(best), bestD, n)
+    graph:createMapMarker(best, name)
+    return { name = name, graph = graph }
+end
+
+function steppers.ad_marker(_env, task)
+    if task.existed then return "DONE", "MARKER_EXISTS" end
+    if task.graph:getMapMarkerByName(task.name) ~= nil then return "DONE", "MARKER_CREATED" end
+    if task.elapsed > Bridge.AD_MARKER_TIMEOUT_MS then return "FAILED", "MARKER_NOT_OBSERVED" end
+    return nil
+end
+
+function aborts.ad_marker() end
+
 -- ------------------------------------------------------------------- fold
 -- A reserved vehicle's own folding parts (a pickup's tailgate, a deckover's ramps) to one
 -- end through GIANTS' Foldable, never its animations directly: getIsFoldAllowed 987-1009,
@@ -1213,7 +1294,7 @@ function aborts.stop() end
 -- --------------------------------------------------------------- runner
 
 Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true, load = true }
-Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true }   -- ops that act on no vehicle
+Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true, ad_marker = true }   -- ops that act on no vehicle
 
 function Bridge.start(env, spec)
     local starter = starters[spec.op]

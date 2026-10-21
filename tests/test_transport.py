@@ -487,9 +487,29 @@ class HaulGoalTests(unittest.TestCase):
         # the tractor stays belted on the trailer.
         world, truck, deck, series9 = haul_world(loaded=True, marker=False)
         job, notices = self.run_goal(world)
-        self.assertEqual((job.state, job.reason), ("BLOCKED", "LOADED_NEEDS_AUTODRIVE"), job.states)
+        # AutoDrive's network does not reach field 3 here: the exact gap is named.
+        self.assertEqual((job.state, job.reason), ("BLOCKED", "AD_NO_WAYPOINT_AT_FIELD"), job.states)
         self.assertNotIn("unload_tractor", " ".join(job.states))
         self.assertEqual(world.items[series9.id].belted_to, deck.id)
+
+    def test_a_missing_autodrive_destination_is_made_once_where_the_network_meets_the_field(self):
+        world, truck, deck, series9 = haul_world(loaded=True, marker=False)
+        world.mock_ad_fields = {3: (-850.0, 420.0)}
+        job, _ = self.run_goal(world)
+        self.assertEqual((job.state, job.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), job.states)
+        self.assertEqual(world.ad_markers_made, (3,))
+        self.assertLess(math.dist(world.items[deck.id].position, (-850.0, 420.0)), 1.0)
+        # Again: the marker is there now, none is made.
+        world.items[series9.id] = replace(world.items[series9.id], position=(0.0, 0.0))
+        self.assertEqual(world.ad_markers_made, (3,))
+
+    def test_no_marker_is_made_for_what_goto_can_deliver(self):
+        world, truck, deck, series9 = haul_world(hitched=True, marker=False)
+        world.mock_ad_fields = {3: (-850.0, 420.0)}
+        result = Executor(world).execute(dict(intent("m-1"), task="move_pair",
+                                              target={"type": "field_entrance", "field": 3}))
+        self.assertEqual(result.status, "COMPLETE", result)                # not loaded: GIANTS GOTO
+        self.assertEqual(world.ad_markers_made, ())
 
     def test_the_next_step_from_each_observed_state(self):
         from companion.coordinator import haul_step
@@ -717,6 +737,25 @@ class RestartTests(unittest.TestCase):
         c.wait(10)
         self.assertEqual(bought, [])                                        # the Series 9 is already there
         self.assertEqual((c.last.state, c.last.states[0]), ("COMPLETE", "buy:ALREADY_DONE"))
+
+
+class AutoDriveBackupTests(unittest.TestCase):
+    def test_the_network_is_copied_and_verified_before_any_change_or_nothing_changes(self):
+        import tempfile
+        from adapters.world import StepFailed
+        from companion.bridge import backup_autodrive_config
+        root = Path(tempfile.mkdtemp())
+        save, profile = root / "savegame2", root / "profile"
+        save.mkdir()
+        (save / "AutoDrive_config.xml").write_text("<AutoDrive><MapName>FourFields</MapName></AutoDrive>")
+        copy = backup_autodrive_config(str(save), profile, root / "backup")
+        self.assertEqual(copy.read_text(), (save / "AutoDrive_config.xml").read_text())
+        (profile / "save").mkdir(parents=True)                               # the Xbox build's active save
+        (profile / "save" / "AutoDrive_config.xml").write_text("<AutoDrive/>")
+        self.assertEqual(backup_autodrive_config(None, profile, root / "b2").read_text(), "<AutoDrive/>")
+        with self.assertRaises(StepFailed) as failed:
+            backup_autodrive_config(str(root / "nowhere"), root / "empty", root / "b3")
+        self.assertEqual(failed.exception.code, "AD_CONFIG_BACKUP_FAILED")
 
 
 if __name__ == "__main__":

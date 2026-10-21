@@ -950,7 +950,10 @@ local function farmInfo(env, farmId)
              helper_buy_fuel = flag(info.helperBuyFuel),
              savegame = (finite(info.savegameIndex) and info.savegameIndex == math.floor(info.savegameIndex)
                          and info.savegameIndex >= 1 and info.savegameIndex <= 99) and info.savegameIndex
-                         or Observe.NULL }
+                         or Observe.NULL,
+             -- Where the save's files are (FSCareerMissionInfo.savegameDirectory): the companion
+             -- backs up AutoDrive's network there before Farmhand adds a destination to it.
+             savegame_dir = text(info.savegameDirectory) or Observe.NULL }
 end
 
 function Observe.snapshot(env, seq, session, dt)

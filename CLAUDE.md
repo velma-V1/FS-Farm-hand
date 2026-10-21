@@ -66,7 +66,8 @@ ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snap
   The ops are fixed (protocol/ipc.py COMMAND_ARGS): `drive` (AutoDrive), `navigate` (GIANTS GOTO), `stage`,
   `maneuver`, `align`, `attach`, `detach` (GIANTS' own, where it allows it), `pull_clear` (straight after that detach),
   `unpark` (straight out of a building GIANTS cannot start from), `fold` (GIANTS Foldable: tailgates, ramps), `belts`
-  (GIANTS TensionBelts), `load` (a tractor alone straight onto a transport's deck or back off it), `fieldwork`,
+  (GIANTS TensionBelts), `load` (a tractor alone straight onto a transport's deck or back off it), `ad_marker`
+  (an AutoDrive destination for a field, AutoDrive's own call, after a backup of its network), `fieldwork`,
   `open_gates`, `block`, `buy`, `save`, `stop`. ACCEPTED/DONE is never success; the game stops a
   session's motion if the heartbeat is lost for 10 s. Player key presses arrive as
   `request` frames (a fixed `action` or typed `text`).

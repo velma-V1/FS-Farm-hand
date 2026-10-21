@@ -57,6 +57,19 @@ class MockWorld:
             return tuple(self.field_map.values())
 
     mock_field_places = ()        # mock-only: Destination("field-N", position, "field N") for every map field
+    mock_ad_fields = {}           # mock-only: field N -> where AutoDrive's network passes its edge
+    ad_markers_made = ()
+
+    def ad_marker(self, field):
+        # Mock-only: AutoDrive's own marker "Field N" where its network meets field N.
+        with self._lock:
+            position = self.mock_ad_fields.get(field)
+            if position is None:
+                raise StepFailed("AD_NO_WAYPOINT_AT_FIELD")
+            self.destination_map = {**self.destination_map,
+                                    f"ad-{field}": Destination(f"ad-{field}", position, f"Field {field}")}
+            self.ad_markers_made = self.ad_markers_made + (field,)
+            return "MARKER_CREATED"
 
     def field_places(self):
         return tuple(self.mock_field_places)

@@ -1423,6 +1423,67 @@ class BuyTests(unittest.TestCase):
                 self.assertEqual(len(env.bought), 0)
 
 
+class AutoDriveMarkerTests(unittest.TestCase):
+    """ad_marker: AutoDrive's own ADGraphManager:createMapMarker (GraphManager.lua 360-381),
+    reached as the environment of its GetAvailableDestinations (getfenv, which AutoDrive
+    uses in FS25), on the connected waypoint nearest field N's GIANTS boundary within 30 m.
+    Stubs only: AutoDrive's event round trip is stood in for by an immediate marker."""
+
+    ENV = r"""
+        local env = { made = {} }
+        local graph = { markers = {} }
+        graph.points = {
+            [1] = { x = -853, z = 420, out = { 2 }, incoming = { 3 } },      -- the road beside the field, 3 m off
+            [2] = { x = -855, z = 440, out = { 3 }, incoming = { 1 } },      -- 5 m off: farther from the edge
+            [3] = { x = -820, z = 420, out = {}, incoming = { 2 } },         -- inside the field, but a dead end
+            [4] = { x = -700, z = 100, out = { 1 }, incoming = { 1 } },      -- far away
+        }
+        function graph:getWayPoints() return self.points end
+        function graph:getMapMarkerByName(name) return self.markers[name] end
+        function graph:createMapMarker(id, name) env.made[#env.made + 1] = { id = id, name = name }; self.markers[name] = { id = id } end
+        local adEnv = { ADGraphManager = graph }
+        local AD = {}
+        function AD:GetAvailableDestinations() return {} end
+        env.AutoDrive = AD
+        env.getfenv = function(fn) if fn == AD.GetAvailableDestinations then return adEnv end return {} end
+        local function node(x, z) return { x = x, y = 0, z = z } end
+        env.getWorldTranslation = function(n) return n.x, n.y, n.z end
+        -- Field 3: a square whose west edge runs along x = -850.
+        env.g_fieldManager = { fields = { { fieldId = 3, polygonPoints = { node(-850, 0), node(-850, 800), node(-50, 800), node(-50, 0) } },
+                                          { fieldId = 7, polygonPoints = { node(500, 500), node(600, 500), node(600, 600) } } } }
+        env.graph = graph
+        return env
+    """
+
+    def setUp(self):
+        self.lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        self.bridge = self.lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        self.start = self.lua.eval("""function(B, env, field)
+            local task, code = B.start(env, { op = 'ad_marker', field = field, owned = function() return true end })
+            if task == nil then return nil, code end
+            task.elapsed = 0
+            local status, result = B.step(env, task, 16)
+            return task, code, status, result end""")
+
+    def test_the_marker_goes_on_the_connected_waypoint_nearest_the_fields_edge(self):
+        env = self.lua.execute(self.ENV)
+        task, _, status, code = self.start(self.bridge, env, 3)
+        self.assertIsNotNone(task)
+        self.assertEqual((status, code), ("DONE", "MARKER_CREATED"))
+        self.assertEqual((env.made[1].id, env.made[1].name), (1, "Field 3"))
+        task, _, status, code = self.start(self.bridge, env, 3)                 # there now: nothing made
+        self.assertEqual((status, code), ("DONE", "MARKER_EXISTS"))
+        self.assertEqual(len(env.made), 1)
+
+    def test_no_marker_without_a_network_at_the_field_or_without_autodrive_s_own_call(self):
+        env = self.lua.execute(self.ENV)
+        self.assertEqual(self.start(self.bridge, env, 7)[1], "AD_NO_WAYPOINT_AT_FIELD")
+        self.assertEqual(self.start(self.bridge, env, 9)[1], "FIELD_NOT_FOUND")
+        env.getfenv = None
+        self.assertEqual(self.start(self.bridge, env, 3)[1], "AD_MARKER_UNSUPPORTED")
+        self.assertEqual(len(env.made), 0)
+
+
 class SaveTests(unittest.TestCase):
     """The game's own save; complete only once GIANTS' saveSavegame ran to its end."""
 

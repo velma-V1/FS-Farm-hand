@@ -244,7 +244,7 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = N
         field_places=tuple(Destination(f"field-{f['id']}", (f["x"], f["z"]), f"field {f['id']}")
                            for f in sorted(frame.get("field_places", ()), key=lambda f: f["id"])),
         farm=None if farm is None else FarmInfo(farm["money"], farm["helper_buy_seeds"],
-                                                farm["helper_buy_fertilizer"], farm["helper_buy_fuel"]),
+                                                farm["helper_buy_fertilizer"], farm["helper_buy_fuel"], farm.get("savegame_dir")),
     )
 
 

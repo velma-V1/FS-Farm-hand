@@ -5,6 +5,7 @@ import functools
 import json
 import logging
 import math
+import re
 import time
 from pathlib import Path
 from threading import Lock
@@ -748,8 +749,28 @@ class Executor:
         # d14230aa9fb24d30-3: BLOCKED from the first frame by its own cargo); AutoDrive counts
         # belt-mounted objects as its own (AutoDriveUtilFuncs checkIsConnected 61-64).
         if isinstance(route, Pose) and any(item.belted_to == wagon.id for item in items):
-            return None, None, "LOADED_NEEDS_AUTODRIVE"
+            route, failure = self._field_marker(target, tractor)
+            if route is None:
+                return None, None, failure
         return (tractor, wagon), route, None
+
+    def _field_marker(self, target, tractor):
+        """A loaded rig to field N with no AutoDrive marker for it: AutoDrive's own marker
+        "Field N" made where its network meets the field (world.ad_marker, after a backup of
+        its network); the minimum change, only when the delivery needs it."""
+        match = isinstance(target, PlaceTarget) and re.fullmatch(r"field (\d+)", _normalized_name(target.name))
+        if not match or "autodrive" not in tractor.capabilities:
+            return None, "LOADED_NEEDS_AUTODRIVE"
+        number = int(match.group(1))
+        try:
+            self.world.ad_marker(number)
+        except (StepFailed, StepUnverified) as failure:
+            log.info("AutoDrive marker for field %d: %s", number, failure.code)
+            return None, failure.code
+        marker = next((d for d in self.world.destinations() if isinstance(d, Destination)
+                       and _normalized_name(d.name or "") == f"field {number}" and valid_position(d.position)), None)
+        log.info("AutoDrive marker for field %d: %s", number, marker)
+        return (marker, None) if marker is not None else (None, "MARKER_NOT_OBSERVED")
 
     def _choose_attached(self, items, farm_id, requester):
         """detach_pair: the tractor with its implement (of the job's kind, if named)
