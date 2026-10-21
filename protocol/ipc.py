@@ -111,7 +111,7 @@ COMMAND_ARGS = {
     "drive": ("tractor", "marker"),
     "stage": ("tractor", "x", "z", "yaw"),
     "navigate": ("tractor", "x", "z", "yaw"),
-    "fieldwork": ("tractor", "field", "x", "z", "yaw", "area", "seed"),   # seed: position in the seeder's crops, 0 as set
+    "fieldwork": ("tractor", "field", "x", "z", "yaw", "area", "seed", "hand"),   # seed: in the seeder's crops (0 as set); hand 1: ends WORKING
     "buy": ("item", "hitch", "engine", "opt1", "opt2", "opt3", "opt4"),
     "save": (),
     "block": ("x", "z", "area"),
@@ -131,10 +131,10 @@ COMMAND_ARGS = {
     "stop": ("tractor",),
 }
 _ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "x", "z": "z",
-              "yaw": "yaw", "tractorJoint": "tj", "wagonJoint": "wj", "maxDistanceM": "dist", "field": "field", "area": "area", "seed": "seed", "item": "item", "hitch": "hitch",
+              "yaw": "yaw", "tractorJoint": "tj", "wagonJoint": "wj", "maxDistanceM": "dist", "field": "field", "area": "area", "seed": "seed", "hand": "hand", "item": "item", "hitch": "hitch",
               "engine": "eng", "opt1": "o1", "opt2": "o2", "opt3": "o3", "opt4": "o4",
               "direction": "fd"}
-_INTEGER = {"tractor", "wagon", "marker", "tractorJoint", "wagonJoint", "field", "seed", "item", "hitch", "engine",
+_INTEGER = {"tractor", "wagon", "marker", "tractorJoint", "wagonJoint", "field", "seed", "hand", "item", "hitch", "engine",
             "opt1", "opt2", "opt3", "opt4"}
 _TOKEN = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 MAX_COMMAND_ID = 2147483647

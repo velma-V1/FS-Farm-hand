@@ -808,7 +808,9 @@ local function sampleFruit(env, f, track)
             end
         end
     end
-    local counts = {}
+    -- Cut: harvested, as GIANTS judges it (fruitTypeDesc:getIsCut(growthState), PlowMission
+    -- isAvailableForField 151-156 on FieldState.growthState).
+    local counts, cut = {}, 0
     for _, p in ipairs(points) do
         local state = env.FieldState.new()
         state:update(p[1], p[2])
@@ -817,11 +819,12 @@ local function sampleFruit(env, f, track)
             if state.fruitTypeIndex ~= nil and state.fruitTypeIndex ~= env.FruitType.UNKNOWN then
                 local desc = env.g_fruitTypeManager:getFruitTypeByIndex(state.fruitTypeIndex)
                 name = token(desc and desc.name) or tostring(state.fruitTypeIndex)
+                if try(function() return desc:getIsCut(state.growthState) end) == true then cut = cut + 1 end
             end
             counts[name] = (counts[name] or 0) + 1
         end
     end
-    return counts, #points
+    return counts, #points, cut
 end
 
 function Observe.fieldCoverage(env, f, track)
@@ -837,9 +840,9 @@ function Observe.fieldCoverage(env, f, track)
     local levels = {}
     for level = 1, (integer(maxSpray) and maxSpray or 0) do levels[tostring(level)] = level end
     local sprayShare = measure(env, f, env.FieldDensityMap.SPRAY_LEVEL, levels)
-    local fruit, sampled = sampleFruit(env, f, track)
+    local fruit, sampled, cut = sampleFruit(env, f, track)
     return { ground = groundShare, spray = sprayShare, total_m2 = total or Observe.NULL, fruit = fruit or Observe.NULL,
-             sampled = sampled or 0 }
+             sampled = sampled or 0, cut = cut or 0 }
 end
 
 -- The owned fields' records; one stale field's coverage is recomputed per call

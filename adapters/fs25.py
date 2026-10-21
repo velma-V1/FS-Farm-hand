@@ -106,6 +106,8 @@ def _category(vehicle, categories) -> str | None:
         return mapped                                       # explicit local override
     if _towing_vehicle(vehicle):
         return "tractor"
+    if vehicle["self_propelled"] is True and vehicle["motor"] is not None and "combine" in vehicle["kinds"]:
+        return "harvester"                                  # a combine: harvests with its header
     if (vehicle["self_propelled"] is False and vehicle["input_joint_poses"]
             and not LOADER_TOOL_KINDS & set(vehicle["kinds"])
             and (IMPLEMENT_KINDS & set(vehicle["kinds"]) or vehicle["category"] is not None)):
@@ -261,5 +263,5 @@ def field_from_frame(f) -> Field:
             spray=tuple(sorted((int(level), min(1.0, share)) for level, share in c["spray"].items())),
             total_m2=c["total_m2"],
             fruit=None if c["fruit"] is None else tuple(sorted(c["fruit"].items())),
-            sampled=c["sampled"])
+            sampled=c["sampled"], cut=c.get("cut", 0))
     return Field(f["id"], f["area_ha"], (f["x"], f["z"]), coverage, f["age_ms"])

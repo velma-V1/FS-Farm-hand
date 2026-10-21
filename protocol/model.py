@@ -114,6 +114,7 @@ class FieldCoverage:
     total_m2: float | None
     fruit: tuple[tuple[str, int], ...] | None
     sampled: int
+    cut: int = 0                  # samples whose crop GIANTS counts as cut (harvested)
 
     def share(self, *ground_types: str) -> float:
         return sum(share for name, share in self.ground if name in ground_types)

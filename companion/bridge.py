@@ -417,10 +417,10 @@ class FS25World:
                          opt2=int(chosen[1]), opt3=int(chosen[2]), opt4=int(chosen[3]))
 
     def fieldwork(self, tractor_id: str, field_id: int, pose: Pose, owner: str, area_m2: float = 0.0,
-                  seed: int = 0) -> str:
+                  seed: int = 0, hand: bool = False) -> str:
         self._reserved(tractor_id, owner)
         return self._run("fieldwork", tractor=int(tractor_id), field=int(field_id), x=pose.x, z=pose.z,
-                         yaw=pose.yaw, area=float(area_m2), seed=int(seed))
+                         yaw=pose.yaw, area=float(area_m2), seed=int(seed), hand=1 if hand else 0)
 
     def travel(self, tractor_id: str, destination_id: str, owner: str) -> None:
         self._reserved(tractor_id, owner)

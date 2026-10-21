@@ -319,8 +319,9 @@ class MappingTests(unittest.TestCase):
                  ({"category": "TELELOADERVEHICLES"}, "unknown"),
                  ({"category": "skidSteerVehicles"}, "unknown"),
                  ({"forage_wagon": True}, "forage_wagon"),
-                 # Live 2026-10-18: a combine (motor, PTO output) is a machine, not a tractor.
-                 ({"kinds": ["combine", "fill_unit", "ai_field_worker"]}, "unknown"),
+                 # Live 2026-10-18: a combine (motor, PTO output) is a machine, not a tractor:
+                 # a harvester (2026-10-21: it harvests with its header).
+                 ({"kinds": ["combine", "fill_unit", "ai_field_worker"]}, "harvester"),
                  ({"kinds": ["sprayer", "fill_unit"]}, "unknown"),              # self-propelled sprayer
                  ({"kinds": ["fill_unit", "ai_field_worker", "ai_implement"]}, "tractor")]
         for change, expected in cases:

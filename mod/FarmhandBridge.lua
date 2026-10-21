@@ -829,6 +829,7 @@ Bridge.AI_STOP_CODES = {
     { "AIMessageErrorVehicleBroken", "VEHICLE_BROKEN" },
 }
 Bridge.aiStops = setmetatable({}, { __mode = "k" })   -- vehicle -> code of its last ended job
+Bridge.handed = setmetatable({}, { __mode = "k" })    -- vehicle -> the op whose job runs on without a command
 
 -- AI_JOB_STOPPED listener: the stopped job's vehicle and why (ClassUtil as
 -- AIMessageManager:getMessageIndex 137-145). Diagnostics and the op's end code only.
@@ -900,7 +901,16 @@ function starters.fieldwork(env, spec)
     if spec.area ~= nil and not (finite(spec.area) and spec.area > 0 and spec.area <= Bridge.FIELDWORK_MAX_AREA_M2) then
         return nil, "INVALID_AREA"
     end
+    Bridge.handed[v] = nil
     if spec.seed == 0 then spec.seed = nil end              -- 0: the crop the seeder is set to
+    -- A combine always lays its straw in a swath where it can (the user 2026-10-21: the straw
+    -- sells): Combine:setIsSwathActive(true) (927-950) where spec.swath.isAvailable (750-759).
+    local combine = v.spec_combine
+    if combine ~= nil and combine.swath ~= nil and combine.swath.isAvailable == true then
+        local ok = pcall(function() v:setIsSwathActive(true) end)
+        if not ok or combine.isSwathActive ~= true then return nil, "SWATH_NOT_SET" end
+        log("fieldwork: straw swath on")
+    end
     if spec.seed ~= nil then
         local denied = Bridge.chooseSeed(v, spec.seed)
         if denied ~= nil then return nil, denied end
@@ -957,6 +967,17 @@ function steppers.fieldwork(env, task, dt)
         if task.elapsed > Bridge.FIELDWORK_TIMEOUT_MS then return "FAILED", "TIMEOUT" end
         local x, _, z = env.getWorldTranslation(v.rootNode)
         if not (finite(x) and finite(z)) then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
+        -- Handed off (hand 1, the user 2026-10-21: workers go on while Farmhand does something
+        -- else): once GIANTS' helper works the field it is the game's hired worker; the op
+        -- ends WORKING and a later stop for this vehicle still ends the helper's job.
+        if task.spec.hand == 1 and task.spec.area == nil then
+            local working = pcall(function() assert(v:getIsFieldWorkActive() == true) end)
+            if working then
+                Bridge.handed[v] = "fieldwork"
+                log("fieldwork handed off: GIANTS' helper works field %s", tostring(task.spec.field))
+                return "DONE", "WORKING"
+            end
+        end
         -- The worked track (implement working: field work active), for crop samples.
         task.track = task.track or {}
         task.sinceTrack = (task.sinceTrack or 0) + (dt or 0)
@@ -1414,7 +1435,16 @@ function aborts.buy() end         -- a purchase is not undone
 -- spec.target: the running task on this tractor, if any; it is aborted first.
 function starters.stop(env, spec)
     if spec.target ~= nil then Bridge.abort(env, spec.target, "STOPPED") end
-    return {}
+    -- A handed-off job of this vehicle: GIANTS' helper ended as the player's stop does,
+    -- AutoDrive by its own stop (as aborts.drive).
+    local handed = spec.tractor ~= nil and Bridge.handed[spec.tractor] or nil
+    if handed == "fieldwork" and spec.tractor:getIsAIActive() == true then
+        Bridge.Hitch.cancelStaging(env, spec.tractor)
+    elseif handed == "drive" and spec.tractor.ad.stateModule:isActive() == true then
+        spec.tractor:stopAutoDrive()
+    end
+    if spec.tractor ~= nil then Bridge.handed[spec.tractor] = nil end
+    return { handed = handed }
 end
 
 function steppers.stop(env, task)
@@ -1435,7 +1465,9 @@ function steppers.stop(env, task)
     if Bridge.lastLoad ~= nil and Bridge.lastLoad.tractor == v then
         Bridge.Hitch.abort(env, Bridge.lastLoad, "STOPPED")      -- latched: brake + cruise off
     end
-    local ownMotion = Bridge.pendingGoto[v] ~= nil or (target ~= nil
+    local ownMotion = Bridge.pendingGoto[v] ~= nil
+        or (task.handed == "fieldwork" and v:getIsAIActive() ~= false)
+        or (task.handed == "drive" and v.ad.stateModule:isActive() ~= false) or (target ~= nil
         and ((target.op == "drive" and v.ad.stateModule:isActive() ~= false)
         or ((target.op == "stage" or target.op == "navigate" or target.op == "fieldwork" or target.op == "follow")
             and target.seen and v:getIsAIActive() ~= false)))
@@ -1594,7 +1626,7 @@ function Bridge:checkSession()
 end
 
 local ATTRS = { tractor = "tractor", wagon = "wagon", marker = "marker", x = "x", z = "z", yaw = "yaw",
-                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", seed = "seed", item = "item", hitch = "hitch", engine = "eng", opt1 = "o1", opt2 = "o2", opt3 = "o3", opt4 = "o4",
+                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", seed = "seed", hand = "hand", item = "item", hitch = "hitch", engine = "eng", opt1 = "o1", opt2 = "o2", opt3 = "o3", opt4 = "o4",
                 direction = "fd" }
 
 function Bridge:pollCommand()
@@ -1730,6 +1762,13 @@ Bridge.NOTICES = {
     RETARGETED = "Farmhand: new destination; carrying on",
     COMPLETE_HAUL = "Farmhand: delivered and unloaded",
     ACCEPTED_CONTRACT = "Farmhand: taking on a contract",
+    WORKER_STARTED = "Farmhand: a helper is working the field; it carries on while I do the next thing",
+    WORKERS_STARTED = "Farmhand: the helpers are working; ready for the next job",
+    WORKER_DONE = "Farmhand: a helper finished its field (checked on the field); bringing the equipment back",
+    WORKER_STOPPED = "Farmhand: a helper stopped before its field was done; bringing the equipment back",
+    ACCEPTED_RETURN = "Farmhand: bringing a helper's equipment back",
+    COMPLETE_RETURN = "Farmhand: equipment back and unhitched",
+    STATUS_HELPERS_WORKING = "Farmhand: free; helpers are working the fields",
     COMPLETE_CONTRACT = "Farmhand: contract done and the reward collected",
     NO_SUCH_TRACTOR = "no tractor by that name",
     TRACTOR_AMBIGUOUS = "more than one tractor fits; name it",
@@ -1790,6 +1829,7 @@ Bridge.STEPS = {
     RAMPS_UP = "raising the ramps",
     FIELD_WORK = "working the field (GIANTS helper)",
     CONTRACT = "taking the contract",
+    WAIT_AHEAD = "waiting for the helper ahead to get going",
     COLLECT = "collecting the contract reward",
     VERIFY = "checking the hitch",
     DELIVER = "driving to the destination",
@@ -1928,6 +1968,9 @@ Bridge.REASONS = {
     SEED_NOT_SUPPORTED = "the seeder cannot sow that crop",
     SEED_NOT_SET = "the seeder did not take that crop",
     CROP_NOT_OBSERVED = "the field does not show that crop afterwards; check it",
+    CROP_NOT_READY = "the crop on that field is not ready to harvest",
+    NO_HARVESTER_WITH_HEADER = "no free combine with its header on",
+    SWATH_NOT_SET = "the combine did not switch to laying a straw swath",
     NO_FIELD_FOUND = "the helper found no field there",
     FIELD_NOT_READY = "the field needs nothing from this implement",
     PARTIAL_COVERAGE = "the helper stopped before the whole field was done",

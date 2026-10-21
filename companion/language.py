@@ -152,7 +152,7 @@ def refuses(text: str) -> bool:
 # Field work: "plow, seed and fertilize field 7", "seed the smallest field".
 _FIELD_VERBS = {"plow": "plow", "plough": "plow", "cultivate": "cultivate", "till": "cultivate",
                 "seed": "sow", "sow": "sow", "plant": "sow", "drill": "sow",
-                "fertilize": "fertilize", "fertilise": "fertilize", "spray": "fertilize"}
+                "fertilize": "fertilize", "fertilise": "fertilize", "spray": "fertilize", "harvest": "harvest"}
 _FIELD_VERB = r"(?:" + "|".join(_FIELD_VERBS) + r")"
 _FIELD_WORK = re.compile(
     rf"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?P<verbs>{_FIELD_VERB}(?:\s+(?:(?:and|then|and\s+then)\s+)?{_FIELD_VERB})*)"

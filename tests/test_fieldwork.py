@@ -670,3 +670,170 @@ class ContractTests(unittest.TestCase):
                 self.assertEqual(r.interpret(words), {"version": 1, "command": "contract", **extra})
         self.assertIsNone(r.interpret("do you have a contract"))
         self.assertIsNone(r.interpret("dont do a contract"))
+
+
+class WorkerTests(unittest.TestCase):
+    """The user (2026-10-21): "farm hand needs to be able to leave workers doing field work
+    and do something else like start the seeder behind the plow tractor". Field work is
+    handed to GIANTS' helper; the job is done once it works, the pair stays reserved for
+    it, and once the helper ends the field is measured and the equipment comes back."""
+
+    def world(self, *kinds, coverage=STUBBLE):
+        class World(MockWorld):
+            cancel = None
+
+            def retained(self):
+                return tuple(self._reservations)
+
+            def recover(self, owner):
+                raise AssertionError(f"a worker's reservation was recovered: {owner}")
+
+            def reservation(self, owner):
+                r = self._reservations.get(owner)
+                return None if r is None else r[1]
+
+        items = []
+        for n, kind in enumerate(kinds):
+            tractor, implement = rig(kind, 500.0, at=(100.0 + 40 * n, 100.0))
+            items += [replace(tractor, id=f"t-{n + 1}", attached_to=f"i-{n + 1}"),
+                      replace(implement, id=f"i-{n + 1}", attached_to=f"t-{n + 1}", required_pto_torque=0.0)]
+        return World(items, PLAYERS, fields=(field(7, 0.4, coverage),), farm=FARM)
+
+    def coordinator(self, world):
+        from companion import coordinator as coordination
+        notices = []
+        c = coordination.Coordinator(world, Executor(world), lambda n, s=False: notices.append(n), lambda: "farm-a",
+                                     lambda: "s1")
+        c.WATCH_S = 0.02
+        c.SETTLE_S = 0.5
+        return c, notices
+
+    def until(self, check, seconds=10.0):
+        import time
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if check():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def unit(self, world, unit_id):
+        return next(i for i in world.snapshot() if i.id == unit_id)
+
+    def test_the_helper_works_on_and_its_equipment_comes_back_once_it_is_done(self):
+        world = self.world("plow")
+        c, notices = self.coordinator(world)
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["plow"]})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"))
+        self.assertEqual(notices[-1], "WORKERS_STARTED")
+        self.assertEqual([w.tractor for w in c.workers], ["t-1"])
+        self.assertIsNotNone(self.unit(world, "t-1").reserved_by)                # kept for the helper
+        self.assertEqual(c.status(), "STATUS_HELPERS_WORKING")
+        world.finish_worker("t-1")
+        self.assertTrue(self.until(lambda: not c.workers and c.last.command == "worker_return"
+                                   and c.last.state == "COMPLETE"))
+        self.assertIn("WORKER_DONE", notices)
+        self.assertEqual(notices[-1], "COMPLETE_RETURN")
+        self.assertGreaterEqual(dict(world.field_map[7].coverage.ground)["PLOWED"], COVERAGE_REQUIRED)
+        tractor, plow = self.unit(world, "t-1"), self.unit(world, "i-1")
+        self.assertLess(math.dist(tractor.position, (100.0, 100.0)), 10.0)      # back (then pulled clear)
+        self.assertIsNone(tractor.attached_to)
+        self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
+
+    def test_farmhand_does_the_next_job_while_the_helper_works(self):
+        world = self.world("plow", "sowing_machine")
+        c, _ = self.coordinator(world)
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["plow"]})
+        c.wait(10)
+        # Another job meanwhile: the busy rig is never taken; the other one moves.
+        c.submit({"version": 1, "command": "move_pair", "implement": "sowing_machine", "target": {"type": "origin"}})
+        c.wait(10)
+        self.assertNotEqual(c.last.reason, "INTERNAL_ERROR")
+        self.assertEqual([w.tractor for w in c.workers], ["t-1"])
+        self.assertTrue(self.unit(world, "t-1").busy)
+
+    def test_the_seeder_starts_behind_the_plow_once_the_plow_is_ahead(self):
+        world = self.world("plow", "sowing_machine")
+        c, notices = self.coordinator(world)
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["plow", "sow"]})
+        self.assertTrue(self.until(lambda: c.workers))
+        self.assertTrue(self.until(lambda: c.current is not None and c.current.step == "WAIT_AHEAD"))
+        self.assertEqual([w.tractor for w in c.workers], ["t-1"])                 # not ahead of the plow
+        f = world.field_map[7]
+        world.field_map[7] = replace(f, coverage=replace(f.coverage, ground=(("PLOWED", 0.4), ("STUBBLE", 0.6))))
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"))
+        self.assertEqual(sorted(w.tractor for w in c.workers), ["t-1", "t-2"])
+        self.assertEqual(notices.count("WORKER_STARTED"), 2)
+
+    def test_with_one_tractor_the_next_implement_waits_for_it_to_come_back(self):
+        world = self.world("plow")
+        seeder = Equipment("i-9", "implement", "farm-a", (160.0, 100.0), kinds=frozenset({"sowing_machine", "ai_implement"}),
+                           heading=0.0, fill_units=(FillUnit(1, "SEEDS", 500.0, 4000.0, role="seed"),),
+                           input_joints=(InputJoint(1, "implement", (160.0, 102.0), True),), required_pto_torque=0.0)
+        world.items["i-9"] = seeder
+        c, _ = self.coordinator(world)
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["plow", "sow"]})
+        self.assertTrue(self.until(lambda: c.workers))
+        f = world.field_map[7]
+        world.field_map[7] = replace(f, coverage=replace(f.coverage, ground=(("PLOWED", 0.4), ("STUBBLE", 0.6))))
+        self.assertTrue(self.until(lambda: c.current is not None and c.current.step == "WAIT_AHEAD"))
+        world.finish_worker("t-1")
+        c.wait(15)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"), c.last)
+        self.assertEqual(self.unit(world, "t-1").attached_to, "i-9")              # the plow back, the seeder on
+        self.assertIsNone(self.unit(world, "i-1").attached_to)
+        self.assertEqual([w.operation for w in c.workers], ["sow"])
+
+    def test_stop_stops_the_helpers_and_brings_nothing_back(self):
+        world = self.world("plow")
+        c, notices = self.coordinator(world)
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["plow"]})
+        c.wait(10)
+        c.submit({"version": 1, "command": "stop"})
+        self.assertTrue(self.until(lambda: self.unit(world, "t-1").reserved_by is None))
+        self.assertFalse(self.unit(world, "t-1").busy)
+        self.assertEqual(c.workers, [])
+        self.assertEqual(notices[-1], "STOPPING")
+        self.assertEqual(self.unit(world, "t-1").attached_to, "i-1")              # left where it stopped
+
+
+class HarvestTests(unittest.TestCase):
+    """"Harvest field 7": a free combine with its header on, GIANTS' helper, the field
+    harvested as GIANTS judges a cut crop (getIsCut on the samples)."""
+    READY = FieldCoverage((("HARVEST_READY", 1.0),), (), 4000.0, (("WHEAT", 9),), 9)
+
+    def combine(self, at=(100.0, 100.0)):
+        x, z = at
+        combine = Equipment("c-1", "harvester", "farm-a", (x, z), heading=0.0, ai_root=Pose(x, z, 0.0),
+                            capabilities=frozenset({"move", "attach", "stop"}), attached_to="h-1",
+                            kinds=frozenset({"combine", "ai_field_worker", "fill_unit"}))
+        header = Equipment("h-1", "implement", "farm-a", (x, z + 4), kinds=frozenset({"cutter", "ai_implement"}),
+                           heading=0.0, attached_to="c-1")
+        return [combine, header]
+
+    def test_the_combine_harvests_and_the_field_shows_it_cut(self):
+        world = MockWorld(self.combine(), PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
+        result = Executor(world).execute(work("harvest"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "FIELD_WORK_OBSERVED"), result)
+        self.assertEqual(world.field_map[7].coverage.cut, 9)
+
+    def test_a_crop_not_ready_or_no_combine_moves_nothing(self):
+        from companion.coordinator import field_steps
+        growing = FieldCoverage((("SOWN", 1.0),), (), 4000.0, (("WHEAT", 9),), 9)
+        world = MockWorld(self.combine(), PLAYERS, fields=(field(7, 0.4, growing),), farm=FARM)
+        result = Executor(world).execute(work("harvest"))
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "CROP_NOT_READY"))
+        self.assertEqual(field_steps(tuple(rig("plow")), "harvest", 7, "farm-a"), (None, "NO_HARVESTER_WITH_HEADER"))
+        self.assertEqual(field_steps(tuple(self.combine()), "harvest", 7, "farm-a")[0],
+                         [{"task": "field_work", "field": 7, "operation": "harvest", "implement": "cutter"}])
+
+    def test_harvest_the_words_and_the_combine_is_not_a_tractor(self):
+        from adapters.fs25 import _category
+        from companion.language import RuleInterpreter
+        self.assertEqual(RuleInterpreter().interpret("harvest field 3"),
+                         {"version": 1, "command": "field_work", "field": 3, "operations": ["harvest"]})
+        combine = {"category": "HARVESTERS", "forage_wagon": False, "self_propelled": True, "motor": {"x": 1},
+                   "kinds": ["combine", "fill_unit"], "output_joints": [{"index": 1}], "input_joint_poses": []}
+        self.assertEqual(_category(combine, {}), "harvester")

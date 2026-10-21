@@ -398,6 +398,10 @@ class Operation:
     def done(self, coverage: FieldCoverage) -> float:
         if self.name == "fertilize":
             return coverage.sprayed()
+        if self.name == "harvest":
+            # The share of the field's crop samples GIANTS counts as cut (getIsCut).
+            grown = sum(n for name, n in coverage.fruit or () if name != "NONE")
+            return coverage.cut / grown if grown else 0.0
         names = {"plow": PLOWED, "cultivate": PREPARED, "sow": SOWN}[self.name]
         return coverage.share(*names)
 
@@ -407,6 +411,7 @@ OPERATIONS = {
     "cultivate": Operation("cultivate", ("cultivator", "plow"), None),
     "sow": Operation("sow", ("sowing_machine",), "seed"),
     "fertilize": Operation("fertilize", ("sprayer",), "spray"),
+    "harvest": Operation("harvest", ("cutter",), None),       # a combine (harvester) with its header
 }
 
 
@@ -433,6 +438,8 @@ def crop_problem(operation: Operation, field: Field) -> str | None:
     c = field.coverage
     if c is None or operation.name == "fertilize":
         return None
+    if operation.name == "harvest":
+        return None if c.share(*CROP_READY) >= CROP_SHARE_BLOCKS else "CROP_NOT_READY"
     if c.share(*CROP_READY) >= CROP_SHARE_BLOCKS:
         return "CROP_READY_TO_HARVEST"
     if operation.name in ("plow", "cultivate") and c.share(*SOWN) >= CROP_SHARE_BLOCKS:
@@ -609,7 +616,10 @@ def workable(tractor: Equipment, implement: Equipment, kinds: tuple[str, ...] = 
     """field_work: a tractor GIANTS' field-work helper can run (AIFieldWorker) with an
     AI-usable implement (AIImplement) of one of ``kinds`` hitched to it; with ``crop``,
     a seeder that can sow it."""
-    return (detachable(tractor, implement) and "ai_field_worker" in tractor.kinds
+    harvesting = tractor.category == "harvester" and "cutter" in kinds and of_kind(implement, "cutter")
+    return ((detachable(tractor, implement) or (harvesting and implement.attached_to == tractor.id
+                                                and {"move", "stop"} <= tractor.capabilities))
+            and "ai_field_worker" in tractor.kinds
             and "ai_implement" in implement.kinds and any(of_kind(implement, k) for k in kinds)
             and (crop is None or seed_position(implement, crop) is not None))
 
@@ -1432,7 +1442,7 @@ class Executor:
             except (RuntimeError, ValueError) as error:
                 return Result("FAILED", getattr(error, "code", None) or type(error).__name__, states=tuple(states))
 
-        reserved = physical_attempted = already_there = False
+        reserved = physical_attempted = already_there = handed = False
         status, reason = "BLOCKED", "NO_ELIGIBLE_PAIR"
         moving = command["task"] == "move_pair"
         detaching = command["task"] == "detach_pair"
@@ -1600,50 +1610,58 @@ class Executor:
                 for detour in range(MAX_DETOURS + 1):
                     try:
                         ended = self.world.fieldwork(tractor.id, field.id, Pose(field.center[0], field.center[1], yaw),
-                                                     owner, area or 0.0, **({"seed": seed} if seed else {}))
+                                                     owner, area or 0.0, **({"seed": seed} if seed else {}),
+                                                     **({"hand": True} if command.get("hand_off") and not area else {}))
                         break
                     except StepFailed as failure:
                         # Stuck on the way while GIANTS still drives: as _navigate.
                         if failure.code != "FIELDWORK_STUCK" or detour == MAX_DETOURS:
                             raise
                         self._block_ahead(tractor.id, detour)
-                enter("VERIFY")
-                tractor, implement = self._pair(ids, farm_id, owner, attached=True)
-                after = self._field(field.id)
-                if after.coverage is None:
-                    raise ObservationMismatch("FIELD_NOT_OBSERVED")
-                done = operation.done(after.coverage)
-                log.info("FIELD_WORK %s ended %s: field %s %s %.3f -> %.3f; after: %s", operation.name, ended,
-                         field.id, operation.name, before_done if before_done is not None else -1, done,
-                         describe(after.coverage))
-                if area:
-                    # A bounded test area: the operation's own measured share grew by it.
-                    worked = (done - (before_done or 0.0)) * (after.coverage.total_m2 or 0.0)
-                    log.info("FIELD_WORK test area: %.0f m2 worked of %.0f m2 asked", worked, area)
-                    if worked < area * COVERAGE_REQUIRED:
-                        raise StepFailed(ended if ended not in ("FINISHED", "AREA_REACHED") else "PARTIAL_COVERAGE")
-                elif done < COVERAGE_REQUIRED:
-                    # GIANTS' own reason when it stopped early (OUT_OF_FILL, FIELD_NOT_READY, ...).
-                    raise StepFailed(ended if ended != "FINISHED" else "PARTIAL_COVERAGE")
-                if seed:
-                    # The crop asked for is what now grows where the samples fell.
-                    grown = max(after.coverage.fruit or (), key=lambda f: f[1], default=(None, 0))[0]
-                    log.info("FIELD_WORK crop %r: seeder %s, field shows %s", command["crop"],
-                             implement.seeds[seed - 1], grown)
-                    if grown != implement.seeds[seed - 1]:
-                        raise ObservationMismatch("CROP_NOT_OBSERVED")
-                if operation.material is not None:
-                    used = _material(implement, operation.material)
-                    farm = self.world.farm()
-                    level_fell = (material is not None and used is not None and material.level is not None
-                                  and used.level is not None and used.level < material.level)
-                    bought = (farm is not None and money is not None and farm.money is not None
-                              and farm.money < money and self._helper_buys(operation))
-                    log.info("material %s: %s -> %s l; money %s -> %s", operation.material,
-                             material and material.level, used and used.level, money, farm and farm.money)
-                    if not (level_fell or bought):
-                        raise ObservationMismatch("MATERIAL_USE_NOT_OBSERVED")
-                status, reason = "COMPLETE", "AREA_WORK_OBSERVED" if area else "FIELD_WORK_OBSERVED"
+                if ended == "WORKING":
+                    # Handed off (the user 2026-10-21: workers go on while Farmhand does something
+                    # else): GIANTS' helper works on as the game's worker; the pair stays reserved
+                    # for it until the coordinator sees the helper end, then measures the field.
+                    handed = True
+                    status, reason = "COMPLETE", "WORKER_STARTED"
+                else:
+                    enter("VERIFY")
+                    tractor, implement = self._pair(ids, farm_id, owner, attached=True)
+                    after = self._field(field.id)
+                    if after.coverage is None:
+                        raise ObservationMismatch("FIELD_NOT_OBSERVED")
+                    done = operation.done(after.coverage)
+                    log.info("FIELD_WORK %s ended %s: field %s %s %.3f -> %.3f; after: %s", operation.name, ended,
+                             field.id, operation.name, before_done if before_done is not None else -1, done,
+                             describe(after.coverage))
+                    if area:
+                        # A bounded test area: the operation's own measured share grew by it.
+                        worked = (done - (before_done or 0.0)) * (after.coverage.total_m2 or 0.0)
+                        log.info("FIELD_WORK test area: %.0f m2 worked of %.0f m2 asked", worked, area)
+                        if worked < area * COVERAGE_REQUIRED:
+                            raise StepFailed(ended if ended not in ("FINISHED", "AREA_REACHED") else "PARTIAL_COVERAGE")
+                    elif done < COVERAGE_REQUIRED:
+                        # GIANTS' own reason when it stopped early (OUT_OF_FILL, FIELD_NOT_READY, ...).
+                        raise StepFailed(ended if ended != "FINISHED" else "PARTIAL_COVERAGE")
+                    if seed:
+                        # The crop asked for is what now grows where the samples fell.
+                        grown = max(after.coverage.fruit or (), key=lambda f: f[1], default=(None, 0))[0]
+                        log.info("FIELD_WORK crop %r: seeder %s, field shows %s", command["crop"],
+                                 implement.seeds[seed - 1], grown)
+                        if grown != implement.seeds[seed - 1]:
+                            raise ObservationMismatch("CROP_NOT_OBSERVED")
+                    if operation.material is not None:
+                        used = _material(implement, operation.material)
+                        farm = self.world.farm()
+                        level_fell = (material is not None and used is not None and material.level is not None
+                                      and used.level is not None and used.level < material.level)
+                        bought = (farm is not None and money is not None and farm.money is not None
+                                  and farm.money < money and self._helper_buys(operation))
+                        log.info("material %s: %s -> %s l; money %s -> %s", operation.material,
+                                 material and material.level, used and used.level, money, farm and farm.money)
+                        if not (level_fell or bought):
+                            raise ObservationMismatch("MATERIAL_USE_NOT_OBSERVED")
+                    status, reason = "COMPLETE", "AREA_WORK_OBSERVED" if area else "FIELD_WORK_OBSERVED"
             elif detaching:
                 # DETACH -> VERIFY: GIANTS' own detach where it allows it; complete only
                 # when a fresh snapshot shows neither end attached and both at rest.
@@ -1909,7 +1927,10 @@ class Executor:
             if not reserved and status != "CANCELLED":
                 # Nothing can have moved before RESERVE: observation trouble only blocks.
                 status = "BLOCKED"
-            if reserved:
+            if reserved and handed:
+                log.info("worker %s on field %s: reserved under %s while GIANTS' helper works", ids[0],
+                         command.get("field"), owner)
+            elif reserved:
                 try:
                     if physical_attempted:
                         enter("STOP")

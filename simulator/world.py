@@ -259,11 +259,20 @@ class MockWorld:
 
     # What each implement kind leaves on the field (mock only, never GIANTS').
     MOCK_WORK = {"cultivator": ("CULTIVATED", None), "plow": ("PLOWED", None), "sowing_machine": ("SOWN", "WHEAT"),
-                 "sprayer": (None, None)}
+                 "sprayer": (None, None), "cutter": (None, None)}
 
-    def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0, seed=0):
+    def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0, seed=0, hand=False):
         # Mock-only: the hitched implement's kind turns the whole field into its result
-        # and uses 100 l of its material; the tractor ends inside the field.
+        # and uses 100 l of its material; the tractor ends inside the field. Handed off,
+        # the helper works on (the tractor busy) until finish_worker or a stop.
+        if hand:
+            with self._lock:
+                reservation = self._reservations.get(owner)
+                if not reservation or tractor_id != reservation[1][0]:
+                    raise RuntimeError("NOT_RESERVED")
+                self.mock_workers = {**self.mock_workers, tractor_id: (field_id, pose, owner, area_m2, seed)}
+                self.items[tractor_id] = replace(self.items[tractor_id], busy=True, busy_reason="AI_ACTIVE")
+                return "WORKING"
         with self._lock:
             reservation = self._reservations.get(owner)
             if not reservation or tractor_id != reservation[1][0]:
@@ -292,7 +301,8 @@ class MockWorld:
                 ground=tuple(sorted(rest + ((ground, share + dict(old.ground).get(ground, 0) * (1 - share)),)))
                 if ground else old.ground,
                 spray=((1, share + dict(old.spray).get(1, 0) * (1 - share)),) if kind == "sprayer" else old.spray,
-                total_m2=old.total_m2, fruit=((fruit, 9),) if fruit else old.fruit, sampled=old.sampled)
+                total_m2=old.total_m2, fruit=((fruit, 9),) if fruit else old.fruit, sampled=old.sampled,
+                cut=sum(n for name, n in old.fruit or () if name != "NONE") if kind == "cutter" else old.cut)
             self.field_map[field_id] = replace(field, coverage=coverage, age_ms=0.0)
             self._worked = getattr(self, "_worked", set()) | {field_id}
             units = tuple(replace(u, level=max(0.0, u.level - 100.0)) if u.role and u.level else u
@@ -300,6 +310,17 @@ class MockWorld:
             self.items[implement.id] = replace(implement, fill_units=units)
             self._place(tractor, pose)
             return "AREA_REACHED" if area_m2 else "FINISHED"
+
+    mock_workers = {}             # mock-only: tractor id -> a handed-off helper's job
+
+    def finish_worker(self, tractor_id, work=True):
+        """Mock-only: the handed-off helper ends (its field worked unless ``work`` is False)."""
+        with self._lock:
+            field_id, pose, owner, area_m2, seed = self.mock_workers[tractor_id]
+            self.mock_workers = {k: v for k, v in self.mock_workers.items() if k != tractor_id}
+            self.items[tractor_id] = replace(self.items[tractor_id], busy=False, busy_reason=None)
+            if work:
+                self.fieldwork(tractor_id, field_id, pose, owner, area_m2, seed)
 
     def map_id(self):
         with self._lock:
@@ -548,6 +569,10 @@ class MockWorld:
             if any(item is None or item.occupied or item.reserved_by != owner
                    or item.farm_id != reservation[0] for item in owned):
                 return False
+            if tractor_id in self.mock_workers:          # a handed-off helper: its job ends
+                self.mock_workers = {k: v for k, v in self.mock_workers.items() if k != tractor_id}
+                self.items[tractor_id] = replace(self.items[tractor_id], busy=False, busy_reason=None)
+                owned = [self.items[identifier] for identifier in reservation[1]]
             for item in owned:
                 self.items[item.id] = replace(item, stopped=True)
             return True

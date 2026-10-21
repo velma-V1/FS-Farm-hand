@@ -234,7 +234,8 @@
         "fruit": {"oneOf": [{"type": "null"},
                             {"type": "object", "maxProperties": 16, "propertyNames": {"$ref": "#/$defs/token"},
                              "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 64}}]},
-        "sampled": {"type": "integer", "minimum": 0, "maximum": 64}
+        "sampled": {"type": "integer", "minimum": 0, "maximum": 64},
+        "cut": {"type": "integer", "minimum": 0, "maximum": 64}
       }
     },
     "field": {

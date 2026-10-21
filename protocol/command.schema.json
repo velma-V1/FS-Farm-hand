@@ -154,7 +154,7 @@
     "operations": {
       "description": "field_work: what to do to the field, in order (each hitches what does it, works the field and unhitches).",
       "type": "array", "minItems": 1, "maxItems": 4,
-      "items": {"enum": ["plow", "cultivate", "sow", "fertilize"]}
+      "items": {"enum": ["plow", "cultivate", "sow", "fertilize", "harvest"]}
     },
     "implement": {
       "description": "The implement to hitch or unhitch (a GIANTS specialization kind; default forage_wagon to hitch, any to unhitch). Only for fetch_pair, hitch_pair, detach_pair.",

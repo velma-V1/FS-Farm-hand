@@ -26,8 +26,8 @@ from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified
 from companion import hitch as transport   # its tractor-transport section
-from companion.executor import (OPERATIONS, already_done, crop_problem, named, of_kind, resolve_field, seed_position,
-                                usable)
+from companion.executor import (COVERAGE_REQUIRED, OPERATIONS, already_done, crop_problem, named, of_kind,
+                                resolve_field, seed_position, usable)
 from protocol.model import Equipment, Result
 
 log = logging.getLogger("farmhand")
@@ -62,12 +62,15 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "sequence": ("sequence", "ACCEPTED_SEQUENCE", "COMPLETE_SEQUENCE"),
         "haul_tractor": ("haul_tractor", "ACCEPTED_HAUL", "COMPLETE_HAUL"),
         "follow_me": ("follow_me", "ACCEPTED_FOLLOW", "COMPLETE_FOLLOW"),
-        "contract": ("contract", "ACCEPTED_CONTRACT", "COMPLETE_CONTRACT")}
+        "contract": ("contract", "ACCEPTED_CONTRACT", "COMPLETE_CONTRACT"),
+        "worker_return": ("worker_return", "ACCEPTED_RETURN", "COMPLETE_RETURN")}
 # The proposal fields that pass into a job command's intent.
 NAMES = ("tractor_name", "implement_name", "cargo_name")
 
 
 def result_notice(status: str, reason: str, complete: str = "COMPLETE") -> str:
+    if status == "COMPLETE" and reason == "WORKERS_STARTED":
+        return "WORKERS_STARTED"                  # the helpers work on; Farmhand is free
     if status == "COMPLETE":
         # Unhitched, but the tractor could not pull clear (nothing moved): say so.
         return complete + "_NOT_CLEAR" if reason == "DETACHED_NOT_CLEAR" else complete
@@ -264,6 +267,15 @@ def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: st
     """The steps for one operation on ``field`` (an id or "smallest"), as executor
     intent fragments, or (None, why). ``crop`` (sowing only): the player's crop."""
     crop = crop if operation == "sow" else None
+    if operation == "harvest":
+        # A combine with its header on, free: harvested where it stands ready; it is not
+        # unhitched or brought back (the player decides where it goes).
+        observed = {i.id: i for i in items}
+        if not any(i.category == "harvester" and usable(i, farm_id) and observed.get(i.attached_to) is not None
+                   and of_kind(observed[i.attached_to], "cutter") for i in items):
+            return None, "NO_HARVESTER_WITH_HEADER"
+        return [{"task": "field_work", "field": field, "operation": "harvest", "implement": "cutter",
+                 **({"area_m2": area_m2} if area_m2 else {})}], None
     kind, note = implement_kind(items, operation, farm_id, crop)
     if kind is None:
         return None, note
@@ -333,6 +345,24 @@ def choose_contract(contracts, items, farm_id: str, field=None, kind=None):
 
 
 @dataclass
+class Worker:
+    """A field job handed to GIANTS' helper (the user 2026-10-21: workers go on while
+    Farmhand does something else). Its pair stays reserved under ``owner`` until the
+    helper is seen to end; then the field is measured and ``after`` (bring the
+    implement back, unhitch it) runs as soon as Farmhand is free."""
+    owner: str
+    tractor: str
+    field: int
+    operation: str
+    after: list
+
+
+# A next operation on the same field starts once the one ahead shows this share done
+# (the seeder behind the plow, not ahead of it).
+HEAD_START = 0.3
+
+
+@dataclass
 class Kept:
     command: str
     target: object
@@ -362,6 +392,9 @@ class Coordinator:
         self.running: str | None = None
         self.kept: Kept | None = self._load_goal()  # the goal "continue" resumes
         self._then = None                         # a destination to resume with once this job ends
+        self.workers: list[Worker] = []           # GIANTS' helpers working on (handed off)
+        self._after: list[list] = []              # their follow-up steps, run when Farmhand is free
+        self._watcher: threading.Thread | None = None
 
     @property
     def busy(self) -> bool:
@@ -415,6 +448,8 @@ class Coordinator:
             return token(f"STATUS_WORKING_{step}")
         if self.kept is not None:
             return "STATUS_PAUSED"
+        if self.workers:
+            return "STATUS_HELPERS_WORKING"
         if last is not None:
             return token(f"STATUS_LAST_{last.state}")
         return "STATUS_IDLE"
@@ -441,9 +476,11 @@ class Coordinator:
                 self._cancel.set()
                 send = not job.stop_sent and job.step not in ("STOP", "RELEASE")
                 job.stop_sent = job.stop_sent or send
+        # STOP stops everything Farmhand started: the job and every helper working on.
+        workers = self._stop_workers()
         if job is None:
-            retained = self.world.retained()
-            self.notify("STOPPING" if retained else "NOTHING_TO_STOP", spoken)
+            retained = [o for o in self.world.retained() if o not in {w.owner for w in workers}]
+            self.notify("STOPPING" if retained or workers else "NOTHING_TO_STOP", spoken)
             for owner in retained:                 # an earlier job's unconfirmed stop
                 threading.Thread(target=self.world.recover, args=(owner,), daemon=True).start()
             return
@@ -451,6 +488,78 @@ class Coordinator:
         if send:
             threading.Thread(target=self._stop_reserved, args=(self.running or job.owner,), daemon=True,
                              name="farmhand-stop").start()
+
+    # ------------------------------------------------------------------ workers
+    WATCH_S = 5.0
+
+    def _worker_owners(self) -> set:
+        with self._lock:
+            return {w.owner for w in self.workers}
+
+    def _stop_workers(self) -> list:
+        """Every handed-off helper stopped (its job ended through the game) and released
+        once stopped; nothing is brought back afterwards (the player decides)."""
+        with self._lock:
+            workers, self.workers, self._after = list(self.workers), [], []
+        for w in workers:
+            def end(w=w):
+                try:
+                    if self.world.stop(w.tractor, w.owner):
+                        self.world.release(w.owner)
+                except (StepFailed, StepUnverified, ValueError) as error:
+                    log.info("worker %s stop: %s (kept reserved)", w.tractor, getattr(error, "code", error))
+            threading.Thread(target=end, daemon=True, name="farmhand-stop-worker").start()
+        return workers
+
+    def _add_worker(self, worker: Worker) -> None:
+        with self._lock:
+            self.workers.append(worker)
+            start = self._watcher is None or not self._watcher.is_alive()
+            if start:
+                self._watcher = threading.Thread(target=self._watch, daemon=True, name="farmhand-workers")
+        if start:
+            self._watcher.start()
+
+    def _watch(self) -> None:
+        """Until no helper works and no follow-up waits: each helper seen ended (no AI
+        job, at rest) has its field measured, is stopped and released, and its follow-up
+        steps run as a job once Farmhand is free."""
+        while True:
+            with self._lock:
+                workers, waiting = list(self.workers), bool(self._after)
+            if not workers and not waiting:
+                return
+            observed = {i.id: i for i in self.world.snapshot()}
+            for w in workers:
+                tractor = observed.get(w.tractor)
+                if tractor is None or tractor.busy or not tractor.stopped:
+                    continue
+                self._worker_ended(w)
+            with self._lock:
+                idle = self.current is None and self._after
+                steps = self._after.pop(0) if idle else None
+            if steps:
+                self.start("worker_return", "here", work={"steps": steps})
+            time.sleep(self.WATCH_S)
+
+    def _worker_ended(self, w: Worker) -> None:
+        field = next((f for f in self.world.fields() if f.id == w.field), None)
+        done = OPERATIONS[w.operation].done(field.coverage) if field is not None and field.coverage else None
+        log.info("worker %s on field %s ended: %s %s", w.tractor, w.field, w.operation,
+                 "?" if done is None else f"{done:.3f}")
+        try:
+            if not self.world.stop(w.tractor, w.owner):
+                raise StepFailed("STOP_NOT_CONFIRMED")
+            self.world.release(w.owner)
+        except (StepFailed, StepUnverified, ValueError) as error:
+            log.info("worker %s: not released (%s)", w.tractor, getattr(error, "code", error))
+            return                                 # watched again next round
+        with self._lock:
+            if w in self.workers:
+                self.workers.remove(w)
+            if w.after:
+                self._after.append(w.after)
+        self.notify("WORKER_DONE" if done is not None and done >= COVERAGE_REQUIRED else "WORKER_STOPPED")
 
     def _stop_reserved(self, owner: str) -> None:
         """Pre-empt the running operation; the job's own cleanup confirms the stop."""
@@ -489,7 +598,8 @@ class Coordinator:
         task, _, complete = JOBS[command]
         try:
             for owner in self.world.retained():   # an earlier job's unconfirmed stop
-                self.world.recover(owner)
+                if owner not in self._worker_owners():
+                    self.world.recover(owner)
 
             def entered(state):
                 job.step = state
@@ -507,6 +617,8 @@ class Coordinator:
                 result = self._haul(job, cancel, entered, work)
             elif command == "contract":
                 result = self._contract(job, cancel, entered, work)
+            elif command == "worker_return":
+                result = self._run_steps(job, cancel, entered, work["steps"], "r")
             else:
                 intent = {"version": 1, "request_id": job.owner, "task": task,
                           "farm_id": self.farm(), "target": "player_at_acceptance" if target == "here" else target}
@@ -796,7 +908,8 @@ class Coordinator:
                 return Result("FAILED", "CONTRACT_LOST", (), tuple(states))
             used = ()
             if current.status != "FINISHED":
-                result = self._field_work(job, cancel, entered, {"field": contract.field, "operations": [operation]})
+                result = self._field_work(job, cancel, entered, {"field": contract.field, "operations": [operation],
+                                                                 "background": False})
                 states += list(result.states)
                 used = tuple(result.equipment_ids)
                 if result.status != "COMPLETE":
@@ -856,54 +969,125 @@ class Coordinator:
         the next step found no pair at rest)."""
         deadline = time.monotonic() + self.SETTLE_S
         while time.monotonic() < deadline:
-            if all(i.stopped for i in self.world.snapshot() if i.category == "tractor"):
+            # A helper working on (AI job) moves by design: never waited for.
+            if all(i.stopped or i.busy for i in self.world.snapshot() if i.category == "tractor"):
                 return
             time.sleep(1.0)
 
     def _field_work(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """Each operation in turn on the same field (resolved once): the planner's next
         steps from fresh state, each a full executor job; the first one that is not
-        COMPLETE ends the plan with its result."""
+        COMPLETE ends the plan with its result. The field work itself is handed to
+        GIANTS' helper (unless ``work["background"]`` is False, or a test area): the job
+        goes on (the next operation, the next command) while it works; a next operation on
+        the same field starts once the one ahead has HEAD_START of it done, and, with no
+        free tractor, once the one ahead has come back."""
         field, failure = resolve_field(work["field"], self.world.fields())
         if field is None:
             return Result("BLOCKED", failure)
         log.info("job %d field work %s on field %s (%.2f ha)", job.number, work["operations"], field.id, field.area_ha)
-        states, equipment, n = [], [], 0
+        background = work.get("background", True) and not work.get("area_m2")
+        states, equipment, started = [], [], []
+        n = 0
+
+        def fresh():
+            return next((f for f in self.world.fields() if f.id == field.id), field)
+
+        def wait_for(done) -> bool:
+            entered("WAIT_AHEAD")
+            while not cancel.is_set() and not done():
+                time.sleep(self.WATCH_S)
+            return not cancel.is_set()
+
         for operation in work["operations"]:
-            field = next((f for f in self.world.fields() if f.id == field.id), field)     # fresh state
-            if already_done(OPERATIONS[operation], field, work.get("area_m2")):
-                log.info("job %d %s: field %s already done; skipped", job.number, operation, field.id)
-                states.append(f"{operation}:ALREADY_DONE")
-                continue
-            crop = None if work.get("over_crop") else crop_problem(OPERATIONS[operation], field)
-            if crop is not None:
-                # Before anything is hitched or moved.
-                log.info("job %d %s: field %s %s", job.number, operation, field.id, crop)
-                return Result("BLOCKED", crop, tuple(equipment), tuple(states))
-            steps, note = field_steps(tuple(self.world.snapshot()), operation, field.id, self.farm(),
-                                      work.get("area_m2"), work.get("crop"))
-            if steps is None:
-                return Result("BLOCKED", note, tuple(equipment), tuple(states))
-            if note is not None:
-                log.info("job %d %s: %s", job.number, operation, note)
-            if work.get("over_crop"):
+            ahead = started[-1] if started else None
+            if ahead is not None and not wait_for(lambda: ahead not in self.workers or (
+                    fresh().coverage is not None
+                    and OPERATIONS[ahead.operation].done(fresh().coverage) >= HEAD_START)):
+                return Result("CANCELLED", "CANCELLED_BY_REQUESTER", tuple(equipment), tuple(states))
+            for attempt in (1, 2):
+                field = fresh()
+                if already_done(OPERATIONS[operation], field, work.get("area_m2")):
+                    log.info("job %d %s: field %s already done; skipped", job.number, operation, field.id)
+                    states.append(f"{operation}:ALREADY_DONE")
+                    break
+                crop = None if work.get("over_crop") else crop_problem(OPERATIONS[operation], field)
+                if crop is not None:
+                    # Before anything is hitched or moved.
+                    log.info("job %d %s: field %s %s", job.number, operation, field.id, crop)
+                    return Result("BLOCKED", crop, tuple(equipment), tuple(states))
+                steps, note = field_steps(tuple(self.world.snapshot()), operation, field.id, self.farm(),
+                                          work.get("area_m2"), work.get("crop"))
+                if steps is None:
+                    return Result("BLOCKED", note, tuple(equipment), tuple(states))
+                if note is not None:
+                    log.info("job %d %s: %s", job.number, operation, note)
                 for step in steps:
                     if step["task"] == "field_work":
-                        step["over_crop"] = True
-            for step in steps:
-                n += 1
-                self._settle()
-                intent = {"version": 1, "request_id": f"{job.owner}-{n}", "farm_id": self.farm(),
-                          "target": "player_at_acceptance", **step}
-                log.info("job %d step %d intent %s", job.number, n, json.dumps(intent))
-                self.running = intent["request_id"]
-                result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
-                states += [f"{step['task']}:{s}" for s in result.states]
-                equipment += [e for e in result.equipment_ids if e not in equipment]
-                log.info("job %d step %d result %s %s", job.number, n, result.status, result.reason)
-                if result.status != "COMPLETE":
-                    return Result(result.status, result.reason, tuple(equipment), tuple(states))
+                        if work.get("over_crop"):
+                            step["over_crop"] = True
+                        if background:
+                            step["hand_off"] = True
+                retry = False
+                for i, step in enumerate(steps):
+                    n += 1
+                    self._settle()
+                    intent = {"version": 1, "request_id": f"{job.owner}-{n}", "farm_id": self.farm(),
+                              "target": "player_at_acceptance", **step}
+                    log.info("job %d step %d intent %s", job.number, n, json.dumps(intent))
+                    self.running = intent["request_id"]
+                    result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
+                    states += [f"{step['task']}:{s}" for s in result.states]
+                    equipment += [e for e in result.equipment_ids if e not in equipment]
+                    log.info("job %d step %d result %s %s", job.number, n, result.status, result.reason)
+                    if (result.status == "BLOCKED" and step["task"] == "hitch_pair" and ahead is not None
+                            and attempt == 1):
+                        # No free tractor while the one ahead works: it comes back first.
+                        if not wait_for(lambda: ahead not in self.workers):
+                            return Result("CANCELLED", "CANCELLED_BY_REQUESTER", tuple(equipment), tuple(states))
+                        result = self._run_after(job, cancel, entered, ahead)
+                        if result.status != "COMPLETE":
+                            return Result(result.status, result.reason, tuple(equipment), tuple(states))
+                        retry = True
+                        break
+                    if result.status != "COMPLETE":
+                        return Result(result.status, result.reason, tuple(equipment), tuple(states))
+                    if result.reason == "WORKER_STARTED":
+                        worker = Worker(intent["request_id"], result.equipment_ids[0], field.id, step["operation"],
+                                        steps[i + 1:])
+                        self._add_worker(worker)
+                        started.append(worker)
+                        self.notify("WORKER_STARTED", job.spoken)
+                        break
+                if not retry:
+                    break
+        if started:
+            return Result("COMPLETE", "WORKERS_STARTED", tuple(equipment), tuple(states))
         return Result("COMPLETE", "FIELD_WORK_OBSERVED", tuple(equipment), tuple(states))
+
+    def _run_after(self, job: Job, cancel: threading.Event, entered, worker: Worker) -> Result:
+        """The ended worker's follow-up steps now (taken off the waiting list), in order."""
+        with self._lock:
+            steps = worker.after
+            self._after = [a for a in self._after if a is not steps]
+        return self._run_steps(job, cancel, entered, steps, "r")
+
+    def _run_steps(self, job: Job, cancel: threading.Event, entered, steps, tag: str) -> Result:
+        states, equipment = [], []
+        for n, step in enumerate(steps, 1):
+            if cancel.is_set():
+                return Result("CANCELLED", "CANCELLED_BY_REQUESTER", tuple(equipment), tuple(states))
+            self._settle()
+            intent = {"version": 1, "request_id": f"{job.owner}-{tag}{n}", "farm_id": self.farm(),
+                      "target": "player_at_acceptance", **step}
+            log.info("job %d %s%d intent %s", job.number, tag, n, json.dumps(intent))
+            self.running = intent["request_id"]
+            result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
+            states += [f"{step['task']}:{s}" for s in result.states]
+            equipment += [e for e in result.equipment_ids if e not in equipment]
+            if result.status != "COMPLETE":
+                return Result(result.status, result.reason, tuple(equipment), tuple(states))
+        return Result("COMPLETE", "RETURNED", tuple(equipment), tuple(states))
 
     def wait(self, timeout: float | None = None) -> None:
         """Wait for the running job (tests and shutdown)."""

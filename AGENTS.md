@@ -126,6 +126,14 @@ have precedence; report conflicts instead of silently changing the scope.
   so that "continue" resumes it.
 - Report implemented, automated-test-passed and live-qualified results separately;
   one working combination never implies general equipment compatibility.
+- Field work goes on while Farmhand does something else (the user, 2026-10-21): once
+  GIANTS' helper works the field it is the game's own hired worker, its tractor and
+  implement stay reserved for it (no other job takes them, no stale-reservation recovery
+  stops it), and only after the helper is observed ended (no AI job, at rest) is the field
+  measured, the pair released and its equipment brought back. A next operation on the
+  same field follows behind the one ahead; STOP stops every helper Farmhand started, and
+  a lost companion heartbeat does not stop a helper already handed off (like a worker the
+  player hired).
 - Voice stays an optional front end; its further work is deferred.
 
 ## Safe collaboration

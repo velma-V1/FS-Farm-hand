@@ -780,7 +780,7 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertEqual(self.results(1)[-1], (1, "UNVERIFIED", "DETACH_TIMEOUT"))
 
     # ----------------------------------------------------------- fieldwork
-    FIELD = {"tractor": 11, "field": 7, "x": 200.0, "z": 300.0, "yaw": 0.5, "area": 0.0, "seed": 0}
+    FIELD = {"tractor": 11, "field": 7, "x": 200.0, "z": 300.0, "yaw": 0.5, "area": 0.0, "seed": 0, "hand": 0}
 
     def fieldwork_stubs(self, available=True):
         """GIANTS' FIELDWORK job shape (AIJobFieldWork 22-49, 134-224) on the GOTO stub."""
@@ -822,6 +822,43 @@ class LuaBridgeTests(unittest.TestCase):
                 self.end_job(message)
                 self.W.run(self.w, 300)
                 self.assertEqual(self.results(1)[-1], (1, "DONE", code))         # never "worked": measured
+
+    def test_a_handed_off_helper_ends_the_op_working_and_a_stop_still_ends_its_job(self):
+        self.adopt()
+        self.fieldwork_stubs()
+        self.w.gotoStarts = True
+        self.lua.execute("local w = ...; function w.tractor:getIsFieldWorkActive() return w.working == true end", self.w)
+        self.send(1, "fieldwork", {**self.FIELD, "hand": 1})
+        self.W.run(self.w, 1000)
+        self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])          # driving there: not yet
+        self.w.working = True
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "WORKING"))
+        self.assertNotIn("stopCurrentAIJob", self.calls())                       # the helper works on
+        self.send(2, "stop", {"tractor": 11})
+        self.assertIn("stopCurrentAIJob", self.calls())
+        self.lua.execute("local w = ...; w.aiActive = false", self.w)
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(2)[-1], (2, "DONE", "STOPPED"))
+
+    def test_a_combine_always_lays_a_straw_swath_where_it_can(self):
+        for available, honest, result in ((True, True, ("ACCEPTED", "ACCEPTED")), (False, True, ("ACCEPTED", "ACCEPTED")),
+                                          (True, False, ("FAILED", "SWATH_NOT_SET"))):
+            with self.subTest(available=available, honest=honest):
+                self.w = self.W.new()
+                self.adopt()
+                self.fieldwork_stubs()
+                self.w.gotoStarts = True
+                self.lua.execute(r"""local w, available, honest = ...
+                    w.tractor.spec_combine = { swath = { isAvailable = available }, isSwathActive = false }
+                    function w.tractor:setIsSwathActive(on)
+                        table.insert(w.calls, "setIsSwathActive:" .. tostring(on))
+                        if honest then self.spec_combine.isSwathActive = on end
+                    end""", self.w, available, honest)
+                self.send(1, "fieldwork", self.FIELD)
+                self.assertEqual(self.results(1)[-1][1:], result)
+                self.assertEqual("setIsSwathActive:true" in self.calls(), available)
+                self.assertEqual("startJob" in self.calls(), result[0] == "ACCEPTED")
 
     def seeder(self, seeds, current=1, honest=True):
         """A hitched seeder: SowingMachine spec.seeds / currentSeed and setSeedFruitType as
