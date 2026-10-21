@@ -250,6 +250,7 @@ class LuaProbeTests(unittest.TestCase):
     def test_mirrored_constants_match_the_companion(self):
         self.assertEqual(self.probe.STAGING_DISTANCE_M, hitch.STAGING_DISTANCE_M)
         self.assertEqual(self.probe.REAR_JOINT_MAX_Z, hitch.REAR_JOINT_MAX_Z)
+        self.assertEqual(self.probe.FRONT_JOINT_SLACK_M, hitch.FRONT_JOINT_SLACK_M)
         self.assertEqual(self.probe.ALIGN_REACH_M, hitch.ALIGN_REACH_M)
         self.assertAlmostEqual(math.radians(self.probe.ALIGN_MAX_HEADING_DEG), hitch.ALIGN_MAX_HEADING_RAD)
         self.assertEqual(self.probe.ALIGN_MAX_LATERAL_M, hitch.ALIGN_MAX_LATERAL_M)
@@ -414,7 +415,7 @@ class LuaProbeTests(unittest.TestCase):
             return rng.choice([None, [], ["rearPto"], ["frontPto"], ["rearPto", "frontPto"]])
 
         compared = 0
-        for _ in range(1500):
+        for _ in range(3000):
             tractor = {"id": 1, "farm_id": 1, "category": "T", "x": 0.0, "z": 0.0, "speed_kmh": 0.0,
                        "entered": False, "ai_active": False, "has_autodrive": False, "ad_active": None,
                        "attachment_observed": True, "attacher_vehicle_id": None, "implement_ids": [],

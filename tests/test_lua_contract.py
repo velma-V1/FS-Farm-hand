@@ -779,7 +779,7 @@ class LuaContractTests(unittest.TestCase):
             '{ id = 31, file = "STUB_TRACTORS", aiDrivable = true, joints = { "IMPLEMENT", "TRAILER" },'
             '  jointZ = { 3.0, -2.5 }, peak = 1.3, ratio = 2.5, ptos = { [1] = { "frontPto" }, [2] = { "rearPto" } } }'))
         self.stubs.vehicle(world, self.lua.eval(
-            '{ id = 32, file = "STUB_WAGONS", x = 0, z = 0, inputs = { "TRAILER" }, inputAt = { { 0, -6.5 } },'
+            '{ id = 32, file = "STUB_WAGONS", x = 0, z = 0, inputs = { "TRAILER" }, inputAt = { { 0, 6.5 } },'
             '  ptoTorque = 1.7, ptoInputs = { [1] = { "rearPto", "ownOnly" } } }'))
         frame = self.snapshot(world)
         records = {r["id"]: r for r in frame["vehicles"]}

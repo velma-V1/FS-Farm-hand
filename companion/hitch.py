@@ -76,14 +76,20 @@ def _pto_connects(outputs, inputs) -> bool:
     return not inputs or bool(outputs & inputs)
 
 
+# An input joint this far behind the implement's root still counts as its front one.
+FRONT_JOINT_SLACK_M = 0.5
+
+
 def plan_hitch(tractor: Equipment, wagon: Equipment,
                staging_distance: float = STAGING_DISTANCE_M) -> HitchPlan | None:
     """Plan a rear hitch of ``wagon`` to ``tractor``, or None if geometry is unusable.
 
     Joint choice: a free rear tractor joint (z < REAR_JOINT_MAX_Z) and an active
-    wagon input joint of the same joint type which, if the wagon needs PTO power,
-    share a PTO name; the lowest (tractor, wagon) index pair wins, independent of
-    observation order. Unknown power or PTO data yields no plan. The tractor faces the wagon's
+    wagon input joint of the same joint type, not behind the wagon's root (the plan
+    reverses along the wagon's axis onto its front; live 8f44d1209a9c4d40-1 the 1124
+    Deckover's rear pintle took the place of its gooseneck), which, if the wagon needs
+    PTO power, share a PTO name; the lowest (tractor, wagon) index pair wins,
+    independent of observation order. Unknown power or PTO data yields no plan. The tractor faces the wagon's
     forward heading, so the last move is a straight reverse along the wagon axis.
     """
     if not _finite(staging_distance) or not 0 < staging_distance <= MAX_STAGING_DISTANCE_M:
@@ -99,9 +105,15 @@ def plan_hitch(tractor: Equipment, wagon: Equipment,
     for joints in (tractor.output_joints, wagon.input_joints):
         if len({joint.index for joint in joints}) != len(joints):
             return None  # Contradictory observation: joint indices must be unique.
+    fx, fz = math.sin(heading), math.cos(heading)
+    wx, wz = wagon.position
+
+    def at_front(inp) -> bool:
+        return (inp.position[0] - wx) * fx + (inp.position[1] - wz) * fz >= -FRONT_JOINT_SLACK_M
+
     pairs = sorted(((out, inp) for out in tractor.output_joints for inp in wagon.input_joints
                     if out.free and inp.active and out.joint_type == inp.joint_type
-                    and _finite(out.x, out.z, *inp.position) and out.z < REAR_JOINT_MAX_Z
+                    and _finite(out.x, out.z, *inp.position) and out.z < REAR_JOINT_MAX_Z and at_front(inp)
                     and (need == 0 or _pto_connects(out.pto_names, inp.pto_names))),
                    key=lambda pair: (pair[0].index, pair[1].index))
     if not pairs:

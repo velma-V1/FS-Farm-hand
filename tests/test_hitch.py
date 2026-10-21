@@ -142,6 +142,26 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(plan_hitch(t, w), plan_hitch(t, w))
 
 
+class FrontJointTests(unittest.TestCase):
+    def test_an_input_joint_behind_the_implement_is_never_planned(self):
+        # Live 8f44d1209a9c4d40-1: the 1124 Deckover has gooseneck inputs at its front
+        # and pintle inputs 7 m behind its root; the lowest index pair took the GMC's
+        # drop hitch to the trailer's rear and lined up with the wrong end.
+        for heading in (0.0, 1.588, -2.4):
+            with self.subTest(heading=heading):
+                root = (-877.9, 805.3)
+                front = Pose(root[0], root[1], heading).to_world(0.0, 7.4)
+                rear = Pose(root[0], root[1], heading).to_world(0.0, -7.0)
+                deck = wagon(root, heading, joints=(InputJoint(1, "SEMITRAILERCAR", front, True),
+                                                    InputJoint(3, "TRAILER", rear, True)))
+                truck = tractor(joints=(OutputJoint(1, "TRAILER", 0.0, -3.0, True),
+                                        OutputJoint(3, "SEMITRAILERCAR", 0.0, 0.0, True)))
+                plan = plan_hitch(truck, deck)
+                self.assertEqual((plan.tractor_joint, plan.wagon_joint), (3, 1))
+                rear_only = wagon(root, heading, joints=(InputJoint(3, "TRAILER", rear, True),))
+                self.assertIsNone(plan_hitch(truck, rear_only))
+
+
 class ApproachTests(unittest.TestCase):
     """GOTO's aims beside the implement (live: the staging pose ahead of the drawbar
     was NOT_REACHABLE for GIANTS' agent)."""
