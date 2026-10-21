@@ -58,6 +58,17 @@ class World(Protocol):
         money: the caller reads the farm's balance."""
         ...
 
+    def ad_unload(self, tractor_id: str, marker_id: str, field: int, owner: str) -> str:
+        """UNLOADER: AutoDrive's combine unloader for the reserved rig, waiting at the field's
+        marker and unloading at the best paid sell point for its crop; UNLOADING once it runs
+        (it goes on until ``stop``)."""
+        ...
+
+    def ad_sell(self, tractor_id: str, owner: str) -> str:
+        """SELL: AutoDrive takes the reserved rig's cargo to the best paid sell point for it
+        and unloads it there; the caller checks the cargo and the money."""
+        ...
+
     def open_gates(self, x: float, z: float, radius: float) -> str:
         """Open closed gates near (x, z) the way GIANTS opens one (opening hours).
         StepFailed NO_CLOSED_GATE when there is none."""

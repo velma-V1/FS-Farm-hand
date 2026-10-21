@@ -43,7 +43,7 @@ HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
 ALIGN_MAX_DISTANCE_M = 10.0      # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
-DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 55.0, "fold": 30.0, "belts": 15.0, "load": 75.0, "ad_marker": 15.0, "follow": 7300.0, "contract": 75.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
+DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 55.0, "fold": 30.0, "belts": 15.0, "load": 75.0, "ad_marker": 15.0, "follow": 7300.0, "contract": 75.0, "ad_unload": 20.0, "ad_sell": 1230.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -401,6 +401,18 @@ class FS25World:
         farm's finished one collected (GIANTS pays its reward); mod/FarmhandBridge.lua
         starters.contract."""
         return self._run("contract", field=int(field), direction=1 if start else -1)
+
+    def ad_unload(self, tractor_id: str, marker_id: str, field: int, owner: str) -> str:
+        """UNLOADER: AutoDrive's own combine unloader for the reserved rig (mod/FarmhandBridge.lua
+        starters.ad_unload); UNLOADING once AutoDrive runs it, which goes on until stopped."""
+        self._reserved(tractor_id, owner)
+        return self._run("ad_unload", tractor=int(tractor_id), marker=int(marker_id), field=int(field))
+
+    def ad_sell(self, tractor_id: str, owner: str) -> str:
+        """SELL: AutoDrive delivers the reserved rig's cargo to the best paid sell point for it
+        (mod/FarmhandBridge.lua starters.ad_sell); never evidence of the sale."""
+        self._reserved(tractor_id, owner)
+        return self._run("ad_sell", tractor=int(tractor_id))
 
     def save_game(self) -> str:
         """SAVE: the game's own save (mod/FarmhandBridge.lua starters.save); DONE only

@@ -376,6 +376,9 @@ def _option_words(phrase: str) -> str | None:
 
 
 def field_work(words: str) -> dict | None:
+    # "harvest field 3 and sell the grain": the unloader sells at the best paid point already.
+    if words.startswith("harvest"):
+        words = re.sub(r"\s+(?:and\s+|then\s+)+sell\b.*$", "", words)
     # "... anyway": the player knows a crop stands there and wants the work done.
     over_crop = re.search(r"\s+(?:anyway|anyways|regardless)$", words)
     if over_crop is not None:
@@ -446,6 +449,21 @@ def contract(words: str) -> dict | None:
         if proposal["field"] < 1:
             return None
     return proposal
+
+
+# "sell the grain", "sell the wheat in the trailer", "go sell the load": the cargo a rig
+# carries, to the best paid sell point (AutoDrive's own). Never a vehicle ("sell the tractor").
+_SELL = re.compile(r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?sell\s+(?P<what>.{1,60}?)"
+                   r"(?:\s+(?:in|on|from)\s+(?:the|my|our)\s+(?:trailer|truck|wagon))?(?:\s+please)?$")
+_SELL_VEHICLE = re.compile(r"\b(?:tractor|truck|trailer|wagon|combine|harvester|plow|plough|cultivator|seeder|"
+                           r"sprayer|implement|vehicle|deutz|gmc)s?\b")
+
+
+def sell(words: str) -> dict | None:
+    match = _SELL.match(words)
+    if match is None or _SELL_VEHICLE.search(match["what"]) or implement_kind(match["what"]):
+        return None
+    return {"version": 1, "command": "sell"}
 
 
 def plant(words: str) -> dict | None:
@@ -624,7 +642,7 @@ class RuleInterpreter:
             return {"version": 1, "command": "move_pair"}
         if re.fullmatch(r"(?:please\s+)?save(?:\s+the)?(?:\s+(?:game|farm|progress))?(?:\s+now)?", words):
             return {"version": 1, "command": "save_game"}
-        work = field_work(words) or plant(words) or buy(words) or transport(words)
+        work = field_work(words) or plant(words) or sell(words) or buy(words) or transport(words)
         if work is not None:
             return work
         # "... with the gmc": the towing vehicle by its name.

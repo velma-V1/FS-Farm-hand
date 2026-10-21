@@ -1150,6 +1150,112 @@ class Executor:
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, ids, tuple(states))
 
+    def _autodrive_rig(self, command, enter, states) -> Result:
+        """AutoDrive's own jobs for a rig with a trailer (the user 2026-10-21: unload the
+        combines while they harvest; sell the product).
+        unload_harvester: FIND an AutoDrive tractor with a trailer that has room, free ->
+        RESERVE -> UNLOADER (AutoDrive's combine unloader, waiting at the field's marker and
+        unloading at the best paid sell point for its crop): COMPLETE UNLOADER_STARTED with
+        the rig still reserved (it goes on; the coordinator stops it).
+        sell: FIND the AutoDrive rig with the most cargo (by name if said) -> RESERVE -> SELL
+        (AutoDrive to the best paid sell point, unloaded there) -> VERIFY (the cargo gone,
+        the money arrived) -> STOP -> RELEASE."""
+        owner, farm_id = command["request_id"], command["farm_id"]
+        selling = command["task"] == "sell"
+        ids, reserved, handed, moved = (), False, False, False
+        status, reason = "BLOCKED", "NO_RIG_TO_SELL" if selling else "NO_UNLOADER"
+
+        def cargo(unit):
+            return sum(u.level or 0.0 for u in unit.fill_units)
+
+        try:
+            enter("FIND")
+            items = sorted(self.world.snapshot(), key=lambda i: i.id)
+            observed = {i.id: i for i in items}
+            rigs = []
+            for tractor in items:
+                trailer = observed.get(tractor.attached_to)
+                if not (tractor.category == "tractor" and "autodrive" in tractor.capabilities and trailer is not None
+                        and trailer.attached_to == tractor.id and "trailer" in trailer.kinds and trailer.fill_units
+                        and all(usable(x, farm_id) and x.stopped for x in (tractor, trailer))
+                        and named(tractor, command.get("tractor_name"))):
+                    continue
+                room = sum((u.capacity or 0.0) - (u.level or 0.0) for u in trailer.fill_units)
+                if selling and cargo(trailer) > 0:
+                    rigs.append((-cargo(trailer), tractor.id, tractor, trailer))
+                elif not selling and room > 0:
+                    rigs.append((cargo(trailer), tractor.id, tractor, trailer))
+            if not rigs:
+                return Result("BLOCKED", reason, states=tuple(states))
+            _, _, tractor, trailer = min(rigs, key=lambda r: (r[0], r[1]))
+            ids = (tractor.id, trailer.id)
+            marker = None
+            if not selling:
+                name = f"field {command['field']}"
+                marker = next((d for d in self.world.destinations() if d.name.casefold() == name), None)
+                if marker is None:
+                    self.world.ad_marker(command["field"])        # AutoDrive's own, after a backup
+                    marker = next((d for d in self.world.destinations() if d.name.casefold() == name), None)
+                if marker is None:
+                    return Result("BLOCKED", "AD_NO_FIELD_MARKER", ids, tuple(states))
+            enter("RESERVE")
+            if not self.world.reserve(ids, owner):
+                return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
+            reserved = True
+            self.active = ids
+            if not selling:
+                enter("UNLOADER")
+                moved = True
+                self.world.ad_unload(tractor.id, marker.id, command["field"], owner)
+                handed = True
+                status, reason = "COMPLETE", "UNLOADER_STARTED"
+            else:
+                before = cargo(trailer)
+                farm = self.world.farm()
+                money = farm.money if farm is not None else None
+                enter("SELL")
+                moved = True
+                self.world.ad_sell(tractor.id, owner)
+                enter("VERIFY")
+                after = self._at_rest(ids)
+                left = cargo(after[trailer.id])
+                farm = self.world.farm()
+                log.info("SELL: cargo %.0f -> %.0f l; money %s -> %s", before, left, money, farm and farm.money)
+                if left > before * 0.05:
+                    raise ObservationMismatch("CARGO_NOT_UNLOADED")
+                if money is None or farm is None or farm.money is None or farm.money <= money:
+                    raise ObservationMismatch("PAYMENT_NOT_OBSERVED")
+                status, reason = "COMPLETE", "SOLD"
+        except Cancelled:
+            status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
+        except ObservationMismatch as error:
+            status, reason = "UNVERIFIED", str(error)
+        except StepUnverified as error:
+            status, reason = "UNVERIFIED", error.code
+        except StepFailed as error:
+            status, reason = "FAILED", error.code
+        except (RuntimeError, ValueError, KeyError) as error:
+            status, reason = "FAILED", getattr(error, "code", None) or type(error).__name__
+        finally:
+            if reserved and handed:
+                log.info("unloader %s: reserved under %s while AutoDrive works", ids[0], owner)
+            elif reserved:
+                try:
+                    if moved:
+                        enter("STOP")
+                        if not self.world.stop(ids[0], owner):
+                            raise ObservationMismatch("STOP_NOT_CONFIRMED")
+                        if not self._at_rest(ids)[ids[0]].stopped:
+                            raise ObservationMismatch("STOP_NOT_OBSERVED")
+                    enter("RELEASE")
+                    self.world.release(owner)
+                except Exception as error:
+                    log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
+                    status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        self.active = ()
+        log.info("result %s %s states %s", status, reason, ",".join(states))
+        return Result(status, reason, ids, tuple(states))
+
     def _transport_pair(self, ids):
         observed = {i.id: i for i in self.world.snapshot()}
         if any(i not in observed for i in ids):
@@ -1432,6 +1538,8 @@ class Executor:
             return self._transport(command, enter, states)
         if command["task"] == "follow_me":
             return self._follow(command, enter, states)
+        if command["task"] in ("unload_harvester", "sell"):
+            return self._autodrive_rig(command, enter, states)
         if command["task"] == "save_game":
             try:
                 enter("SAVE")

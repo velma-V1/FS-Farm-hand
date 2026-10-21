@@ -63,7 +63,8 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "haul_tractor": ("haul_tractor", "ACCEPTED_HAUL", "COMPLETE_HAUL"),
         "follow_me": ("follow_me", "ACCEPTED_FOLLOW", "COMPLETE_FOLLOW"),
         "contract": ("contract", "ACCEPTED_CONTRACT", "COMPLETE_CONTRACT"),
-        "worker_return": ("worker_return", "ACCEPTED_RETURN", "COMPLETE_RETURN")}
+        "worker_return": ("worker_return", "ACCEPTED_RETURN", "COMPLETE_RETURN"),
+        "sell": ("sell", "ACCEPTED_SELL", "COMPLETE_SELL")}
 # The proposal fields that pass into a job command's intent.
 NAMES = ("tractor_name", "implement_name", "cargo_name")
 
@@ -425,7 +426,7 @@ class Coordinator:
                      "crop": proposal.get("crop")}
                     if command == "field_work"
                     else {"wants": proposal["wants"]} if command == "buy" else None)
-            if command in ("fetch_pair", "hitch_pair", "move_pair", "load_tractor", "unload_tractor", "follow_me"):
+            if command in ("fetch_pair", "hitch_pair", "move_pair", "load_tractor", "unload_tractor", "follow_me", "sell"):
                 names = {k: proposal[k] for k in NAMES if k in proposal}
                 work = names or None
             elif command == "sequence":
@@ -544,7 +545,8 @@ class Coordinator:
 
     def _worker_ended(self, w: Worker) -> None:
         field = next((f for f in self.world.fields() if f.id == w.field), None)
-        done = OPERATIONS[w.operation].done(field.coverage) if field is not None and field.coverage else None
+        done = (OPERATIONS[w.operation].done(field.coverage)
+                if w.operation in OPERATIONS and field is not None and field.coverage else None)
         log.info("worker %s on field %s ended: %s %s", w.tractor, w.field, w.operation,
                  "?" if done is None else f"{done:.3f}")
         try:
@@ -559,7 +561,29 @@ class Coordinator:
                 self.workers.remove(w)
             if w.after:
                 self._after.append(w.after)
+            unloaders = [u for u in self.workers if u.operation == "unload" and u.field == w.field] \
+                if w.operation == "harvest" else []
+        if w.operation == "unload":
+            self.notify("UNLOADER_STOPPED")             # AutoDrive ended it on its own
+            return
         self.notify("WORKER_DONE" if done is not None and done >= COVERAGE_REQUIRED else "WORKER_STOPPED")
+        # The combine is done: its unloader stops, and what it still carries is sold.
+        for u in unloaders:
+            try:
+                if not self.world.stop(u.tractor, u.owner):
+                    raise StepFailed("STOP_NOT_CONFIRMED")
+                self.world.release(u.owner)
+            except (StepFailed, StepUnverified, ValueError) as error:
+                log.info("unloader %s: not released (%s)", u.tractor, getattr(error, "code", error))
+                continue
+            with self._lock:
+                if u in self.workers:
+                    self.workers.remove(u)
+            observed = {i.id: i for i in self.world.snapshot()}
+            trailer = observed.get(observed[u.tractor].attached_to) if u.tractor in observed else None
+            if trailer is not None and sum(f.level or 0.0 for f in trailer.fill_units) > 0:
+                with self._lock:
+                    self._after.append([{"task": "sell"}])
 
     def _stop_reserved(self, owner: str) -> None:
         """Pre-empt the running operation; the job's own cleanup confirms the stop."""
@@ -1058,12 +1082,29 @@ class Coordinator:
                         self._add_worker(worker)
                         started.append(worker)
                         self.notify("WORKER_STARTED", job.spoken)
+                        if step["operation"] == "harvest":
+                            self._start_unloader(job, cancel, entered, field.id)
                         break
                 if not retry:
                     break
         if started:
             return Result("COMPLETE", "WORKERS_STARTED", tuple(equipment), tuple(states))
         return Result("COMPLETE", "FIELD_WORK_OBSERVED", tuple(equipment), tuple(states))
+
+    def _start_unloader(self, job: Job, cancel: threading.Event, entered, field_id: int) -> None:
+        """Unloading while harvesting (the user 2026-10-21): an AutoDrive rig with a
+        trailer that has room runs AutoDrive's combine unloader for this field, a worker
+        until the combine is done. Without one the combine waits when full (said so)."""
+        intent = {"version": 1, "request_id": f"{job.owner}-u{field_id}", "farm_id": self.farm(),
+                  "target": "player_at_acceptance", "task": "unload_harvester", "field": field_id}
+        self.running = intent["request_id"]
+        result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
+        log.info("job %d unloader for field %s: %s %s", job.number, field_id, result.status, result.reason)
+        if result.reason == "UNLOADER_STARTED":
+            self._add_worker(Worker(intent["request_id"], result.equipment_ids[0], field_id, "unload", []))
+            self.notify("UNLOADER_STARTED", job.spoken)
+        else:
+            self.notify("NO_UNLOADER", job.spoken)
 
     def _run_after(self, job: Job, cancel: threading.Event, entered, worker: Worker) -> Result:
         """The ended worker's follow-up steps now (taken off the waiting list), in order."""

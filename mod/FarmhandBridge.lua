@@ -731,6 +731,142 @@ end
 
 function aborts.ad_marker() end
 
+-- ------------------------------------------------------------ AutoDrive sell / unload
+-- The best paid sell point for a fill type and the AutoDrive marker at it, as AutoDrive's
+-- own "automatic unload target" finds them (UnloadAtMode.lua getNextTask:
+-- ADTriggerManager:getHighestPayingSellStation(fillType) (TriggerManager.lua 377-394),
+-- getMarkerAtStation(station, vehicle) 444- (a map marker's waypoint on the path over the
+-- trigger, else -1), ADStateModule:setFirstMarkerByWayPointId 886-893 (the marker whose
+-- waypoint it is)). AutoDrive's globals come in as its own function environment, as for
+-- ad_marker (adGraph). Returns the marker id (GetAvailableDestinations' key) or nil, why.
+local function adManagers(env)
+    local AD = (Bridge.Observe and Bridge.Observe.autoDrive and Bridge.Observe.autoDrive(env)) or env.AutoDrive
+    if type(AD) ~= "table" or type(AD.GetAvailableDestinations) ~= "function" or type(env.getfenv) ~= "function" then
+        return nil
+    end
+    local ok, adEnv = pcall(env.getfenv, AD.GetAvailableDestinations)
+    if not ok or type(adEnv) ~= "table" or type(adEnv.ADTriggerManager) ~= "table"
+            or type(adEnv.ADGraphManager) ~= "table" then
+        return nil
+    end
+    return AD, adEnv.ADTriggerManager, adEnv.ADGraphManager
+end
+
+function Bridge.bestSellMarker(env, v, fillType)
+    local AD, triggers, graph = adManagers(env)
+    if AD == nil then return nil, "AD_SELL_UNSUPPORTED" end
+    local ok, marker, why = pcall(function()
+        local station = triggers:getHighestPayingSellStation(fillType)
+        if station == nil then return nil, "NO_SELL_POINT" end
+        local wp = triggers:getMarkerAtStation(station, v)
+        if wp == nil or wp < 0 then return nil, "AD_NO_MARKER_AT_SELL_POINT" end
+        for id, m in pairs(graph:getMapMarkers()) do
+            if m.id == wp then return id end
+        end
+        return nil, "AD_NO_MARKER_AT_SELL_POINT"
+    end)
+    if not ok then return nil, "AD_SELL_ERROR" end
+    return marker, why
+end
+
+-- The fill type a field's crop is harvested as (FieldState at GIANTS' field position, as
+-- Observe samples it; g_fruitTypeManager:getFillTypeIndexByFruitTypeIndex, as
+-- SowingMachine:setSeedIndex 405 uses it).
+local function fieldFillType(env, n)
+    for _, f in ipairs(env.g_fieldManager.fields or {}) do
+        local id = (type(f.getId) == "function" and f:getId()) or f.fieldId
+        if id == n then
+            local state = env.FieldState.new()
+            state:update(f.posX, f.posZ)
+            if state.fruitTypeIndex == nil or state.fruitTypeIndex == env.FruitType.UNKNOWN then return nil end
+            return env.g_fruitTypeManager:getFillTypeIndexByFruitTypeIndex(state.fruitTypeIndex)
+        end
+    end
+    return nil
+end
+
+-- What the rig carries to sell: the first filled unit behind the tractor (getFillUnits,
+-- getFillUnitFillLevel, getFillUnitFillType as Observe.fillUnits reads them).
+local function cargoFillType(v)
+    for _, impl in ipairs(v:getAttachedImplements() or {}) do
+        local o = impl.object
+        if o ~= nil and type(o.getFillUnits) == "function" then
+            for i in ipairs(o:getFillUnits()) do
+                if (o:getFillUnitFillLevel(i) or 0) > 0 then return o:getFillUnitFillType(i) end
+            end
+        end
+    end
+    return nil
+end
+
+-- ad_unload (tractor, marker, field): AutoDrive's own combine unloader
+-- (CombineUnloaderMode, MODE_UNLOAD 5, Specialization.lua:212) for the rig: it waits at
+-- `marker` (the field's), is called by AutoDrive's harvest manager to the combines that
+-- need it (HarvestManager.lua 239-300, GIANTS helpers included), and empties its trailer at
+-- the best paid sell point for the field's crop. AutoDrive:StartDriving(v, marker, unload)
+-- (ExternalInterface.lua:114-161) after setMode. DONE UNLOADING once AutoDrive runs it:
+-- handed off (it goes on until stopped).
+function starters.ad_unload(env, spec)
+    local v = spec.tractor
+    local denied = idle(env, v, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local AD = adManagers(env)
+    if v.ad == nil or AD == nil then return nil, "NO_AUTODRIVE" end
+    if v.ad.stateModule:getStartHelper() ~= false then return nil, "AD_START_HELPER_ON" end
+    if type(spec.marker) ~= "number" or AD:GetAvailableDestinations()[spec.marker] == nil then return nil, "UNKNOWN_MARKER" end
+    local ok, fillType = pcall(fieldFillType, env, spec.field)
+    if not ok or fillType == nil then return nil, "FIELD_CROP_UNKNOWN" end
+    local unload, why = Bridge.bestSellMarker(env, v, fillType)
+    if unload == nil then return nil, why end
+    v.ad.stateModule:setMode(AD.MODE_UNLOAD)
+    AD:StartDriving(v, spec.marker, unload)
+    log("ad_unload: waiting at marker %s, unloading at marker %s", tostring(spec.marker), tostring(unload))
+    return { seen = false }
+end
+
+function steppers.ad_unload(_env, task)
+    local status, code = stillOurs(task.spec)
+    if status ~= nil then return status, code end
+    local v = task.spec.tractor
+    if v.ad.stateModule:isActive() == true then
+        Bridge.handed[v] = "drive"
+        return "DONE", "UNLOADING"
+    end
+    if task.elapsed > Bridge.START_TIMEOUT_MS then return "FAILED", "AD_NOT_STARTED" end
+    return nil
+end
+
+aborts.ad_unload = function(_env, task)
+    local v = task.spec.tractor
+    if v.ad.stateModule:isActive() == true then v:stopAutoDrive() end
+end
+
+-- ad_sell (tractor): the rig's cargo delivered by AutoDrive (MODE_DELIVERTO: UnloadAtMode
+-- drives to the first marker, unloads there, parks; UnloadAtMode.lua 1-80) to the best paid
+-- sell point for what it carries; the drive as `drive` (AutoDrive ends it). The companion
+-- checks the cargo went and the money came.
+function starters.ad_sell(env, spec)
+    local v = spec.tractor
+    local denied = idle(env, v, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local AD = adManagers(env)
+    if v.ad == nil or AD == nil then return nil, "NO_AUTODRIVE" end
+    if v.ad.stateModule:getStartHelper() ~= false then return nil, "AD_START_HELPER_ON" end
+    local ok, fillType = pcall(cargoFillType, v)
+    if not ok or fillType == nil then return nil, "NOTHING_TO_SELL" end
+    local marker, why = Bridge.bestSellMarker(env, v, fillType)
+    if marker == nil then return nil, why end
+    v.ad.stateModule:setMode(AD.MODE_DELIVERTO)
+    AD:StartDriving(v, marker, marker)
+    log("ad_sell: to marker %s", tostring(marker))
+    return { seen = false }
+end
+
+steppers.ad_sell = steppers.drive
+aborts.ad_sell = aborts.drive
+
 -- ------------------------------------------------------------------- fold
 -- A reserved vehicle's own folding parts (a pickup's tailgate, a deckover's ramps) to one
 -- end through GIANTS' Foldable, never its animations directly: getIsFoldAllowed 987-1009,
@@ -1769,6 +1905,11 @@ Bridge.NOTICES = {
     ACCEPTED_RETURN = "Farmhand: bringing a helper's equipment back",
     COMPLETE_RETURN = "Farmhand: equipment back and unhitched",
     STATUS_HELPERS_WORKING = "Farmhand: free; helpers are working the fields",
+    UNLOADER_STARTED = "Farmhand: an AutoDrive tractor and trailer unloads the combine and sells at the best paid point",
+    UNLOADER_STOPPED = "Farmhand: AutoDrive stopped unloading the combine; check the unloader",
+    NO_UNLOADER = "Farmhand: no AutoDrive tractor with an empty trailer to unload the combine; it waits when full",
+    ACCEPTED_SELL = "Farmhand: taking the load to the best paid sell point (AutoDrive)",
+    COMPLETE_SELL = "Farmhand: sold; the load is gone and the money is in",
     COMPLETE_CONTRACT = "Farmhand: contract done and the reward collected",
     NO_SUCH_TRACTOR = "no tractor by that name",
     TRACTOR_AMBIGUOUS = "more than one tractor fits; name it",
@@ -1830,6 +1971,8 @@ Bridge.STEPS = {
     FIELD_WORK = "working the field (GIANTS helper)",
     CONTRACT = "taking the contract",
     WAIT_AHEAD = "waiting for the helper ahead to get going",
+    UNLOADER = "sending the unloader (AutoDrive)",
+    SELL = "driving the load to the sell point (AutoDrive)",
     COLLECT = "collecting the contract reward",
     VERIFY = "checking the hitch",
     DELIVER = "driving to the destination",
@@ -1950,7 +2093,7 @@ Bridge.REASONS = {
     BUY_ERROR = "the store refused the purchase",
     BUY_NOT_OBSERVED = "the purchase did not appear; check the store",
     PURCHASE_NOT_OBSERVED = "the purchase did not appear; check the store",
-    PAYMENT_NOT_OBSERVED = "the purchase appeared but the payment was not seen; check the finances",
+    PAYMENT_NOT_OBSERVED = "the money was not seen moving; check the finances",
     FIELD_NOT_OWNED = "the farm does not own that field",
     NO_CONTRACT = "there is no contract to take right now",
     NO_CONTRACT_ON_FIELD = "there is no contract for that field",
@@ -1971,6 +2114,15 @@ Bridge.REASONS = {
     CROP_NOT_READY = "the crop on that field is not ready to harvest",
     NO_HARVESTER_WITH_HEADER = "no free combine with its header on",
     SWATH_NOT_SET = "the combine did not switch to laying a straw swath",
+    NO_RIG_TO_SELL = "no AutoDrive tractor with a loaded trailer",
+    NOTHING_TO_SELL = "the trailer is empty",
+    NO_SELL_POINT = "no sell point buys that",
+    AD_NO_MARKER_AT_SELL_POINT = "AutoDrive has no destination at the best sell point; add one there in AutoDrive",
+    AD_SELL_UNSUPPORTED = "this AutoDrive version does not offer its sell point lookup",
+    AD_SELL_ERROR = "AutoDrive's sell point lookup failed",
+    FIELD_CROP_UNKNOWN = "the crop on that field could not be read",
+    CARGO_NOT_UNLOADED = "the load did not come off at the sell point; check the trailer",
+    AD_NO_FIELD_MARKER = "AutoDrive has no destination at that field",
     NO_FIELD_FOUND = "the helper found no field there",
     FIELD_NOT_READY = "the field needs nothing from this implement",
     PARTIAL_COVERAGE = "the helper stopped before the whole field was done",

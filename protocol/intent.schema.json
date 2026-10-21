@@ -34,9 +34,11 @@
         "save_game",
         "load_tractor",
         "unload_tractor",
-        "follow_me"
+        "follow_me",
+        "unload_harvester",
+        "sell"
       ],
-      "description": "field_work: GIANTS' field-work helper works an owned field with the hitched implement that does the operation; complete only on the field's measured state; target is player_at_acceptance. deliver_tractor_and_forage_wagon: select, hitch and deliver an available pair. move_pair: move the hitched tractor and forage wagon nearest the requester. hitch_pair: select and hitch an available pair where the wagon stands, no delivery. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to nearest the requester, where it stands; target is player_at_acceptance. load_tractor: a free tractor (tractor_name) driven up onto a transport trailer's deck (implement_name), belted, ramps raised. unload_tractor: the belted tractor released and backed off the trailer, ramps raised."
+      "description": "field_work: GIANTS' field-work helper works an owned field with the hitched implement that does the operation; complete only on the field's measured state; target is player_at_acceptance. deliver_tractor_and_forage_wagon: select, hitch and deliver an available pair. move_pair: move the hitched tractor and forage wagon nearest the requester. hitch_pair: select and hitch an available pair where the wagon stands, no delivery. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to nearest the requester, where it stands; target is player_at_acceptance. load_tractor: a free tractor (tractor_name) driven up onto a transport trailer's deck (implement_name), belted, ramps raised. unload_tractor: the belted tractor released and backed off the trailer, ramps raised. unload_harvester: an AutoDrive rig with a trailer that has room runs AutoDrive's combine unloader for the combines on field (handed off, kept reserved). sell: the AutoDrive rig with the most cargo (tractor_name if said) delivers it to the best paid sell point; complete when the cargo went and the money came."
     },
     "farm_id": {
       "type": "string",
@@ -242,7 +244,15 @@
     {
       "if": {"properties": {"task": {"const": "field_work"}}},
       "then": {"required": ["field", "operation"], "properties": {"target": {"const": "player_at_acceptance"}}},
-      "else": {"not": {"anyOf": [{"required": ["field"]}, {"required": ["operation"]}, {"required": ["area_m2"]}, {"required": ["over_crop"]}, {"required": ["hand_off"]}]}}
+      "else": {"not": {"anyOf": [{"required": ["operation"]}, {"required": ["area_m2"]}, {"required": ["over_crop"]}, {"required": ["hand_off"]}]}}
+    },
+    {
+      "if": {"properties": {"task": {"const": "unload_harvester"}}},
+      "then": {"required": ["field"], "properties": {"field": {"type": "integer"}, "target": {"const": "player_at_acceptance"}}}
+    },
+    {
+      "if": {"properties": {"task": {"enum": ["field_work", "unload_harvester"]}}},
+      "else": {"not": {"required": ["field"]}}
     },
     {
       "if": {

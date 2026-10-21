@@ -312,6 +312,43 @@ class MockWorld:
             return "AREA_REACHED" if area_m2 else "FINISHED"
 
     mock_workers = {}             # mock-only: tractor id -> a handed-off helper's job
+    mock_sell_at = None           # mock-only: where the best paid sell point is; None: none reachable
+    mock_price = 2.0              # mock-only: money per litre sold
+
+    def _cargo(self, tractor_id):
+        tractor = self.items[tractor_id]
+        return self.items.get(tractor.attached_to)
+
+    def ad_unload(self, tractor_id, marker_id, field, owner):
+        # Mock-only: AutoDrive's unloader runs (busy) until stopped; tests fill its trailer.
+        with self._lock:
+            reservation = self._reservations.get(owner)
+            if not reservation or tractor_id != reservation[1][0]:
+                raise RuntimeError("NOT_RESERVED")
+            if marker_id not in self.destination_map:
+                raise StepFailed("UNKNOWN_MARKER")
+            if self.mock_sell_at is None:
+                raise StepFailed("NO_SELL_POINT")
+            self.mock_workers = {**self.mock_workers, tractor_id: None}
+            self.items[tractor_id] = replace(self.items[tractor_id], busy=True, busy_reason="AUTODRIVE_ACTIVE")
+            return "UNLOADING"
+
+    def ad_sell(self, tractor_id, owner):
+        # Mock-only: the cargo goes to the sell point, the farm is paid for it.
+        with self._lock:
+            reservation = self._reservations.get(owner)
+            if not reservation or tractor_id != reservation[1][0]:
+                raise RuntimeError("NOT_RESERVED")
+            cargo = self._cargo(tractor_id)
+            litres = sum(u.level or 0.0 for u in cargo.fill_units) if cargo else 0.0
+            if not litres:
+                raise StepFailed("NOTHING_TO_SELL")
+            if self.mock_sell_at is None:
+                raise StepFailed("NO_SELL_POINT")
+            self.items[cargo.id] = replace(cargo, fill_units=tuple(replace(u, level=0.0) for u in cargo.fill_units))
+            self.farm_info = replace(self.farm_info, money=self.farm_info.money + litres * self.mock_price)
+            self._place(self.items[tractor_id], Pose(*self.mock_sell_at, 0.0))
+            return "AD_ENDED"
 
     def finish_worker(self, tractor_id, work=True):
         """Mock-only: the handed-off helper ends (its field worked unless ``work`` is False)."""

@@ -584,15 +584,6 @@ class ContractTests(unittest.TestCase):
         world.mock_contract_fields = {c[0]: field(c[0], 1.5, at=(400.0 + c[0], 500.0)) for c in contracts}
         return world
 
-    def coordinator(self, world):
-        from companion import coordinator as coordination
-        notices = []
-        c = coordination.Coordinator(world, Executor(world), lambda n, s=False: notices.append(n), lambda: "farm-a",
-                                     lambda: "s1")
-        c.CONTRACT_WAIT_S = 2.0
-        c.SETTLE_S = 2.0
-        return c, notices
-
     OFFERS = ((20, "harvest", "CREATED", False, 9000.0),       # not a contract Farmhand does
               (31, "fertilize", "CREATED", False, 5000.0),     # no sprayer on the farm
               (21, "plow", "CREATED", False, 3000.0),
@@ -602,7 +593,7 @@ class ContractTests(unittest.TestCase):
         for offers in (self.OFFERS, tuple(reversed(self.OFFERS))):
             with self.subTest(first=offers[0][0]):
                 world = self.world(offers)
-                c, notices = self.coordinator(world)
+                c, notices = coordinated(world)
                 c.submit({"version": 1, "command": "contract"})
                 c.wait(30)
                 self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "CONTRACT_PAID"), c.last)
@@ -615,7 +606,7 @@ class ContractTests(unittest.TestCase):
 
     def test_the_field_or_kind_said_picks_that_contract(self):
         world = self.world(self.OFFERS)
-        c, _ = self.coordinator(world)
+        c, _ = coordinated(world)
         c.submit({"version": 1, "command": "contract", "field": 22})
         c.wait(30)
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "CONTRACT_PAID"))
@@ -626,7 +617,7 @@ class ContractTests(unittest.TestCase):
                              ({"field": 40}, "NO_CONTRACT_ON_FIELD"), ({"kind": "mow"}, "NO_CONTRACT")):
             with self.subTest(reason=reason):
                 world = self.world(self.OFFERS)
-                c, _ = self.coordinator(world)
+                c, _ = coordinated(world)
                 c.submit({"version": 1, "command": "contract", **work})
                 c.wait(30)
                 self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", reason))
@@ -646,7 +637,7 @@ class ContractTests(unittest.TestCase):
 
         world = self.world(((21, "plow", "CREATED", False, 3000.0),))
         world.__class__ = Slow
-        c, _ = self.coordinator(world)
+        c, _ = coordinated(world)
         c.submit({"version": 1, "command": "contract"})
         c.wait(30)
         self.assertEqual((c.last.state, c.last.reason), ("UNVERIFIED", "CONTRACT_NOT_FINISHED"))
@@ -672,6 +663,44 @@ class ContractTests(unittest.TestCase):
         self.assertIsNone(r.interpret("dont do a contract"))
 
 
+class CoordinatedWorld(MockWorld):
+    """The mock as the coordinator sees the bridge: reservations it can list, never a
+    worker's recovered as a stale one."""
+    cancel = None
+
+    def retained(self):
+        return tuple(self._reservations)
+
+    def recover(self, owner):
+        raise AssertionError(f"a worker's reservation was recovered: {owner}")
+
+    def reservation(self, owner):
+        r = self._reservations.get(owner)
+        return None if r is None else r[1]
+
+
+def coordinated(world):
+    """A coordinator over the real executor, its watch and settling quick."""
+    from companion import coordinator as coordination
+    notices = []
+    c = coordination.Coordinator(world, Executor(world), lambda n, s=False: notices.append(n), lambda: "farm-a",
+                                 lambda: "s1")
+    c.WATCH_S = 0.02
+    c.SETTLE_S = 0.5
+    c.CONTRACT_WAIT_S = 2.0
+    return c, notices
+
+
+def until(check, seconds=10.0):
+    import time
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if check():
+            return True
+        time.sleep(0.02)
+    return False
+
+
 class WorkerTests(unittest.TestCase):
     """The user (2026-10-21): "farm hand needs to be able to leave workers doing field work
     and do something else like start the seeder behind the plow tractor". Field work is
@@ -679,50 +708,19 @@ class WorkerTests(unittest.TestCase):
     it, and once the helper ends the field is measured and the equipment comes back."""
 
     def world(self, *kinds, coverage=STUBBLE):
-        class World(MockWorld):
-            cancel = None
-
-            def retained(self):
-                return tuple(self._reservations)
-
-            def recover(self, owner):
-                raise AssertionError(f"a worker's reservation was recovered: {owner}")
-
-            def reservation(self, owner):
-                r = self._reservations.get(owner)
-                return None if r is None else r[1]
-
         items = []
         for n, kind in enumerate(kinds):
             tractor, implement = rig(kind, 500.0, at=(100.0 + 40 * n, 100.0))
             items += [replace(tractor, id=f"t-{n + 1}", attached_to=f"i-{n + 1}"),
                       replace(implement, id=f"i-{n + 1}", attached_to=f"t-{n + 1}", required_pto_torque=0.0)]
-        return World(items, PLAYERS, fields=(field(7, 0.4, coverage),), farm=FARM)
-
-    def coordinator(self, world):
-        from companion import coordinator as coordination
-        notices = []
-        c = coordination.Coordinator(world, Executor(world), lambda n, s=False: notices.append(n), lambda: "farm-a",
-                                     lambda: "s1")
-        c.WATCH_S = 0.02
-        c.SETTLE_S = 0.5
-        return c, notices
-
-    def until(self, check, seconds=10.0):
-        import time
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            if check():
-                return True
-            time.sleep(0.02)
-        return False
+        return CoordinatedWorld(items, PLAYERS, fields=(field(7, 0.4, coverage),), farm=FARM)
 
     def unit(self, world, unit_id):
         return next(i for i in world.snapshot() if i.id == unit_id)
 
     def test_the_helper_works_on_and_its_equipment_comes_back_once_it_is_done(self):
         world = self.world("plow")
-        c, notices = self.coordinator(world)
+        c, notices = coordinated(world)
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["plow"]})
         c.wait(10)
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"))
@@ -731,7 +729,7 @@ class WorkerTests(unittest.TestCase):
         self.assertIsNotNone(self.unit(world, "t-1").reserved_by)                # kept for the helper
         self.assertEqual(c.status(), "STATUS_HELPERS_WORKING")
         world.finish_worker("t-1")
-        self.assertTrue(self.until(lambda: not c.workers and c.last.command == "worker_return"
+        self.assertTrue(until(lambda: not c.workers and c.last.command == "worker_return"
                                    and c.last.state == "COMPLETE"))
         self.assertIn("WORKER_DONE", notices)
         self.assertEqual(notices[-1], "COMPLETE_RETURN")
@@ -743,7 +741,7 @@ class WorkerTests(unittest.TestCase):
 
     def test_farmhand_does_the_next_job_while_the_helper_works(self):
         world = self.world("plow", "sowing_machine")
-        c, _ = self.coordinator(world)
+        c, _ = coordinated(world)
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["plow"]})
         c.wait(10)
         # Another job meanwhile: the busy rig is never taken; the other one moves.
@@ -755,10 +753,10 @@ class WorkerTests(unittest.TestCase):
 
     def test_the_seeder_starts_behind_the_plow_once_the_plow_is_ahead(self):
         world = self.world("plow", "sowing_machine")
-        c, notices = self.coordinator(world)
+        c, notices = coordinated(world)
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["plow", "sow"]})
-        self.assertTrue(self.until(lambda: c.workers))
-        self.assertTrue(self.until(lambda: c.current is not None and c.current.step == "WAIT_AHEAD"))
+        self.assertTrue(until(lambda: c.workers))
+        self.assertTrue(until(lambda: c.current is not None and c.current.step == "WAIT_AHEAD"))
         self.assertEqual([w.tractor for w in c.workers], ["t-1"])                 # not ahead of the plow
         f = world.field_map[7]
         world.field_map[7] = replace(f, coverage=replace(f.coverage, ground=(("PLOWED", 0.4), ("STUBBLE", 0.6))))
@@ -773,12 +771,12 @@ class WorkerTests(unittest.TestCase):
                            heading=0.0, fill_units=(FillUnit(1, "SEEDS", 500.0, 4000.0, role="seed"),),
                            input_joints=(InputJoint(1, "implement", (160.0, 102.0), True),), required_pto_torque=0.0)
         world.items["i-9"] = seeder
-        c, _ = self.coordinator(world)
+        c, _ = coordinated(world)
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["plow", "sow"]})
-        self.assertTrue(self.until(lambda: c.workers))
+        self.assertTrue(until(lambda: c.workers))
         f = world.field_map[7]
         world.field_map[7] = replace(f, coverage=replace(f.coverage, ground=(("PLOWED", 0.4), ("STUBBLE", 0.6))))
-        self.assertTrue(self.until(lambda: c.current is not None and c.current.step == "WAIT_AHEAD"))
+        self.assertTrue(until(lambda: c.current is not None and c.current.step == "WAIT_AHEAD"))
         world.finish_worker("t-1")
         c.wait(15)
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"), c.last)
@@ -788,11 +786,11 @@ class WorkerTests(unittest.TestCase):
 
     def test_stop_stops_the_helpers_and_brings_nothing_back(self):
         world = self.world("plow")
-        c, notices = self.coordinator(world)
+        c, notices = coordinated(world)
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["plow"]})
         c.wait(10)
         c.submit({"version": 1, "command": "stop"})
-        self.assertTrue(self.until(lambda: self.unit(world, "t-1").reserved_by is None))
+        self.assertTrue(until(lambda: self.unit(world, "t-1").reserved_by is None))
         self.assertFalse(self.unit(world, "t-1").busy)
         self.assertEqual(c.workers, [])
         self.assertEqual(notices[-1], "STOPPING")
@@ -837,3 +835,76 @@ class HarvestTests(unittest.TestCase):
         combine = {"category": "HARVESTERS", "forage_wagon": False, "self_propelled": True, "motor": {"x": 1},
                    "kinds": ["combine", "fill_unit"], "output_joints": [{"index": 1}], "input_joint_poses": []}
         self.assertEqual(_category(combine, {}), "harvester")
+
+
+class UnloadAndSellTests(unittest.TestCase):
+    """The user (2026-10-21): unload the combines while they harvest, sell the product.
+    AutoDrive's own combine unloader on an AutoDrive rig with a trailer, unloading at the
+    best paid sell point; what is left when the combine is done is sold; complete only on
+    the cargo gone and the money in."""
+
+    def world(self, unloader=True, cargo=0.0):
+        from protocol.model import Destination
+
+        combine = HarvestTests().combine()
+        items = list(combine)
+        if unloader:
+            tractor = Equipment("t-5", "tractor", "farm-a", (300.0, 100.0), heading=0.0, ai_root=Pose(300.0, 100.0, 0.0),
+                                capabilities=frozenset({"move", "attach", "stop", "autodrive"}), attached_to="w-5",
+                                kinds=frozenset({"ai_field_worker"}))
+            trailer = Equipment("w-5", "implement", "farm-a", (300.0, 94.0), kinds=frozenset({"trailer", "fill_unit"}),
+                                heading=0.0, attached_to="t-5",
+                                fill_units=(FillUnit(1, "WHEAT", cargo, 30000.0),))
+            items += [tractor, trailer]
+        world = CoordinatedWorld(items, PLAYERS, destinations=(Destination("17", (210.0, 290.0), "Field 7"),),
+                      fields=(field(7, 0.4, HarvestTests.READY),), farm=FARM)
+        world.mock_sell_at = (900.0, 900.0)
+        return world
+
+    def test_the_combine_is_unloaded_while_it_harvests_and_the_rest_is_sold_after(self):
+        world = self.world()
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"))
+        self.assertEqual(sorted((w.tractor, w.operation) for w in c.workers), [("c-1", "harvest"), ("t-5", "unload")])
+        self.assertIn("UNLOADER_STARTED", notices)
+        unit = world.items["w-5"]
+        world.items["w-5"] = replace(unit, fill_units=(replace(unit.fill_units[0], level=5000.0),))   # AutoDrive loaded it
+        world.finish_worker("c-1")
+        self.assertTrue(until(lambda: c.last.command == "worker_return" and c.last.state == "COMPLETE"))
+        self.assertEqual(world.farm().money, FARM.money + 10000.0)
+        self.assertEqual(world.items["w-5"].fill_units[0].level, 0.0)
+        self.assertEqual(c.workers, [])
+        self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
+        self.assertIn("WORKER_DONE", notices)
+
+    def test_without_an_unloader_the_player_is_told(self):
+        world = self.world(unloader=False)
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        c.wait(10)
+        self.assertIn("NO_UNLOADER", notices)
+        self.assertEqual([w.tractor for w in c.workers], ["c-1"])
+
+    def test_sell_the_grain_is_complete_only_on_the_money(self):
+        world = self.world(cargo=8000.0)
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "sell"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "SOLD"), c.last)
+        self.assertEqual(world.farm().money, FARM.money + 16000.0)
+        self.assertEqual(notices[-1], "COMPLETE_SELL")
+        c.submit({"version": 1, "command": "sell"})                      # nothing left
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", "NO_RIG_TO_SELL"))
+
+    def test_the_words(self):
+        from companion.language import RuleInterpreter
+        r = RuleInterpreter()
+        for words in ("sell the grain", "sell the wheat in the trailer", "go sell the load"):
+            self.assertEqual(r.interpret(words), {"version": 1, "command": "sell"})
+        for words in ("sell the tractor", "sell the plow"):
+            self.assertNotEqual((r.interpret(words) or {}).get("command"), "sell")
+        self.assertEqual(r.interpret("harvest field 3 and sell the grain"),
+                         {"version": 1, "command": "field_work", "field": 3, "operations": ["harvest"]})

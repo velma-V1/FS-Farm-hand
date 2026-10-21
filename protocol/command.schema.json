@@ -13,7 +13,7 @@
       "const": 1
     },
     "command": {
-      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to, the pair nearest the requester, where it stands. unsupported: understood, but not something Farmhand does yet (reason). load_tractor: drive a free tractor (tractor_name) up a transport trailer's ramps (implement_name), belt it and raise the ramps ('load the tractor and secure it'). unload_tractor: release the belts and back the tractor off ('unload it'). sequence: several job commands in order (steps). follow_me: the named rig (tractor_name) follows the vehicle the player drives, with FollowMe, until stopped; only on the player's explicit 'follow me'. resume: continue the goal that was stopped, taken over or blocked, from what is already done ('continue'). retarget: give the goal a new destination ('take it to field 2 instead'). haul_tractor: take the named tractor (tractor_name) to the target on a transport and unload it there, from whatever is already done ('take the deutz to field 3 and unload it'). contract: a GIANTS field contract taken, worked and collected (field, kind optional; 'do a contract', 'do the plow contract on field 12'). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop.",
+      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to, the pair nearest the requester, where it stands. unsupported: understood, but not something Farmhand does yet (reason). load_tractor: drive a free tractor (tractor_name) up a transport trailer's ramps (implement_name), belt it and raise the ramps ('load the tractor and secure it'). unload_tractor: release the belts and back the tractor off ('unload it'). sequence: several job commands in order (steps). follow_me: the named rig (tractor_name) follows the vehicle the player drives, with FollowMe, until stopped; only on the player's explicit 'follow me'. resume: continue the goal that was stopped, taken over or blocked, from what is already done ('continue'). retarget: give the goal a new destination ('take it to field 2 instead'). haul_tractor: take the named tractor (tractor_name) to the target on a transport and unload it there, from whatever is already done ('take the deutz to field 3 and unload it'). sell: the AutoDrive rig with the most cargo (tractor_name if said) takes it to the best paid sell point ('sell the grain'). contract: a GIANTS field contract taken, worked and collected (field, kind optional; 'do a contract', 'do the plow contract on field 12'). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop.",
       "enum": [
         "fetch_pair",
         "move_pair",
@@ -34,7 +34,8 @@
         "resume",
         "retarget",
         "follow_me",
-        "contract"
+        "contract",
+        "sell"
       ]
     },
     "steps": {
@@ -199,7 +200,8 @@
               "unload_tractor",
               "sequence",
               "follow_me",
-              "contract"
+              "contract",
+              "sell"
             ]
           }
         }

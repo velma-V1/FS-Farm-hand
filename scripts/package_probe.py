@@ -213,7 +213,10 @@ KEYS (in game, on foot)
 WHAT YOU CAN SAY (examples; plain words, one job or several in one sentence)
   Pairs        "bring me a tractor and forage wagon", "hitch the deckover with the gmc",
                "unhitch the trailer", "move this here", "take it back"
-  Field work   "plow field 1", "cultivate and sow field 7", "plow a small area of field 3"
+  Field work   "plow field 1", "cultivate and sow field 7", "plow a small area of field 3",
+               "plant wheat on field 3", "plow and plant canola on field 4", "harvest field 3"
+  Contracts    "do a contract", "do the plow contract on field 12"
+  Selling      "sell the grain"
   Buying       "buy a large plow", "buy the gmc truck and the 1124 deckover",
                "buy a deutz series 9 with a boss hoss engine",
                "buy a lizard titan vineyard plow with the 25m unrealistic width and the 25 mph speed"
@@ -228,6 +231,12 @@ GOOD TO KNOW
     "continue" and Farmhand picks it up from what is already done, also after a
     restart. Nothing already done is repeated (nothing is bought twice).
   - Farmhand only unloads where it observes the rig has arrived.
+  - Field work is handed to the game's helpers: Farmhand is free for the next job
+    while they work, puts the next machine in behind the one ahead, and brings the
+    equipment back once a helper is done. Stop also stops the helpers.
+  - Harvesting: the straw swath is always on (where the combine has one). An
+    AutoDrive tractor with an empty trailer unloads the combine meanwhile and sells
+    at the best paid sell point; what is left is sold when the field is done.
   - A trailer carrying a belted tractor cannot be driven by the game's helper or by
     AutoDrive (they stop for the cargo). Farmhand then asks you to drive it (or say
     "follow me" from another vehicle) and "continue" when you are there.

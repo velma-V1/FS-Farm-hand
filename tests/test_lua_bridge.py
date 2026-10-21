@@ -1692,6 +1692,90 @@ class ContractOpTests(unittest.TestCase):
         self.assertEqual(self.run(self.bridge, self.env, 22, -1), (None, "NO_CONTRACT_ON_FIELD"))    # not ours
 
 
+class AutoDriveSellTests(unittest.TestCase):
+    """ad_unload / ad_sell: AutoDrive's own combine unloader and deliver mode to the best
+    paid sell point as AutoDrive finds it (ADTriggerManager getHighestPayingSellStation /
+    getMarkerAtStation, the map marker of that waypoint), reached as the environment of
+    its GetAvailableDestinations. Stubs in the pinned source's shapes only."""
+
+    ENV = r"""
+        local env = { started = {} }
+        local AD = { MODE_DRIVETO = 1, MODE_DELIVERTO = 3, MODE_UNLOAD = 5 }
+        local markers = { [4] = { id = 40, name = "Field 7" }, [9] = { id = 90, name = "Grain Elevator" } }
+        function AD:GetAvailableDestinations() return markers end
+        function AD:StartDriving(v, first, second)
+            env.started[#env.started + 1] = { mode = v.mode, first = first, second = second }
+            v.active = true
+        end
+        local triggers = { best = { name = "elevator" }, wp = 90 }
+        function triggers:getHighestPayingSellStation(fillType) env.askedFillType = fillType; return self.best end
+        function triggers:getMarkerAtStation(station, v) return self.wp end
+        local graph = {}
+        function graph:getMapMarkers() return markers end
+        env.AutoDrive = AD
+        env.getfenv = function(fn) if fn == AD.GetAvailableDestinations then return { ADTriggerManager = triggers, ADGraphManager = graph } end return {} end
+        env.triggers = triggers
+        env.FruitType = { UNKNOWN = 0 }
+        env.FieldState = { new = function() return { update = function(s) s.fruitTypeIndex = 3 end } end }
+        env.g_fruitTypeManager = { getFillTypeIndexByFruitTypeIndex = function(_, i) return 100 + i end }
+        env.g_fieldManager = { fields = { { fieldId = 7, posX = 1, posZ = 2 } } }
+        local trailer = { levels = { 0 } }
+        function trailer:getFillUnits() return { {} } end
+        function trailer:getFillUnitFillLevel(i) return self.levels[i] end
+        function trailer:getFillUnitFillType(i) return 7 end
+        local v = { ownerFarmId = 1, active = false, ad = {} }
+        v.ad.stateModule = { getStartHelper = function() return false end, setMode = function(_, m) v.mode = m end,
+                             isActive = function() return v.active end }
+        function v:getIsEntered() return false end
+        function v:getIsAIActive() return false end
+        function v:getLastSpeed() return 0 end
+        function v:getAttachedImplements() return { { object = trailer } } end
+        function v:stopAutoDrive() self.active = false end
+        env.v, env.trailer = v, trailer
+        return env
+    """
+
+    def setUp(self):
+        self.lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        self.lua.globals().print = lambda *a: None
+        for name in ("FarmhandObserve.lua", "FarmhandHitch.lua"):
+            self.lua.execute((ROOT / "mod" / name).read_text())
+        self.bridge = self.lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        self.env = self.lua.execute(self.ENV)
+        self.run = self.lua.eval("""function(B, env, op, marker, field)
+            local task, code = B.start(env, { op = op, tractor = env.v, marker = marker, field = field, farmId = 1,
+                                             owned = function() return true end })
+            if task == nil then return nil, code end
+            task.elapsed = 0
+            return task, B.step(env, task, 16) end""")
+
+    def test_the_unloader_waits_at_the_field_and_unloads_at_the_best_paid_sell_point(self):
+        task, status, code = self.run(self.bridge, self.env, "ad_unload", 4, 7)
+        self.assertEqual((status, code), ("DONE", "UNLOADING"))
+        started = self.env.started[1]
+        self.assertEqual((started.mode, started.first, started.second), (5, 4, 9))
+        self.assertEqual(self.env.askedFillType, 103)                      # the field's crop
+        self.assertEqual(self.bridge.handed[self.env.v], "drive")          # a stop still ends it
+
+    def test_selling_delivers_the_cargo_to_the_best_paid_sell_point(self):
+        self.assertEqual(self.run(self.bridge, self.env, "ad_sell", 0, 0), (None, "NOTHING_TO_SELL"))
+        self.env.trailer.levels[1] = 5000
+        task, status, code = self.run(self.bridge, self.env, "ad_sell", 0, 0)
+        started = self.env.started[1]
+        self.assertEqual((started.mode, started.first, started.second), (3, 9, 9))
+        self.assertEqual(self.env.askedFillType, 7)                        # what it carries
+        self.env.v.active = False
+        self.assertEqual(self.bridge.step(self.env, task, 16), ("DONE", "AD_ENDED"))
+
+    def test_no_sell_point_or_no_marker_there_starts_nothing(self):
+        self.env.trailer.levels[1] = 5000
+        self.env.triggers.wp = -1
+        self.assertEqual(self.run(self.bridge, self.env, "ad_sell", 0, 0), (None, "AD_NO_MARKER_AT_SELL_POINT"))
+        self.env.triggers.best = None
+        self.assertEqual(self.run(self.bridge, self.env, "ad_unload", 4, 7), (None, "NO_SELL_POINT"))
+        self.assertEqual(len(self.env.started), 0)
+
+
 class FollowTests(unittest.TestCase):
     """follow: FollowMe's registered vehicle functions (initiateFollowVehicle, getIsFollowVehicleActive,
     getCanStartFollowVehicle; FollowVehicle.lua 38-75, 556-571), the leader the vehicle the player
