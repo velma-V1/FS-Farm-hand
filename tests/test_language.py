@@ -49,6 +49,12 @@ class RuleInterpreterTests(unittest.TestCase):
             ("unhitch the cultivator at field 3", None),
             ("drop it", None),                               # "drop" needs the thing named
             ("don't unhitch the cultivator", None),
+            # Found 2026-10-20 checking free wording: "take ... off" was read as a hitch.
+            ("take the seeder off the tractor", {**detach, "implement": "sowing_machine"}),
+            ("take off the plough", {**detach, "implement": "plow"}),
+            ("get the trailer off", {**detach, "implement": "trailer"}),
+            ("pull the cultivator off the tractor", {**detach, "implement": "cultivator"}),
+            ("take the seeder off at the barn", None),
         ])
 
     def test_other_implements_by_their_names(self):

@@ -102,6 +102,8 @@ _HITCH_VERB = re.compile(r"\b(?:attach|hook|hitch|couple|connect)\b")
 # the wagon", "detach it"); "drop" only with the implement named ("drop the trailer").
 _DETACH_VERB = re.compile(r"^(?:unhitch|detach|unhook|uncouple|disconnect|unattach)\b")
 _DROP = re.compile(r"^drop(?:\s+off)?\b")
+# "take the seeder off (the tractor)", "take off the plough": unhitch (was read as a hitch).
+_TAKE_OFF = re.compile(r"^(?:take|get|pull)\s+(?:\S+\s+){0,3}?off\b")
 _IMPLEMENT_WORD = re.compile(r"\b(?:implement|equipment|tool)s?\b")
 # A destination that is equipment, not a place: "take the tractor to the wagon".
 _EQUIPMENT = re.compile(r"^(?:(?:the|a|an|my|that|this)\s+)?(?:(?:forage|loader|silage)\s+)?"
@@ -296,7 +298,7 @@ class RuleInterpreter:
 
     def _interpret_rest(self, text: str, words: str) -> dict | None:
         kind = implement_kind(words)
-        if _DETACH_VERB.match(words) or _DROP.match(words):
+        if _DETACH_VERB.match(words) or _DROP.match(words) or _TAKE_OFF.match(words):
             return self._detach(text, words, kind)
         if kind is not None:
             return self._implement(text, words, kind)
