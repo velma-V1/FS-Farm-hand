@@ -417,6 +417,7 @@ class LiveTest:
                     "places": [(p.get("name"), round(p.get("x")), round(p.get("z"))) for p in frame.get("places") or []][:60],
                     "markers": [(d.get("name"), round(d.get("x")), round(d.get("z")))
                                 for d in frame.get("destinations") or []][:300],
+                    "contracts": frame.get("contracts"),
                     # Why a motorized vehicle is no towing vehicle (adapters/fs25.py _towing_vehicle).
                     "unclassified": [{k: v.get(k) for k in ("id", "name", "category", "self_propelled", "motor",
                                                             "kinds", "output_joints")}
@@ -488,6 +489,7 @@ class LiveTest:
                                    "belt_markers": [[round(c, 2) for c in m] for m in i.belt_markers]}
                                   if i.belts_fastened is not None else {}),
                                **({"belted_to": i.belted_to} if i.belted_to is not None else {}),
+                               **({"seeds": list(i.seeds)} if i.seeds else {}),
                                "fill_units": [{"index": u.index, "fill_type": u.fill_type, "level": u.level,
                                                "capacity": u.capacity, "role": u.role,
                                                "supported": sorted(u.supported)[:12]} for u in i.fill_units]}
