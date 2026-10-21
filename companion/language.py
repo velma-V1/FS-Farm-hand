@@ -42,7 +42,7 @@ _FIELD = re.compile(r"\bto\s+field\s+(?:number\s+)?(\d{1,4})\b")
 _HERE = re.compile(r"^(?:me|here|my place|my position|where i am|where i m standing|right here|over here|back here)$")
 # "this"/"it": the hitched pair the player means (the executor picks the one nearest them).
 _REFERENT = re.compile(r"\b(?:it|this|that|them|these|those|everything)\b")
-_MOVE_VERB = re.compile(r"\b(?:bring|take|drive|move|park|send|return|put)\b")
+_MOVE_VERB = re.compile(r"\b(?:bring|take|drive|move|park|send|return|put|deliver|haul)\b")
 _COME = re.compile(r"^(?:come|come here|come to me|come over here|come back|come back here|get over here)$")
 # The destination: whatever follows the last "to"/"at"/"into" (and an optional "the"/"my").
 _PREPOSITION = re.compile(r"\b(?:to|at|into|in)\s+(?:the\s+|my\s+|our\s+)?", re.IGNORECASE)
@@ -165,6 +165,95 @@ _FIELD_WORK = re.compile(
 TEST_AREA_M2 = 400        # "a small area of field 7": about a minute of work for one implement
 
 
+# What one command already does: a sequence of only these is that command ("hitch the
+# tractor to the forage wagon then take it to the barn" is one fetch).
+_COVERS = {"fetch_pair": {"hitch_pair", "fetch_pair", "move_pair"}, "buy": {"buy"},
+           "load_tractor": {"load_tractor"}, "field_work": {"field_work"}}
+# Clause breaks of a sequence: commas, "then", "and then", ", and", semicolons.
+_CLAUSE_BREAK = re.compile(r"\s*,\s*(?:and\s+)?(?:then\s+)?|\s+(?:and\s+)?then\s+|\s*;\s*")
+# Tractor transport (AGENTS.md exception 5): "load the tractor onto the trailer", "load the
+# deutz on the deckover and secure it", "unload it", "take the tractor off the trailer".
+# Belting it and raising the ramps are part of every load ("secure it", "raise the ramps").
+_THING = r"[a-z0-9]{1,20}(?:\s+[a-z0-9]{1,20}){0,3}?"
+_LOAD = re.compile(
+    r"^(?:please\s+)?(?P<verb>load|put|drive|get|run)\s+(?:up\s+)?(?:the\s+|my\s+|our\s+|a\s+)?(?P<tractor>" + _THING + r")"
+    r"(?:\s+(?:up\s+)?(?:on|onto|on to|into|up)\s+(?:the\s+|my\s+|our\s+)?(?P<trailer>" + _THING + r"))?"
+    r"(?:\s+(?:and|then)\s+(?:secure|strap|belt|tie|chain)\s+(?:it|him|that)(?:\s+down)?)?"
+    r"(?:\s+(?:and|then)\s+(?:raise|lift|close|put\s+up)\s+the\s+ramps(?:\s+up)?)?$")
+_UNLOAD = re.compile(
+    r"^(?:please\s+)?(?:(?:unload|offload)(?:\s+(?:the\s+|my\s+)?(?P<tractor>" + _THING + r"))?"
+    r"|(?:take|drive|get|back|run)\s+(?:the\s+|my\s+)?(?P<off>" + _THING + r")\s+off)"
+    r"(?:\s+(?:of\s+)?(?:off\s+|from\s+)?(?:the\s+|my\s+)?(?P<trailer>" + _THING + r"))?$")
+# What a transport clause may name: a trailer word, a truck, or the thing itself.
+_TRAILER_WORDS = re.compile(r"\b(?:trailers?|decks?|deckovers?|goosenecks?|lowboys?|lowloaders?|flatbeds?)\b")
+_TRANSPORT_NOT = re.compile(r"\b(?:wagon|forage|implement|bales?|pallets?|grain|silage|logs?|wood)\b")
+# Clauses a sequence folds into its load (the load always belts and raises the ramps).
+_ABSORBED = re.compile(r"^(?:then\s+)?(?:(?:secure|strap|belt|tie|chain)\s+(?:it|him|that|the tractor)(?:\s+down)?"
+                       r"|(?:raise|lift|close|put\s+up|lower|drop|put\s+down)\s+the\s+ramps(?:\s+(?:up|down))?)$")
+# "take the gmc", "use the gmc": the towing vehicle for the hitch that follows.
+_TAKE_VEHICLE = re.compile(r"^(?:take|use|grab|get|with)\s+(?:the|my|our)\s+([a-z0-9][a-z0-9 ]{0,30}?)(?:\s+truck)?$")
+
+
+def _vehicle_name(words: str | None) -> str | None:
+    """A tractor named by its words ("the deutz series 9"), or None for just "the tractor"/"it"."""
+    if not words:
+        return None
+    words = re.sub(r"\s*\btractors?\b\s*", " ", words).strip()
+    if not words or _KNOWN_THING.fullmatch(words) or re.fullmatch(r"(?:it|him|that|this|one)", words):
+        return None
+    return words
+
+
+def _trailer_name(words: str | None) -> str | None:
+    """A transport trailer named beyond its kind ("the deckover", "the lizard trailer")."""
+    if not words:
+        return None
+    if _GOOSENECK.search(words):
+        return "gooseneck"
+    if _DECKOVER.search(words):
+        return "deckover"
+    name = re.sub(r"\s*\b(?:trailers?|decks?)\b\s*", " ", words).strip()
+    return name or None
+
+
+def transport(words: str) -> dict | None:
+    words = _DEUTZ.sub("deutz", words)
+    load, unload = _LOAD.match(words), _UNLOAD.match(words)
+    if load is not None:
+        trailer = load["trailer"]
+        if load["verb"] != "load" and (trailer is None or not _TRAILER_WORDS.search(trailer)):
+            return None                   # "drive the tractor onto the field" is no load
+        if _TRANSPORT_NOT.search(load["tractor"]) or (trailer and _TRANSPORT_NOT.search(trailer)):
+            return None                   # a wagon or a load of goods: not a tractor transport
+        proposal = {"version": 1, "command": "load_tractor"}
+        tractor = _vehicle_name(load["tractor"])
+        if tractor is not None and _TRAILER_WORDS.search(tractor):
+            return None
+        if tractor is not None:
+            proposal["tractor_name"] = tractor
+        name = _trailer_name(trailer) if trailer and _TRAILER_WORDS.search(trailer) else None
+        if name is not None:
+            proposal["implement_name"] = name
+        return proposal
+    if unload is not None:
+        thing, trailer = unload["tractor"] or unload["off"], unload["trailer"]
+        if unload["off"] is not None and (trailer is None or not _TRAILER_WORDS.search(trailer)):
+            return None                   # "take the seeder off the tractor" is an unhitch
+        if thing and _TRANSPORT_NOT.search(thing):
+            return None
+        proposal = {"version": 1, "command": "unload_tractor"}
+        tractor = None if thing and _TRAILER_WORDS.search(thing) else _vehicle_name(thing)
+        if tractor is not None:
+            proposal["tractor_name"] = tractor
+        name = _trailer_name(trailer) if trailer and _TRAILER_WORDS.search(trailer) else None
+        if name is None and thing and _TRAILER_WORDS.search(thing):
+            name = _trailer_name(thing)
+        if name is not None:
+            proposal["implement_name"] = name
+        return proposal
+    return None
+
+
 # Buying: "buy a large plow, the gmc truck and a gooseneck".
 _BUY = re.compile(r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?:buy|purchase|get us|order)\s+(?P<items>.+?)"
                   r"(?:\s+from\s+the\s+(?:store|shop|dealer))?$")
@@ -272,6 +361,55 @@ class RuleInterpreter:
     def interpret(self, text: str) -> dict | None:
         if not isinstance(text, str):
             return None
+        # Several commands in one go win over one reading of the whole sentence (live words
+        # of the final acceptance request read as a single fetch); a clause not understood
+        # leaves the whole sentence to the single reading ("buy a plow, the gmc truck ...").
+        single = self._interpret_one(text)
+        if _CLAUSE_BREAK.search(text.casefold()):
+            several = self._sequence(text)
+            if several is not None and not (single is not None and {s["command"] for s in several["steps"]}
+                                            <= _COVERS.get(single["command"], set())):
+                return several
+        return single
+
+    def _sequence(self, text: str) -> dict | None:
+        """Several job commands said in one go ("take the gmc, hitch the deckover, load the
+        tractor, secure it, raise the ramps, deliver it to field 3, and unload it"): each
+        clause is understood on its own, in order; "take the gmc" names the towing vehicle
+        of the hitch that follows, belting and the ramps fold into the load, and names carry
+        to the steps after them. Any clause not understood: no sequence."""
+        clauses = [c.strip(" .!") for c in _CLAUSE_BREAK.split(text.casefold())]
+        steps, towing, trailer = [], None, None
+        for clause in clauses:
+            words = normalize(clause)
+            if not words:
+                continue
+            take = _TAKE_VEHICLE.match(words)
+            if take is not None and not _KNOWN_THING.search(take.group(1)) and implement_kind(take.group(1)) is None:
+                towing = take.group(1)
+                continue
+            if _ABSORBED.match(words):
+                lowering = re.search(r"\b(?:lower|drop|down)\b", words)
+                if not lowering and not any(s["command"] == "load_tractor" for s in steps):
+                    return None               # securing or raising with nothing loaded
+                continue
+            step = self._interpret_one(clause)
+            if step is None or step["command"] in ("stop", "status", "settings", "report", "unsupported", "sequence"):
+                return None
+            if step["command"] in ("hitch_pair", "fetch_pair", "move_pair") and towing and "tractor_name" not in step:
+                step["tractor_name"] = towing
+            if step["command"] in ("hitch_pair", "fetch_pair") and step.get("implement_name"):
+                trailer = step["implement_name"]
+            if step["command"] in ("load_tractor", "unload_tractor") and trailer and "implement_name" not in step:
+                step["implement_name"] = trailer
+            steps.append(step)
+        if not 2 <= len(steps) <= 8:
+            return None
+        return {"version": 1, "command": "sequence", "steps": steps}
+
+    def _interpret_one(self, text: str) -> dict | None:
+        if not isinstance(text, str):
+            return None
         words = normalize(text)
         if is_stop(words):
             return {"version": 1, "command": "stop"}
@@ -288,7 +426,7 @@ class RuleInterpreter:
             return {"version": 1, "command": "move_pair"}
         if re.fullmatch(r"(?:please\s+)?save(?:\s+the)?(?:\s+(?:game|farm|progress))?(?:\s+now)?", words):
             return {"version": 1, "command": "save_game"}
-        work = field_work(words) or buy(words)
+        work = field_work(words) or buy(words) or transport(words)
         if work is not None:
             return work
         # "... with the gmc": the towing vehicle by its name.
@@ -368,8 +506,12 @@ class RuleInterpreter:
             return {"version": 1, "command": "unsupported", "reason": "tractor_only"}
         named = _NAMED.match(words)
         if named and not _KNOWN_THING.search(named.group(1)):
-            # "bring the Boss Hoss to the farm": a vehicle by its name is not
-            # supported yet; never guessed.
+            # "move the gmc here", "bring the gmc to field 3": the rig that vehicle tows
+            # (move_pair filtered by its name; nothing else is chosen). Anything else by
+            # a name is not supported yet; never guessed.
+            if (_MOVE_VERB.match(words) and target is not None
+                    and (target or re.search(r"\b(?:here|to me|over here)\b", words))):
+                return {"version": 1, "command": "move_pair", "tractor_name": named.group(1), **target}
             return {"version": 1, "command": "unsupported", "reason": "named_vehicle"}
         return None
 

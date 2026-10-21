@@ -1007,9 +1007,12 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "stop"])    # no drive anywhere
         commands = len(game.commands)
         game.say(2, "bring a tractor to me")
+        # A vehicle by its name (2026-10-21, "move the gmc here"): the rig it tows, if any;
+        # no "Boss Hoss" here, so nothing is chosen and nothing moves.
         game.say(3, "bring the Boss Hoss to the farm")
-        self.wait_for(lambda: len(notices) >= 4)
-        self.assertEqual(notices[2:], ["UNSUPPORTED_TRACTOR_ONLY", "UNSUPPORTED_NAMED_VEHICLE"])
+        self.wait_for(lambda: len(notices) >= 5)
+        self.assertEqual(notices[2:4], ["UNSUPPORTED_TRACTOR_ONLY", "ACCEPTED_MOVE"])
+        self.assertTrue(notices[4].startswith("BLOCKED_"), notices)
         self.assertEqual(len(game.commands), commands)                           # nothing moved
 
     def test_replayed_or_foreign_requests_never_run(self):

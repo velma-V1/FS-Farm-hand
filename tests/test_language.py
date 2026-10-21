@@ -179,7 +179,9 @@ class RuleInterpreterTests(unittest.TestCase):
             ("bring the tractor and wagon from the store to the farm", {**FETCH, "target": farm}),
             ("take the tractor and get the forage wagon from the store and park it at the farm",
              {**FETCH, "target": farm}),
-            ("bring the Boss Hoss to the farm", {"version": 1, "command": "unsupported", "reason": "named_vehicle"}),
+            # By its name: the rig that vehicle tows (2026-10-21, "move the gmc here").
+            ("bring the Boss Hoss to the farm", {"version": 1, "command": "move_pair", "tractor_name": "boss hoss",
+                                                 "target": {"type": "place", "name": "farm"}}),
             ("take the tractor and attach the forage wagon", HITCH),
             ("deliver the tractor to the forage wagon", HITCH),       # equipment, never a place
             ("take a tractor to the wagon", HITCH),

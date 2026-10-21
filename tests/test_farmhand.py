@@ -916,6 +916,22 @@ class ExplicitDestinationTests(unittest.TestCase):
         world, _, result = self.run_target({"type": "field_entrance", "field": 12})
         self.assert_delivered_to(world, result, (640, -120))
 
+    def test_an_unmapped_field_is_reached_at_giants_own_field_position_on_any_map(self):
+        # The user (2026-10-21): Farmhand works on every map. Without a configured entrance
+        # marker, "field N" is the field GIANTS places there, reached by GOTO.
+        from companion.executor import PLACE_STANDOFF_M
+        from protocol.model import Destination
+        for map_id, entrances in (("OtherMap", FIELD_ENTRANCES), (None, None)):
+            with self.subTest(map_id=map_id):
+                world = explicit_world(map_id=map_id)
+                world.mock_field_places = (Destination("field-12", (700.0, -300.0), "field 12"),
+                                           Destination("field-1", (50.0, 50.0), "field 1"))
+                world, _, result = self.run_target({"type": "field_entrance", "field": 12}, world, entrances)
+                self.assertEqual(result.status, "COMPLETE", result)
+                tractor = world.items[result.equipment_ids[0]]
+                self.assertAlmostEqual(math.dist((tractor.ai_root.x, tractor.ai_root.z), (700.0, -300.0)),
+                                       PLACE_STANDOFF_M, places=6)
+
     def test_unresolvable_targets_block_before_reservation(self):
         cases = [
             ({"type": "autodrive_marker", "marker_id": "404"}, None, "DESTINATION_NOT_FOUND"),

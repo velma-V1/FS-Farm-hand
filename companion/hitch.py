@@ -247,3 +247,117 @@ def align_problem(error: JointError | None) -> str | None:
     if abs(error.lateral) > ALIGN_MAX_LATERAL_M:
         return "ALIGN_LATERAL_OUT_OF_RANGE"
     return None
+
+
+# ------------------------------------------------------------ tractor transport
+# Pure geometry for tractor transport (AGENTS.md exception 5): where GIANTS' GOTO puts the
+# tractor so LOAD can start (right behind the transport trailer's ramps, on its axis, facing
+# along it), the deck box LOAD stops in (GIANTS' own cargo area: the span of the trailer's
+# tension belts, half a belt spacing longer at each end), and whether a tractor stands on
+# the deck or off the ramps. Everything comes from observation (positions, headings,
+# GIANTS' size boxes, belt markers): nothing here knows a map, a place or a model.
+#
+# Frames as mod/FarmhandHitch.lua's LOAD: the trailer's root, ``a`` along its heading,
+# ``l`` to its local +x side.
+RAMP_M = 3.0                     # = mod/FarmhandHitch.lua Hitch.LOAD.rampM
+LATERAL_START_M = 0.5            # = Hitch.LOAD.lateralStartM
+HEADING_START_RAD = math.radians(5.0)   # = Hitch.LOAD.headingStartDeg
+# The tractor's front this far behind the trailer's rear (inside LOAD's 0..RAMP_M window),
+# in the order GIANTS' GOTO is asked for them.
+FRONT_GAPS_M = (1.5, 2.25, 0.75)
+DECK_SLACK_M = 0.25              # = the mod's UNLOAD_NOT_ON_DECK slack
+DECK_LATERAL_M = 0.75            # a tractor centred on the deck within this
+
+
+def _unit(heading: float) -> tuple[float, float]:
+    return math.sin(heading), math.cos(heading)
+
+
+def to_frame(trailer: Equipment, point) -> tuple[float, float]:
+    """(a, l) of a world point in the trailer's frame."""
+    fx, fz = _unit(trailer.heading)
+    dx, dz = point[0] - trailer.position[0], point[1] - trailer.position[1]
+    return dx * fx + dz * fz, dx * fz - dz * fx
+
+
+def _ends(vehicle: Equipment) -> tuple[float, float] | None:
+    """The vehicle's rear and front along its own heading, relative to its root."""
+    if vehicle.size is None:
+        return None
+    length, _, _, offset = vehicle.size
+    return offset - length / 2, offset + length / 2
+
+
+def is_transport(item: Equipment) -> bool:
+    """A trailer with GIANTS Foldable ramps, at least two tension belts and a size box."""
+    return (item.fold is not None and len(item.belt_markers) >= 2 and item.size is not None
+            and item.heading is not None and item.belts_fastened is not None)
+
+
+def deck_box(trailer: Equipment) -> tuple[float, float, float, float] | None:
+    """(aMin, aMax, lMin, lMax) of the deck in the trailer's frame, from its belts."""
+    if trailer.heading is None or len(trailer.belt_markers) < 2:
+        return None
+    along, lateral = [], []
+    for m in trailer.belt_markers:
+        a1, l1 = to_frame(trailer, (m[0], m[2]))
+        a2, l2 = to_frame(trailer, (m[3], m[5]))
+        along.append((a1 + a2) / 2)
+        lateral += [l1, l2]
+    along.sort()
+    pad = (along[-1] - along[0]) / (len(along) - 1) / 2
+    return along[0] - pad, along[-1] + pad, min(lateral), max(lateral)
+
+
+def load_aims(tractor: Equipment, trailer: Equipment) -> tuple[Pose, ...]:
+    """GIANTS GOTO poses (of the tractor's AI root) that put its front FRONT_GAPS_M behind
+    the trailer's rear, on its axis, facing along it; () when the geometry is unknown."""
+    tractor_ends, trailer_ends = _ends(tractor), _ends(trailer)
+    if (tractor_ends is None or trailer_ends is None or tractor.ai_root is None or tractor.heading is None
+            or trailer.heading is None):
+        return ()
+    tx, tz = _unit(tractor.heading)
+    # The tractor's front ahead of its AI root (GIANTS' agent steers that node).
+    front = ((tractor.position[0] - tractor.ai_root.x) * tx + (tractor.position[1] - tractor.ai_root.z) * tz
+             + tractor_ends[1])
+    fx, fz = _unit(trailer.heading)
+    aims = []
+    for gap in FRONT_GAPS_M:
+        a = trailer_ends[0] - gap - front
+        aims.append(Pose(trailer.position[0] + fx * a, trailer.position[1] + fz * a, trailer.heading))
+    return tuple(aims)
+
+
+def _angle(a: float, b: float) -> float:
+    return abs((a - b + math.pi) % (2 * math.pi) - math.pi)
+
+
+def lined_up(tractor: Equipment, trailer: Equipment, share: float = 1.0) -> bool:
+    """Inside ``share`` of LOAD's start window (the mod decides at the start; this chooses
+    whether GOTO is needed and whether its end will do)."""
+    tractor_ends, trailer_ends = _ends(tractor), _ends(trailer)
+    if tractor_ends is None or trailer_ends is None or tractor.heading is None or trailer.heading is None:
+        return False
+    a, l = to_frame(trailer, tractor.position)
+    front = a + tractor_ends[1]
+    return (abs(l) <= LATERAL_START_M * share and _angle(tractor.heading, trailer.heading) <= HEADING_START_RAD * share
+            and trailer_ends[0] - RAMP_M + 0.25 <= front <= trailer_ends[0] - 0.25)
+
+
+def on_deck(tractor: Equipment, trailer: Equipment) -> bool:
+    """The tractor's body inside the deck box (with the slack) and centred across it."""
+    deck, ends = deck_box(trailer), _ends(tractor)
+    if deck is None or ends is None:
+        return False
+    a, l = to_frame(trailer, tractor.position)
+    return (deck[0] - DECK_SLACK_M <= a + ends[0] and a + ends[1] <= deck[1] + DECK_SLACK_M
+            and abs(l - (deck[2] + deck[3]) / 2) <= DECK_LATERAL_M)
+
+
+def off_ramps(tractor: Equipment, trailer: Equipment) -> bool:
+    """The tractor's front behind the ramps lying on the ground."""
+    tractor_ends, trailer_ends = _ends(tractor), _ends(trailer)
+    if tractor_ends is None or trailer_ends is None or trailer.heading is None:
+        return False
+    a, _ = to_frame(trailer, tractor.position)
+    return a + tractor_ends[1] <= trailer_ends[0] - RAMP_M + DECK_SLACK_M

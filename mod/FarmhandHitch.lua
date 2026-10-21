@@ -1826,6 +1826,304 @@ function Hitch.describeUnpark(s)
         tostring(s.aheadHits or "-"), tostring(s.exitWhy or "-"))
 end
 
+-- ------------------------------------------------------------- LOAD / UNLOAD
+-- AGENTS.md exception 5 (the user, 2026-10-20, for tractor transport: no GIANTS job or
+-- installed mod drives a vehicle onto a deck; Universal Autoload moves pallets, bales
+-- and bags only). LOAD: the tractor alone, straight along the transport trailer's axis
+-- up its rear ramps (verified down through GIANTS' Foldable: fold time 1, at rest), at
+-- most 3 km/h and at most the ramps plus the deck; it stops, braked, with its body inside
+-- the deck box, which is GIANTS' own cargo area: the span of the trailer's tension belts
+-- (TensionBelts sortedBelts start/end nodes, as getObjectToMount 1100-1193 builds the box
+-- a belt holds), half a belt spacing longer at each end. UNLOAD: belts released, ramps
+-- down, straight back off the ramps. Everything else is UNPARK's: the start frame (here
+-- the trailer's), GIANTS' collision query proven on the tractor (own body, terrain) and on
+-- the trailer (seen as the transport, excluded), the swept volume clear of everything but
+-- the tractor and the transport trailer (the truck towing it is not excluded) from just
+-- above the terrain to the tractor's top on the deck, PULL_CLEAR's guards, the line
+-- followed by GIANTS' driveToPoint, and every exit restoring the vehicle-control state.
+-- Nothing is teleported, no collision is disabled, and the truck and trailer must not move.
+Hitch.LOAD_LIMITS = { maxSpeedKmh = 3, timeoutMs = 60000, rampM = 3 }
+Hitch.LOAD = {
+    rampM = 3,                -- the ramps on the ground: the tractor's leading end at most this behind the trailer
+    lateralStartM = 0.5,      -- the steering node this close to the trailer's axis at the start
+    headingStartDeg = 5,      -- and the tractor turned at most this far off the trailer's heading
+    divergeM = 0.3,           -- while moving: farther off the axis is DIVERGED (the ramps)
+    lookaheadM = 3,
+    lateralMarginM = 0.5, floorClearanceM = 0.3, topMarginM = 0.3, stepM = 0.5,
+    aheadEndM = 0.5,          -- the swept volume ends this far past where the tractor stops
+    minLookaheadM = 2, reactionS = 1, decelMs2 = 1,
+    rampsDownTime = 1,        -- Foldable fold time of ramps down (FS25_UGR1124 brandtTrailer.xml 283-337)
+    movedM = 0.25,            -- the truck or trailer moving this far: TRANSPORT_MOVED
+}
+
+-- The deck box in the trailer's frame from its belts: { aMin, aMax, lMin, lMax, height }
+-- (height: the belts above the terrain). Errors on fewer than two belts.
+local function deckBox(env, s, trailer)
+    local spec = trailer.spec_tensionBelts
+    assert(type(spec) == "table" and spec.hasTensionBelts)
+    local along, box, heights = {}, { lMin = math.huge, lMax = -math.huge }, 0
+    for _, belt in ipairs(spec.sortedBelts or {}) do
+        local sx, sy, sz = env.getWorldTranslation(belt.startNode)
+        local ex, ey, ez = env.getWorldTranslation(belt.endNode)
+        assert(finite(sx) and finite(sy) and finite(sz) and finite(ex) and finite(ey) and finite(ez))
+        local a1, l1 = inFrame(s, sx, sz)
+        local a2, l2 = inFrame(s, ex, ez)
+        along[#along + 1] = (a1 + a2) / 2
+        box.lMin, box.lMax = math.min(box.lMin, l1, l2), math.max(box.lMax, l1, l2)
+        heights = heights + (sy + ey) / 2 - terrainAt(env, (sx + ex) / 2, (sz + ez) / 2)
+    end
+    assert(#along >= 2)
+    table.sort(along)
+    local pad = (along[#along] - along[1]) / (#along - 1) / 2
+    box.aMin, box.aMax, box.height = along[1] - pad, along[#along] + pad, heights / #along
+    return box
+end
+
+-- The transport: the trailer and everything in its rig (the truck towing it and what
+-- else hangs there), as a set.
+local function transportSet(trailer)
+    local _, set = rigUnits(trailer.rootVehicle or trailer)
+    set[trailer] = true
+    return set
+end
+
+local function rampsDown(trailer)
+    local spec = trailer.spec_foldable
+    if spec == nil or next(spec.foldingParts or {}) == nil then return false end
+    local t = trailer:getFoldAnimTime()
+    return finite(t) and math.abs(t - Hitch.LOAD.rampsDownTime) < 0.001 and spec.foldMoveDirection == 0
+end
+
+-- Other vehicles and the player as surroundings() reads them, without the transport.
+local function loadSurroundings(env, s)
+    local others, player = surroundings(env, s)
+    local out = {}
+    for _, other in ipairs(others) do
+        local v = other.vehicle
+        if not (s.transport[v] or (v.rootVehicle ~= nil and s.transport[v.rootVehicle])) then out[#out + 1] = other end
+    end
+    return out, player
+end
+
+-- The tractor's swept volume from `a0` to `a1` (trailer frame) clear? nil, "HIT" and the
+-- names, or "UNKNOWN".
+local function loadVolume(env, s, a0, a1)
+    local D = Hitch.LOAD
+    return clearVolume(env, s, a0, a1, D.lateralMarginM, D.stepM, D.floorClearanceM,
+                       s.tractorBox.height + s.deck.height + D.topMarginM, s.masks.obstacles)
+end
+
+-- Prepare LOAD (direction 1) or UNLOAD (-1). `args`: tractor, trailer, direction, farmId,
+-- isReserved; optional maxSpeedKmh, timeoutMs (capped by LOAD_LIMITS). Refused before any
+-- motion unless every check holds. Returns a session, or nil, a reason and the half-built
+-- session (for the log).
+function Hitch.newLoad(env, args)
+    local D, L = Hitch.LOAD, Hitch.LOAD_LIMITS
+    local speed = capped(args.maxSpeedKmh, L.maxSpeedKmh, L.maxSpeedKmh)
+    local timeout = capped(args.timeoutMs, L.timeoutMs, L.timeoutMs)
+    local sign = (args.direction == 1 and 1) or (args.direction == -1 and -1) or nil
+    if speed == nil or speed < Hitch.LIMITS.minSpeedKmh or timeout == nil or sign == nil
+            or type(args.isReserved) ~= "function" then
+        return nil, "INVALID_LIMITS"
+    end
+    local s = { tractor = args.tractor, wagon = args.trailer, trailer = args.trailer, farmId = args.farmId,
+                isReserved = args.isReserved, maxSpeedKmh = speed, timeoutMs = timeout, sign = sign, elapsed = 0,
+                sinceProgress = 0, best = 0, result = nil, others = {} }
+    local ok, reason = pcall(function()
+        local tractor, trailer = s.tractor, s.trailer
+        if tractor:getIsEntered() == true then return "SEATED_DURING_LOAD" end
+        local v = tractor:getLastSpeed()
+        if not finite(v) or math.abs(v) >= 1 then return "NOT_STOPPED" end
+        Hitch.watchDriver(env, tractor)
+        local denied = unparkAuthority(s)
+        if denied ~= nil then return denied end
+        if trailer.ownerFarmId ~= s.farmId then return "RESERVATION_LOST" end
+        local tv = trailer:getLastSpeed()
+        if not finite(tv) or math.abs(tv) >= 1 then return "TRANSPORT_NOT_STOPPED" end
+        local axis = tractor.spec_articulatedAxis
+        if axis ~= nil and axis.componentJoint ~= nil then return "LOAD_ARTICULATED_UNSUPPORTED" end
+        local okUnits, units = pcall(rigUnits, tractor)
+        if not okUnits then return "LOAD_GEOMETRY_UNKNOWN" end
+        if #units ~= 1 then return "LOAD_TRACTOR_NOT_ALONE" end
+        if not rampsDown(trailer) then return "LOAD_RAMPS_NOT_DOWN" end
+        local belts = trailer.spec_tensionBelts
+        if belts == nil or not belts.hasTensionBelts then return "LOAD_NO_BELTS" end
+        if belts.areAllBeltsFastened ~= false or tractor.tensionMountObject ~= nil then return "LOAD_BELTS_FASTENED" end
+        -- The trailer's frame: its root, its forward axis.
+        local ox, _, oz = world(env, trailer.rootNode)
+        local fx, _, fz = env.localDirectionToWorld(trailer.rootNode, 0, 0, 1)
+        assert(finite(fx) and finite(fz))
+        local n = math.sqrt(fx * fx + fz * fz)
+        s.ox, s.oz, s.dirX, s.dirZ = ox, oz, fx / n, fz / n
+        s.yaw = atan2(s.dirX, s.dirZ)
+        s.last = { wx = s.ox, wz = s.oz }
+        s.transport = transportSet(trailer)
+        s.rig = { [tractor] = true, [trailer] = true }     -- never the truck
+        local okTrailer, trailerBox = pcall(unitBox, env, s, trailer)
+        local okTractor, tractorBox = pcall(unitBox, env, s, tractor)
+        local okDeck, deck = pcall(deckBox, env, s, trailer)
+        if not (okTrailer and okTractor and okDeck) then return "LOAD_GEOMETRY_UNKNOWN" end
+        s.trailerBox, s.tractorBox, s.deck = trailerBox, tractorBox, deck
+        -- The steering node on the axis, the tractor facing along the trailer.
+        local node = tractor:getAISteeringNode()
+        local sx, _, sz = world(env, node)
+        s.startAlong, s.startLateral = inFrame(s, sx, sz)
+        s.turn = unitTurn(env, s, tractor)
+        if math.abs(s.startLateral) > D.lateralStartM or math.abs(s.turn) > D.headingStartDeg then
+            return "LOAD_NOT_LINED_UP"
+        end
+        local length = tractorBox.aMax - tractorBox.aMin
+        if length > deck.aMax - deck.aMin then return "LOAD_DOES_NOT_FIT" end
+        -- Where it goes: LOAD from behind the ramps to its body centred on the deck;
+        -- UNLOAD from the deck back until its leading (front) end is behind the ramps.
+        if sign > 0 then
+            if tractorBox.aMax > trailerBox.aMin or tractorBox.aMax < trailerBox.aMin - D.rampM then
+                return "LOAD_NOT_BEHIND_RAMPS"
+            end
+            s.travelM = (deck.aMin + deck.aMax) / 2 - (tractorBox.aMin + tractorBox.aMax) / 2
+            s.sweepFrom, s.sweepTo = tractorBox.aMax, tractorBox.aMax + s.travelM + D.aheadEndM
+        else
+            if tractorBox.aMin < deck.aMin - 0.25 or tractorBox.aMax > deck.aMax + 0.25 then
+                return "UNLOAD_NOT_ON_DECK"
+            end
+            s.travelM = tractorBox.aMax - (trailerBox.aMin - D.rampM)
+            s.sweepFrom, s.sweepTo = tractorBox.aMin, tractorBox.aMin - s.travelM - D.aheadEndM
+        end
+        -- Never more than the ramps plus the trailer.
+        if s.travelM <= 0 or s.travelM > D.rampM + (trailerBox.aMax - trailerBox.aMin) then return "LOAD_TOO_FAR" end
+        s.lMin, s.lMax = tractorBox.lMin, tractorBox.lMax
+        local okMasks, masks = pcall(collisionMasks, env)
+        if not okMasks then return "LOAD_QUERY_UNKNOWN" end
+        s.masks = masks
+        -- The query proves itself: the tractor's own body and the terrain under it, and the
+        -- trailer's deck seen and excluded as the transport.
+        local b = tractorBox
+        local da, dl = (b.aMax - b.aMin) * 0.1, (b.lMax - b.lMin) * 0.1
+        local body = overlap(env, s, b.aMin + da, b.aMax - da, b.lMin + dl, b.lMax - dl, 0.1 * b.height,
+                             0.9 * b.height, masks.vehicles)
+        local ground = overlap(env, s, b.aMin + da, b.aMax - da, b.lMin + dl, b.lMax - dl, -0.5, 0.5, masks.terrain)
+        local dk = overlap(env, s, deck.aMin, deck.aMax, deck.lMin, deck.lMax, deck.height - 0.5, deck.height + 0.2,
+                           masks.vehicles)
+        if body == nil or body.own < 1 or ground == nil or ground.terrain < 1 or dk == nil or dk.own < 1 then
+            return "LOAD_QUERY_UNVERIFIED"
+        end
+        local bad, names = loadVolume(env, s, s.sweepFrom, s.sweepTo)
+        if bad == "UNKNOWN" then return "LOAD_QUERY_UNKNOWN" end
+        if bad ~= nil then s.pathHits = names; return "LOAD_PATH_BLOCKED" end
+        local okAround, others, player = pcall(loadSurroundings, env, s)
+        if not okAround then return "LOCAL_AREA_UNKNOWN" end
+        s.others, s.player = others, player
+        local conflict = pullConflict(s, { { s.startAlong, 0 }, { s.startAlong + sign * s.travelM, 0 } },
+                                      Hitch.LOCAL.vehicleClearanceM, Hitch.LOCAL.playerClearanceM)
+        if conflict == "OTHER_VEHICLE_NEAR" then return "LOAD_BLOCKED" end
+        if conflict == "PERSON_TOO_CLOSE" then return "LOAD_PERSON" end
+        -- The transport stays where it is: every unit's root watched.
+        s.watched = {}
+        for unit in pairs(s.transport) do
+            local ux, _, uz = world(env, unit.rootNode)
+            s.watched[#s.watched + 1] = { vehicle = unit, wx = ux, wz = uz }
+        end
+        return nil
+    end)
+    if not ok then return nil, "UNKNOWN_OBSERVATION", s end
+    if reason ~= nil then return nil, reason, s end
+    return s
+end
+
+local function loadDrive(env, s, dt)
+    local D = Hitch.LOAD
+    local denied = unparkAuthority(s)
+    if denied ~= nil then return denied end
+    if s.tractor:getIsEntered() ~= false then return "SEATED_DURING_LOAD" end
+    if s.trailer.ownerFarmId ~= s.farmId then return "RESERVATION_LOST" end
+    local node = s.tractor:getAISteeringNode()
+    local x, _, z = world(env, node)
+    local along, lateral = inFrame(s, x, z)
+    local progress = s.sign * (along - s.startAlong)
+    s.lastAlong, s.lastLateral = along, lateral
+    pcall(function() s.lastSpeed = s.tractor:getLastSpeed() end)
+    if #rigUnits(s.tractor) ~= 1 then return "RIG_CHANGED" end
+    for _, w in ipairs(s.watched) do
+        local ux, _, uz = world(env, w.vehicle.rootNode)
+        if distance(ux, uz, w.wx, w.wz) > D.movedM then return "TRANSPORT_MOVED" end
+    end
+    if not rampsDown(s.trailer) then return "RAMPS_MOVED" end
+    if math.abs(lateral) > D.divergeM then return "DIVERGED" end
+    if progress > s.travelM + 0.5 then return "DISTANCE_LIMIT" end
+    if s.elapsed > s.timeoutMs then return "TIMEOUT" end
+    for _, other in ipairs(s.others) do
+        local vx, _, vz = world(env, other.vehicle.rootNode)
+        if distance(vx, vz, other.wx, other.wz) > Hitch.LOCAL.movedM then return "OTHER_VEHICLE_MOVED" end
+    end
+    local others, player = loadSurroundings(env, s)
+    s.others, s.player = others, player
+    local bad = pullConflict(s, { { along, 0 } }, Hitch.LOCAL.vehicleStopM, Hitch.LOCAL.playerStopM)
+    if bad ~= nil then return bad end
+    if progress >= s.travelM then return s.sign > 0 and "LOADED" or "UNLOADED" end
+    -- Past the leading end: the stopping distance, never past the planned volume's end.
+    local v = math.abs(s.lastSpeed or 0) / 3.6
+    local reach = math.max(D.minLookaheadM, v * D.reactionS + v * v / (2 * D.decelMs2) + 0.5)
+    local lead = (s.sign > 0 and s.tractorBox.aMax or s.tractorBox.aMin) + s.sign * progress
+    local stop = s.sweepTo
+    local far = s.sign > 0 and math.min(lead + reach, stop) or math.max(lead - reach, stop)
+    if s.sign * (far - lead) > 0.05 then
+        local hit, names = loadVolume(env, s, lead, far)
+        if hit == "UNKNOWN" then return "UNKNOWN_OBSERVATION" end
+        if hit ~= nil then s.aheadHits = names; return "OBSTACLE_AHEAD" end
+    end
+    if progress > s.best + Hitch.LOCAL.stallProgressM then
+        s.best, s.sinceProgress = progress, 0
+    else
+        s.sinceProgress = s.sinceProgress + dt
+        if s.sinceProgress > Hitch.LOCAL.stallMs then return "STALLED" end
+    end
+    local tractor = s.tractor
+    if not tractor:getIsMotorStarted() then
+        if not tractor:getCanMotorRun() then return "MOTOR_UNAVAILABLE" end
+        tractor:startMotor()
+    end
+    Hitch.holdActive(s)
+    tractor:raiseActive()
+    local steer = s.sign > 0 and node or (tractor:getAIReverserNode() or node)
+    local _, wy = env.getWorldTranslation(steer)
+    local gx, gz = fromFrame(s, along + s.sign * D.lookaheadM, 0)
+    local lx, _, lz = env.worldToLocal(steer, gx, wy, gz)
+    env.AIVehicleUtil.driveToPoint(tractor, dt, 1, true, s.sign > 0, lx, lz, s.maxSpeedKmh)
+    return "CONTINUE"
+end
+
+-- One update: "CONTINUE", "LOADED" / "UNLOADED" (braked where planned) or a failure:
+-- RESERVATION_LOST, DRIVER_TOOK_OVER, SEATED_DURING_LOAD, AI_ACTIVE, RIG_CHANGED,
+-- TRANSPORT_MOVED, RAMPS_MOVED, DIVERGED, DISTANCE_LIMIT, TIMEOUT, OTHER_VEHICLE_MOVED,
+-- OTHER_VEHICLE_NEAR, PERSON_TOO_CLOSE, OBSTACLE_AHEAD, STALLED, MOTOR_UNAVAILABLE,
+-- UNKNOWN_OBSERVATION. Latched like UNPARK: later calls only brake.
+function Hitch.loadStep(env, s, dt)
+    if s.result ~= nil then
+        Hitch.halt(env, s, dt)
+        return s.result
+    end
+    s.elapsed = s.elapsed + dt
+    local ok, code = pcall(loadDrive, env, s, dt)
+    if not ok then code = "UNKNOWN_OBSERVATION" end
+    if code ~= "CONTINUE" then
+        s.result = code
+        Hitch.halt(env, s, dt)
+    end
+    return code
+end
+
+function Hitch.describeLoad(s)
+    if s == nil then return "-" end
+    local function f(n) return n and string.format("%.2f", n) or "?" end
+    local t, d, b = s.trailerBox or {}, s.deck or {}, s.tractorBox or {}
+    return string.format("direction=%s trailer=[%s,%s] deck=[%s,%s]x[%s,%s] h=%s tractor=[%s,%s] w=%s h=%s "
+        .. "start=(%s,%s) turn=%s travel=%s along=%s lateral=%s speed=%s t=%dms pathHits=%s aheadHits=%s",
+        tostring(s.sign), f(t.aMin), f(t.aMax), f(d.aMin), f(d.aMax), f(d.lMin), f(d.lMax), f(d.height), f(b.aMin),
+        f(b.aMax), b.lMax and f(b.lMax - b.lMin) or "?", f(b.height), f(s.startAlong), f(s.startLateral), f(s.turn),
+        f(s.travelM), f(s.lastAlong), f(s.lastLateral), f(s.lastSpeed), s.elapsed or 0, tostring(s.pathHits or "-"),
+        tostring(s.aheadHits or "-"))
+end
+
 -- ------------------------------------------------------------------ ATTACH
 
 -- Attach only if GIANTS' fresh candidate is exactly the planned pair and GIANTS

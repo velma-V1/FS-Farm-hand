@@ -124,6 +124,7 @@ COMMAND_ARGS = {
     "unpark": ("tractor",),
     "fold": ("tractor", "direction"),            # the vehicle's own Foldable parts to one end
     "belts": ("tractor", "direction"),           # a transport's TensionBelts fastened (1) or released (-1)
+    "load": ("tractor", "wagon", "direction"),   # the tractor alone onto the trailer's deck (1) or off it (-1)
     "stop": ("tractor",),
 }
 _ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "x", "z": "z",

@@ -60,6 +60,12 @@
                                  "markers": {"type": "array", "maxItems": 16, "items": {
                                    "type": "array", "minItems": 6, "maxItems": 6, "items": {"type": "number"}}}}}]},
         "belted_to": {"oneOf": [{"$ref": "#/$defs/objectId"}, {"type": "null"}]},
+        "size": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false,
+                 "required": ["length", "width", "height", "length_offset"],
+                 "properties": {"length": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
+                                "width": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
+                                "height": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
+                                "length_offset": {"type": "number", "minimum": -50, "maximum": 50}}}]},
         "name": {"oneOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
         "fill_units": {"type": "array", "maxItems": 8, "items": {
           "type": "object", "additionalProperties": false,
@@ -158,6 +164,10 @@
         "vehicles": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/vehicle"}},
         "destinations": {"type": "array", "maxItems": 2000, "items": {"$ref": "#/$defs/destination"}},
         "places": {"type": "array", "maxItems": 500, "items": {"$ref": "#/$defs/place"}},
+        "field_places": {"type": "array", "maxItems": 200, "items": {
+          "type": "object", "additionalProperties": false, "required": ["id", "x", "z"],
+          "properties": {"id": {"type": "integer", "minimum": 1, "maximum": 100000},
+                         "x": {"$ref": "#/$defs/coordinate"}, "z": {"$ref": "#/$defs/coordinate"}}}},
         "fields": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/field"}},
         "farm": {"$ref": "#/$defs/farm"}
       }

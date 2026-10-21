@@ -552,6 +552,47 @@ function aborts.unpark(env, task)
     Bridge.Hitch.abort(env, task.session, "STOPPED")
 end
 
+-- ------------------------------------------------------------------- load
+-- LOAD (direction 1) / UNLOAD (-1): the reserved tractor alone straight up the reserved
+-- transport trailer's ramps onto its deck, or straight back off (Hitch.newLoad, AGENTS.md
+-- exception 5). The ramps and belts are the companion's steps (fold, belts); this op
+-- only drives, and refuses unless the ramps are down and the belts open.
+function starters.load(env, spec)
+    local denied = idle(env, spec.tractor, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local direction = (spec.direction == 1 and 1) or (spec.direction == -1 and -1) or nil
+    if direction == nil then return nil, "INVALID_DIRECTION" end
+    local session, reason, refused = Bridge.Hitch.newLoad(env, {
+        tractor = spec.tractor, trailer = spec.wagon, direction = direction, farmId = spec.farmId,
+        isReserved = spec.owned,
+    })
+    if session == nil then
+        log("load refused %s: %s", tostring(reason), Bridge.Hitch.describeLoad(refused))
+        return nil, reason
+    end
+    log("load start: %s", Bridge.Hitch.describeLoad(session))
+    Bridge.lastLoad = session
+    return { session = session }
+end
+
+function steppers.load(env, task, dt)
+    local code = Bridge.Hitch.loadStep(env, task.session, dt)
+    if code == "CONTINUE" then return nil end
+    if not task.endLogged then
+        task.endLogged = true
+        log("load end %s %s", code, Bridge.Hitch.describeLoad(task.session))
+    end
+    if code ~= "LOADED" and code ~= "UNLOADED" then
+        return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code
+    end
+    return settle(task, code)           -- braked by the latch; DONE once observed at rest
+end
+
+function aborts.load(env, task)
+    Bridge.Hitch.abort(env, task.session, "STOPPED")
+end
+
 -- ------------------------------------------------------------------- fold
 -- A reserved vehicle's own folding parts (a pickup's tailgate, a deckover's ramps) to one
 -- end through GIANTS' Foldable, never its animations directly: getIsFoldAllowed 987-1009,
@@ -1152,6 +1193,9 @@ function steppers.stop(env, task)
     if Bridge.lastUnpark ~= nil and Bridge.lastUnpark.tractor == v then
         Bridge.Hitch.abort(env, Bridge.lastUnpark, "STOPPED")    -- latched: brake + cruise off
     end
+    if Bridge.lastLoad ~= nil and Bridge.lastLoad.tractor == v then
+        Bridge.Hitch.abort(env, Bridge.lastLoad, "STOPPED")      -- latched: brake + cruise off
+    end
     local ownMotion = Bridge.pendingGoto[v] ~= nil or (target ~= nil
         and ((target.op == "drive" and v.ad.stateModule:isActive() ~= false)
         or ((target.op == "stage" or target.op == "navigate" or target.op == "fieldwork") and target.seen
@@ -1168,7 +1212,7 @@ function aborts.stop() end
 
 -- --------------------------------------------------------------- runner
 
-Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true }
+Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true, load = true }
 Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true }   -- ops that act on no vehicle
 
 function Bridge.start(env, spec)
@@ -1264,7 +1308,7 @@ function Bridge:dropSession(code)
     end
     if self:companionOwner() then Bridge.owner = nil end
     Bridge.lastAlign, Bridge.lastManeuver, Bridge.lastDetach, Bridge.lastPull = nil, nil, nil, nil
-    Bridge.lastUnpark = nil
+    Bridge.lastUnpark, Bridge.lastLoad = nil, nil
     log("bridge session %s dropped: %s", tostring(self.session), code)
     self.dropped[self.session] = true      -- a dropped session is never re-adopted
     self.session = nil
@@ -1435,6 +1479,12 @@ Bridge.NOTICES = {
     UNSUPPORTED_TRACTOR_ONLY = "Farmhand: moving a tractor on its own is not supported yet; ask for a tractor with an implement, such as the forage wagon",
     UNSUPPORTED_NAMED_VEHICLE = "Farmhand: choosing a vehicle by its name is not supported yet; name the kind of implement, such as the forage wagon or the cultivator",
     COMPLETE_MOVE = "Farmhand: arrived",
+    ACCEPTED_SEQUENCE = "Farmhand: on it, one step at a time",
+    COMPLETE_SEQUENCE = "Farmhand: all done and checked",
+    ACCEPTED_LOAD = "Farmhand: loading the tractor onto the trailer",
+    COMPLETE_LOAD = "Farmhand: tractor loaded, belted and the ramps up",
+    ACCEPTED_UNLOAD = "Farmhand: unloading the tractor",
+    COMPLETE_UNLOAD = "Farmhand: tractor unloaded and the ramps up",
     CANCELLED = "Farmhand: stopped",
     STOPPING = "Farmhand: stopping",
     NOTHING_TO_STOP = "Farmhand: nothing to stop",
@@ -1476,6 +1526,13 @@ Bridge.STEPS = {
     DETACH = "unhitching the implement",
     PULL_CLEAR = "pulling clear of the unhitched implement",
     UNPARK = "driving out of the building",
+    RAMPS_DOWN = "lowering the ramps",
+    APPROACH = "lining up behind the ramps",
+    LOAD = "driving up onto the trailer",
+    BELTS = "fastening the belts",
+    UNBELT = "releasing the belts",
+    UNLOAD = "backing off the trailer",
+    RAMPS_UP = "raising the ramps",
     FIELD_WORK = "working the field (GIANTS helper)",
     VERIFY = "checking the hitch",
     DELIVER = "driving to the destination",
@@ -1495,6 +1552,20 @@ Bridge.REASONS = {
     CLEANUP_NOT_CONFIRMED = "the tractor may still be moving; check it",
     NO_HITCHED_PAIR = "no hitched tractor and implement to move",
     NO_ATTACHED_IMPLEMENT = "no hitched implement to unhitch",
+    NO_TRANSPORT = "no transport trailer with ramps and belts",
+    NO_TRACTOR_TO_LOAD = "no free tractor to load",
+    NO_LOADED_TRACTOR = "no tractor on a trailer to unload",
+    RAMPS_NOT_OBSERVED = "the ramps did not move; check the trailer",
+    LOAD_RAMPS_NOT_DOWN = "the trailer's ramps are not down",
+    LOAD_NOT_LINED_UP = "the tractor is not lined up behind the ramps",
+    LOAD_NOT_BEHIND_RAMPS = "the tractor is not right behind the ramps",
+    LOAD_APPROACH_FAILED = "the tractor could not be lined up behind the ramps",
+    LOAD_DOES_NOT_FIT = "the tractor is longer than the deck",
+    LOAD_PATH_BLOCKED = "something is in the way on the ramps or the deck",
+    LOAD_TRACTOR_NOT_ALONE = "unhitch the tractor's implement first",
+    TRANSPORT_MOVED = "the truck or trailer moved; stopped",
+    BELTS_NOT_HOLDING = "the belts did not hold the tractor; check it",
+    NOT_ON_DECK = "the tractor is not on the deck; check it",
     DETACH_NOT_ALLOWED = "the game does not allow unhitching it right now",
     NOT_ATTACHED = "that implement is not hitched",
     DETACH_TIMEOUT = "unhitching did not finish; check the tractor",

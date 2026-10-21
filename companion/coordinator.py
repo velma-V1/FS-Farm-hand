@@ -40,7 +40,8 @@ def token(text: str) -> str:
 
 # Steps worth telling the player about while a job works (WORKING_<step>); the
 # rest is visible on request (STATUS_WORKING_<step>).
-MILESTONES = frozenset({"FIELD_WORK", "PULL_CLEAR", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "DELIVER"})
+MILESTONES = frozenset({"FIELD_WORK", "PULL_CLEAR", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "DELIVER",
+                        "RAMPS_DOWN", "LOAD", "BELTS", "RAMPS_UP", "UNLOAD"})
 # The executor task and the player-facing notices of each job command.
 JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE"),
         "move_pair": ("move_pair", "ACCEPTED_MOVE", "COMPLETE_MOVE"),
@@ -48,7 +49,12 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "detach_pair": ("detach_pair", "ACCEPTED_DETACH", "COMPLETE_DETACH"),
         "field_work": ("field_work", "ACCEPTED_FIELD_WORK", "COMPLETE_FIELD_WORK"),
         "buy": ("buy", "ACCEPTED_BUY", "COMPLETE_BUY"),
-        "save_game": ("save_game", "ACCEPTED_SAVE", "COMPLETE_SAVE")}
+        "save_game": ("save_game", "ACCEPTED_SAVE", "COMPLETE_SAVE"),
+        "load_tractor": ("load_tractor", "ACCEPTED_LOAD", "COMPLETE_LOAD"),
+        "unload_tractor": ("unload_tractor", "ACCEPTED_UNLOAD", "COMPLETE_UNLOAD"),
+        "sequence": ("sequence", "ACCEPTED_SEQUENCE", "COMPLETE_SEQUENCE")}
+# The proposal fields that pass into a job command's intent.
+NAMES = ("tractor_name", "implement_name")
 
 
 def result_notice(status: str, reason: str, complete: str = "COMPLETE") -> str:
@@ -136,6 +142,9 @@ class Coordinator:
         self.last: Job | None = None
         self._cancel = threading.Event()
         self._worker: threading.Thread | None = None
+        # The request id of the executor job running now: a plan's step reserves under its
+        # own id, and STOP must pre-empt that reservation's running bridge operation.
+        self.running: str | None = None
 
     @property
     def busy(self) -> bool:
@@ -161,9 +170,11 @@ class Coordinator:
                      "area_m2": proposal.get("area_m2"), "over_crop": proposal.get("over_crop", False)}
                     if command == "field_work"
                     else {"wants": proposal["wants"]} if command == "buy" else None)
-            if command in ("fetch_pair", "hitch_pair"):
-                names = {k: proposal[k] for k in ("tractor_name", "implement_name") if k in proposal}
+            if command in ("fetch_pair", "hitch_pair", "move_pair", "load_tractor", "unload_tractor"):
+                names = {k: proposal[k] for k in NAMES if k in proposal}
                 work = names or None
+            elif command == "sequence":
+                work = {"steps": proposal["steps"]}
             return self.start(command, proposal.get("target", "here"), spoken, proposal.get("implement"), work)
         return None
 
@@ -197,7 +208,7 @@ class Coordinator:
             return
         self.notify("STOPPING", spoken)
         if send:
-            threading.Thread(target=self._stop_reserved, args=(job.owner,), daemon=True,
+            threading.Thread(target=self._stop_reserved, args=(self.running or job.owner,), daemon=True,
                              name="farmhand-stop").start()
 
     def _stop_reserved(self, owner: str) -> None:
@@ -248,6 +259,8 @@ class Coordinator:
                 result = self._field_work(job, cancel, entered, work)
             elif command == "buy":
                 result = self._buy(job, cancel, entered, work)
+            elif command == "sequence":
+                result = self._sequence(job, cancel, entered, work)
             else:
                 intent = {"version": 1, "request_id": job.owner, "task": task,
                           "farm_id": self.farm(), "target": "player_at_acceptance" if target == "here" else target}
@@ -255,6 +268,7 @@ class Coordinator:
                     intent["implement"] = implement
                 intent.update(work or {})            # tractor_name / implement_name
                 log.info("job %d intent %s", job.number, json.dumps(intent))
+                self.running = intent["request_id"]
                 result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
             job.states, job.equipment = tuple(result.states), tuple(result.equipment_ids)
             job.state, job.reason = result.status, result.reason
@@ -268,9 +282,43 @@ class Coordinator:
             job.state, job.reason = "FAILED", "INTERNAL_ERROR"
         finally:
             self.world.cancel = None
+            self.running = None
             with self._lock:
                 self.current, self.last = None, job
             self.notify(result_notice(job.state, job.reason or "", complete), job.spoken)
+
+    def _sequence(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
+        """The player's commands in order, one job: each step starts only after the one
+        before it completed (COMPLETE, from its own verification) and only if not cancelled;
+        the first that did not complete ends it with its own result."""
+        states, used = [], []
+        for n, step in enumerate(work["steps"], 1):
+            if cancel.is_set():
+                return Result("CANCELLED", "CANCELLED_BY_REQUESTER", tuple(used), tuple(states))
+            command = step["command"]
+            sub = Job(number=job.number, owner=f"{job.owner}-s{n}", spoken=job.spoken)
+            if command == "field_work":
+                result = self._field_work(sub, cancel, entered, {
+                    "field": step["field"], "operations": step["operations"], "area_m2": step.get("area_m2"),
+                    "over_crop": step.get("over_crop", False)})
+            elif command == "buy":
+                result = self._buy(sub, cancel, entered, {"wants": step["wants"]})
+            else:
+                target = step.get("target", "here")
+                intent = {"version": 1, "request_id": sub.owner, "task": JOBS[command][0], "farm_id": self.farm(),
+                          "target": "player_at_acceptance" if target == "here" else target}
+                if step.get("implement") is not None:
+                    intent["implement"] = step["implement"]
+                intent.update({k: step[k] for k in NAMES if k in step})
+                log.info("job %d step %d intent %s", job.number, n, json.dumps(intent))
+                self.running = intent["request_id"]
+                result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
+            states += [f"{command}:{s}" for s in result.states]
+            used += [i for i in result.equipment_ids if i not in used]
+            log.info("job %d step %d %s result %s %s", job.number, n, command, result.status, result.reason)
+            if result.status != "COMPLETE":
+                return Result(result.status, result.reason, tuple(used), tuple(states))
+        return Result("COMPLETE", "SEQUENCE_DONE", tuple(used), tuple(states))
 
     def _buy(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """Each want in turn, one executor purchase each; the first not COMPLETE ends it."""
@@ -287,6 +335,7 @@ class Coordinator:
             intent = {"version": 1, "request_id": f"{job.owner}-{n}", "farm_id": self.farm(),
                       "target": "player_at_acceptance", "task": "buy", "want": want}
             log.info("job %d buy %d intent %s", job.number, n, json.dumps(intent))
+            self.running = intent["request_id"]
             result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
             states += [f"buy:{s}" for s in result.states]
             bought += list(result.equipment_ids)
@@ -343,6 +392,7 @@ class Coordinator:
                 intent = {"version": 1, "request_id": f"{job.owner}-{n}", "farm_id": self.farm(),
                           "target": "player_at_acceptance", **step}
                 log.info("job %d step %d intent %s", job.number, n, json.dumps(intent))
+                self.running = intent["request_id"]
                 result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
                 states += [f"{step['task']}:{s}" for s in result.states]
                 equipment += [e for e in result.equipment_ids if e not in equipment]

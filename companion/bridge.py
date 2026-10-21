@@ -43,7 +43,7 @@ HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
 ALIGN_MAX_DISTANCE_M = 10.0      # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
-DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 55.0, "fold": 30.0, "belts": 15.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
+DONE_TIMEOUT_S = {"drive": 1230.0, "navigate": 1230.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 55.0, "fold": 30.0, "belts": 15.0, "load": 75.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -265,6 +265,10 @@ class FS25World:
     def fields(self) -> tuple[Field, ...]:
         return self._observe().fields
 
+    def field_places(self) -> tuple[Destination, ...]:
+        """Every map field as a place "field N" at GIANTS' own field position."""
+        return self._observe().field_places
+
     def farm(self) -> FarmInfo | None:
         return self._observe().farm
 
@@ -272,7 +276,9 @@ class FS25World:
         return self._observe().map_id
 
     # ------------------------------------------------------------ reservation
-    def reserve(self, ids: tuple[str, str], owner: str) -> bool:
+    def reserve(self, ids: tuple[str, str], owner: str, transport: bool = False) -> bool:
+        """Both units or neither. ``transport``: a free tractor and a transport trailer, which
+        alone may be hitched outside the pair (to the truck towing it)."""
         with self._lock:
             if not owner or len(set(ids)) != 2 or owner in self._reservations:
                 return False
@@ -282,10 +288,14 @@ class FS25World:
             pair = [items[i] for i in ids]
             # Unattached, or hitched to each other (move_pair); never to anything else.
             partners = {pair[0].id: pair[1].id, pair[1].id: pair[0].id}
-            if any(e.reserved_by is not None or e.busy or e.occupied or not e.available
-                   or e.attached_to not in (None, partners[e.id]) or not e.stopped for e in pair):
+            if any(e.reserved_by is not None or e.busy or e.occupied or not e.available or not e.stopped
+                   for e in pair):
                 return False
-            if (pair[0].attached_to is None) != (pair[1].attached_to is None):
+            if transport:
+                if pair[0].attached_to is not None or pair[1].attached_to == pair[0].id:
+                    return False
+            elif (any(e.attached_to not in (None, partners[e.id]) for e in pair)
+                  or (pair[0].attached_to is None) != (pair[1].attached_to is None)):
                 return False
             if pair[0].farm_id != pair[1].farm_id:
                 return False
@@ -440,6 +450,13 @@ class FS25World:
         """The reserved transport's tension belts fastened or released (GIANTS TensionBelts)."""
         self._unit(vehicle_id, owner)
         return self._run("belts", tractor=int(vehicle_id), direction=1 if fasten else -1)
+
+    def load(self, tractor_id: str, trailer_id: str, direction: int, owner: str) -> str:
+        """LOAD (1) / UNLOAD (-1): the reserved tractor alone straight onto the reserved
+        trailer's deck or back off it (mod/FarmhandBridge.lua starters.load); DONE LOADED /
+        UNLOADED only braked at rest where planned. The companion verifies from a snapshot."""
+        self._reserved(tractor_id, owner, trailer_id)
+        return self._run("load", tractor=int(tractor_id), wagon=int(trailer_id), direction=int(direction))
 
     def _unit(self, vehicle_id: str, owner: str) -> None:
         with self._lock:

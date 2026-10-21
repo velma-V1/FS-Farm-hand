@@ -5,6 +5,7 @@ gooseneck is reversed under, stays down while hitched (clearance is never assume
 is down again before unhitching.
 """
 from dataclasses import replace
+import math
 import unittest
 
 from companion.executor import Executor
@@ -140,6 +141,255 @@ class TailgateTests(unittest.TestCase):
         self.assertEqual(result.status, "COMPLETE", result)
         self.assertLess(result.states.index("TAILGATE"), result.states.index("DETACH"))
         self.assertEqual(world.items[truck.id].fold, 1.0)
+
+
+def transport_world(tractor_ahead=-30.0, tractor_side=6.0, cls=MockWorld):
+    """A GMC towing a deckover (ramps up: fold 0, belts open, four belts 2 m apart) facing
+    yaw 0.4, and a Series 9 standing off to one side; IDs opaque and unordered."""
+    yaw = 0.4
+    fx, fz = math.sin(yaw), math.cos(yaw)
+
+    def at(a, l=0.0):
+        return (300.0 + fx * a + fz * l, -120.0 + fz * a - fx * l)
+
+    deck = Equipment("q-77", "implement", "farm-a", at(0.0), name="1124 Deckover Trailer", heading=yaw,
+                     kinds=frozenset({"trailer"}), attached_to="g-31", fold=0.0, folding=False,
+                     belts_fastened=False, size=(10.0, 2.6, 1.2, 0.0),
+                     belt_markers=tuple((*at(a, -1.3)[:1], 1.0, at(a, -1.3)[1], *at(a, 1.3)[:1], 1.0, at(a, 1.3)[1])
+                                        for a in (-4.0, -2.0, 0.0, 2.0)))
+    truck = Equipment("g-31", "tractor", "farm-a", at(9.0), name="2024 GMC Sierra Denali 2500 - 3500HD",
+                      heading=yaw, attached_to="q-77", capabilities=GOTO_TRACTOR, size=(6.5, 2.4, 2.0, 0.0))
+    position = at(tractor_ahead, tractor_side)
+    tractor = Equipment("t-05", "tractor", "farm-a", position, name="Series 9 2019", heading=-1.0,
+                        ai_root=Pose(*position, -1.0), capabilities=GOTO_TRACTOR, size=(5.2, 2.7, 3.0, 0.3))
+    world = cls([deck, tractor, truck], PLAYERS, ())
+    return world, tractor, deck, truck
+
+
+def load(**extra):
+    return dict(intent(), task="load_tractor", **extra)
+
+
+class TractorTransportTests(unittest.TestCase):
+    """The user's tractor transport (2026-10-21; AGENTS.md exception 5) on the mock world:
+    ramps down and verified, GIANTS GOTO right behind them, LOAD, belts verified holding the
+    tractor, ramps up and verified; UNLOAD the reverse. Mock-only fold, belt and LOAD state."""
+
+    def test_load_lowers_the_ramps_lines_up_drives_up_belts_and_raises_the_ramps(self):
+        from companion import hitch as transport
+        world, tractor, deck, truck = transport_world()
+        result = Executor(world).execute(load())
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+        self.assertEqual(result.states, ("FIND", "RESERVE", "RAMPS_DOWN", "APPROACH", "LOAD", "BELTS", "RAMPS_UP",
+                                         "STOP", "RELEASE"))
+        self.assertEqual(set(result.equipment_ids), {tractor.id, deck.id})
+        after = world.items
+        self.assertTrue(transport.on_deck(after[tractor.id], after[deck.id]))
+        self.assertEqual(after[tractor.id].belted_to, deck.id)
+        self.assertEqual((after[deck.id].fold, after[deck.id].belts_fastened), (0.0, True))
+        self.assertEqual(after[truck.id].position, truck.position)                 # the truck never moved
+        self.assertTrue(all(i.reserved_by is None for i in after.values()))
+
+    def test_approach_aims_put_the_front_right_behind_the_ramps_on_the_axis(self):
+        from companion import hitch as transport
+        world, tractor, deck, _ = transport_world()
+        aims = transport.load_aims(tractor, deck)
+        self.assertEqual(len(aims), 3)
+        for aim, gap in zip(aims, transport.FRONT_GAPS_M):
+            a, l = transport.to_frame(deck, (aim.x, aim.z))
+            self.assertAlmostEqual(l, 0.0, places=9)
+            self.assertAlmostEqual(aim.yaw, deck.heading)
+            self.assertAlmostEqual(a + 0.3 + 2.6, -5.0 - gap)       # its front (offset + half length)
+
+    def test_unload_releases_the_belts_lowers_the_ramps_backs_off_and_raises_them(self):
+        from companion import hitch as transport
+        world, tractor, deck, _ = transport_world()
+        Executor(world).execute(load())
+        result = Executor(world).execute(dict(intent(), task="unload_tractor"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "UNLOADED"), result)
+        self.assertEqual(result.states, ("FIND", "RESERVE", "UNBELT", "RAMPS_DOWN", "UNLOAD", "RAMPS_UP", "STOP",
+                                         "RELEASE"))
+        after = world.items
+        self.assertTrue(transport.off_ramps(after[tractor.id], after[deck.id]))
+        self.assertIsNone(after[tractor.id].belted_to)
+        self.assertEqual((after[deck.id].fold, after[deck.id].belts_fastened), (0.0, False))
+
+    def test_ramps_that_do_not_move_move_nothing(self):
+        class Stuck(MockWorld):
+            def fold(self, vehicle_id, direction, owner):
+                return "FOLDED"                                   # said so, never observed
+
+        world, tractor, deck, _ = transport_world(cls=Stuck)
+        result = Executor(world).execute(load())
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "RAMPS_NOT_OBSERVED"))
+        self.assertEqual(world.items[tractor.id].position, tractor.position)
+        self.assertNotIn("LOAD", result.states)
+
+    def test_belts_that_do_not_hold_the_tractor_are_never_secured(self):
+        class Loose(MockWorld):
+            def belts(self, vehicle_id, fasten, owner):
+                outcome = super().belts(vehicle_id, fasten, owner)
+                tractor = next(i for i in self.items.values() if i.belted_to == vehicle_id)
+                self.items[tractor.id] = replace(tractor, belted_to=None)
+                return outcome
+
+        world, *_ = transport_world(cls=Loose)
+        result = Executor(world).execute(load())
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "BELTS_NOT_HOLDING"))
+        self.assertNotIn("RAMPS_UP", result.states)
+
+    def test_a_load_that_never_reached_the_deck_is_not_belted(self):
+        world, *_ = transport_world()
+        world.mock_load_moves = False
+        result = Executor(world).execute(load())
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "NOT_ON_DECK"))
+        self.assertNotIn("BELTS", result.states)
+
+    def test_what_is_chosen(self):
+        # Named: the deutz; a tractor towing something, or one the player rides away, is never loaded.
+        world, tractor, deck, truck = transport_world()
+        self.assertEqual(Executor(world).execute(load(tractor_name="fendt")).reason, "NO_TRACTOR_TO_LOAD")
+        world, tractor, deck, truck = transport_world()
+        self.assertEqual(Executor(world).execute(load(implement_name="lowboy")).reason, "NO_TRANSPORT")
+        world, tractor, deck, truck = transport_world()
+        world.items[deck.id] = replace(deck, belt_markers=())
+        self.assertEqual(Executor(world).execute(load()).reason, "NO_TRANSPORT")
+        world, tractor, deck, truck = transport_world()
+        world.items[tractor.id] = replace(tractor, attached_to="x-1")
+        self.assertEqual(Executor(world).execute(load()).reason, "NO_TRACTOR_TO_LOAD")
+        world, *_ = transport_world()
+        self.assertEqual(Executor(world).execute(dict(intent(), task="unload_tractor")).reason, "NO_LOADED_TRACTOR")
+
+
+FINAL = "Take the GMC, hitch the Deckover, load the tractor, secure it, raise the ramps, deliver it to field 3, and unload it."
+
+
+class SequenceTests(unittest.TestCase):
+    """The user's final acceptance request as one job (the completion plan, 2026-10-20)."""
+
+    def test_the_final_request_is_four_steps_in_order(self):
+        from companion.language import RuleInterpreter
+        proposal = RuleInterpreter().interpret(FINAL)
+        self.assertEqual(proposal["command"], "sequence")
+        self.assertEqual(proposal["steps"], [
+            {"version": 1, "command": "hitch_pair", "implement": "trailer", "implement_name": "deckover",
+             "tractor_name": "gmc"},
+            {"version": 1, "command": "load_tractor", "implement_name": "deckover"},
+            {"version": 1, "command": "move_pair", "target": {"type": "field_entrance", "field": 3},
+             "tractor_name": "gmc"},
+            {"version": 1, "command": "unload_tractor", "implement_name": "deckover"}])
+
+    def test_transport_words(self):
+        from companion.language import RuleInterpreter
+        rules = RuleInterpreter()
+        cases = {
+            "load the tractor": {"command": "load_tractor"},
+            "load the tractor onto the trailer and secure it": {"command": "load_tractor"},
+            "load the Deutz-Fahr series 9 on the deckover, strap it down and raise the ramps":
+                {"command": "load_tractor", "tractor_name": "deutz series 9", "implement_name": "deckover"},
+            "put the deutz on the gooseneck": {"command": "load_tractor", "tractor_name": "deutz",
+                                               "implement_name": "gooseneck"},
+            "unload it": {"command": "unload_tractor"},
+            "unload the tractor off the deckover": {"command": "unload_tractor", "implement_name": "deckover"},
+            "take the tractor off the trailer": {"command": "unload_tractor"},
+            "move the gmc here": {"command": "move_pair", "tractor_name": "gmc"},
+        }
+        for words, expected in cases.items():
+            with self.subTest(words=words):
+                got = rules.interpret(words)
+                self.assertIsNotNone(got)
+                self.assertEqual({k: got.get(k) for k in expected}, expected)
+        # Not transports: an implement off the tractor, a wagon, a field drive, raising with nothing loaded.
+        self.assertEqual(rules.interpret("take the seeder off the tractor")["command"], "detach_pair")
+        self.assertIsNone(rules.interpret("load the forage wagon"))
+        self.assertNotEqual((rules.interpret("drive the tractor onto the field") or {}).get("command"), "load_tractor")
+        self.assertIsNone(rules.interpret("secure it, raise the ramps"))
+        # A sequence of what one command does stays that command.
+        self.assertEqual(rules.interpret("hitch the tractor to the forage wagon then take it to the barn")["command"],
+                         "fetch_pair")
+
+    def test_the_coordinator_runs_the_steps_in_order_and_stops_at_the_first_not_complete(self):
+        from companion import coordinator as coordination
+        from companion.language import RuleInterpreter
+        from protocol.model import Result
+        ran = []
+
+        class World(MockWorld):
+            cancel = None
+
+            def retained(self):
+                return ()
+
+        class Scripted:
+            def __init__(self, fail_at=None):
+                self.fail_at = fail_at
+
+            def execute(self, intent, cancel=None, on_state=None, job=None):
+                ran.append((intent["task"], intent.get("tractor_name"), intent.get("implement_name"),
+                            intent["target"], job))
+                if intent["task"] == self.fail_at:
+                    return Result("FAILED", "LOAD_PATH_BLOCKED", ("t-1",), ("FIND",))
+                return Result("COMPLETE", "OK", ("t-1",), ("FIND",))
+
+        for fail_at, tasks, last in ((None, ["hitch_pair", "load_tractor", "move_pair", "unload_tractor"],
+                                      ("COMPLETE", "SEQUENCE_DONE", "COMPLETE_SEQUENCE")),
+                                     ("load_tractor", ["hitch_pair", "load_tractor"],
+                                      ("FAILED", "LOAD_PATH_BLOCKED", "FAILED_LOAD_PATH_BLOCKED"))):
+            with self.subTest(fail_at=fail_at):
+                ran.clear()
+                notices = []
+                c = coordination.Coordinator(World([], PLAYERS, ()), Scripted(fail_at),
+                                             lambda n, s=False: notices.append(n), lambda: "farm-a", lambda: "s1")
+                c.submit(RuleInterpreter().interpret(FINAL))
+                c.wait(10)
+                self.assertEqual([r[0] for r in ran], tasks)
+                self.assertEqual(ran[0][1:3], ("gmc", "deckover"))
+                self.assertEqual(ran[2][3] if len(ran) > 2 else None,
+                                 {"type": "field_entrance", "field": 3} if fail_at is None else None)
+                self.assertEqual(len({r[4] for r in ran}), 1)                  # one job for every step
+                self.assertEqual((c.last.state, c.last.reason, notices[-1]), last)
+                self.assertEqual(notices[0], "ACCEPTED_SEQUENCE")
+
+    def test_stop_preempts_the_running_steps_own_reservation(self):
+        # A plan's step reserves under its own request id; STOP must stop that one
+        # (before 2026-10-21 it looked for the job's id and pre-empted nothing).
+        import threading
+        from companion import coordinator as coordination
+        from protocol.model import Result
+        started, stopped = threading.Event(), []
+
+        class World(MockWorld):
+            cancel = None
+            current = None
+
+            def retained(self):
+                return ()
+
+            def reservation(self, owner):
+                return ("t-1", "w-1") if owner == self.current else None
+
+            def stop(self, tractor_id, owner):
+                stopped.append((tractor_id, owner))
+                return True
+
+        world = World([], PLAYERS, ())
+
+        class Scripted:
+            def execute(self, intent, cancel=None, on_state=None, job=None):
+                world.current = intent["request_id"]
+                started.set()
+                cancel.wait(5)
+                return Result("CANCELLED", "CANCELLED_BY_REQUESTER", ("t-1",), ("FIND", "RESERVE"))
+
+        c = coordination.Coordinator(world, Scripted(), lambda n, s=False: None, lambda: "farm-a", lambda: "s1")
+        c.submit({"version": 1, "command": "sequence", "steps": [
+            {"version": 1, "command": "load_tractor"}, {"version": 1, "command": "unload_tractor"}]})
+        self.assertTrue(started.wait(5))
+        c.stop()
+        c.wait(10)
+        self.assertEqual(stopped, [("t-1", world.current)])
+        self.assertTrue(world.current.endswith("-s1"))
+        self.assertEqual(c.last.state, "CANCELLED")
 
 
 if __name__ == "__main__":

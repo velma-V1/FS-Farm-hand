@@ -65,7 +65,9 @@ ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snap
   (atomic rename) plus a `session.xml` heartbeat that also carries player notices.
   The ops are fixed (protocol/ipc.py COMMAND_ARGS): `drive` (AutoDrive), `navigate` (GIANTS GOTO), `stage`,
   `maneuver`, `align`, `attach`, `detach` (GIANTS' own, where it allows it), `pull_clear` (straight after that detach),
-  `unpark` (straight out of a building GIANTS cannot start from), `fieldwork`, `open_gates`, `block`, `buy`, `save`, `stop`. ACCEPTED/DONE is never success; the game stops a
+  `unpark` (straight out of a building GIANTS cannot start from), `fold` (GIANTS Foldable: tailgates, ramps), `belts`
+  (GIANTS TensionBelts), `load` (a tractor alone straight onto a transport's deck or back off it), `fieldwork`,
+  `open_gates`, `block`, `buy`, `save`, `stop`. ACCEPTED/DONE is never success; the game stops a
   session's motion if the heartbeat is lost for 10 s. Player key presses arrive as
   `request` frames (a fixed `action` or typed `text`).
 - `companion/language.py` (deterministic rules; a local model may sit behind them)
@@ -109,6 +111,8 @@ The only self-driven motion allowed is HITCH's capped LOCAL_MANEUVER (forward, i
 25 m of the wagon's joint), ALIGN_REVERSE (the final reverse), DETACH's PULL_CLEAR
 (straight forward, at most 8 m at 3 km/h, straight after Farmhand's own detach) and UNPARK
 (straight, at most 20 m at 3 km/h, only after GIANTS could not start a vehicle and no closed
-door is near it; AGENTS.md exception 4); all other travel is
+door is near it; AGENTS.md exception 4) and LOAD / UNLOAD (a tractor alone, straight along a
+transport trailer's axis up its verified-down ramps or back off, at most 3 km/h and the ramps
+plus the deck; AGENTS.md exception 5); all other travel is
 delegated to AutoDrive (optional; marker destinations only) or GIANTS GOTO
 (`navigate`, `stage`), whose navigation agent plans for the attached wagon.

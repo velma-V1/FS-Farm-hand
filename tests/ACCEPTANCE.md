@@ -426,6 +426,22 @@ Executable mapping (`python scripts/check.py`):
   Mod side (`test_lua_bridge` `BuyTests`): the hitch and engine options go to GIANTS'
   BuyVehicleData as configurations, priced by getBuyPrice with them; an option the item
   lacks or an engine price the farm cannot pay buys nothing.
+- Tractor transport (AGENTS.md exception 5). Mod side (`tests/test_lua_load.py`, kinematic
+  stub): LOAD drives the tractor alone straight up onto the deck and stops centred on it,
+  forward at 3 km/h; every precondition (ramps down, belts open, on the axis and facing along
+  it, right behind the ramps, fits the deck, alone, empty, at rest, the transport at rest, the
+  query proven and trustworthy) refuses before any motion; anything on the deck refuses, the
+  trailer itself never does and the truck towing it is not excluded; every guard while moving
+  (transport moved, ramps moved, takeover, seat, reservation, AI, stall, divergence, person,
+  obstacle, timeout) stops it braked and restored; UNLOAD backs straight off past the ramps.
+  Companion side (`tests/test_transport.py` `TractorTransportTests`): ramps down verified,
+  GIANTS GOTO right behind them, LOAD, on the deck at rest, belts verified holding the tractor,
+  ramps up verified; UNLOAD the reverse; ramps that do not move, belts that do not hold or a
+  LOAD that never reached the deck never complete; selection by name and kind.
+  `SequenceTests`: the final acceptance request is four steps in order (hitch with the GMC,
+  load, move to field 3, unload), run as one job that stops at the first step not complete;
+  STOP pre-empts the running step's own reservation; phrasings of loading and unloading.
+  `ExplicitDestinationTests.test_an_unmapped_field_is_reached_at_giants_own_field_position_on_any_map`.
 - `tests/test_transport.py` (truck and gooseneck, stage 3; mock fold state): a regular
   bed's tailgate is lowered and verified before anything moves and again right before
   ALIGN_REVERSE (GIANTS' AI raises it on every GOTO), stays down while hitched and is

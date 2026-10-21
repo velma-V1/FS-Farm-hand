@@ -569,6 +569,14 @@ function Observe.vehicle(env, v)
         end
         return { fastened = spec.areAllBeltsFastened, held = Observe.array(held), markers = Observe.array(markers) }
     end)
+    -- GIANTS' vehicle size box around its rootNode (as AIDrivable:setAIRootNodeDirty
+    -- 526-531 reads it): where a transport's rear and a tractor's front are.
+    local size = try(function()
+        local sz = v.size
+        assert(type(sz) == "table" and finite(sz.length) and sz.length > 0 and finite(sz.width) and sz.width > 0
+               and finite(sz.height) and sz.height > 0 and finite(sz.lengthOffset or 0))
+        return { length = sz.length, width = sz.width, height = sz.height, length_offset = sz.lengthOffset or 0 }
+    end)
     local beltedTo = try(function()
         if v.tensionMountObject == nil then return nil end
         local mountId = env.NetworkUtil.getObjectId(v.tensionMountObject)
@@ -583,6 +591,7 @@ function Observe.vehicle(env, v)
         fold = nullable(fold),
         belts = nullable(belts),
         belted_to = nullable(beltedTo),
+        size = nullable(size),
         kinds = Observe.kinds(v),
         fill_units = Observe.fillUnits(env, v),
         name = nullable(text(storeName)),
@@ -808,6 +817,21 @@ function Observe.tickFields(env, farmId, dt)
     Observe.fieldCache[fieldId(f)] = { record = ok and record or nil, age = 0 }
 end
 
+-- Every field of the map (owned or not), where GIANTS places it (Field posX/posZ, the
+-- position FieldState samples, sampleFruit above): a delivery to "field N" on any map.
+Observe.MAX_FIELD_PLACES = 200
+function Observe.fieldPlaces(env)
+    local out = Observe.array()
+    local fields = try(function() return env.g_fieldManager.fields end)
+    for _, f in ipairs(type(fields) == "table" and fields or {}) do
+        if #out >= Observe.MAX_FIELD_PLACES then break end
+        local id = fieldId(f)
+        local x, z = try(function() return f.posX end), try(function() return f.posZ end)
+        if id ~= nil and finite(x) and finite(z) then out[#out + 1] = { id = id, x = x, z = z } end
+    end
+    return out
+end
+
 -- Refresh one field now (the companion asks before and after field work).
 function Observe.refreshField(env, id, track)
     local fields = try(function() return env.g_fieldManager.fields end)
@@ -1002,6 +1026,7 @@ function Observe.snapshot(env, seq, session, dt)
         destinations = destinations,
         places = places,
         fields = try(function() return Observe.fields(env, farmId) end) or Observe.array(),
+        field_places = try(function() return Observe.fieldPlaces(env) end) or Observe.array(),
         farm = farmInfo(env, farmId),
     }), nil
 end

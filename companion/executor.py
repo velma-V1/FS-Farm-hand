@@ -12,6 +12,7 @@ from threading import Lock
 from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified, World
+from companion import hitch as transport   # its tractor-transport section
 from companion.hitch import (ALIGN_MAX_HEADING_RAD, IMPLEMENT_CATEGORIES, LOCAL_WORK_RADIUS_M, align_problem,
                              against_loose_implement, approach_poses, hitch_problem, joint_error,
                              joint_separation, plan_hitch, PULL_CLEAR_M)
@@ -147,7 +148,8 @@ UNPARK_REFUSALS = frozenset({
     "LOCAL_AREA_UNKNOWN", "NOT_STOPPED", "NOT_ROOT_VEHICLE", "UNPARK_DOOR_CLOSED"})
 
 CANCELLABLE_STEPS = frozenset({"RESERVE", "FIELD_WORK", "PULL_CLEAR", "UNPARK", "TAILGATE", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
-                               "DETACH", "DELIVER"})
+                               "DETACH", "DELIVER", "RAMPS_DOWN", "APPROACH", "LOAD", "BELTS", "UNBELT", "UNLOAD",
+                               "RAMPS_UP"})
 
 
 def valid_position(position: Position) -> bool:
@@ -715,7 +717,7 @@ class Executor:
         marker = select_destination(markers, target) if autodrive else None
         return (marker or standoff_pose(target, origin, fallback_yaw)), None
 
-    def _choose_hitched(self, items, farm_id, requester, target, markers, origins=None, kind=None):
+    def _choose_hitched(self, items, farm_id, requester, target, markers, origins=None, kind=None, name=None):
         """move_pair: the hitched tractor and implement nearest the requester ("this"),
         ties by opaque ID, and its route; decided before reservation. With ``origins``
         (target origin): only an implement this companion took (of ``kind``), routed
@@ -728,6 +730,7 @@ class Executor:
                                         or (kind is not None and not of_kind(wagon, kind))):
                 continue
             if (wagon is not None and wagon.attached_to == tractor.id and movable(tractor, wagon)
+                    and named(tractor, name)       # "move the gmc here": that vehicle's rig only
                     and all(usable(x, farm_id) and x.stopped for x in (tractor, wagon))):
                 pairs.append((math.dist(tractor.position, requester), tractor.id, tractor, wagon))
         if not pairs:
@@ -827,6 +830,162 @@ class Executor:
             return Result("UNVERIFIED", error.code, states=tuple(states))
         except (RuntimeError, ValueError, KeyError) as error:
             return Result("FAILED", getattr(error, "code", None) or type(error).__name__, states=tuple(states))
+
+    # ------------------------------------------------------------ transport
+    def _transport(self, command, enter, states) -> Result:
+        """Tractor transport (AGENTS.md exception 5), each step verified from a fresh snapshot.
+        load_tractor: FIND (a transport trailer with Foldable ramps and belts; a free tractor
+        alone) -> RESERVE -> RAMPS_DOWN -> APPROACH (GIANTS GOTO right behind the ramps, on
+        the trailer's axis) -> LOAD -> BELTS (the trailer holding the tractor) -> RAMPS_UP.
+        unload_tractor: FIND (a trailer holding or carrying a tractor) -> RESERVE -> UNBELT ->
+        RAMPS_DOWN -> UNLOAD (straight back off) -> RAMPS_UP. Then STOP and RELEASE; a
+        failure after RESERVE stops the tractor and keeps the reservation unless confirmed."""
+        owner, farm_id = command["request_id"], command["farm_id"]
+        loading = command["task"] == "load_tractor"
+        reserved = moved = False
+        ids: tuple = ()
+        status, reason = "BLOCKED", "NO_TRANSPORT"
+        try:
+            enter("FIND")
+            items = sorted(self.world.snapshot(), key=lambda i: i.id)
+            observed = {i.id: i for i in items}
+            trailers = [i for i in items if usable(i, farm_id) and i.stopped and transport.is_transport(i)
+                        and named(i, command.get("implement_name"))
+                        and (i.attached_to is None or (observed.get(i.attached_to) is not None
+                                                       and observed[i.attached_to].stopped))]
+            if not trailers:
+                return Result("BLOCKED", "NO_TRANSPORT", states=tuple(states))
+            pairs = []
+            for trailer in trailers:
+                for tractor in items:
+                    if (tractor.category != "tractor" or tractor.id == trailer.id or tractor.id == trailer.attached_to
+                            or not usable(tractor, farm_id) or not tractor.stopped or tractor.attached_to is not None
+                            or not named(tractor, command.get("tractor_name"))):
+                        continue
+                    if loading and (tractor.belted_to is None and not transport.on_deck(tractor, trailer)
+                                    and transport.load_aims(tractor, trailer)
+                                    and not any(transport.on_deck(tractor, t) for t in trailers)):
+                        pairs.append((math.dist(tractor.position, trailer.position), tractor.id, tractor, trailer))
+                    elif not loading and (tractor.belted_to == trailer.id or transport.on_deck(tractor, trailer)):
+                        pairs.append((0.0, tractor.id, tractor, trailer))
+            if not pairs:
+                return Result("BLOCKED", "NO_TRACTOR_TO_LOAD" if loading else "NO_LOADED_TRACTOR",
+                              states=tuple(states))
+            _, _, tractor, trailer = min(pairs, key=lambda p: (p[0], p[1]))
+            ids = (tractor.id, trailer.id)
+            log.info("%s tractor %s %r on trailer %s %r (towed by %s)", "loading" if loading else "unloading",
+                     tractor.id, tractor.name, trailer.id, trailer.name, trailer.attached_to)
+            enter("RESERVE")
+            if not self.world.reserve(ids, owner, transport=True):
+                return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
+            reserved = True
+            if loading:
+                self._ramps(trailer.id, 1, owner, "RAMPS_DOWN")
+                tractor, trailer = self._transport_pair(ids)
+                if not transport.lined_up(tractor, trailer, share=0.5):
+                    enter("APPROACH")
+                    moved = True
+                    self._approach(tractor, trailer, owner)
+                enter("LOAD")
+                moved = True
+                self.world.load(tractor.id, trailer.id, 1, owner)
+                tractor, trailer = self._settled_transport(ids)
+                if not transport.on_deck(tractor, trailer):
+                    raise ObservationMismatch("NOT_ON_DECK")
+                enter("BELTS")
+                self.world.belts(trailer.id, True, owner)
+                tractor, trailer = self._transport_pair(ids)
+                if trailer.belts_fastened is not True or tractor.belted_to != trailer.id:
+                    log.info("belts: fastened %s, holding %s, tractor belted to %s", trailer.belts_fastened,
+                             trailer.belted, tractor.belted_to)
+                    raise ObservationMismatch("BELTS_NOT_HOLDING")
+                self._ramps(trailer.id, -1, owner, "RAMPS_UP")
+                status, reason = "COMPLETE", "LOADED_AND_SECURED"
+            else:
+                enter("UNBELT")
+                self.world.belts(trailer.id, False, owner)
+                tractor, trailer = self._transport_pair(ids)
+                if trailer.belts_fastened is not False or tractor.belted_to is not None:
+                    raise ObservationMismatch("BELTS_NOT_RELEASED")
+                self._ramps(trailer.id, 1, owner, "RAMPS_DOWN")
+                enter("UNLOAD")
+                moved = True
+                self.world.load(tractor.id, trailer.id, -1, owner)
+                tractor, trailer = self._settled_transport(ids)
+                if not transport.off_ramps(tractor, trailer):
+                    raise ObservationMismatch("NOT_OFF_RAMPS")
+                self._ramps(trailer.id, -1, owner, "RAMPS_UP")
+                status, reason = "COMPLETE", "UNLOADED"
+        except Cancelled:
+            status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
+        except ObservationMismatch as error:
+            status, reason = "UNVERIFIED", str(error)
+        except StepUnverified as error:
+            status, reason = "UNVERIFIED", error.code
+        except StepFailed as error:
+            status, reason = "FAILED", error.code
+        except (RuntimeError, ValueError, KeyError) as error:
+            status, reason = "FAILED", getattr(error, "code", None) or type(error).__name__
+        finally:
+            if reserved:
+                try:
+                    if moved:
+                        enter("STOP")
+                        if not self.world.stop(ids[0], owner):
+                            raise ObservationMismatch("STOP_NOT_CONFIRMED")
+                        if not self._at_rest(ids)[ids[0]].stopped:
+                            raise ObservationMismatch("STOP_NOT_OBSERVED")
+                    enter("RELEASE")
+                    self.world.release(owner)
+                except Exception as error:
+                    log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
+                    status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        log.info("result %s %s states %s", status, reason, ",".join(states))
+        return Result(status, reason, ids, tuple(states))
+
+    def _transport_pair(self, ids):
+        observed = {i.id: i for i in self.world.snapshot()}
+        if any(i not in observed for i in ids):
+            raise ObservationMismatch("EQUIPMENT_MISSING")
+        return tuple(observed[i] for i in ids)
+
+    def _settled_transport(self, ids):
+        observed = self._at_rest(ids)
+        if any(i not in observed for i in ids):
+            raise ObservationMismatch("EQUIPMENT_MISSING")
+        if not observed[ids[0]].stopped:
+            raise ObservationMismatch("EQUIPMENT_MOVING")
+        return observed[ids[0]], observed[ids[1]]
+
+    def _ramps(self, trailer_id, direction, owner, state):
+        """The trailer's ramps (GIANTS Foldable) to one end, verified: fold time 1 down, 0 up."""
+        trailer = self._transport_pair((trailer_id,))[0]
+        want = 1.0 if direction > 0 else 0.0
+        if trailer.fold == want and not trailer.folding:
+            return
+        self._enter(state)
+        self.world.fold(trailer_id, direction, owner)
+        after = self._transport_pair((trailer_id,))[0]
+        if after.fold is None or abs(after.fold - want) > 1e-3 or after.folding:
+            raise ObservationMismatch("RAMPS_NOT_OBSERVED")
+        log.info("%s: trailer %s fold %.2f", state, trailer_id, after.fold)
+
+    def _approach(self, tractor, trailer, owner):
+        """GIANTS GOTO to right behind the ramps; the first aim GIANTS reaches and that
+        lines the tractor up for LOAD. LOAD itself re-checks the window."""
+        for aim in transport.load_aims(tractor, trailer):
+            try:
+                self._navigate(tractor.id, aim, owner, free=True)
+            except StepFailed as failure:
+                log.info("APPROACH aim %s: %s", aim, failure.code)
+                continue
+            tractor, trailer = self._settled_transport((tractor.id, trailer.id))
+            a, l = transport.to_frame(trailer, tractor.position)
+            log.info("APPROACH end: ai_root %s, along %.2f lateral %.2f heading %.1f deg off the trailer",
+                     tractor.ai_root, a, l, math.degrees(_angle(tractor.heading or 0.0, trailer.heading)))
+            if transport.lined_up(tractor, trailer, share=0.9):
+                return
+        raise StepFailed("LOAD_APPROACH_FAILED")
 
     def _field(self, field_id):
         """The field's latest measured state (the mod measures it again at the start
@@ -1062,6 +1221,8 @@ class Executor:
 
         if command["task"] == "buy":
             return self._buy(command, enter, states)
+        if command["task"] in ("load_tractor", "unload_tractor"):
+            return self._transport(command, enter, states)
         if command["task"] == "save_game":
             try:
                 enter("SAVE")
@@ -1135,17 +1296,26 @@ class Executor:
                           else None)
                 destination, failure = resolve_explicit_destination(
                     command["target"], self.world.destinations(), map_id, self.field_entrances)
-                if destination is None:
+                if destination is None and failure in ("FIELD_NOT_MAPPED", "MAP_UNKNOWN"):
+                    # Any map: GIANTS' own field position, by GOTO (no AutoDrive marker known).
+                    number = command["target"]["field"]
+                    place = next((p for p in self.world.field_places() if p.id == f"field-{number}"), None)
+                    if place is None:
+                        return Result("BLOCKED", failure, states=tuple(states))
+                    target = PlaceTarget(place.name, None, place)
+                    log.info("field %s at %s (GIANTS' field position)", number, place.position)
+                elif destination is None:
                     return Result("BLOCKED", failure, states=tuple(states))
-                target = destination
-                log.info("destination %s %r at %s", destination.id, destination.name, destination.position)
+                else:
+                    target = destination
+                    log.info("destination %s %r at %s", destination.id, destination.name, destination.position)
             # The tractor the requester rides comes first; then the opaque-ID order.
             items = sorted(self.world.snapshot(), key=lambda item: (not item.ridden, item.id))
             if moving:
                 pair, delivery, failure = self._choose_hitched(items, farm_id, requester, target,
                                                                self.world.destinations(),
                                                                self._origins if to_origin else None,
-                                                               command.get("implement"))
+                                                               command.get("implement"), command.get("tractor_name"))
                 plan = travel = None
                 aims = ()
             elif detaching or working:

@@ -56,6 +56,11 @@ class MockWorld:
         with self._lock:
             return tuple(self.field_map.values())
 
+    mock_field_places = ()        # mock-only: Destination("field-N", position, "field N") for every map field
+
+    def field_places(self):
+        return tuple(self.mock_field_places)
+
     store_items = ()              # StoreItems the mock store sells
     mock_bought = None            # Equipment template the mock purchase spawns (name from the item)
 
@@ -107,6 +112,35 @@ class MockWorld:
             return "BELTS_FASTENED" if fasten else "BELTS_RELEASED"
 
     mock_on_deck = {}             # mock-only: transport id -> ids standing on its deck
+    _transports = frozenset()     # owners whose reservation is a tractor and a transport trailer
+    mock_load_moves = True        # mock-only: False and LOAD says LOADED without moving anything
+
+    def load(self, tractor_id, trailer_id, direction, owner):
+        # Mock-only teleport standing in for the mod's straight drive: onto the middle of
+        # the deck box, or back until its front is 3.5 m behind the trailer's rear.
+        with self._lock:
+            tractor, trailer = self._owned(tractor_id, owner), self._owned(trailer_id, owner)
+            if trailer.fold != 1.0:
+                raise StepFailed("LOAD_RAMPS_NOT_DOWN")
+            if trailer.belts_fastened:
+                raise StepFailed("LOAD_BELTS_FASTENED")
+            if not self.mock_load_moves:
+                return "LOADED" if direction > 0 else "UNLOADED"
+            fx, fz = math.sin(trailer.heading), math.cos(trailer.heading)
+            length, _, _, offset = tractor.size
+            if direction > 0:
+                mids = [((m[0] + m[3]) / 2 - trailer.position[0]) * fx + ((m[2] + m[5]) / 2 - trailer.position[1]) * fz
+                        for m in trailer.belt_markers]
+                a = (min(mids) + max(mids)) / 2 - offset          # the belts' middle
+                self.mock_on_deck = {**self.mock_on_deck, trailer_id: (tractor_id,)}
+            else:
+                t_length, _, _, t_offset = trailer.size
+                a = t_offset - t_length / 2 - 3.5 - (offset + length / 2)
+                self.mock_on_deck = {k: tuple(i for i in v if i != tractor_id) for k, v in self.mock_on_deck.items()}
+            x, z = trailer.position[0] + fx * a, trailer.position[1] + fz * a
+            self.items[tractor_id] = replace(tractor, position=(x, z), heading=trailer.heading,
+                                             ai_root=Pose(x, z, trailer.heading), stopped=True)
+            return "LOADED" if direction > 0 else "UNLOADED"
 
     def _start_blocked(self, tractor_id, prefix):
         # Mock-only: GIANTS accepts the target, its agent stays BLOCKED, nothing moves.
@@ -202,7 +236,7 @@ class MockWorld:
         with self._lock:
             return self.current_map_id
 
-    def reserve(self, ids, owner):
+    def reserve(self, ids, owner, transport=False):
         with self._lock:
             if not owner or len(set(ids)) != 2 or any(i not in self.items for i in ids):
                 return False
@@ -212,16 +246,20 @@ class MockWorld:
             # Unattached, or hitched to each other (move_pair); never to anything else.
             partners = {pair[0].id: pair[1].id, pair[1].id: pair[0].id}
             if any(item.reserved_by is not None or item.busy or item.occupied
-                   or not item.available or item.attached_to not in (None, partners[item.id])
-                   or not item.stopped for item in pair):
+                   or not item.available or not item.stopped for item in pair):
                 return False
-            if (pair[0].attached_to is None) != (pair[1].attached_to is None):
+            if transport:                 # only the trailer may hang on its truck
+                if pair[0].attached_to is not None or pair[1].attached_to == pair[0].id:
+                    return False
+            elif (any(item.attached_to not in (None, partners[item.id]) for item in pair)
+                  or (pair[0].attached_to is None) != (pair[1].attached_to is None)):
                 return False
             if pair[0].farm_id != pair[1].farm_id:
                 return False
             for item in pair:
                 self.items[item.id] = replace(item, reserved_by=owner)
             self._reservations[owner] = (pair[0].farm_id, tuple(ids))
+            self._transports = (self._transports - {owner}) | ({owner} if transport else set())
             return True
 
     def _owned(self, identifier, owner):
@@ -285,9 +323,17 @@ class MockWorld:
         # MOCK_TRAILER_OFFSET_M behind the tractor's AI root.
         with self._lock:
             ids = self._reservations.get(owner, (None, (None, None)))[1]
+            if owner in self._transports:         # the lone tractor beside its transport
+                tractor = self._owned(tractor_id, owner)
+                if ids[0] != tractor_id or tractor.attached_to is not None:
+                    raise ValueError("Not the reserved tractor")
+                self._start_blocked(tractor_id, "NAVIGATE_")
+                self._place(tractor, pose)
+                return
             tractor, wagon = self._reserved_pair(tractor_id, ids[1], owner)
             coupled = (tractor.attached_to, wagon.attached_to) == (wagon.id, tractor.id)
-            if not coupled and (tractor.attached_to is not None or wagon.attached_to is not None):
+            # A lone tractor may drive beside a reserved wagon another vehicle tows (transport).
+            if not coupled and (tractor.attached_to is not None or wagon.attached_to == tractor.id):
                 raise ValueError("Invalid attachment")
             self._start_blocked(tractor_id, "NAVIGATE_")
             self._place(tractor, pose)

@@ -59,6 +59,7 @@ class Observation:
     places: tuple[Destination, ...] = ()
     fields: tuple[Field, ...] = ()
     farm: FarmInfo | None = None
+    field_places: tuple[Destination, ...] = ()     # every map field: "field N" at GIANTS' position
 
 
 def _claimed_links(vehicles) -> dict[int, set[int]]:
@@ -196,6 +197,8 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
         belted=tuple(str(i) for i in (vehicle.get("belts") or {}).get("held", ())),
         belted_to=None if vehicle.get("belted_to") is None else str(vehicle["belted_to"]),
         belt_markers=tuple(tuple(m) for m in (vehicle.get("belts") or {}).get("markers", ())),
+        size=None if vehicle.get("size") is None else tuple(
+            vehicle["size"][k] for k in ("length", "width", "height", "length_offset")),
     )
 
 
@@ -237,6 +240,8 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = N
         destinations=destinations,
         places=places,
         fields=fields,
+        field_places=tuple(Destination(f"field-{f['id']}", (f["x"], f["z"]), f"field {f['id']}")
+                           for f in sorted(frame.get("field_places", ()), key=lambda f: f["id"])),
         farm=None if farm is None else FarmInfo(farm["money"], farm["helper_buy_seeds"],
                                                 farm["helper_buy_fertilizer"], farm["helper_buy_fuel"]),
     )
