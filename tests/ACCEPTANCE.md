@@ -455,3 +455,25 @@ Synthetic movement sets coordinates and coupling sets relations. The simulator
 has no physics, terrain, route graph, collision, trigger, animation, network or
 actual GIANTS API. Failure injections test orchestration only. The actual game
 checks in BUILD_SPEC.md remain mandatory before a production claim.
+
+## Completion criteria (BUILD_SPEC.md completion plan; the user, 2026-10-21)
+Each criterion names its evidence: a test (automated) and/or a live record
+(tests/LIVE_QUALIFICATION.md). "Pending" means neither exists yet. Automated passes
+never imply live qualification, and one live combination never implies others.
+
+| # | Observable criterion | Automated | Live |
+| --- | --- | --- | --- |
+| C1 | "Take the Deutz to field 3 and unload it" from an unprepared state (trailer unhitched, tractor elsewhere): hitch, ramps, load, belts, ramps up, delivery, unload, ramps up; COMPLETE only with each verified | pending | pending |
+| C2 | The same from a partly completed state (already hitched / already loaded and belted / ramps left down): completed steps ALREADY_DONE, never repeated | pending | pending |
+| C3 | A loaded rig is never sent by GIANTS GOTO; without an AutoDrive route the job is kept and the gap named | `test_transport.TractorTransportTests.test_a_loaded_rig_is_never_sent_by_giants_goto` (refusal only) | refusal cause observed d14230aa9fb24d30-3 |
+| C4 | Unloading only after observed arrival at the destination; a stop, cancel, takeover or failure never unloads | pending | pending |
+| C5 | A destination changed during the job ("take it to field 2 instead") replaces the kept goal's destination; nothing completed repeats | pending | pending |
+| C6 | Player takeover pauses the goal; "continue" resumes from the observed state | pending | pending |
+| C7 | STOP pre-empts the running step of a plan, the goal kept for "continue" | `test_transport.SequenceTests.test_stop_preempts_the_running_steps_own_reservation` (pre-emption only) | pending |
+| C8 | After a reload or companion restart the kept goal is reconciled with the world, equipment re-identified, no purchase repeated | pending | pending |
+| C9 | Vehicles by brand and nickname ("the Deutz"); "it", "that trailer", "take it back" resolve to the goal's own equipment | brand: `test_procurement.NamedPairTests.test_only_the_named_vehicles_are_chosen` | brand: pending (gap seen d14230aa9fb24d30-1) |
+| C10 | Progress notices and STATUS from observed state only | pending | pending |
+| C11 | Spending limit, preferences, buy/sell permission checked before buying | pending | pending |
+| C12 | Queued and recurring jobs with explicit completion and stop conditions | pending | pending |
+| C13 | FollowMe only on an explicit "follow me" | pending | pending |
+| C14 | The final acceptance request as one command | `test_transport.SequenceTests` (planning and order) | pending |

@@ -91,6 +91,34 @@ have precedence; report conflicts instead of silently changing the scope.
   adapters/, game-side Lua in mod/, synthetic state in simulator/, tests in tests/.
   Never import simulator into companion or mod. No simulated success in real adapters.
 
+## Goal-directed operation (the user, 2026-10-21)
+- A request is a goal, completed from the observed current state: what is already
+  done (hitched, loaded, belted, bought, delivered) is verified and the work continues;
+  it is never refused for that, nor repeated. A purchase is never made twice for one goal.
+- Autonomous delivery of a loaded transport (a trailer carrying a belted vehicle) is
+  AutoDrive's: GIANTS GOTO was observed blocked by its own belted cargo (FourFields save 2,
+  GMC 3500HD + 1124 Deckover + Deutz Series 9, build e91fc6c, live d14230aa9fb24d30-3; scoped to
+  that combination until other combinations are tested) and is not used for it. FollowMe
+  runs only when the player explicitly asks to be followed; it never stands in for a
+  point-to-point delivery. Without a usable AutoDrive route the job is kept and the
+  exact route or configuration gap is reported.
+- Unloading happens only on observed arrival at the intended destination's unloading
+  area. Stopping for traffic, a cancellation, a takeover or a failure never unloads.
+- AutoDrive configuration may be completed only through AutoDrive's own supported
+  mechanisms, with the minimum destination markers in the test save, the existing
+  network preserved and its configuration backed up first. No replacement navigation,
+  and creating markers is never made the player's routine job.
+- Pause, a changed destination or equipment, a player takeover and resume keep the
+  original goal; nothing completed is repeated. After a reload or a companion restart
+  the job is reconciled with the observed world and the equipment re-identified.
+- Progress is reported from observed game state only: an accepted or pending command
+  is not proof that anything moves.
+- When the player's help is needed, ask for the smallest intervention and keep the job
+  so that "continue" resumes it.
+- Report implemented, automated-test-passed and live-qualified results separately;
+  one working combination never implies general equipment compatibility.
+- Voice stays an optional front end; its further work is deferred.
+
 ## Safe collaboration
 - Work on a dedicated branch. Inspect git status before edits; preserve others'
   changes. Agree file ownership before concurrent edits; do not share a mutable

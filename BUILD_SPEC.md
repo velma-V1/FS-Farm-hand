@@ -258,3 +258,66 @@ release.
    acknowledgement, invalid intent and uncertain stop as primary review risks.
 3. Add one CI check entry point and GitHub Actions. Run the full suite, review all
    files, remove redundant scaffolding, and publish a dedicated review branch.
+
+## Completion plan (user, 2026-10-20; companion requirements 2026-10-21)
+Farmhand is the coordinator between GIANTS and proven installed mods (AutoDrive,
+Universal Autoload, FollowMe, belts and winch mods), with custom code only for the gaps.
+It works on every map: nothing map-specific is hard-coded; destinations come from
+observation (GIANTS fields, owned buildings, AutoDrive markers). Status of each stage:
+implemented / automated-test-passed / live-qualified are reported separately
+(tests/LIVE_QUALIFICATION.md is the live record).
+
+| Stage | Scope | Status (2026-10-21) |
+| --- | --- | --- |
+| 1 Baseline | every live test records build, map, save, mods | done (livetest records) |
+| 2 Language | phrasings reach the same workflow; STOP immediate | rules + optional model; sequences |
+| 3 Assembly | routes, GMC gooseneck hitching, tailgates, crowded yards | GMC + 1124 Deckover live-qualified (hitch, move, detach, re-hitch) |
+| 4 Farming | plow, cultivate, seed, fertilize, stones, weeds, harvest, refill, unload, tool change | field-work plans; partly live |
+| 5 Commerce | buying (configurations), pallets via Universal Autoload | buying with hitch and engine options live-qualified |
+| 6 Tractor transport | ramps, LOAD, belts, delivery, UNLOAD | LOAD + belts + ramps live-qualified once (Series 9 on the Deckover); loaded delivery needs an AutoDrive route |
+| 7 Qualify and package | single consolidated live session, package | pending |
+
+Final acceptance request, one command: "Take the GMC, hitch the Deckover, load the
+tractor, secure it, raise the ramps, deliver it to field 3, and unload it", and the
+goal form "Take the Deutz to field 3 and unload it" from an unprepared and from a
+partly completed state, with a changed destination, a player takeover and a resume.
+
+### Companion requirements and how each is met (extend what exists)
+1. **Goals from observed state** (coordinator plans, executor verifies). A goal is a
+   plan of executor steps; before each step its post-condition is checked on a fresh
+   snapshot (hitched, loaded and belted, ramps up, at the destination, unloaded) and a
+   satisfied step is recorded ALREADY_DONE, not repeated. The executor's own jobs
+   continue from partial states (a tractor on the deck but not belted is belted; ramps
+   left down are raised).
+2. **Loaded delivery** by AutoDrive only (AGENTS.md); a GOTO route for a loaded rig is
+   BLOCKED LOADED_NEEDS_AUTODRIVE before reserving. Destinations resolve to an
+   AutoDrive marker by name, by the configured field entrance, or the marker nearest the
+   destination's unloading area on a route AutoDrive can reach; none: the job is kept,
+   the gap reported.
+3. **Unloading only on arrival**: UNLOAD runs only after the delivery step observed the
+   rig at rest at the destination (tolerance) — never after a stop, cancel or failure.
+4. **Pause / change / takeover / resume**: STOP pauses the goal (its plan and the steps
+   done are kept); "continue" re-plans from observed state; "take it to field 2 instead"
+   replaces the destination of the kept goal; a takeover (DRIVER_TOOK_OVER) pauses it.
+5. **Recovery after reloads or companion crashes**: the kept goal is persisted beside the
+   companion's settings; on start it is reconciled with the observed world (equipment
+   re-identified by name, brand and role, not by session IDs) and offered as "continue";
+   a purchase step records what it bought so a repeat finds it instead of buying again.
+6. **Names and references**: vehicles by store name and brand ("the Deutz"); persistent
+   nicknames; "it", "that trailer", "take it back" refer to the goal's own equipment and
+   its origin (move_pair to origin exists).
+7. **Spending and permissions**: saved spending limit, equipment preferences, and
+   whether buying/selling is allowed, checked before any purchase.
+8. **Named destinations**: a destination carries its approach, parking and unloading
+   places (AutoDrive markers or GIANTS positions), chosen from observation.
+9. **Truthful progress**: notices and STATUS from observed state (moving, at the
+   destination); an accepted command is "started", not "driving".
+10. **Queued and recurring jobs** with explicit completion and stop conditions.
+11. **Human help**: the smallest intervention, said once; the job kept for "continue".
+12. **FollowMe**: only on an explicit "follow me" (its AIJobTypeFollowVehicle), qualified
+    separately; never a substitute for delivery.
+Voice: deferred.
+
+Implementation order: (1) and (3) with the goal form of the transport request; (2)
+destination resolution to AutoDrive; (4) pause/resume/change; (6) references; (5)
+persistence and reconciliation; (9) progress; (7), (8), (10), (11), (12).
