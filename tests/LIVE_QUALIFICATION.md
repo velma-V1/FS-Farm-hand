@@ -135,3 +135,15 @@ All OPEN; rows are added as each capability lands.
 | Same (8 m ahead only) | 34c38284ac53469b-1 | 3894229 | UNPARK PASS; hitch FAILED UNPARK_HANDOFF_BLOCKED (fixed) | **UNPARK live-proven**: the 7R (start `ROOF LOD1`, back UNPARK_BLOCKED at 4.5 m) planned `exit 8.5 m` forward and drove it: along 8.50 m, lateral 0.00, 3.03 km/h, 10.5 s, CLEAR, DONE UNPARKED; the executor saw it at rest 8.7 m on, (943.93, 811.46) -> (944.08, 802.80). The hand-off GOTO then aimed beside the PROLANDER (the aim it refused before) and ended `not_reachable` 7.0 m off: UNPARK_HANDOFF_BLOCKED, stopped, released. The user: re-plan from the exit (inside 25 m the bounded steps, no GOTO) |
 | Same (re-plan from the exit) | a65b3e6338e347d3-1 | 979b119 | UNPARK PASS again; hitch FAILED STALLED (LOCAL_MANEUVER, open) | UNPARK 8.5 m forward again (lateral 0.00, 3.03 km/h, 10.5 s, CLEAR); the re-plan took no GOTO: LOCAL_MANEUVER from the exit (gap 6.21 m, ahead 2.18, lateral 5.82) chose a 41.5 m curve of radius 5.5 m and STALLED 17 m along it in LOCAL_TURN, heading turned ~180 deg, at (933.1, 803.0): LOCAL_MANEUVER does not observe static objects (a collision shows as STALLED), so it most likely touched a building; stopped and released. Next: check LOCAL_MANEUVER's curve with the same GIANTS collision query UNPARK uses |
 | X8, Puma (Farm Barn bays) | user, 2026-10-20 | — | cause found | every staging aim `not_reachable`: the barn doors in front of them were closed (the user opened them by hand) |
+
+## Language to every capability (stage 2), save 2, build 781426c (2026-10-20)
+
+Configuration: map FS25_fourFields, save slot 2, 109 mods (from FS25's log of the load; now in every record),
+AI: Ollama `ministral-3:3b-instruct-2512-q8_0` (the user's choice).
+
+| Words (typed through the live interface, as the player's) | Read by | Proposal | Result |
+| --- | --- | --- | --- |
+| "take the seeder off the tractor" | rules | detach_pair, sowing_machine (was hitch_pair before c5f0d04) | BLOCKED NO_ATTACHED_IMPLEMENT, nothing moved (correct: nothing hitched) |
+| "how is everything coming along out there" | model | status | NOT_A_JOB (status answered); the first two asks after the companion restart timed out (Ollama cold load, `TimeoutError`), answered once warm |
+| "could you get a small bit of field 1 plowed for me" | model | field_work, field 1, plow, area 400 m2 | BLOCKED CROP_READY_TO_HARVEST (standing wheat, no "anyway"), nothing moved |
+| "go work the dirt on field 1 with a plow" | model | field_work, field 1, plow | BLOCKED CROP_READY_TO_HARVEST, nothing moved |
