@@ -90,13 +90,13 @@ class PurchaseTests(unittest.TestCase):
 
     def test_an_unseen_purchase_or_payment_is_never_complete(self):
         class Vanishing(MockWorld):
-            def buy(self, item_id, hitch=0):
+            def buy(self, item_id, hitch=0, engine=0):
                 return "BOUGHT"                                  # said bought, nothing appeared
 
         class Free(MockWorld):
-            def buy(self, item_id, hitch=0):
+            def buy(self, item_id, hitch=0, engine=0):
                 money = self.farm_info.money
-                super().buy(item_id, hitch)
+                super().buy(item_id, hitch, engine)
                 self.farm_info = replace(self.farm_info, money=money)   # not charged
 
         for cls, reason in ((Vanishing, "PURCHASE_NOT_OBSERVED"), (Free, "PAYMENT_NOT_OBSERVED")):
@@ -113,6 +113,53 @@ class PurchaseTests(unittest.TestCase):
         result = Executor(world).execute(buy({"kind": "plow"}))
         self.assertEqual((result.status, result.reason), ("BLOCKED", "NOT_ENOUGH_MONEY"))
         self.assertEqual(len(world.items), 3)
+
+
+class EngineOptionTests(unittest.TestCase):
+    """The user's preferred tractor (2026-10-21): the Deutz-Fahr Series 9 with its
+    "Boss Hoss" motor configuration (FS25_Deutz_Series_9_2019 series9.xml 1956-2023;
+    GIANTS StoreItemUtil reads storeItem.configurations["motor"])."""
+
+    SERIES9 = StoreItem(21, "Series 9 2019", "DEUTZFAHR", ("TRACTORSL",), 200000, True, None, None, 295,
+                        engines=("9290 TTV", "9310 TTV", "9340 TTV", "9340 TTV Chipped", "1000 HP (Unrealistic)",
+                                 "Boss Hoss"))
+    WANT = {"kind": "tractor", "name": "deutz series 9", "engine": "boss hoss"}
+
+    def test_the_words(self):
+        rules = RuleInterpreter()
+        for words in ("buy a Deutz-Farhr series 9 with a boss hoss engine setup",
+                      "buy a deutz fahr series 9 tractor with the boss hoss engine",
+                      "purchase a deutz-fahr series 9 with a boss hoss motor"):
+            with self.subTest(words=words):
+                self.assertEqual(rules.interpret(words), {"version": 1, "command": "buy", "wants": [self.WANT]})
+        self.assertEqual(rules.interpret("buy a deutz series 9 tractor")["wants"],
+                         [{"kind": "tractor", "name": "deutz series 9"}])
+
+    def test_the_named_tractor_and_its_engine_option(self):
+        from companion.executor import choose_engine
+        catalog = CATALOG + (self.SERIES9,)
+        self.assertEqual(choose_store_item(catalog, self.WANT, 1e6, None)[0].id, 21)
+        self.assertEqual(choose_engine(self.SERIES9, self.WANT), 6)
+        self.assertEqual(choose_engine(self.SERIES9, {"kind": "tractor", "name": "deutz"}), 0)       # default
+        self.assertEqual(choose_engine(self.SERIES9, dict(self.WANT, engine="v12")), 0)
+
+    def test_it_is_bought_with_that_engine_or_not_at_all(self):
+        bought = []
+
+        class Recording(MockWorld):
+            def buy(self, item_id, hitch=0, engine=0):
+                bought.append((item_id, hitch, engine))
+                return super().buy(item_id, hitch, engine)
+
+        for engines, expected in ((self.SERIES9.engines, ("COMPLETE", "BOUGHT")), ((), ("BLOCKED", "NO_ENGINE_OPTION"))):
+            with self.subTest(engines=engines):
+                bought.clear()
+                world = Recording(list(TRACTORS), {"farm-a": (0.0, 0.0)}, farm=FarmInfo(1e6, True, True, True))
+                world.store_items = CATALOG + (replace(self.SERIES9, engines=engines),)
+                world.mock_bought = Equipment("x", "tractor", "farm-a", (500.0, 500.0))
+                result = Executor(world).execute(buy(self.WANT))
+                self.assertEqual((result.status, result.reason), expected, result)
+                self.assertEqual(bought, [(21, 0, 6)] if expected[0] == "COMPLETE" else [])
 
 
 if __name__ == "__main__":

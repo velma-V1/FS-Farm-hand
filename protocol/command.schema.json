@@ -110,15 +110,16 @@
     "wants": {
       "description": "buy: what to buy, in order.",
       "type": "array", "minItems": 1, "maxItems": 4, "items": {
-        "description": "buy: what to buy. kind: plow (a store plow our tractors can pull), truck or trailer (by the name the player gave); size large: the widest that fits.",
+        "description": "buy: what to buy. kind: plow (a store plow our tractors can pull), truck, trailer or tractor (by the name the player gave); size large: the widest that fits; engine: the motor configuration with these words in its name.",
         "type": "object",
         "additionalProperties": false,
         "required": ["kind"],
         "properties": {
-          "kind": {"enum": ["plow", "truck", "trailer"]},
+          "kind": {"enum": ["plow", "truck", "trailer", "tractor"]},
           "size": {"enum": ["large"]},
           "name": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[A-Za-z0-9 -]+$"},
-        "hitch": {"enum": ["gooseneck", "drop hitch", "fifth wheel"]}
+        "hitch": {"enum": ["gooseneck", "drop hitch", "fifth wheel"]},
+          "engine": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"}
         }
       }
     },

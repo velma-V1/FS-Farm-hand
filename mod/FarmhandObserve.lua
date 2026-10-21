@@ -861,8 +861,17 @@ function Observe.storeItem(env, item)
         if i > 12 then break end
         hitches[#hitches + 1] = text(type(option) == "table" and option.name or nil) or ""
     end
+    -- The engines likewise (configurations["motor"], as StoreItemUtil reads them): live,
+    -- the Deutz Series 9's "Boss Hoss".
+    local engines = Observe.array()
+    options = type(item.configurations) == "table" and item.configurations.motor or nil
+    for i, option in ipairs(type(options) == "table" and options or {}) do
+        if i > 12 then break end
+        engines[#engines + 1] = text(type(option) == "table" and option.name or nil) or ""
+    end
     return { id = item.id, name = text(item.name) or Observe.NULL, brand = text(item.brandNameRaw) or Observe.NULL,
              categories = categories, price = item.price, mod = item.isMod == true, hitches = hitches,
+             engines = engines,
              width = nullable(specNumber(specs.workingWidth, "width")),
              needed_power = nullable(specNumber(specs.neededPower, "base")),
              power = nullable(specNumber(specs.power, "power")) }

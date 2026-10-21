@@ -419,6 +419,13 @@ Executable mapping (`python scripts/check.py`):
   Soil work or sowing over a crop standing on most of the field is BLOCKED
   (CROP_READY_TO_HARVEST / CROP_GROWING) before anything is hitched, unless the
   player says "... anyway" (`StandingCropTests`, `OverCropTests`).
+- `tests/test_procurement.py` `EngineOptionTests` (the user's preferred tractor): "buy a
+  Deutz-Farhr series 9 with a boss hoss engine setup" (and other phrasings) asks for the
+  named tractor with that engine; the store item is chosen by name and the motor
+  configuration by its words; without that option nothing is bought (NO_ENGINE_OPTION).
+  Mod side (`test_lua_bridge` `BuyTests`): the hitch and engine options go to GIANTS'
+  BuyVehicleData as configurations, priced by getBuyPrice with them; an option the item
+  lacks or an engine price the farm cannot pay buys nothing.
 - `tests/test_transport.py` (truck and gooseneck, stage 3; mock fold state): a regular
   bed's tailgate is lowered and verified before anything moves and again right before
   ALIGN_REVERSE (GIANTS' AI raises it on every GOTO), stays down while hitched and is

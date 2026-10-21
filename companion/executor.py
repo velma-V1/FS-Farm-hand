@@ -445,7 +445,8 @@ def describe(coverage: FieldCoverage | None) -> str:
 # Observe.storeItem). A want is {"kind": "plow" | "truck" | "trailer", "size":
 # "large" | None, "name": words the player named | None}; the purchase itself and its
 # verification are the executor's (task "buy").
-STORE_KINDS = {"plow": ("PLOW",), "truck": ("CAR", "TRUCK", "PICKUP"), "trailer": ("TRAILER",)}
+STORE_KINDS = {"plow": ("PLOW",), "truck": ("CAR", "TRUCK", "PICKUP"), "trailer": ("TRAILER",),
+               "tractor": ("TRACTOR",)}
 BUY_MONEY_TOLERANCE = 0.99        # the money must fall by at least this share of the price
 CATALOG_WAIT_S = 90.0             # the game builds the catalog after a load (25 items per snapshot)
 
@@ -456,9 +457,9 @@ def _matches(item: StoreItem, want: dict) -> bool:
     if words and not all(w in text for w in words):
         return False
     kinds = STORE_KINDS.get(want["kind"], ())
-    if want["kind"] == "truck" and item.power is None:
+    if want["kind"] in ("truck", "tractor") and item.power is None:
         return False                          # a truck drives itself (live: a GMC truck bed was bought)
-    if want.get("name") and want["kind"] in ("truck", "trailer"):
+    if want.get("name") and want["kind"] in ("truck", "trailer", "tractor"):
         return True                           # a named vehicle: its name decides
     return any(k in c for c in item.categories for k in kinds)
 
@@ -475,6 +476,15 @@ def choose_hitch(item: StoreItem, want: dict) -> int:
         return 0
     return min(options, key=lambda o: ("hitch" not in o[1].lower().replace(hitch, ""), "plow" in o[1].lower(),
                                        len(o[1]), o[0]))[0]
+
+
+def choose_engine(item: StoreItem, want: dict) -> int:
+    """The motor configuration (1-based) whose name has every word of the want's engine
+    ("boss hoss": "Boss Hoss"), else 0 (the default; none asked or none named so)."""
+    words = (want.get("engine") or "").lower().split()
+    if not words:
+        return 0
+    return next((n for n, name in enumerate(item.engines, 1) if all(w in name.lower() for w in words)), 0)
 
 
 def choose_store_item(catalog, want: dict, money: float | None, tractor_power: float | None):
@@ -791,8 +801,13 @@ class Executor:
             if want.get("hitch") and not hitch:
                 return Result("BLOCKED", "NO_HITCH_OPTION", states=tuple(states))
             log.info("buy: hitch option %d %r", hitch, item.hitches[hitch - 1] if hitch else "default")
+            engine = choose_engine(item, want)
+            if want.get("engine") and not engine:
+                log.info("buy: no engine option %r among %s", want["engine"], item.engines)
+                return Result("BLOCKED", "NO_ENGINE_OPTION", states=tuple(states))
+            log.info("buy: engine option %d %r", engine, item.engines[engine - 1] if engine else "default")
             enter("BUY")
-            self.world.buy(item.id, hitch)
+            self.world.buy(item.id, hitch, engine)
             enter("VERIFY")
             after = {i.id: i for i in self.world.snapshot()}
             new = [i for i in after.values() if i.id not in before and i.name == item.name]

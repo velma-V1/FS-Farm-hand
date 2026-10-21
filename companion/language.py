@@ -172,14 +172,22 @@ _BUY_ITEM = re.compile(
     r"\s*(?:(?:and|plus|also)\s+)?(?:(?:a|an|the|one|new)\s+)?(?:new\s+)?(?P<size>large|big|biggest|largest)?\s*"
     r"(?:(?P<plow>plows?|ploughs?)|(?P<goose>gooseneck)(?:\s+trailer)?"
     r"|(?P<deck>(?:[a-z0-9-]*[0-9][a-z0-9-]*\s+)?deckover)(?:\s+trailer)?"
+    # A named tractor, with the engine option ("... with a boss hoss engine setup") or the word.
+    r"|(?P<tractor>[a-z0-9]{1,20}(?:\s+[a-z0-9]{1,20}){0,3}?)(?:\s+tractor)?\s+with\s+(?:a|an|the)\s+"
+    r"(?P<engine>[a-z0-9]{1,20}(?:\s+[a-z0-9]{1,20}){0,2}?)\s+(?:engine|motor)"
+    r"(?:\s+(?:setup|set\s+up|option|configuration|package))?"
+    r"|(?P<tname>[a-z0-9]{1,20}(?:\s+[a-z0-9]{1,20}){0,3}?)\s+tractor"
     r"|(?P<name>[a-z0-9][a-z0-9-]{0,20}(?:\s+[a-z0-9][a-z0-9-]{0,20})?)\s+(?:truck|pickup))\b")
+# GIANTS spells the brand as one word (DEUTZFAHR): the player's "deutz-fahr" (and its
+# slips, live "Deutz-Farhr") is matched by "deutz".
+_DEUTZ = re.compile(r"\bdeutz\s+f(?:ahr|arh|arhr|ahrr|har)\b")
 
 
 def buy(words: str) -> dict | None:
     match = _BUY.match(words)
     if match is None:
         return None
-    text, wants, at = match["items"], [], 0
+    text, wants, at = _DEUTZ.sub("deutz", match["items"]), [], 0
     while at < len(text):
         item = _BUY_ITEM.match(text, at)
         if item is None or item.end() == at:
@@ -190,6 +198,13 @@ def buy(words: str) -> dict | None:
             want = {"kind": "trailer", "name": "gooseneck"}
         elif item["deck"]:
             want = {"kind": "trailer", "name": item["deck"]}
+        elif item["tractor"] or item["tname"]:
+            name = item["tractor"] or item["tname"]
+            if re.search(r"\b(?:a|an|the|and|plus|with)\b", name):
+                return None
+            want = {"kind": "tractor", "name": name}
+            if item["engine"]:
+                want["engine"] = item["engine"]
         else:
             if re.search(r"\b(?:a|an|the|and|plus)\b", item["name"]):
                 return None

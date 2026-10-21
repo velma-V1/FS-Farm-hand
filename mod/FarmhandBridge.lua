@@ -1075,6 +1075,13 @@ function starters.buy(env, spec)
             if type(options) ~= "table" or options[spec.hitch] == nil then return nil, "UNKNOWN_CONFIGURATION" end
             configs.attacherJoint = spec.hitch
         end
+        -- The buyer's engine (motor configuration, 1-based; StoreItemUtil reads
+        -- storeItem.configurations["motor"]); 0 keeps the default. Priced below with it.
+        if finite(spec.engine) and spec.engine > 0 then
+            local options = item.configurations and item.configurations.motor
+            if type(options) ~= "table" or options[spec.engine] == nil then return nil, "UNKNOWN_CONFIGURATION" end
+            configs.motor = spec.engine
+        end
         local price = env.g_currentMission.economyManager:getBuyPrice(item, configs, nil)
         local before = balance(env, spec.farmId)
         if not finite(price) or price <= 0 then return nil, "PRICE_UNKNOWN" end
@@ -1304,7 +1311,7 @@ function Bridge:checkSession()
 end
 
 local ATTRS = { tractor = "tractor", wagon = "wagon", marker = "marker", x = "x", z = "z", yaw = "yaw",
-                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", item = "item", hitch = "hitch",
+                tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", item = "item", hitch = "hitch", engine = "eng",
                 direction = "fd" }
 
 function Bridge:pollCommand()

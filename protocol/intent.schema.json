@@ -143,15 +143,16 @@
       "oneOf": [{"type": "integer", "minimum": 1, "maximum": 100000}, {"const": "smallest"}]
     },
     "want": {
-      "description": "buy: what to buy. kind: plow (a store plow our tractors can pull), truck or trailer (by the name the player gave); size large: the widest that fits.",
+      "description": "buy: what to buy. kind: plow (a store plow our tractors can pull), truck, trailer or tractor (by the name the player gave); size large: the widest that fits; engine: the motor configuration with these words in its name.",
       "type": "object",
       "additionalProperties": false,
       "required": ["kind"],
       "properties": {
-        "kind": {"enum": ["plow", "truck", "trailer"]},
+        "kind": {"enum": ["plow", "truck", "trailer", "tractor"]},
         "size": {"enum": ["large"]},
         "name": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[A-Za-z0-9 -]+$"},
-        "hitch": {"enum": ["gooseneck", "drop hitch", "fifth wheel"]}
+        "hitch": {"enum": ["gooseneck", "drop hitch", "fifth wheel"]},
+        "engine": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"}
       }
     },
     "tractor_name": {"description": "fetch_pair, hitch_pair: the towing vehicle must have all these words in its name ('with the gmc').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},

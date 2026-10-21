@@ -142,6 +142,7 @@ class StoreItem:
     needed_power: float | None
     power: float | None
     hitches: tuple[str, ...] = ()       # attacherJoint configuration names, in GIANTS' order (1-based)
+    engines: tuple[str, ...] = ()       # motor configuration names, in GIANTS' order (1-based)
 
 
 @dataclass(frozen=True)

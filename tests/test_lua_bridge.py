@@ -1359,6 +1359,70 @@ class Lua51BridgeTests(LuaBridgeTests):
     runtime = lua51
 
 
+class BuyTests(unittest.TestCase):
+    """GIANTS' own BuyVehicleData with the buyer's configurations: the hitch option
+    (attacherJoint) and the engine (motor, StoreItemUtil storeItem.configurations["motor"]),
+    each 1-based and only one the store item has; the price is GIANTS' getBuyPrice for
+    those configurations. Stubs only."""
+
+    ENV = r"""
+        local env = { bought = {} }
+        local series9 = { id = 21, name = "Series 9 2019", xmlFilename = "series9.xml",
+            defaultConfigurationIds = { motor = 1, wheel = 2 },
+            configurations = { motor = { { name = "9290 TTV" }, { name = "9310 TTV" }, { name = "9340 TTV" },
+                { name = "9340 TTV Chipped" }, { name = "1000 HP" }, { name = "Boss Hoss", price = 55000 } },
+                attacherJoint = { { name = "Standard" }, { name = "Hitch" } } } }
+        env.g_storeManager = { getItems = function() return { [21] = series9 } end }
+        env.StoreItemUtil = { getIsVehicle = function(item) return true end }
+        env.balance = 1000000
+        env.g_farmManager = { getFarmById = function(_, id) return { getBalance = function() return env.balance end } end }
+        env.g_currentMission = { storeSpawnPlaces = {}, usedStorePlaces = {}, vehicles = {},
+            economyManager = { getBuyPrice = function(_, item, configs)
+                local option = item.configurations.motor[configs.motor]
+                return 200000 + (option and option.price or 0) end } }
+        env.BuyVehicleData = { new = function()
+            local d = {}
+            function d:setStoreItem(item) self.item = item end
+            function d:setConfigurations(c) self.configs = c end
+            function d:setOwnerFarmId(f) self.farm = f end
+            function d:setPrice(p) self.price = p end
+            function d:buy() env.bought[#env.bought + 1] = self end
+            return d end }
+        return env
+    """
+
+    def setUp(self):
+        self.lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        self.bridge = self.lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        self.start = self.lua.eval("""function(B, env, hitch, engine)
+            local spec = { op = 'buy', item = 21, hitch = hitch, engine = engine, farmId = 1,
+                           owned = function() return true end }
+            local task, code = B.start(env, spec)
+            return task, code end""")
+
+    def test_the_engine_and_hitch_options_are_giants_configurations_and_priced_by_giants(self):
+        env = self.lua.execute(self.ENV)
+        task, code = self.start(self.bridge, env, 2, 6)
+        self.assertIsNotNone(task, code)
+        data = env.bought[1]
+        self.assertEqual((data.configs.motor, data.configs.attacherJoint, data.configs.wheel), (6, 2, 2))
+        self.assertEqual(data.price, 255000)
+        env = self.lua.execute(self.ENV)
+        task, code = self.start(self.bridge, env, 0, 0)                   # the defaults
+        self.assertEqual((env.bought[1].configs.motor, env.bought[1].configs.attacherJoint), (1, None))
+
+    def test_an_option_the_item_lacks_or_the_engine_price_unpaid_buys_nothing(self):
+        for hitch, engine, balance, reason in ((0, 9, 1e6, "UNKNOWN_CONFIGURATION"), (3, 0, 1e6, "UNKNOWN_CONFIGURATION"),
+                                               (0, 6, 240000, "NOT_ENOUGH_MONEY")):
+            with self.subTest(reason=reason, engine=engine):
+                env = self.lua.execute(self.ENV)
+                env.balance = balance
+                task, code = self.start(self.bridge, env, hitch, engine)
+                self.assertIsNone(task)
+                self.assertEqual(code, reason)
+                self.assertEqual(len(env.bought), 0)
+
+
 class SaveTests(unittest.TestCase):
     """The game's own save; complete only once GIANTS' saveSavegame ran to its end."""
 
