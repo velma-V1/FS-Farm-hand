@@ -1537,6 +1537,21 @@ class MovePairTests(unittest.TestCase):
         root = world.items["t1"].ai_root
         self.assertAlmostEqual(math.dist((root.x, root.z), BARN.position), PLACE_STANDOFF_M, places=6)
 
+    def test_the_buildings_of_one_yard_are_one_place(self):
+        # Live FourFields save 2 (2026-10-21): "the farm" names the Farm Barn and the Farm Silo,
+        # 44 m apart in one farmyard: that yard, at the building nearest its middle. Buildings
+        # spread across the map stay ambiguous.
+        from companion.executor import resolve_place
+        barn = Destination("place-a", (890.0, 823.0), "Farm Barn")
+        silo = Destination("place-b", (896.0, 867.0), "Farm Silo")
+        house = Destination("place-c", (884.0, 774.0), "Farmhouse 4")
+        target, failure = resolve_place("farm", (), (house, silo, barn))
+        self.assertIsNone(failure)
+        self.assertIn(target.building, (barn, silo))
+        self.assertEqual(resolve_place("farm", (), (house, barn, silo))[0].building, target.building)   # any order
+        far = Destination("place-d", (-600.0, 300.0), "Farm Shop")
+        self.assertEqual(resolve_place("farm", (), (barn, silo, far)), (None, "DESTINATION_AMBIGUOUS"))
+
     def test_unknown_ambiguous_or_marker_only_places_block_before_reservation(self):
         second_barn = Destination("place-2", (10.0, 10.0), "Pig Barn")
         marker_only = Destination("m-1", (5.0, 5.0), "Yard")

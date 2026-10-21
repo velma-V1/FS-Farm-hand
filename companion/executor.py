@@ -36,6 +36,7 @@ DELIVERY_STANDOFF_M = 10.0
 # A named building is a destination without AutoDrive: GOTO stops this far short of
 # its root node (its centre, which is inside it), facing it. Provisional.
 PLACE_STANDOFF_M = 15.0
+YARD_M = 150.0                    # buildings matching the words this close together are one place
 TRACTOR_ARRIVAL_TOLERANCE_M = 3.0
 # A loaded transport no installed driver moves (cargo belted on its trailer: GIANTS GOTO blocked,
 # live d14230aa9fb24d30-3; AutoDrive waits on it as traffic, live 831d6868b9df40b0-1) is driven
@@ -205,6 +206,13 @@ def resolve_place(name: str, markers, buildings) -> tuple[PlaceTarget | None, st
              and d.name and _normalized_name(d.name) == wanted]
     containing = [b for b in buildings if isinstance(b, Destination) and isinstance(b.name, str)
                   and words and all(w in _normalized_name(b.name).split() for w in words)]
+    if len(containing) > 1:
+        # The buildings of one yard ("the farm": its barn and its silo) are one place: the one
+        # nearest their middle (ties by name). Spread across the map: ambiguous.
+        spots = [b for b in containing if valid_position(b.position)]
+        if len(spots) == len(containing) and max(math.dist(a.position, b.position) for a in spots for b in spots) <= YARD_M:
+            mid = (sum(b.position[0] for b in spots) / len(spots), sum(b.position[1] for b in spots) / len(spots))
+            containing = [min(spots, key=lambda b: (round(math.dist(b.position, mid), 3), b.name, b.id))]
     if len(exact) > 1 or len(containing) > 1:
         return None, "DESTINATION_AMBIGUOUS"
     marker = exact[0] if exact and valid_position(exact[0].position) else None
