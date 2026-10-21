@@ -266,8 +266,9 @@ Executable mapping (`python scripts/check.py`):
   hopper leave forward whole; the exit within the cap; already in the open refused;
   a low beam, a pallet, a tree or a parked body in the swept path refused before
   motion, a beam above the rig and margin passed; the whole rig's width and height
-  checked; a tight bay, a vehicle root or the player near the line, cargo touching the
-  rig refused; a query that cannot prove itself (count, own body, terrain, flags,
+  checked; a tight bay, a vehicle root ahead of it or the player on any side near the
+  line, cargo touching the rig refused, a vehicle parked beside or behind it passed by
+  its body; a query that cannot prove itself (count, own body, terrain, flags,
   reachability unknown) never clear; seated, moving, AI, unreserved, articulated,
   unknown size and a crooked rig refused unmoved; stops on takeover, seating,
   reservation, AI, stall, drift, the player, an obstacle ahead, the rig changing,

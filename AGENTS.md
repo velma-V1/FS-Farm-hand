@@ -62,7 +62,11 @@ have precedence; report conflicts instead of silently changing the scope.
      excluded, and an unreadable query is never clear. While moving it re-checks past
      the leading end (at least 2 m, more with speed) and keeps PULL_CLEAR's guards
      (takeover, player, vehicles, reservation, divergence, stall, timeout) and stops on
-     any change of the rig. It ends braked and at rest only where the whole rig is out
+     any change of the rig. One difference (the user, 2026-10-20, after the Open Hall
+     live run): PULL_CLEAR's 8 m / 6 m vehicle-root clearance applies to vehicles ahead
+     of the rig's leading end in the direction of travel; one beside or behind is
+     checked by its body with the margin and stops it if it moves; the player keeps
+     6 m / 4 m on every side. It ends braked and at rest only where the whole rig is out
      from under any roof with 1.5 m clear all round and GIANTS' navigation map takes
      the ground ahead; every exit restores the temporary vehicle-control state. Then
      GIANTS gets the original target once, which must move it, else

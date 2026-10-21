@@ -427,6 +427,29 @@ class LuaUnparkTests(unittest.TestCase):
         w.player.x, w.player.z = w.steer.x + 10 * math.sin(w.yaw), w.steer.z + 10 * math.cos(w.yaw)
         self.assert_refused(w, "UNPARK_PERSON")
 
+    def test_a_vehicle_parked_beside_or_behind_counts_only_by_its_body(self):
+        # Live bc8307516e994d85-1: the PROLANDER's root 5.6 m beside the 7R in the Open Hall.
+        # The user, 2026-10-20: the 8 m clearance only for vehicles ahead of the leading end.
+        for name, (a, l) in {"beside": (0.0, 5.6), "behind": (-8.0, 0.0)}.items():
+            with self.subTest(name):
+                w = self.world()
+                w.shed(-12, 6, 8, 4.5)
+                w.vehicle(a, l, 4.0, 2.4)
+                session, code, along, _ = self.extract(w)
+                self.assertEqual(code, "CLEAR", self.hitch.describeUnpark(session))
+                self.assertGreater(along, 8.5)
+        w = self.world()
+        w.shed(-12, 6, 8, 4.5)
+        w.vehicle(0.0, 2.8, 4.0, 2.4)                             # its body inside the path's margin
+        self.assert_refused(w, "UNPARK_TOO_TIGHT")
+
+    def test_the_player_keeps_the_distance_on_every_side(self):
+        w = self.world()
+        w.shed(-12, 6, 8, 4.5)
+        s, c = math.sin(w.yaw), math.cos(w.yaw)
+        w.player.x, w.player.z = w.steer.x + 5.0 * c, w.steer.z - 5.0 * s     # 5 m to its side
+        self.assert_refused(w, "UNPARK_PERSON")
+
     def test_cargo_or_a_wall_touching_the_rig_where_it_stands_is_refused(self):
         w = self.world(size=TRUCK, trailer=HOPPER)
         w.shed(-16, 4, 4, 5.0)

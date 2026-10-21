@@ -1447,6 +1447,21 @@ local function unparkPoints(s, d)
     return { { d, 0 }, { s.lead + d, (s.lMin + s.lMax) / 2 } }
 end
 
+-- PULL_CLEAR's guards for the rig moved `d` along the line, with one difference (the user,
+-- 2026-10-20, after live bc8307516e994d85-1: the PROLANDER's root 5.6 m beside the 7R in
+-- the Open Hall): another vehicle's root counts only once it is ahead of the rig's leading
+-- end in the direction of travel. One beside or behind is checked by its body (the swept
+-- volume's collision query with the margin, again every frame) and stops it if it moves.
+-- The player counts on every side. nil, "OTHER_VEHICLE_NEAR" or "PERSON_TOO_CLOSE".
+local function unparkConflict(s, d, vehicleM, playerM)
+    local front = s.lead + d
+    local ahead = { others = {}, player = s.player }
+    for _, other in ipairs(s.others) do
+        if s.sign * (other.x - front) > 0 then ahead.others[#ahead.others + 1] = other end
+    end
+    return pullConflict(ahead, unparkPoints(s, d), vehicleM, playerM)
+end
+
 -- One direction (sign 1 forward, -1 back): the nearest exit along the line, or why there
 -- is none. Every slab from the rig's far end to the exit is clear with the lateral margin.
 local function planUnpark(env, s, sign)
@@ -1466,8 +1481,7 @@ local function planUnpark(env, s, sign)
                                  U.floorClearanceM, top, s.masks.obstacles)
         if bad == "UNKNOWN" then return { why = "UNPARK_QUERY_UNKNOWN" } end
         if bad ~= nil then return { why = "UNPARK_EXIT_BLOCKED", at = nd, names = names } end
-        local conflict = pullConflict(s, unparkPoints(s, sign * nd), Hitch.LOCAL.vehicleClearanceM,
-                                      Hitch.LOCAL.playerClearanceM)
+        local conflict = unparkConflict(s, sign * nd, Hitch.LOCAL.vehicleClearanceM, Hitch.LOCAL.playerClearanceM)
         if conflict == "OTHER_VEHICLE_NEAR" then return { why = "UNPARK_BLOCKED", at = nd } end
         if conflict == "PERSON_TOO_CLOSE" then return { why = "UNPARK_PERSON", at = nd } end
         local open = openAt(env, s, sign * nd)
@@ -1623,7 +1637,7 @@ local function unparkDrive(env, s, dt)
     end
     local others, player = surroundings(env, s)
     s.others, s.player = others, player
-    local bad = pullConflict(s, unparkPoints(s, along), Hitch.LOCAL.vehicleStopM, Hitch.LOCAL.playerStopM)
+    local bad = unparkConflict(s, along, Hitch.LOCAL.vehicleStopM, Hitch.LOCAL.playerStopM)
     if bad ~= nil then return bad end
     if progress >= s.exitM then
         -- At the exit: confirmed in the open from fresh queries, else nothing more.
