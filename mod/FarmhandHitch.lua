@@ -1511,7 +1511,10 @@ function Hitch.newUnpark(env, args)
         Hitch.watchDriver(env, tractor)
         local denied = unparkAuthority(s)
         if denied ~= nil then return denied end
-        if tractor.spec_articulatedAxis ~= nil then return "UNPARK_ARTICULATED_UNSUPPORTED" end
+        -- Articulated steering only with a componentJoint (ArticulatedAxis onPostLoad 233-241;
+        -- live 758c6fbfdbf94125-2: the 7R and the X8 carry the spec without one).
+        local axis = tractor.spec_articulatedAxis
+        if axis ~= nil and axis.componentJoint ~= nil then return "UNPARK_ARTICULATED_UNSUPPORTED" end
         local node = tractor:getAISteeringNode()
         local ox, _, oz = world(env, node)
         local fx, _, fz = env.localDirectionToWorld(node, 0, 0, 1)

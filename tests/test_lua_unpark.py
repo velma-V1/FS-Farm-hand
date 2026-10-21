@@ -465,7 +465,8 @@ class LuaUnparkTests(unittest.TestCase):
             (lambda w: setattr(w, "speed", 2.0), "NOT_STOPPED"),
             (lambda w: setattr(w, "ai", True), "AI_ACTIVE"),
             (lambda w: setattr(w, "reserved", False), "RESERVATION_LOST"),
-            (lambda w: setattr(w.tractor, "spec_articulatedAxis", self.lua.table()), "UNPARK_ARTICULATED_UNSUPPORTED"),
+            (lambda w: setattr(w.tractor, "spec_articulatedAxis", self.lua.table(componentJoint=self.lua.table())),
+             "UNPARK_ARTICULATED_UNSUPPORTED"),
             (lambda w: setattr(w.tractor.size, "height", None), "UNPARK_GEOMETRY_UNKNOWN"),
         ]
         for setup, reason in cases:
@@ -474,6 +475,13 @@ class LuaUnparkTests(unittest.TestCase):
                 w.shed(-9, 6, 4, 4.5)
                 setup(w)
                 self.assert_refused(w, reason)
+
+    def test_a_rigid_tractor_carrying_the_articulated_spec_is_not_refused(self):
+        # Live 758c6fbfdbf94125-2: the 7R and the X8 have spec_articulatedAxis, no componentJoint.
+        w = self.world()
+        w.shed(-9, 6, 4, 4.5)
+        w.tractor.spec_articulatedAxis = self.lua.table()
+        self.assertEqual(self.extract(w)[1], "CLEAR")
 
     def test_a_rig_that_is_not_straight_is_refused(self):
         w = self.world(size=TRUCK, trailer=dict(HOPPER, turn=0.3))
