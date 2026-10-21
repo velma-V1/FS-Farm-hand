@@ -174,6 +174,21 @@ class Job:
     stop_sent: bool = False       # at most one requester stop per job
     states: tuple = ()            # the executor's result: states entered, equipment used
     equipment: tuple = ()
+    command: str | None = None    # the job command (JOBS key)
+
+
+# Goals that are kept when they do not complete (stopped, taken over, blocked, failed):
+# "continue" re-plans them from the observed state; their ``work`` carries the progress
+# (a haul's observed delivery, a sequence's completed steps), so nothing done repeats.
+GOALS = frozenset({"haul_tractor", "sequence"})
+
+
+@dataclass
+class Kept:
+    command: str
+    target: object
+    implement: str | None
+    work: dict
 
 
 class Coordinator:
@@ -193,6 +208,8 @@ class Coordinator:
         # The request id of the executor job running now: a plan's step reserves under its
         # own id, and STOP must pre-empt that reservation's running bridge operation.
         self.running: str | None = None
+        self.kept: Kept | None = None             # the goal "continue" resumes
+        self._then = None                         # a destination to resume with once this job ends
 
     @property
     def busy(self) -> bool:
@@ -213,6 +230,10 @@ class Coordinator:
             self.notify(self.status(), spoken)
         elif command == "unsupported":                 # understood: say exactly what is missing
             self.notify(token(f"UNSUPPORTED_{proposal['reason'].upper()}"), spoken)
+        elif command == "resume":
+            return self.resume(spoken)
+        elif command == "retarget":
+            return self.retarget(proposal["target"], spoken)
         else:
             work = ({"field": proposal["field"], "operations": proposal["operations"],
                      "area_m2": proposal.get("area_m2"), "over_crop": proposal.get("over_crop", False)}
@@ -281,7 +302,7 @@ class Coordinator:
                 busy = False
                 self._jobs += 1
                 self._cancel = threading.Event()
-                self.current = Job(self._jobs, f"{self.session()}-{self._jobs}", spoken=spoken)
+                self.current = Job(self._jobs, f"{self.session()}-{self._jobs}", spoken=spoken, command=command)
                 job, cancel = self.current, self._cancel
         if busy:
             self.notify("BUSY", spoken)
@@ -335,16 +356,79 @@ class Coordinator:
         finally:
             self.world.cancel = None
             self.running = None
+            then = None
             with self._lock:
                 self.current, self.last = None, job
-            self.notify(result_notice(job.state, job.reason or "", complete), job.spoken)
+                if command in GOALS:
+                    self.kept = None if job.state == "COMPLETE" else Kept(command, target, implement, work)
+                then, self._then = self._then, None
+            notice = result_notice(job.state, job.reason or "", complete)
+            if command in GOALS and job.state != "COMPLETE" and then is None:
+                notice = "PAUSED" if job.state == "CANCELLED" else notice
+            self.notify(notice, job.spoken)
+            if then is not None and self.kept is not None:
+                self._retarget_kept(then)
+                self.resume(job.spoken)
+
+    # ---------------------------------------------------------- resume / retarget
+    def resume(self, spoken: bool = False) -> Job | None:
+        """Continue the kept goal from the observed state (nothing completed repeats)."""
+        with self._lock:
+            kept, busy = self.kept, self.current is not None
+        if busy:
+            self.notify("BUSY", spoken)
+            return None
+        if kept is None:
+            self.notify("NOTHING_TO_RESUME", spoken)
+            return None
+        log.info("resuming %s to %s with %s", kept.command, kept.target, kept.work)
+        self.notify("RESUMING", spoken)
+        return self.start(kept.command, kept.target, spoken, kept.implement, kept.work)
+
+    def retarget(self, target, spoken: bool = False) -> Job | None:
+        """A new destination for the goal: a running one is stopped and resumed with it
+        once its stop is confirmed; a kept one is resumed with it."""
+        with self._lock:
+            job = self.current
+            running_goal = job is not None and job.command in GOALS
+            if running_goal:
+                self._then = target
+        if running_goal:
+            self.notify("RETARGETED", spoken)
+            self.stop(spoken)
+            return None
+        if job is not None:
+            self.notify("BUSY", spoken)
+            return None
+        if self.kept is None:
+            self.notify("NOTHING_TO_RESUME", spoken)
+            return None
+        self._retarget_kept(target)
+        self.notify("RETARGETED", spoken)
+        return self.resume(spoken)
+
+    def _retarget_kept(self, target) -> None:
+        kept = self.kept
+        kept.target = target
+        if kept.command == "haul_tractor":
+            kept.work["target"] = target
+            kept.work["delivered"] = False          # delivered somewhere else: deliver again
+        elif kept.command == "sequence":
+            for n, step in enumerate(kept.work["steps"]):
+                if n >= kept.work.get("done", 0) and step["command"] in ("move_pair", "fetch_pair"):
+                    step["target"] = target
+        log.info("goal %s retargeted to %s", kept.command, target)
 
     def _sequence(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """The player's commands in order, one job: each step starts only after the one
         before it completed (COMPLETE, from its own verification) and only if not cancelled;
         the first that did not complete ends it with its own result."""
         states, used = [], []
+        work.setdefault("done", 0)                # kept with the goal: a resume starts after these
         for n, step in enumerate(work["steps"], 1):
+            if n <= work["done"]:
+                states.append(f"{step['command']}:ALREADY_DONE")
+                continue
             if cancel.is_set():
                 return Result("CANCELLED", "CANCELLED_BY_REQUESTER", tuple(used), tuple(states))
             command = step["command"]
@@ -370,6 +454,7 @@ class Coordinator:
             log.info("job %d step %d %s result %s %s", job.number, n, command, result.status, result.reason)
             if result.status != "COMPLETE":
                 return Result(result.status, result.reason, tuple(used), tuple(states))
+            work["done"] = n
         return Result("COMPLETE", "SEQUENCE_DONE", tuple(used), tuple(states))
 
     MAX_HAUL_STEPS = 8
@@ -382,12 +467,13 @@ class Coordinator:
         only after this goal's delivery step completed (AGENTS.md: never because the rig
         stopped). The first step not complete ends it with that step's result."""
         name, target = work.get("tractor_name"), work["target"]
-        states, used, delivered = [], [], False
+        states, used = [], []
+        work.setdefault("delivered", False)       # kept with the goal: a resume never unloads early
         for n in range(1, self.MAX_HAUL_STEPS + 1):
             if cancel.is_set():
                 return Result("CANCELLED", "CANCELLED_BY_REQUESTER", tuple(used), tuple(states))
             self._settle()
-            step, failure = haul_step(tuple(self.world.snapshot()), self.farm(), name, target, delivered)
+            step, failure = haul_step(tuple(self.world.snapshot()), self.farm(), name, target, work["delivered"])
             if step is None:
                 if failure == "HAULED":
                     return Result("COMPLETE", "HAULED_AND_UNLOADED", tuple(used), tuple(states))
@@ -402,7 +488,9 @@ class Coordinator:
             if result.status != "COMPLETE":
                 return Result(result.status, result.reason, tuple(used), tuple(states))
             if step["task"] == "move_pair":
-                delivered = True                  # observed arrival (DELIVERY_OBSERVED): unloading may follow
+                work["delivered"] = True          # observed arrival (DELIVERY_OBSERVED): unloading may follow
+            elif step["task"] == "unload_tractor":
+                return Result("COMPLETE", "HAULED_AND_UNLOADED", tuple(used), tuple(states))
         return Result("FAILED", "HAUL_PLAN_TOO_LONG", tuple(used), tuple(states))
 
     def _buy(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:

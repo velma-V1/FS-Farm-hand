@@ -504,5 +504,147 @@ class HaulGoalTests(unittest.TestCase):
         self.assertEqual(haul_step(items, "farm-a", None, target, False)[0]["task"], "move_pair")   # "the tractor"
 
 
+class ResumeTests(unittest.TestCase):
+    """Pause, takeover, a changed destination and resume keep the goal; nothing completed
+    repeats (BUILD_SPEC completion plan requirement 4; ACCEPTANCE C5-C7)."""
+
+    def coordinator(self, world, interrupt):
+        """The real executor, except where ``interrupt(intent, cancel)`` returns a Result."""
+        import threading
+        from companion import coordinator as coordination
+        executor = Executor(world)
+        ran = []
+
+        class Wrapped:
+            def execute(self, intent, cancel=None, on_state=None, job=None):
+                ran.append(intent)
+                early = interrupt(intent, cancel)
+                if early is not None:
+                    return early
+                return executor.execute(intent, cancel=cancel, on_state=on_state, job=job)
+
+        world.cancel = None
+        world.retained = lambda: ()
+        world.reservation = lambda owner: None
+        notices = []
+        c = coordination.Coordinator(world, Wrapped(), lambda n, s=False: notices.append(n), lambda: "farm-a",
+                                     lambda: "s1")
+        self.patch = unittest.mock.patch.object(coordination.Coordinator, "SETTLE_S", 0.0)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        return c, ran, notices, threading
+
+    def haul(self, c, words="Take the Deutz to field 3 and unload it"):
+        from companion.language import RuleInterpreter
+        c.submit(RuleInterpreter().interpret(words))
+
+    def wait_idle(self, c):
+        import time
+        for _ in range(300):
+            c.wait(1)
+            if not c.busy:
+                time.sleep(0.05)
+                if not c.busy:
+                    return
+        self.fail("still busy")
+
+    def test_stop_pauses_the_goal_and_continue_finishes_it_without_repeating(self):
+        from protocol.model import Result
+        world, truck, deck, series9 = haul_world(loaded=True)
+        first = {"move": True}
+
+        def interrupt(intent, cancel):
+            if intent["task"] == "move_pair" and first["move"]:
+                first["move"] = False
+                return Result("CANCELLED", "CANCELLED_BY_REQUESTER", (truck.id, deck.id), ("FIND", "RESERVE", "DELIVER"))
+            return None
+
+        c, ran, notices, _ = self.coordinator(world, interrupt)
+        self.haul(c)
+        self.wait_idle(c)
+        self.assertEqual(c.last.state, "CANCELLED")
+        self.assertEqual(notices[-1], "PAUSED")
+        self.assertIsNotNone(c.kept)
+        self.assertEqual(world.items[series9.id].belted_to, deck.id)        # never unloaded on a stop
+        ran.clear()
+        c.resume()
+        self.wait_idle(c)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), c.last.states)
+        self.assertEqual([i["task"] for i in ran], ["move_pair", "unload_tractor"])
+        self.assertIsNone(c.kept)
+        self.assertIn("RESUMING", notices)
+
+    def test_a_takeover_pauses_and_continue_resumes_from_the_observed_state(self):
+        from protocol.model import Result
+        world, truck, deck, series9 = haul_world(hitched=True)
+        taken = {"done": False}
+
+        def interrupt(intent, cancel):
+            if intent["task"] == "load_tractor" and not taken["done"]:
+                taken["done"] = True
+                return Result("FAILED", "DRIVER_TOOK_OVER", (series9.id, deck.id), ("FIND", "RESERVE", "RAMPS_DOWN"))
+            return None
+
+        c, ran, notices, _ = self.coordinator(world, interrupt)
+        self.haul(c)
+        self.wait_idle(c)
+        self.assertEqual((c.last.state, c.last.reason), ("FAILED", "DRIVER_TOOK_OVER"))
+        self.assertIsNotNone(c.kept)
+        ran.clear()
+        c.submit({"version": 1, "command": "resume"})
+        self.wait_idle(c)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), c.last.states)
+        self.assertEqual([i["task"] for i in ran], ["load_tractor", "move_pair", "unload_tractor"])
+
+    def test_a_new_destination_while_driving_stops_and_carries_on_there(self):
+        from protocol.model import Destination, Result
+        world, truck, deck, series9 = haul_world(loaded=True)
+        world.destination_map = {**world.destination_map, "m-2": Destination("m-2", (-600.0, 300.0), "Field 2")}
+        started = []
+
+        def interrupt(intent, cancel):
+            if intent["task"] == "move_pair" and not started:
+                started.append(intent["target"])
+                cancel.wait(5)                          # driving until the stop arrives
+                return Result("CANCELLED", "CANCELLED_BY_REQUESTER", (truck.id, deck.id), ("FIND", "RESERVE", "DELIVER"))
+            return None
+
+        c, ran, notices, threading = self.coordinator(world, interrupt)
+        self.haul(c)
+        for _ in range(100):
+            if started:
+                break
+            c.wait(0.05)
+        c.submit({"version": 1, "command": "retarget", "target": {"type": "field_entrance", "field": 2}})
+        self.wait_idle(c)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), c.last.states)
+        self.assertLess(math.dist(world.items[deck.id].position, (-600.0, 300.0)), 1.0)    # field 2, not 3
+        self.assertEqual([i["task"] for i in ran], ["move_pair", "move_pair", "unload_tractor"])
+        self.assertEqual(ran[1]["target"], {"type": "field_entrance", "field": 2})
+        self.assertIn("RETARGETED", notices)
+
+    def test_a_new_destination_for_a_kept_goal_and_nothing_to_continue(self):
+        from protocol.model import Destination, Result
+        world, truck, deck, series9 = haul_world(loaded=True)
+        world.destination_map = {**world.destination_map, "m-2": Destination("m-2", (-600.0, 300.0), "Field 2")}
+        once = {"stop": True}
+
+        def interrupt(intent, cancel):
+            if intent["task"] == "move_pair" and once["stop"]:
+                once["stop"] = False
+                return Result("CANCELLED", "CANCELLED_BY_REQUESTER", (truck.id, deck.id), ("FIND",))
+            return None
+
+        c, ran, notices, _ = self.coordinator(world, interrupt)
+        c.submit({"version": 1, "command": "resume"})
+        self.assertEqual(notices[-1], "NOTHING_TO_RESUME")
+        self.haul(c)
+        self.wait_idle(c)
+        c.submit({"version": 1, "command": "retarget", "target": {"type": "field_entrance", "field": 2}})
+        self.wait_idle(c)
+        self.assertEqual(c.last.reason, "HAULED_AND_UNLOADED", c.last.states)
+        self.assertLess(math.dist(world.items[deck.id].position, (-600.0, 300.0)), 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

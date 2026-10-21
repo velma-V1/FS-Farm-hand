@@ -467,9 +467,9 @@ never imply live qualification, and one live combination never implies others.
 | C2 | The same from a partly completed state (already hitched / already loaded and belted / ramps left down): completed steps never repeated | `test_transport.HaulGoalTests.test_from_partly_done_states_nothing_completed_is_repeated` | pending |
 | C3 | A loaded rig is never sent by GIANTS GOTO; without an AutoDrive route the job is kept and the gap named | `test_transport.TractorTransportTests.test_a_loaded_rig_is_never_sent_by_giants_goto` (refusal only) | refusal cause observed d14230aa9fb24d30-3 |
 | C4 | Unloading only after observed arrival at the destination; a stop, cancel, takeover or failure never unloads | `test_transport.HaulGoalTests.test_no_unload_without_the_observed_arrival` (failure case) | pending |
-| C5 | A destination changed during the job ("take it to field 2 instead") replaces the kept goal's destination; nothing completed repeats | pending | pending |
-| C6 | Player takeover pauses the goal; "continue" resumes from the observed state | pending | pending |
-| C7 | STOP pre-empts the running step of a plan, the goal kept for "continue" | `test_transport.SequenceTests.test_stop_preempts_the_running_steps_own_reservation` (pre-emption only) | pending |
+| C5 | A destination changed during the job ("take it to field 2 instead") replaces the kept goal's destination; nothing completed repeats | `test_transport.ResumeTests.test_a_new_destination_while_driving_stops_and_carries_on_there`, `..._for_a_kept_goal_and_nothing_to_continue` | pending |
+| C6 | Player takeover pauses the goal; "continue" resumes from the observed state | `test_transport.ResumeTests.test_a_takeover_pauses_and_continue_resumes_from_the_observed_state` (takeover as the step's DRIVER_TOOK_OVER result) | pending |
+| C7 | STOP pre-empts the running step of a plan, the goal kept for "continue" | `test_transport.SequenceTests.test_stop_preempts_the_running_steps_own_reservation`, `ResumeTests.test_stop_pauses_the_goal_and_continue_finishes_it_without_repeating` | pending |
 | C8 | After a reload or companion restart the kept goal is reconciled with the world, equipment re-identified, no purchase repeated | pending | pending |
 | C9 | Vehicles by brand and nickname ("the Deutz"); "it", "that trailer", "take it back" resolve to the goal's own equipment | brand: `test_procurement.NamedPairTests.test_only_the_named_vehicles_are_chosen` | brand: pending (gap seen d14230aa9fb24d30-1) |
 | C10 | Progress notices and STATUS from observed state only | pending | pending |

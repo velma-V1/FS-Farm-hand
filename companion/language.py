@@ -169,6 +169,11 @@ TEST_AREA_M2 = 400        # "a small area of field 7": about a minute of work fo
 # tractor to the forage wagon then take it to the barn" is one fetch).
 _COVERS = {"fetch_pair": {"hitch_pair", "fetch_pair", "move_pair"}, "buy": {"buy"},
            "load_tractor": {"load_tractor"}, "field_work": {"field_work"}}
+# Continue the kept goal; a new destination for it.
+_RESUME = re.compile(r"(?:please\s+)?(?:continue|resume|carry on|keep going|go on|go ahead|pick up where you left off"
+                     r"|finish (?:it|the job))(?:\s+(?:please|the job|with it|now))?")
+_INSTEAD = re.compile(r"^(?:no\s+|actually\s+|wait\s+)?(?:(?:(?:take|bring|deliver|move|haul|send|drive)\s+(?:it|them|everything|the tractor|the rig|the truck)\s+|go\s+)(to\s+.+?)\s+instead"
+                      r"|change\s+(?:the\s+)?destination\s+(to\s+.+?))$")
 # "... and unload it (there)": the end of a haul goal.
 _UNLOAD_TAIL = re.compile(r"\s+(?:and\s+)?(?:then\s+)?unload\s+(?:it|him|that|the tractor)(?:\s+there)?$")
 # Clause breaks of a sequence: commas, "then", "and then", ", and", semicolons.
@@ -366,6 +371,16 @@ class RuleInterpreter:
         # Several commands in one go win over one reading of the whole sentence (live words
         # of the final acceptance request read as a single fetch); a clause not understood
         # leaves the whole sentence to the single reading ("buy a plow, the gmc truck ...").
+        words = normalize(text)
+        if _RESUME.fullmatch(words):
+            return {"version": 1, "command": "resume"}
+        instead = _INSTEAD.match(words)
+        if instead is not None:
+            place = instead.group(1) or instead.group(2)
+            target = self._target(place, place)
+            if target and target != _EQUIPMENT_TARGET:
+                return {"version": 1, "command": "retarget", **target}
+            return None
         haul = self._haul(text)
         if haul is not None:
             return haul
