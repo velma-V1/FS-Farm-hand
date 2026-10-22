@@ -278,7 +278,7 @@ RUN_UP_GAP_M = 8.0
 # behind the ramps' foot and this close to the axis LOAD steers onto it itself.
 RUN_IN_M, MIN_RUN_IN_M = 12.0, 4.0
 LATERAL_RUN_IN_M = 2.5
-HEADING_RUN_IN_RAD = math.radians(20.0)
+HEADING_RUN_IN_RAD = math.radians(25.0)
 DECK_SLACK_M = 0.25              # = the mod's UNLOAD_NOT_ON_DECK slack
 DECK_LATERAL_M = 0.75            # a tractor centred on the deck within this
 

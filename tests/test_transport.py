@@ -248,6 +248,29 @@ class TractorTransportTests(unittest.TestCase):
             else:                              # in LOAD's run-in: LOAD lines it up itself
                 self.assertEqual(len(world.aims), 1)
 
+    def test_a_run_up_ending_turned_towards_the_axis_is_left_to_the_run_in(self):
+        # Live 3389dfbd1b564660-1: GIANTS' run-up GOTO ended on position alone, the Series 9
+        # 1.6 m off and 18.4 deg turned (heading for the axis); the near aims then stalled
+        # 90 s each. Inside LOAD's run-in (25 deg): LOAD steers it on, no further aim.
+        from companion import hitch as transport
+
+        class Turned(MockWorld):
+            def navigate(self, tractor_id, pose, owner):
+                self.aims = getattr(self, "aims", []) + [pose]
+                super().navigate(tractor_id, pose, owner)
+                t = self.items[tractor_id]
+                yaw = pose.yaw + math.radians(18.4)
+                lx, lz = math.cos(pose.yaw) * -1.6, -math.sin(pose.yaw) * -1.6
+                self.items[tractor_id] = replace(t, position=(t.position[0] + lx, t.position[1] + lz), heading=yaw,
+                                                 ai_root=Pose(t.position[0] + lx, t.position[1] + lz, yaw))
+
+        world, tractor, deck, _ = transport_world(cls=Turned)
+        result = Executor(world).execute(load())
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+        self.assertEqual(len(world.aims), 1)
+        self.assertNotIn("BACKOFF", result.states)
+        self.assertAlmostEqual(transport.HEADING_RUN_IN_RAD, math.radians(25.0))
+
     def test_a_tractor_stuck_right_behind_the_ramps_backs_off_and_runs_up_again(self):
         # Live 49b5344a47ec418a-1: the Series 9 + plow left at the ramps, turned; GIANTS
         # BLOCKED_AT_START there, UNPARK refused (in the open): BACKOFF 8 m, then the run-up.

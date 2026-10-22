@@ -103,7 +103,9 @@ have precedence; report conflicts instead of silently changing the scope.
        read 4.14 km/h over the 3 km/h cap: not qualified; requalification pending.
      - Run-in (the user, 2026-10-21, "figure this out"; that instruction authorizes trying it,
        it is not evidence that it is safe): LOAD may start up to 12 m behind the ramps' foot,
-       within 2.5 m and 20 degrees of the axis, steering onto the axis with driveToPoint;
+       within 2.5 m and 25 degrees of the axis, steering onto the axis with driveToPoint
+       (20 until live 3389dfbd1b564660-1, where GIANTS' run-up left the Series 9 18.4 degrees
+       turned; widened by Farmhand under the same instruction, not by the user);
        its corridor is swept wide from where it stands to the ramps' foot and the rig's own
        straight width on the ramps and deck; at the foot it must be inside the start window
        (0.5 m, 5 degrees) or it stops there braked (NOT_LINED_UP_AT_RAMPS). Geometry assumed:
@@ -155,10 +157,12 @@ have precedence; report conflicts instead of silently changing the scope.
 - Motion speed (the user, 2026-10-22: the 4.14 km/h LOAD reading broke the 3 km/h cap).
   Every self-driven motion above has its session's limit (3 km/h, ALIGN/LOCAL at most 5 by
   argument, default 3); driveToPoint's maxSpeed is only GIANTS' motor target, so Farmhand
-  measures the speed itself (the root's travel over the last 0.25 s) and governs it: it
-  commands 85 % of the limit (never under 1 km/h), takes the throttle off above 90 %, brakes a
-  frame above 97 %, and above the limit ends the motion braked (OVERSPEED, latched, never
-  retried by itself); GIANTS' own reading is logged beside it with a speed trace. The limit is
+  measures the speed itself (the root's travel over the last 0.25 s) and governs it on the
+  higher of that and GIANTS' own per-frame reading: it commands 85 % of the limit (never under
+  1 km/h), throttles in proportion to the margin left under a ceiling eased in from 0.3 to full
+  over 1.5 s, takes the throttle off above 90 %, brakes a frame above 97 % (downhill above the
+  command), and above the limit ends the motion braked (OVERSPEED, latched, never retried by
+  itself); both readings are logged with a speed trace (every 0.1 s for 2 s, then 0.5 s). The limit is
   never raised to make a run pass, and a run that went over it is not qualified.
 - Motion envelope: while LOAD / UNLOAD, BACKOFF and ALONGSIDE move, every unit of the rig
   (the tractor, a mounted implement, a towed trailer) at its own pose, pitched as it is, is

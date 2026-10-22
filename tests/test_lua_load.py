@@ -413,6 +413,38 @@ class LuaLoadTests(unittest.TestCase):
         self.assertTrue(all(0 < t <= 1 for t in throttles))
         self.assertLess(max(throttles[10:]), 1)                     # never full once moving near the command
 
+    def test_the_throttle_ceiling_eases_in_from_the_start(self):
+        # Live b1d3f6cdc2ca44e3-1: 3.00 km/h (GIANTS 4.25) 0.47 s after starting at a third of the
+        # throttle. However slow it reads, the throttle stays under a ceiling rising from 0.3 to
+        # full over the first 1.5 s.
+        w = self.world()
+        w.stuck = True
+        session, why, _ = self.start(w)
+        self.assertIsNotNone(session, why)
+        for _ in range(40):
+            self.hitch.loadStep(w.env, session, 50)
+        throttles = [d["acc"] for d in self.drives(w) if d["allowed"]]
+        self.assertGreater(len(throttles), 20)
+        S = self.hitch.SPEED
+        for k, t in enumerate(throttles):
+            self.assertLessEqual(t, min(1, S.startThrottle + (1 - S.startThrottle) * k * 50 / S.throttleRampMs) + 1e-9)
+        self.assertLess(throttles[5], 0.6)
+
+    def test_giants_reading_decides_when_it_is_the_higher(self):
+        # The window's average lags an acceleration GIANTS' own reading already shows (live
+        # b1d3f6cdc2ca44e3-1: 3.00 against 4.25): with the root moving at the command but GIANTS
+        # reading 3.2 km/h, it ends OVERSPEED at that reading.
+        w = self.world()
+        session, why, _ = self.start(w)
+        self.assertIsNotNone(session, why)
+        self.lua.execute("""local w = ...
+            local base = w.tractor.getLastSpeed
+            function w.tractor:getLastSpeed() if w.giantsKmh then return w.giantsKmh end return base(self) end""", w)
+        code, _ = self.drive(w, session, hook=lambda i: i == 30 and setattr(w, "giantsKmh", 3.2))
+        self.assertEqual(code, "OVERSPEED", self.hitch.describeSpeed(session))
+        self.assertAlmostEqual(session.overKmh, 3.2)
+        self.assertLessEqual(session.peakKmh, 3.0)
+
     def test_it_coasts_and_brakes_to_stay_under_the_limit(self):
         # The motor overshoots (10 % over what it is told) and the rig keeps 2.95 km/h while not
         # accelerating: Farmhand coasts above 90 % of the limit and brakes above 97 %; it loads

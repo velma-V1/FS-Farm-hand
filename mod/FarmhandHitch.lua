@@ -339,6 +339,10 @@ Hitch.SPEED = { windowMs = 250, commandShare = 0.85, coastShare = 0.9, brakeShar
                 -- 3.05 km/h within 0.5 s): throttleGainKmh of margin is full throttle, never under
                 -- throttleMin; before the first reading, startThrottle.
                 throttleGainKmh = 1.0, throttleMin = 0.15, startThrottle = 0.3,
+                -- The throttle's ceiling eased in from startThrottle to full over throttleRampMs,
+                -- and every decision on the higher of the two readings (live b1d3f6cdc2ca44e3-1:
+                -- at 0.47 s GIANTS read 4.25 km/h while the 0.25 s average still read 3.00).
+                throttleRampMs = 1500,
                 -- The steering target eased in over steerRampMs from straight ahead (live
                 -- b1d3f6cdc2ca44e3-1: LOAD's run-in from 2 m off and 17 deg turned moved 0.21 m in
                 -- the first 0.25 s, 3.00 km/h, GIANTS 4.25, at a third of the throttle), and the
@@ -393,12 +397,16 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
     if reported ~= nil and reported > (s.peakReportedKmh or -1) then
         s.peakReportedKmh, s.peakReportedAlong = reported, s.lastAlong
     end
+    -- The higher reading decides: the window's average lags behind an acceleration that
+    -- GIANTS' per-frame reading already shows.
+    local vc = v
+    if reported ~= nil and (vc == nil or reported > vc) then vc = reported end
     local mode = "drive"
-    if v ~= nil and v > cap then
+    if vc ~= nil and vc > cap then
         mode = "over"
-    elseif v ~= nil and (v > cap * S.brakeShare or (downhill and v > command)) then
+    elseif vc ~= nil and (vc > cap * S.brakeShare or (downhill and vc > command)) then
         mode = "brake"
-    elseif v ~= nil and v > cap * S.coastShare then
+    elseif vc ~= nil and vc > cap * S.coastShare then
         mode = "coast"
     end
     if downhill then s.downhillFrames = (s.downhillFrames or 0) + 1 end
@@ -414,7 +422,7 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
         end
     end
     if mode == "over" then
-        s.overKmh = v
+        s.overKmh = vc
         return "OVERSPEED"
     end
     if mode == "brake" then
@@ -422,8 +430,9 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
     else
         local throttle = 0
         if mode == "drive" then
-            throttle = v == nil and S.startThrottle
-                or math.max(S.throttleMin, math.min(1, (command - v) / S.throttleGainKmh))
+            local ceiling = math.min(1, S.startThrottle + (1 - S.startThrottle) * driven / S.throttleRampMs)
+            throttle = vc == nil and S.startThrottle
+                or math.max(S.throttleMin, math.min(ceiling, (command - vc) / S.throttleGainKmh))
         end
         env.AIVehicleUtil.driveToPoint(s.tractor, dt, throttle, true, forwards, lx, lz, command)
     end
@@ -2139,7 +2148,9 @@ Hitch.LOAD = {
     -- and took no closer aim): from up to runInM behind the ramps, within lateralRunInM and
     -- headingRunInDeg of the axis, it steers onto the axis (driveToPoint at lookaheadRunInM);
     -- at the ramps' foot it must be inside the start window, else NOT_LINED_UP_AT_RAMPS, braked.
-    runInM = 12, minRunInM = 4, lateralRunInM = 2.5, headingRunInDeg = 20, lookaheadRunInM = 4,
+    -- 25 deg since live 3389dfbd1b564660-1: GIANTS' run-up GOTO ends on position alone and left
+    -- the Series 9 15.6, 17.2 and 18.4 deg turned (1.6 m off, heading for the axis).
+    runInM = 12, minRunInM = 4, lateralRunInM = 2.5, headingRunInDeg = 25, lookaheadRunInM = 4,
 }
 
 -- The one implement a LOAD may carry: mounted on the tractor's three-point joint (GIANTS
