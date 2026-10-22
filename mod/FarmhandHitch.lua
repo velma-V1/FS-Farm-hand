@@ -768,6 +768,36 @@ local function hitDetail(env, hits)
     return table.concat(names, ",")
 end
 
+-- Diagnostics for a rig another driver could not move (an AutoDrive stall): what touches each
+-- of its units within contactM, the rig itself and what its tension belts hold excluded, as
+-- "unitN:hits floor^clearance groundOnly|standing", or "-" (live b8e4fcf886464f0a-1: the
+-- loaded GMC crept 3 min at full lock with nothing in AutoDrive's sensors).
+function Hitch.rigContacts(env, vehicle)
+    local E = Hitch.ENVELOPE
+    local units, excluded = rigUnits(vehicle)
+    for _, unit in ipairs(units) do
+        local belts = unit.spec_tensionBelts
+        for _, data in pairs(belts ~= nil and belts.objectsToJoint or {}) do
+            if data.object ~= nil then excluded[data.object] = true end
+        end
+    end
+    local masks = collisionMasks(env)
+    local out = {}
+    for index, unit in ipairs(units) do
+        local hits = unitEnvelope(env, excluded, unit, E.contactM, masks.obstacles)
+        if hits == nil then
+            out[#out + 1] = string.format("unit%d:?", index)
+        elseif #hits > 0 then
+            local high = unitEnvelope(env, excluded, unit, E.contactM, masks.obstacles, E.clearanceM + 0.5)
+            local okLow, low = pcall(unitFloorClearance, env, unit)
+            out[#out + 1] = string.format("unit%d:%s floor^%s %s", index, hitDetail(env, hits),
+                                          okLow and finite(low) and string.format("%.2f", low) or "?",
+                                          high == nil and "above?" or (#high == 0 and "groundOnly" or "standing"))
+        end
+    end
+    return #out > 0 and table.concat(out, " ") or "-"
+end
+
 -- nil (clear), or "ENVELOPE_CONTACT" / "UNKNOWN_OBSERVATION". s.units (the rig), s.rig (excluded:
 -- LOAD's includes the trailer it drives onto, never the truck), s.transport (excluded too when
 -- s.envelopeTransport: BACKOFF starts right at the ramps), s.masks.obstacles.

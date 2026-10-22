@@ -492,6 +492,20 @@ class LuaLoadTests(unittest.TestCase):
         self.assertGreater(session.downhillFrames, 0)
         self.assertLessEqual(session.peakKmh, 3.0)
 
+    def test_rig_contacts_name_what_touches_a_stuck_rig(self):
+        # Live b8e4fcf886464f0a-1: AutoDrive crept 3 min with nothing in its sensors. The stall
+        # log names what touches each unit of the rig (the rig itself excluded): here a post
+        # 0.1 m beside the towed unit, and nothing once it is gone.
+        w = self.world(plow=PLOW)
+        self.assertEqual(self.hitch.rigContacts(w.env, w.tractor), "-")
+        x0, z0 = w.steer.x, w.steer.z
+        a, _ = self.W.travel(w, x0, z0)
+        w.box(a - 4.5, a - 3.0, 0.95, 1.25, 0, 1.0, None, "post")
+        contacts = self.hitch.rigContacts(w.env, w.tractor)
+        self.assertTrue(contacts.startswith("unit2:"), contacts)
+        self.assertIn("post", contacts)
+        self.assertIn("standing", contacts)
+
     def test_the_whole_rig_is_watched_while_it_moves_the_mounted_plow_included(self):
         # Something comes up beside the plow (outside the volume ahead of the tractor): 0.1 m
         # from its side it is contact, braked; 0.3 m from it, recorded as near, and it loads.

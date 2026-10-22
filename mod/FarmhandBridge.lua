@@ -338,7 +338,9 @@ function steppers.drive(env, task)
             log("drive AutoDrive (%.0f, %.0f) %s", x, z, describeAd(d))
             if task.elapsed - task.movedAt > Bridge.AD_STALL_MS then
                 local stall = adStallCode(d)
-                log("drive stalled %s: unmoved %.0f s; %s", stall, (task.elapsed - task.movedAt) / 1000, describeAd(d))
+                local okC, contacts = pcall(Bridge.Hitch.rigContacts, env, v)
+                log("drive stalled %s: unmoved %.0f s; %s; touching %s", stall, (task.elapsed - task.movedAt) / 1000,
+                    describeAd(d), okC and contacts or "?")
                 return "FAILED", stall
             end
         end
