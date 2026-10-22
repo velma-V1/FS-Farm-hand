@@ -201,7 +201,8 @@ def load_with_step(items, farm_id: str, work: dict):
     words = work.get("tractor_name") or _words(tractor.name)
     implement = observed.get(tractor.attached_to)
     carrying = implement is not None and of_kind(implement, kind) and named(implement, work.get("carry_name"))
-    aboard = tractor.belted_to is not None or any(transport.on_deck(tractor, t) for t in transports)
+    aboard = tractor.belted_to is not None or any(transport.on_deck(tractor, t) or transport.on_ramps(tractor, t)
+                                                  for t in transports)
     if carrying and aboard and tractor.belted_to is not None:
         return None, "LOADED"
     if carrying:

@@ -273,6 +273,27 @@ class TractorTransportTests(unittest.TestCase):
         self.assertIsNone(after[tractor.id].belted_to)
         self.assertEqual((after[deck.id].fold, after[deck.id].belts_fastened), (0.0, False))
 
+    def test_a_tractor_stopped_on_the_ramps_is_unloaded_from_there(self):
+        # Live ac71c4b45aea40dd-1: UNLOAD stopped ENVELOPE_CONTACT with the Series 9 half down the
+        # ramps, belts released, ramps down; "unload the deutz" then found no loaded tractor.
+        from companion import hitch as transport
+        world, tractor, deck, _ = transport_world()
+        Executor(world).execute(load())
+        on = world.items[tractor.id]
+        fx, fz = math.sin(deck.heading), math.cos(deck.heading)
+        a, _ = transport.to_frame(deck, on.position)
+        rear = transport._ends(deck)[0]
+        front = transport._ends(on)[1]
+        back = (a + front) - (rear + 1.5)                                   # its front 1.5 m over the trailer's rear
+        world.items[tractor.id] = replace(on, position=(on.position[0] - fx * back, on.position[1] - fz * back),
+                                          belted_to=None)
+        world.items[deck.id] = replace(world.items[deck.id], fold=1.0, belts_fastened=False)
+        self.assertTrue(transport.on_ramps(world.items[tractor.id], world.items[deck.id]))
+        self.assertFalse(transport.on_deck(world.items[tractor.id], world.items[deck.id]))
+        result = Executor(world).execute(dict(intent(), task="unload_tractor"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "UNLOADED"), result)
+        self.assertTrue(transport.off_ramps(world.items[tractor.id], world.items[deck.id]))
+
     def test_ramps_that_do_not_move_move_nothing(self):
         class Stuck(MockWorld):
             def fold(self, vehicle_id, direction, owner):

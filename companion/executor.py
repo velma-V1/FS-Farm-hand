@@ -1039,7 +1039,8 @@ class Executor:
                     elif loading and (tractor.belted_to is None and transport.load_aims(tractor, trailer)
                                       and not any(transport.on_deck(tractor, t) for t in trailers)):
                         pairs.append((math.dist(tractor.position, trailer.position), tractor.id, tractor, trailer))
-                    elif not loading and (tractor.belted_to == trailer.id or transport.on_deck(tractor, trailer)):
+                    elif not loading and (tractor.belted_to == trailer.id or transport.on_deck(tractor, trailer)
+                                          or transport.on_ramps(tractor, trailer)):    # stopped on its way off
                         pairs.append((0.0, tractor.id, tractor, trailer))
             if not pairs:
                 return Result("BLOCKED", "NO_TRACTOR_TO_LOAD" if loading else "NO_LOADED_TRACTOR",

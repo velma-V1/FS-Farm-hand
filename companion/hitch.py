@@ -378,6 +378,22 @@ def on_deck(tractor: Equipment, trailer: Equipment) -> bool:
             and abs(l - (deck[2] + deck[3]) / 2) <= DECK_LATERAL_M)
 
 
+ON_RAMPS_M = 0.5                 # = mod/FarmhandHitch.lua newLoad's onRamps (its front this far over the trailer)
+
+
+def on_ramps(tractor: Equipment, trailer: Equipment) -> bool:
+    """Stopped on the ramps on its way on or off (live ac71c4b45aea40dd-1: UNLOAD ended
+    ENVELOPE_CONTACT half down): its front up over the trailer's rear, on the trailer's axis,
+    not yet on the deck."""
+    tractor_ends, trailer_ends = _ends(tractor), _ends(trailer)
+    if tractor_ends is None or trailer_ends is None or trailer.heading is None or on_deck(tractor, trailer):
+        return False
+    a, l = to_frame(trailer, tractor.position)
+    deck = deck_box(trailer)
+    middle = (deck[2] + deck[3]) / 2 if deck is not None else 0.0
+    return a + tractor_ends[1] > trailer_ends[0] + ON_RAMPS_M and abs(l - middle) <= DECK_LATERAL_M
+
+
 def off_ramps(tractor: Equipment, trailer: Equipment) -> bool:
     """The tractor's front behind the ramps lying on the ground."""
     tractor_ends, trailer_ends = _ends(tractor), _ends(trailer)
