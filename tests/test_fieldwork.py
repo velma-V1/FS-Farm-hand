@@ -1180,6 +1180,29 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertEqual(new[0].fill_units[0].level, 9000.0)
         self.assertEqual(world.farm().money, FARM.money - 6000.0)
 
+    def test_a_bought_trailer_that_arrives_unable_to_take_the_crop_is_said_and_never_hitched(self):
+        # Live e3e3b0c194914776-2: the store specs said grain, the default configuration bought
+        # was a bale loader. Checked as it arrived: UNVERIFIED BOUGHT_ITEM_UNSUITABLE, not hitched.
+        from protocol.model import StoreItem
+        world = self.full_combine_world()
+        t, w = world.items["t-5"], world.items["w-5"]
+        world.items["t-5"] = replace(t, attached_to=None, name="MT600 Series",
+                                     output_joints=(OutputJoint(2, "trailer", 0.0, -2.0, True),))
+        del world.items["w-5"]
+        shop = (210.0, 90.0)
+        world.mock_bought = replace(w, id="tmp", attached_to=None, position=shop, heading=0.0,
+                                    fill_units=(FillUnit(1, None, 0.0, 12.0, frozenset({"SQUAREBALE"})),),
+                                    input_joints=(InputJoint(1, "trailer", (shop[0], shop[1] + 3.0), True),))
+        world.store_items = (StoreItem(33, "Tipper 8", "Z", ("TRAILERS",), 6000.0, False, None, None, None,
+                                       capacity=9500.0, fill_types=("WHEAT",)),)
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("UNVERIFIED", "BOUGHT_ITEM_UNSUITABLE"), c.last)
+        new = [i for i in world.items.values() if i.id.startswith("new-")]
+        self.assertEqual(len(new), 1)
+        self.assertIsNone(new[0].attached_to)
+
     def test_harvest_with_a_full_combine_empties_it_first(self):
         world = self.full_combine_world()
         c, notices = coordinated(world)

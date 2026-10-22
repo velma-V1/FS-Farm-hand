@@ -560,6 +560,7 @@ class Coordinator:
         self.workers: list[Worker] = []           # GIANTS' helpers working on (handed off)
         self._harvest_rigs: dict[int, str] = {}   # field -> the rig (tractor words) its grain was transferred into
         self._bought_for: set[str] = set()         # jobs that already bought what they needed (never twice)
+        self._unreachable: set[str] = set()        # implements no hitch could reach this session (not tried again)
         self._after: list[list] = []              # their follow-up steps, run when Farmhand is free
         self._watcher: threading.Thread | None = None
 
@@ -1398,64 +1399,65 @@ class Coordinator:
         return result
 
     def _make_grain_rig(self, job: Job, cancel: threading.Event, entered) -> Result | None:
-        """A tractor and a trailer with room for grain, hitched, when none is: the trailer that
-        stands free with the most room; a free tractor, else one freed (its ordinary implement
-        unhitched where it has room ahead, _tractor_to_free). None when there is no such
-        trailer or tractor (nothing done); else the hitch's (or the unhitch's) result."""
+        """A tractor and a trailer with room for the combine's crop, hitched, when none is: a free
+        tractor, else one freed (its ordinary implement unhitched where it has room ahead,
+        _tractor_to_free); the free trailer with the most room for that crop, else (none, or none
+        any hitch could reach: live 51bff50a47804f8e-1) one bought for the job, once, the cheapest
+        that takes the crop and holds the load (AGENTS.md: found or bought), checked as it arrived.
+        None when there is no tractor to use (nothing done); else the step's result."""
         items, farm = tuple(self.world.snapshot()), self.farm()
+        combine = max((i for i in items if i.category == "harvester" and usable(i, farm)),
+                      key=lambda c: sum(u.level or 0.0 for u in c.fill_units if u.fill_type not in self.executor.NOT_CARGO),
+                      default=None)
+        grain = max((u for u in (combine.fill_units if combine else ()) if u.fill_type and u.fill_type not in
+                     self.executor.NOT_CARGO), key=lambda u: u.level or 0.0, default=None)
+        crop = grain.fill_type if grain is not None else None
 
         def room(t):
             return sum((u.capacity or 0.0) - (u.level or 0.0) for u in t.fill_units
-                       if not u.supported or any(f not in self.executor.NOT_CARGO for f in u.supported))
+                       if (crop in u.supported if crop else any(f not in self.executor.NOT_CARGO for f in u.supported))
+                       and (not u.level or u.fill_type == crop))
         trailers = sorted((t for t in items if usable(t, farm) and t.attached_to is None and "trailer" in t.kinds
-                           and t.fill_units and not transport.is_transport(t) and room(t) > 0 and _words(t.name)),
+                           and t.fill_units and not transport.is_transport(t) and room(t) > 0 and _words(t.name)
+                           and t.id not in self._unreachable),
                           key=lambda t: (-room(t), t.id))
-        if not trailers:
-            return None
-        trailer = trailers[0]
         free = [t for t in items if t.category == "tractor" and usable(t, farm) and t.stopped and t.attached_to is None
                 and {"move", "attach", "stop"} <= t.capabilities and _words(t.name)]
         if free:
-            name = _words(min(free, key=lambda t: (math.dist(t.position, trailer.position), t.id)).name)
+            near = trailers[0].position if trailers else (combine.position if combine else (0.0, 0.0))
+            name = _words(min(free, key=lambda t: (math.dist(t.position, near), t.id)).name)
         else:
             name = _tractor_to_free(items, "trailer", farm)
             if name is None:
                 return None
-            log.info("job %d grain rig: freeing the %s for the %s", job.number, name, trailer.name)
+            log.info("job %d grain rig: freeing the %s", job.number, name)
             freed = self._execute(job, cancel, entered, "gf", task="detach_pair", tractor_name=name)
             if freed.status != "COMPLETE":
                 return freed
         cleared = self._clear_of_dropped_implement(job, cancel, entered, name)
         if cleared is not None and cleared.status != "COMPLETE":
             return cleared
-        log.info("job %d grain rig: the %s to the %s", job.number, name, trailer.name)
-        hitched = self._execute(job, cancel, entered, "gh", task="hitch_pair", implement="trailer",
-                                implement_name=_words(trailer.name), tractor_name=name)
-        if hitched.status == "COMPLETE" or hitched.reason not in UNREACHABLE_IMPLEMENT:
-            return hitched
-        # The farm's only trailer with room cannot be reached (live 51bff50a47804f8e-1: GIANTS
-        # refused every aim on the EDK 650's drawbar side): the job's own requirement bought once,
-        # the cheapest grain tipper the farm can afford (AGENTS.md: found or bought), then hitched.
+        hitched = None
+        for trailer in trailers:
+            log.info("job %d grain rig: the %s to the %s", job.number, name, trailer.name)
+            hitched = self._execute(job, cancel, entered, "gh", task="hitch_pair", implement="trailer",
+                                    implement_name=_words(trailer.name), tractor_name=name)
+            if hitched.status == "COMPLETE" or hitched.reason not in UNREACHABLE_IMPLEMENT:
+                return hitched
+            self._unreachable.add(trailer.id)          # not tried again this session
         if job.owner in self._bought_for:
-            return hitched
+            return hitched or Result("BLOCKED", "NO_TRAILER_FOR_THE_GRAIN")
         self._bought_for.add(job.owner)
         before = {i.id for i in self.world.snapshot()}
-        combine = max((i for i in items if i.category == "harvester" and usable(i, farm)),
-                      key=lambda c: sum(u.level or 0.0 for u in c.fill_units if u.fill_type not in self.executor.NOT_CARGO),
-                      default=None)
-        grain = max((u for u in (combine.fill_units if combine else ()) if u.fill_type and u.fill_type not in
-                     self.executor.NOT_CARGO), key=lambda u: u.level or 0.0, default=None)
-        want = {"kind": "grain_trailer", **({"fill_type": grain.fill_type, "min_capacity": grain.level or 0.0}
-                                            if grain is not None else {})}
+        want = {"kind": "grain_trailer", **({"fill_type": crop, "min_capacity": grain.level or 0.0} if crop else {})}
         bought = self._execute(job, cancel, entered, "gb", task="buy", want=want)
         if bought.status != "COMPLETE":
             return bought
         new = next((i for i in self.world.snapshot() if i.id not in before and i.id in bought.equipment_ids), None)
         if new is None or not _words(new.name):
             return Result("UNVERIFIED", "PURCHASE_NOT_OBSERVED")
-        crop = want.get("fill_type")
         if crop and not any(crop in u.supported for u in new.fill_units):
-            # What arrived does not take the crop (live: a bale loader): said, never hitched.
+            # What arrived does not take the crop (live e3e3b0c194914776-2: a bale loader): said, never hitched.
             log.info("job %d grain rig: the bought %s takes %s, not %s", job.number, new.name,
                      sorted({f for u in new.fill_units for f in u.supported})[:8], crop)
             return Result("UNVERIFIED", "BOUGHT_ITEM_UNSUITABLE", (new.id,))
