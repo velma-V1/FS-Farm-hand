@@ -998,14 +998,37 @@ end
 -- Every field of the map (owned or not), where GIANTS places it (Field posX/posZ, the
 -- position FieldState samples, sampleFruit above): a delivery to "field N" on any map.
 Observe.MAX_FIELD_PLACES = 200
-function Observe.fieldPlaces(env)
+-- Every map field at GIANTS' own position, and the farmland parcel it lies on as a buyable:
+-- its id (Field.farmland), owner (FarmlandManager:getFarmlandOwner 407-414: this farm,
+-- none, another farm, or NOT_BUYABLE_FARM_ID), price (Farmland.price, set by updatePrice)
+-- and area (setArea, ha). Read only; unreadable parts are left out.
+function Observe.fieldPlaces(env, farmId)
     local out = Observe.array()
     local fields = try(function() return env.g_fieldManager.fields end)
+    local manager = try(function() return env.g_farmlandManager end)
     for _, f in ipairs(type(fields) == "table" and fields or {}) do
         if #out >= Observe.MAX_FIELD_PLACES then break end
         local id = fieldId(f)
         local x, z = try(function() return f.posX end), try(function() return f.posZ end)
-        if id ~= nil and finite(x) and finite(z) then out[#out + 1] = { id = id, x = x, z = z } end
+        if id ~= nil and finite(x) and finite(z) then
+            local place = { id = id, x = x, z = z }
+            local land = try(function() return f.farmland end)
+            local landId = land and try(function() return land.id end)
+            if integer(landId) and landId > 0 and manager ~= nil then
+                place.farmland = landId
+                local owner = try(function() return manager:getFarmlandOwner(landId) end)
+                local notBuyable = try(function() return env.FarmlandManager.NOT_BUYABLE_FARM_ID end)
+                if integer(owner) then
+                    place.owner = owner == farmId and "mine" or owner == 0 and "none"
+                        or owner == notBuyable and "not_buyable" or "other"
+                end
+                local price = try(function() return land.price end)
+                if finite(price) and price >= 0 then place.price = price end
+                local area = try(function() return land.areaInHa end)
+                if finite(area) and area >= 0 then place.area_ha = area end
+            end
+            out[#out + 1] = place
+        end
     end
     return out
 end
@@ -1081,6 +1104,37 @@ function Observe.itemOptions(item)
     return out
 end
 
+-- A store item's fill capacity in litres: the largest selectable fill-unit configuration of
+-- GIANTS' "capacity" store spec (FillUnit.loadSpecValueCapacity 2810-2870: configurations of
+-- {isSelectable, fillUnits {capacity}}). nil when it has none.
+function Observe.storeCapacity(specs)
+    local best = nil
+    for _, configuration in ipairs(type(specs.capacity) == "table" and specs.capacity or {}) do
+        if type(configuration) == "table" and configuration.isSelectable ~= false then
+            local sum = 0
+            for _, unit in ipairs(type(configuration.fillUnits) == "table" and configuration.fillUnits or {}) do
+                if finite(unit.capacity) and unit.capacity > 0 then sum = sum + unit.capacity end
+            end
+            if sum > 0 and (best == nil or sum > best) then best = sum end
+        end
+    end
+    return best
+end
+
+Observe.MAX_STORE_FILL_TYPES = 40
+-- The fill types a store item takes, by GIANTS' own resolution of its "fillTypes" spec
+-- (FillUnit.getSpecValueFillTypes 3114-3151 -> fill type indices) and FillTypeManager names.
+function Observe.storeFillTypes(env, item)
+    local out = Observe.array()
+    local indices = try(function() return env.FillUnit.getSpecValueFillTypes(item) end)
+    for _, index in ipairs(type(indices) == "table" and indices or {}) do
+        if #out >= Observe.MAX_STORE_FILL_TYPES then break end
+        local name = try(function() return env.g_fillTypeManager:getFillTypeNameByIndex(index) end)
+        if token(name) then out[#out + 1] = name end
+    end
+    return out
+end
+
 function Observe.storeItem(env, item)
     local ok, vehicle = pcall(env.StoreItemUtil.getIsVehicle, item)
     if not ok or vehicle ~= true or item.showInStore == false or not integer(item.id) then return nil end
@@ -1121,7 +1175,9 @@ function Observe.storeItem(env, item)
              end)(),
              width = nullable(specNumber(specs.workingWidth, "width")),
              needed_power = nullable(specNumber(specs.neededPower, "base")),
-             power = nullable(specNumber(specs.power, "power")) }
+             power = nullable(specNumber(specs.power, "power")),
+             capacity = nullable(Observe.storeCapacity(specs)),
+             fill_types = Observe.storeFillTypes(env, item) }
 end
 
 -- One step of building the catalog; returns the finished frame once, else nil.
@@ -1266,7 +1322,7 @@ function Observe.snapshot(env, seq, session, dt)
         destinations = destinations,
         places = places,
         fields = try(function() return Observe.fields(env, farmId) end) or Observe.array(),
-        field_places = try(function() return Observe.fieldPlaces(env) end) or Observe.array(),
+        field_places = try(function() return Observe.fieldPlaces(env, farmId) end) or Observe.array(),
         contracts = try(function() return Observe.contracts(env, farmId) end) or Observe.array(),
         farm = farmInfo(env, farmId),
     }), nil

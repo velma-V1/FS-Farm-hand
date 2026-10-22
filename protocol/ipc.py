@@ -129,6 +129,7 @@ COMMAND_ARGS = {
     "ad_connect": ("tractor", "marker"),         # AutoDrive's dead-end lane from the vehicle joined to the routed road it stops short of
     "follow": ("tractor",),                      # FollowMe: the vehicle follows the one the player drives
     "contract": ("field", "direction"),          # the field's contract taken (1) or its reward collected (-1)
+    "land": ("field", "direction"),              # the field's farmland parcel bought (1) or sold (-1), GIANTS' FarmlandStateEvent
     "ad_unload": ("tractor", "marker", "field"),  # AutoDrive's combine unloader: waits at the marker, sells the field's crop
     "ad_sell": ("tractor",),                      # AutoDrive delivers the rig's cargo to the best paid sell point
     "pipe": ("tractor", "direction"),            # a combine's pipe out (1) or in (-1), GIANTS Pipe

@@ -136,6 +136,18 @@ class Field:
 
 
 @dataclass(frozen=True)
+class LandParcel:
+    """The farmland parcel a map field lies on, as a buyable (mod/FarmhandObserve.lua
+    Observe.fieldPlaces): GIANTS' farmland id, its owner from this farm's view (mine, none,
+    other, not_buyable), its price and area. Unknown parts are None."""
+    field: int
+    farmland: int | None
+    owner: str | None
+    price: float | None
+    area_ha: float | None = None
+
+
+@dataclass(frozen=True)
 class Contract:
     """A GIANTS field contract (mod/FarmhandObserve.lua Observe.contracts): the field, its
     type (plow, cultivate, sow, harvest, ...), MissionStatus name, reward, and whether
@@ -163,6 +175,8 @@ class StoreItem:
     hitches: tuple[str, ...] = ()       # attacherJoint configuration names, in GIANTS' order (1-based)
     engines: tuple[str, ...] = ()       # motor configuration names, in GIANTS' order (1-based)
     options: tuple[tuple[str, str | None, int, str], ...] = ()   # (kind, type, index, name), the mod's order
+    capacity: float | None = None       # litres, the largest selectable fill-unit configuration
+    fill_types: tuple[str, ...] = ()    # what it takes, by GIANTS' own resolution of its fillTypes spec
 
 
 @dataclass(frozen=True)

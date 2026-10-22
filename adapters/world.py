@@ -58,6 +58,16 @@ class World(Protocol):
         money: the caller reads the farm's balance."""
         ...
 
+    def land(self) -> tuple:
+        """Every map field's farmland parcel (protocol.model.LandParcel): owner, price."""
+        ...
+
+    def land_change(self, field: int, buy: bool) -> str:
+        """LAND: the field's farmland parcel bought or sold through GIANTS' own request at its
+        price; DONE once GIANTS shows the new owner, never evidence of the money: the caller
+        reads the farm's balance."""
+        ...
+
     def ad_unload(self, tractor_id: str, marker_id: str, field: int, owner: str) -> str:
         """UNLOADER: AutoDrive's combine unloader for the reserved rig, waiting at the field's
         marker and unloading at the best paid sell point for its crop; UNLOADING once it runs

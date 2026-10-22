@@ -161,7 +161,9 @@
         "size": {"enum": ["large"]},
         "name": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[A-Za-z0-9 -]+$"},
         "hitch": {"enum": ["gooseneck", "drop hitch", "fifth wheel"]},
-        "engine": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
+"fill_type": {"description": "grain_trailer: a fill type it must take (GIANTS' name, e.g. WHEAT).", "type": "string", "pattern": "^[A-Z0-9_]{1,40}$"},
+        "min_capacity": {"description": "grain_trailer: litres it must hold at least.", "type": "number", "minimum": 0, "maximum": 1e7},
+                "engine": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
           "options": {"description": "Other configuration choices by their words ('25m unrealistic', '25 mph').", "type": "array", "minItems": 1, "maxItems": 4, "items": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"}}
       }
     },

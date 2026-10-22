@@ -173,7 +173,11 @@
         "field_places": {"type": "array", "maxItems": 200, "items": {
           "type": "object", "additionalProperties": false, "required": ["id", "x", "z"],
           "properties": {"id": {"type": "integer", "minimum": 1, "maximum": 100000},
-                         "x": {"$ref": "#/$defs/coordinate"}, "z": {"$ref": "#/$defs/coordinate"}}}},
+                         "x": {"$ref": "#/$defs/coordinate"}, "z": {"$ref": "#/$defs/coordinate"},
+                         "farmland": {"type": "integer", "minimum": 1, "maximum": 100000},
+                         "owner": {"enum": ["mine", "none", "other", "not_buyable"]},
+                         "price": {"type": "number", "minimum": 0, "maximum": 1e12},
+                         "area_ha": {"type": "number", "minimum": 0, "maximum": 1e6}}}},
         "fields": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/field"}},
         "contracts": {"type": "array", "maxItems": 50, "items": {
           "type": "object", "additionalProperties": false, "required": ["field", "kind", "status", "mine", "reward"],
@@ -208,7 +212,7 @@
                                    "name": {"type": "string", "maxLength": 128}}}},
         "width": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 1000}, {"type": "null"}]},
         "needed_power": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 100000}, {"type": "null"}]},
-        "power": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 100000}, {"type": "null"}]}
+        "capacity": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 1e9}, {"type": "null"}]}, "fill_types": {"type": "array", "maxItems": 40, "items": {"$ref": "#/$defs/token"}}, "power": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 100000}, {"type": "null"}]}
       }
     },
     "catalog": {

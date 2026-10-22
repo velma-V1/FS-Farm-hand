@@ -2233,6 +2233,61 @@ end
 
 function aborts.buy() end         -- a purchase is not undone
 
+-- ------------------------------------------------------------------- land
+-- The farmland parcel a field lies on, bought (direction 1) or sold (-1) through GIANTS' own
+-- request, as its farmland screen and FarmlandManager:consoleCommandBuyFarmland /
+-- consoleCommandSellFarmland (572-607, 626-659) send it: g_client:getServerConnection():
+-- sendEvent(FarmlandStateEvent.new(farmlandId, farmId, price)), here at the parcel's own price
+-- (Farmland.price), never the console's 0. Refused unchanged when already owned (buy), not
+-- this farm's (sell), not for sale or the balance short. DONE once FarmlandManager:
+-- getFarmlandOwner (407-414) shows the change; the companion verifies the money.
+Bridge.LAND_TIMEOUT_MS = 15000
+
+local function fieldLand(env, n)
+    for _, f in ipairs(env.g_fieldManager.fields or {}) do
+        local id = (type(f.getId) == "function" and f:getId()) or f.fieldId
+        if id == n then return f.farmland end
+    end
+    return nil
+end
+
+function starters.land(env, spec)
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    if not (finite(spec.field) and spec.field % 1 == 0) then return nil, "INVALID_FIELD" end
+    local manager = env.g_farmlandManager
+    local land = fieldLand(env, spec.field)
+    if land == nil or not finite(land.id) then return nil, "FIELD_NOT_FOUND" end
+    local owner = manager:getFarmlandOwner(land.id)
+    local price = land.price
+    if not finite(price) or price < 0 then return nil, "LAND_PRICE_UNKNOWN" end
+    local target
+    if spec.direction == 1 then
+        if owner == spec.farmId then return nil, "LAND_ALREADY_OWNED" end
+        if owner ~= env.FarmlandManager.NO_OWNER_FARM_ID then return nil, "LAND_NOT_FOR_SALE" end
+        local money = balance(env, spec.farmId)
+        if money == nil then return nil, "BALANCE_UNKNOWN" end
+        if money < price then return nil, "NOT_ENOUGH_MONEY" end
+        target = spec.farmId
+    elseif spec.direction == -1 then
+        if owner ~= spec.farmId then return nil, "LAND_NOT_OWNED" end
+        target = env.FarmlandManager.NO_OWNER_FARM_ID
+    else
+        return nil, "INVALID_DIRECTION"
+    end
+    env.g_client:getServerConnection():sendEvent(env.FarmlandStateEvent.new(land.id, target, price))
+    log("land: farmland %d (field %d) %s for %.0f", land.id, spec.field, spec.direction == 1 and "bought" or "sold", price)
+    return { farmland = land.id, target = target, buying = spec.direction == 1 }
+end
+
+function steppers.land(env, task)
+    local owner = env.g_farmlandManager:getFarmlandOwner(task.farmland)
+    if owner == task.target then return "DONE", task.buying and "LAND_BOUGHT" or "LAND_SOLD" end
+    if task.elapsed > Bridge.LAND_TIMEOUT_MS then return "UNVERIFIED", "LAND_NOT_CHANGED" end
+    return nil
+end
+
+function aborts.land() end
+
 -- ------------------------------------------------------------------- stop
 -- spec.target: the running task on this tractor, if any; it is aborted first.
 function starters.stop(env, spec)
@@ -2705,6 +2760,9 @@ Bridge.REASONS = {
     NO_HITCHED_PAIR = "no hitched tractor and implement to move",
     NO_ATTACHED_IMPLEMENT = "no hitched implement to unhitch",
     NO_TRANSPORT = "no transport trailer with ramps and belts",
+    LAND_ALREADY_OWNED = "the farm already owns that land",
+    LAND_NOT_FOR_SALE = "that land is not for sale",
+    LAND_NOT_OWNED = "the farm does not own that land",
     TRANSPORT_LOADED = "the transport you named already carries something",
     TRANSPORT_TOO_SMALL = "the tractor and what it carries do not fit the transport you named",
     NO_FREE_TRANSPORT = "every transport already carries something or is too small for this load",

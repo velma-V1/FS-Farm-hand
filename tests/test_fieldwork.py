@@ -1132,7 +1132,8 @@ class UnloadAndSellTests(unittest.TestCase):
     def test_with_the_only_trailer_unreachable_a_grain_trailer_is_bought_once_and_used(self):
         # Live 51bff50a47804f8e-1: GIANTS refused every aim on the EDK 650's drawbar side; the
         # 3650 ended behind it (LOCAL_PATH_HITS_WAGON). The job's own requirement is bought, the
-        # cheapest grain tipper (GIANTS' TRAILERS, never a semitrailer), hitched, the grain moved.
+        # cheapest grain tipper that takes the crop and holds the load (GIANTS' TRAILERS, never a
+        # semitrailer, a platform body, one too small or for another crop), hitched, the grain moved.
         from protocol.model import StoreItem
 
         class Walled(CoordinatedWorld):
@@ -1158,9 +1159,17 @@ class UnloadAndSellTests(unittest.TestCase):
         shop = (210.0, 90.0)
         world.mock_bought = replace(w, id="tmp", attached_to=None, position=shop, heading=0.0,
                                     input_joints=(InputJoint(1, "trailer", (shop[0], shop[1] + 3.0), True),))
-        world.store_items = (StoreItem(31, "Semi Tipper", "X", ("SEMITRAILERS",), 3000.0, False, None, None, None),
-                             StoreItem(32, "Tipper 12", "Y", ("TRAILERS",), 8000.0, False, None, None, None),
-                             StoreItem(33, "Tipper 8", "Z", ("TRAILERS",), 6000.0, False, None, None, None))
+        world.store_items = (StoreItem(31, "Semi Tipper", "X", ("SEMITRAILERS",), 3000.0, False, None, None, None,
+                                       capacity=30000.0, fill_types=("WHEAT",)),
+                             StoreItem(34, "Platform body", "W", ("TRAILERS",), 2000.0, False, None, None, None),
+                             StoreItem(35, "Tipper 6", "V", ("TRAILERS",), 4000.0, False, None, None, None,
+                                       capacity=6000.0, fill_types=("WHEAT",)),         # too small for 9,000 l
+                             StoreItem(36, "Potato box", "U", ("TRAILERS",), 3500.0, False, None, None, None,
+                                       capacity=20000.0, fill_types=("POTATO",)),       # not for wheat
+                             StoreItem(32, "Tipper 12", "Y", ("TRAILERS",), 8000.0, False, None, None, None,
+                                       capacity=12000.0, fill_types=("WHEAT", "BARLEY")),
+                             StoreItem(33, "Tipper 8", "Z", ("TRAILERS",), 6000.0, False, None, None, None,
+                                       capacity=9500.0, fill_types=("WHEAT",)))
         c, notices = coordinated(world)
         c.submit({"version": 1, "command": "unload_combine"})
         c.wait(10)

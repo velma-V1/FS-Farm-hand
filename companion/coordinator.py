@@ -1434,7 +1434,14 @@ class Coordinator:
             return hitched
         self._bought_for.add(job.owner)
         before = {i.id for i in self.world.snapshot()}
-        bought = self._execute(job, cancel, entered, "gb", task="buy", want={"kind": "grain_trailer"})
+        combine = max((i for i in items if i.category == "harvester" and usable(i, farm)),
+                      key=lambda c: sum(u.level or 0.0 for u in c.fill_units if u.fill_type not in self.executor.NOT_CARGO),
+                      default=None)
+        grain = max((u for u in (combine.fill_units if combine else ()) if u.fill_type and u.fill_type not in
+                     self.executor.NOT_CARGO), key=lambda u: u.level or 0.0, default=None)
+        want = {"kind": "grain_trailer", **({"fill_type": grain.fill_type, "min_capacity": grain.level or 0.0}
+                                            if grain is not None else {})}
+        bought = self._execute(job, cancel, entered, "gb", task="buy", want=want)
         if bought.status != "COMPLETE":
             return bought
         new = next((i for i in self.world.snapshot() if i.id not in before and i.id in bought.equipment_ids), None)

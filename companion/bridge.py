@@ -43,7 +43,7 @@ HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
 ALIGN_MAX_DISTANCE_M = 10.0      # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
-DONE_TIMEOUT_S = {"drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "ad_marker": 15.0, "ad_connect": 15.0, "follow": 7300.0, "contract": 75.0, "ad_unload": 20.0, "ad_sell": 14700.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
+DONE_TIMEOUT_S = {"drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "ad_marker": 15.0, "ad_connect": 15.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "ad_unload": 20.0, "ad_sell": 14700.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -163,7 +163,8 @@ class CommandLink:
                                                    i["mod"], i["width"], i["needed_power"], i["power"],
                                                    tuple(i.get("hitches") or ()), tuple(i.get("engines") or ()),
                                                    tuple((o["kind"], o["type"], o["index"], o["name"])
-                                                         for o in i.get("options") or ()))
+                                                         for o in i.get("options") or ()),
+                                                   i.get("capacity"), tuple(i.get("fill_types") or ()))
                                          for i in items)
                     self._catalog_pages = {}
             elif event == "result" and frame["session"] == self.session:
@@ -410,6 +411,13 @@ class FS25World:
         farm's finished one collected (GIANTS pays its reward); mod/FarmhandBridge.lua
         starters.contract."""
         return self._run("contract", field=int(field), direction=1 if start else -1)
+
+    def land(self) -> tuple:
+        return self._observe().land
+
+    def land_change(self, field: int, buy: bool) -> str:
+        """LAND: the field's farmland parcel bought or sold; mod/FarmhandBridge.lua starters.land."""
+        return self._run("land", field=int(field), direction=1 if buy else -1)
 
     def ad_unload(self, tractor_id: str, marker_id: str, field: int, owner: str) -> str:
         """UNLOADER: AutoDrive's own combine unloader for the reserved rig (mod/FarmhandBridge.lua

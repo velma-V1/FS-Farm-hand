@@ -486,3 +486,30 @@ class ObserveTravelTests(unittest.TestCase):
 
 class Lua51ObserveTravelTests(ObserveTravelTests):
     runtime = lua51
+
+
+class ObserveStoreSpecTests(unittest.TestCase):
+    """A store item's capacity and fill types from GIANTS' own store specs (FillUnit
+    loadSpecValueCapacity / getSpecValueFillTypes), for buying what a job needs (live
+    c83d16674c7645cc-1: the cheapest TRAILERS item was a platform body)."""
+    runtime = lua54
+
+    def setUp(self):
+        self.lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
+        self.observe = self.lua.execute((ROOT / "mod" / "FarmhandObserve.lua").read_text())
+
+    def test_capacity_is_the_largest_selectable_configuration_and_fill_types_are_named(self):
+        specs = self.lua.eval("""{ capacity = {
+            { isSelectable = true, fillUnits = { { capacity = 8000 }, { capacity = 2000 } } },
+            { isSelectable = false, fillUnits = { { capacity = 50000 } } },
+            { isSelectable = true, fillUnits = { { capacity = 9500 } } } } }""")
+        self.assertEqual(self.observe.storeCapacity(specs), 10000)
+        self.assertIsNone(self.observe.storeCapacity(self.lua.eval("{}")))
+        env = self.lua.eval("""{ FillUnit = { getSpecValueFillTypes = function(item) return { 3, 7 } end },
+            g_fillTypeManager = { getFillTypeNameByIndex = function(_, i) return ({ [3] = "WHEAT", [7] = "BARLEY" })[i] end } }""")
+        names = self.observe.storeFillTypes(env, self.lua.eval("{}"))
+        self.assertEqual(list(names.values()), ["WHEAT", "BARLEY"])
+
+
+class Lua51ObserveStoreSpecTests(ObserveStoreSpecTests):
+    runtime = lua51

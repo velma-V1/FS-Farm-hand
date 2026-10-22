@@ -6,7 +6,7 @@ upstream data is unproven, the mapping fails closed (ineligible equipment).
 """
 from dataclasses import dataclass
 
-from protocol.model import (Contract, Destination, Equipment, FarmInfo, Field, FieldCoverage, FillUnit, InputJoint, OutputJoint,
+from protocol.model import (Contract, Destination, LandParcel, Equipment, FarmInfo, Field, FieldCoverage, FillUnit, InputJoint, OutputJoint,
                             Pose, Position)
 
 # AutoDrive treats ``lastSpeedReal * 3600 < 1`` (km/h) as not moving
@@ -63,6 +63,7 @@ class Observation:
     farm: FarmInfo | None = None
     field_places: tuple[Destination, ...] = ()     # every map field: "field N" at GIANTS' position
     contracts: tuple[Contract, ...] = ()           # field contracts: available and this farm's
+    land: tuple[LandParcel, ...] = ()              # every map field's farmland parcel, as a buyable
 
 
 def _claimed_links(vehicles) -> dict[int, set[int]]:
@@ -253,6 +254,8 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = N
                            for f in sorted(frame.get("field_places", ()), key=lambda f: f["id"])),
         contracts=tuple(Contract(c["field"], c["kind"], c["status"], c["mine"], c["reward"], c.get("completion"))
                         for c in frame.get("contracts", ())),
+        land=tuple(LandParcel(f["id"], f.get("farmland"), f.get("owner"), f.get("price"), f.get("area_ha"))
+                   for f in sorted(frame.get("field_places", ()), key=lambda f: f["id"])),
         farm=None if farm is None else FarmInfo(farm["money"], farm["helper_buy_seeds"],
                                                 farm["helper_buy_fertilizer"], farm["helper_buy_fuel"], farm.get("savegame_dir")),
     )

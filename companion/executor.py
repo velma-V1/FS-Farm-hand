@@ -502,7 +502,11 @@ def _matches(item: StoreItem, want: dict) -> bool:
     if words and not all(w in text for w in words):
         return False
     if want["kind"] in STORE_KINDS_EXACT:
-        return any(c in STORE_KINDS_EXACT[want["kind"]] for c in item.categories)
+        # A grain trailer by what the store says it is and takes (live c83d16674c7645cc-1: the
+        # cheapest TRAILERS item was a platform body, no fill unit, no drawbar for the 3650).
+        return (any(c in STORE_KINDS_EXACT[want["kind"]] for c in item.categories)
+                and (item.capacity or 0.0) >= max(want.get("min_capacity", 0.0), 1.0)
+                and (not want.get("fill_type") or want["fill_type"] in item.fill_types))
     kinds = STORE_KINDS.get(want["kind"], ())
     if want["kind"] in ("truck", "tractor") and item.power is None:
         return False                          # a truck drives itself (live: a GMC truck bed was bought)
