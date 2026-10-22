@@ -602,6 +602,18 @@ class HaulGoalTests(unittest.TestCase):
         self.assertIsNone(ad_routed(graph, (1.0, 0.0), (250.0, 9.0)))          # not a marker on the network
         self.assertIsNone(ad_route_start(graph, (1.0, 0.0), (500.0, 0.0), max_m=30.0))
 
+    def test_staging_prefers_where_autodrives_own_path_runs_out(self):
+        # Live 2026-10-22 (Riverbend Springs): the lane from the store yard (11800-11808) stops
+        # 5.5 m short of the road it joins (5767); a parallel road (3515) is nearer the rig but
+        # GIANTS' agent could not plan there (planning 96 s). The lane's end comes first.
+        from companion.hitch import ADGraph, ad_route_starts
+        graph = ADGraph(points={1: (0.0, 0.0), 2: (0.0, 40.0), 3: (0.0, 80.0),       # the dead-end lane
+                                10: (5.0, 82.0), 11: (50.0, 82.0),                  # the road it should join
+                                20: (60.0, 0.0), 21: (60.0, 40.0), 22: (500.0, 500.0)},
+                        out={1: (2,), 2: (3,), 3: (), 10: (11,), 11: (22,), 20: (21,), 21: (22,), 22: ()})
+        starts = ad_route_starts(graph, (1.0, -2.0), (500.0, 500.0))
+        self.assertEqual([wp for _, _, wp in starts], [10, 20, 21])
+
     def test_the_empty_transport_is_staged_where_autodrive_has_a_route_before_it_is_loaded(self):
         # Live 2026-10-22 (Riverbend Springs): the waypoint nearest the GMC was on a dead end,
         # AutoDrive "could not calculate path". Its saved network (read only) says so; GIANTS

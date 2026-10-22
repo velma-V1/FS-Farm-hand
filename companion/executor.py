@@ -1516,20 +1516,28 @@ class Executor:
                 return Result("BLOCKED", "AD_MARKER_NOT_ON_NETWORK", ids, tuple(states))
             if routed:
                 return Result("COMPLETE", "ROUTED", ids, tuple(states))
-            start = transport.ad_route_start(graph, truck.position, marker.position)
-            if start is None:
+            starts = transport.ad_route_starts(graph, truck.position, marker.position)
+            if not starts:
                 return Result("BLOCKED", "AD_NO_ROUTED_WAYPOINT_NEAR", ids, tuple(states))
-            (x, z), yaw, wp = start
-            log.info("STAGE: no AutoDrive route from %s to %s; to waypoint %s at (%.1f, %.1f), %.0f m off",
-                     truck.position, marker.name, wp, x, z, math.dist(truck.position, (x, z)))
             enter("RESERVE")
             if not self.world.reserve(ids, owner):
                 return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
             reserved = True
             self.active = ids
-            enter("STAGE")
-            moved = True
-            self._navigate(truck.id, Pose(x, z, yaw), owner, trailer.id)
+            for n, ((x, z), yaw, wp) in enumerate(starts, 1):
+                log.info("STAGE %d: no AutoDrive route from %s to %s; to waypoint %s at (%.1f, %.1f), %.0f m off", n,
+                         truck.position, marker.name, wp, x, z, math.dist(truck.position, (x, z)))
+                enter("STAGE")
+                moved = True
+                try:
+                    self._navigate(truck.id, Pose(x, z, yaw), owner, trailer.id)
+                    break
+                except StepFailed as failure:
+                    # GIANTS could not plan or drive there (live: its agent planning 96 s, 72 m off):
+                    # the next routed waypoint.
+                    if n == len(starts) or not failure.code.startswith(("NAVIGATE_", "GOTO_")):
+                        raise
+                    log.info("STAGE %d: %s", n, failure.code)
             enter("VERIFY")
             after = self._at_rest(ids)
             if not transport.ad_routed(graph, after[truck.id].position, marker.position):

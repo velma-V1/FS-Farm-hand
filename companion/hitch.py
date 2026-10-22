@@ -485,6 +485,50 @@ def ad_routed(graph: "ADGraph", position, target_position) -> bool | None:
     return start in graph.reaching(target)
 
 
+AD_STUB_LINK_M = 15.0            # where AutoDrive's own path from the rig runs out: a routed waypoint this near it
+
+
+def ad_route_starts(graph: "ADGraph", position, target_position, max_m: float = AD_ROUTE_START_MAX_M, count: int = 3):
+    """Up to ``count`` waypoints within ``max_m`` that have a route to the marker and lead on
+    toward it, as ((x, z), yaw along the next routed edge, waypoint id), best first. First the
+    one nearest the end of AutoDrive's own path from the waypoint nearest the rig (live
+    2026-10-22: a dead-end lane stopping 5.5 m short of the road it joins, so the rig goes the
+    way the network's author drove), then the rest by distance."""
+    target = _ad_target(graph, target_position)
+    if target is None:
+        return []
+    reach = graph.reaching(target)
+
+    def start(wp):
+        nxt = next((b for b in graph.out.get(wp, ()) if b in reach), None)
+        if nxt is None:
+            return None
+        point, (nx, nz) = graph.points[wp], graph.points[nxt]
+        return point, math.atan2(nx - point[0], nz - point[1]), wp
+
+    ordered = []
+    here, _ = graph.closest(position)
+    seen, wp, last = set(), here, None
+    while wp is not None and wp not in seen and wp not in reach and len(seen) < 500:
+        seen.add(wp)
+        last, wp = wp, next(iter(graph.out.get(wp, ())), None)
+    end = graph.points.get(last) if last is not None and wp is None else None     # it ran out
+    if end is not None:
+        linked = sorted((w for w in reach if math.dist(graph.points[w], end) <= AD_STUB_LINK_M),
+                        key=lambda w: math.dist(graph.points[w], end))
+        ordered += linked[:1]
+    ordered += [w for w in sorted(reach, key=lambda w: math.dist(graph.points[w], position))
+                if w not in ordered and math.dist(graph.points[w], position) <= max_m][:count * 4]
+    out = []
+    for wp in ordered:
+        found = start(wp)
+        if found is not None and math.dist(found[0], position) <= max_m:
+            out.append(found)
+        if len(out) >= count:
+            break
+    return out
+
+
 def ad_route_start(graph: "ADGraph", position, target_position, max_m: float = AD_ROUTE_START_MAX_M):
     """The nearest waypoint within ``max_m`` that has a route to the marker and leads on toward
     it: ((x, z), yaw along its next routed edge, waypoint id), or None."""
