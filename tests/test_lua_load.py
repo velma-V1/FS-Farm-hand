@@ -418,6 +418,30 @@ class LuaLoadTests(unittest.TestCase):
         self.assertEqual(modes["over"], 0, modes)
         self.assertIn("coast", list(w.events.values()))
 
+    def test_downhill_it_brakes_above_the_commanded_speed(self):
+        # Live c696741383fe4388-1: backing off the ramps' foot (nose up, going back: downhill)
+        # it rolled 2.88 -> 3.04 km/h while coasting. Here it rolls on at 3.2 km/h whenever it is
+        # not braked: downhill it brakes above the command and never goes over the limit.
+        w = self.world(plow=PLOW, ahead=0.0)
+        w.coastKmh = 3.2
+        self.lua.execute("""local w = ...
+            local base = w.env.localDirectionToWorld
+            w.env.localDirectionToWorld = function(n, x, y, z)
+                local a, b, c = base(n, x, y, z)
+                if n == w.steer and z == 1 then return a, 0.15, c end
+                return a, b, c
+            end""", w)
+        session, why, refused = self.start(w, direction=-1)
+        self.assertIsNotNone(session, (why, self.hitch.describeLoad(refused)))
+        w.speedFactor = 1.25                                   # and overshoots what it is told
+        code, _ = self.drive(w, session)
+        self.assertEqual(code, "UNLOADED", self.hitch.describeSpeed(session))
+        modes = dict(session.speedModes)
+        self.assertEqual(modes["over"], 0, self.hitch.describeSpeed(session))
+        self.assertGreater(modes["brake"], 0)
+        self.assertGreater(session.downhillFrames, 0)
+        self.assertLessEqual(session.peakKmh, 3.0)
+
     def test_the_whole_rig_is_watched_while_it_moves_the_mounted_plow_included(self):
         # Something comes up beside the plow (outside the volume ahead of the tractor): 0.1 m
         # from its side it is contact, braked; 0.3 m from it, recorded as near, and it loads.

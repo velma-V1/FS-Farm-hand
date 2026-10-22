@@ -329,7 +329,11 @@ end
 -- OVERSPEED. GIANTS' own reading (getLastSpeed, smoothed) and the horizontal speed are
 -- recorded beside it, and a trace every traceMs, for the log.
 Hitch.SPEED = { windowMs = 250, commandShare = 0.85, coastShare = 0.9, brakeShare = 0.97,
-                traceMs = 500, traceMax = 240 }
+                traceMs = 500, traceMax = 240,
+                -- Downhill in the direction of travel (live c696741383fe4388-1: UNLOAD rolling off
+                -- the ramps' foot backwards went 2.88 -> 3.04 km/h while only coasting): it brakes
+                -- above the commanded speed, and commands downhillShare of the limit there.
+                downhillSine = 0.02, downhillShare = 0.7 }
 
 -- The tractor's measured speed in km/h (3D and horizontal) over the window, or nil before
 -- the window has filled.
@@ -365,6 +369,9 @@ end
 function Hitch.drive(env, s, dt, forwards, lx, lz)
     local S, cap = Hitch.SPEED, s.maxSpeedKmh
     local command = Hitch.commandKmh(cap)
+    local okF, _, fy = pcall(env.localDirectionToWorld, s.tractor.rootNode, 0, 0, 1)
+    local downhill = okF and finite(fy) and ((forwards and fy < -S.downhillSine) or (not forwards and fy > S.downhillSine))
+    if downhill then command = math.max(math.min(cap, 1), cap * S.downhillShare) end
     local v, flat = Hitch.measureSpeed(env, s)
     local okR, reported = pcall(function() return s.tractor:getLastSpeed() end)
     reported = okR and finite(reported) and math.abs(reported) or nil
@@ -376,11 +383,12 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
     local mode = "drive"
     if v ~= nil and v > cap then
         mode = "over"
-    elseif v ~= nil and v > cap * S.brakeShare then
+    elseif v ~= nil and (v > cap * S.brakeShare or (downhill and v > command)) then
         mode = "brake"
     elseif v ~= nil and v > cap * S.coastShare then
         mode = "coast"
     end
+    if downhill then s.downhillFrames = (s.downhillFrames or 0) + 1 end
     s.speedModes = s.speedModes or { drive = 0, coast = 0, brake = 0, over = 0 }
     s.speedModes[mode] = s.speedModes[mode] + 1
     if (s.elapsed or 0) >= (s.traceAt or 0) or mode == "over" then
@@ -409,9 +417,10 @@ function Hitch.describeSpeed(s)
     if s == nil or s.maxSpeedKmh == nil then return "speed[-]" end
     local function f(n) return n and string.format("%.2f", n) or "?" end
     local m = s.speedModes or {}
-    return string.format("speed[limit=%.1f cmd=%.2f peak=%s@%s flat=%s giants=%s@%s modes=drive:%d,coast:%d,brake:%d,over:%d%s]",
+    return string.format("speed[limit=%.1f cmd=%.2f peak=%s@%s flat=%s giants=%s@%s modes=drive:%d,coast:%d,brake:%d,over:%d downhill=%d%s]",
         s.maxSpeedKmh, Hitch.commandKmh(s.maxSpeedKmh), f(s.peakKmh), f(s.peakAlong), f(s.peakFlatKmh),
         f(s.peakReportedKmh), f(s.peakReportedAlong), m.drive or 0, m.coast or 0, m.brake or 0, m.over or 0,
+        s.downhillFrames or 0,
         s.overKmh and string.format(" OVERSPEED=%.2f", s.overKmh) or "")
 end
 
