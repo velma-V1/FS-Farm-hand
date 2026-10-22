@@ -1493,6 +1493,7 @@ class Executor:
             rigs = [(t, observed[t.attached_to]) for t in items
                     if t.attached_to in observed and transport.is_transport(observed[t.attached_to])
                     and observed[t.attached_to].attached_to == t.id and named(t, command.get("tractor_name"))
+                    and named_trailer(observed[t.attached_to], command.get("implement_name"))
                     and all(usable(x, farm_id) and x.stopped for x in (t, observed[t.attached_to]))
                     and not any(i.belted_to == t.attached_to for i in items)]
             if not rigs:

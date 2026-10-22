@@ -228,11 +228,14 @@ def _words(name: str | None) -> str | None:
 
 
 def haul_step(items: tuple[Equipment, ...], farm_id: str, name: str | None, target, delivered: bool,
-              staged: bool = True):
+              staged: bool = True, transport_name: str | None = None, truck_name: str | None = None):
     """The next executor step of a haul goal from observed state, as an intent fragment,
     or (None, why): HAULED when it is done; NO_SUCH_TRACTOR, TRACTOR_AMBIGUOUS,
     NO_TRANSPORT when it cannot go on. Not yet ``staged``: before the load, the empty
-    transport is taken where AutoDrive has a route to the target (stage_transport)."""
+    transport is taken where AutoDrive has a route to the target (stage_transport). One
+    transport throughout (live 2026-10-22: with two on the farm the load took the lowboy nearest
+    the tractor, not the Deckover just staged): the one named (``transport_name``, kept by the
+    goal once chosen), else the one the named truck tows, else the one nearest the tractor."""
     observed = {i.id: i for i in items}
     transports = [i for i in items if transport.is_transport(i) and i.farm_id == farm_id]
     tractors = _tractor_for(items, farm_id, name, transports)
@@ -255,10 +258,16 @@ def haul_step(items: tuple[Equipment, ...], farm_id: str, name: str | None, targ
         return {"task": "load_tractor", "target": "player_at_acceptance", "tractor_name": words,
                 "implement_name": _words(trailer.name)}, None
     hitched = [t for t in transports if observed.get(t.attached_to) is not None]
+    if transport_name:
+        hitched = [t for t in hitched if named(t, transport_name)]
+    elif truck_name:
+        hitched = [t for t in hitched if named(observed[t.attached_to], truck_name)]
+    hitched.sort(key=lambda t: (math.dist(t.position, tractor.position), t.id))
+    which = {"implement_name": _words(hitched[0].name)} if hitched and _words(hitched[0].name) else {}
     if hitched and not staged and destination:
-        return {"task": "stage_transport", **destination}, None
+        return {"task": "stage_transport", **destination, **which}, None
     if hitched:
-        return {"task": "load_tractor", "target": "player_at_acceptance", "tractor_name": words}, None
+        return {"task": "load_tractor", "target": "player_at_acceptance", "tractor_name": words, **which}, None
     if transports:
         return {"task": "hitch_pair", "target": "player_at_acceptance", "implement": "trailer",
                 "implement_name": _words(transports[0].name)}, None
@@ -537,7 +546,8 @@ class Coordinator:
             elif command == "sequence":
                 work = {"steps": proposal["steps"]}
             elif command == "haul_tractor":
-                work = {"tractor_name": proposal.get("tractor_name"), "target": proposal.get("target", "here")}
+                work = {"tractor_name": proposal.get("tractor_name"), "target": proposal.get("target", "here"),
+                        "truck_name": proposal.get("truck_name")}
             elif command == "contract":
                 work = {"field": proposal.get("field"), "kind": proposal.get("kind")}
             elif command == "unload_combine":
@@ -957,7 +967,8 @@ class Coordinator:
                 return Result("BLOCKED", "NOTHING_TO_HITCH_TOGETHER", (), tuple(states))
             if command == "haul_tractor":
                 result = self._haul(sub, cancel, entered, {"tractor_name": step.get("tractor_name"),
-                                                           "target": step.get("target", "here")})
+                                                           "target": step.get("target", "here"),
+                                                           "truck_name": step.get("truck_name")})
             elif command == "load_tractor" and step.get("carry"):
                 result = self._load_with(sub, cancel, entered, step)
             elif command == "field_work":
@@ -1035,7 +1046,9 @@ class Coordinator:
                 return Result("CANCELLED", "CANCELLED_BY_REQUESTER", tuple(used), tuple(states))
             self._settle()
             step, failure = haul_step(tuple(self.world.snapshot()), self.farm(), name, target, work["delivered"],
-                                      work["staged"])
+                                      work["staged"], work.get("transport"), work.get("truck_name"))
+            if step is not None and step.get("implement_name") and step["task"] in ("stage_transport", "load_tractor"):
+                work.setdefault("transport", step["implement_name"])       # this transport from now on
             if step is None:
                 if failure == "HAULED":
                     return Result("COMPLETE", "HAULED_AND_UNLOADED", tuple(used), tuple(states))

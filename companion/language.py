@@ -168,7 +168,8 @@ TEST_AREA_M2 = 400        # "a small area of field 7": about a minute of work fo
 # What one command already does: a sequence of only these is that command ("hitch the
 # tractor to the forage wagon then take it to the barn" is one fetch).
 _COVERS = {"fetch_pair": {"hitch_pair", "fetch_pair", "move_pair"}, "buy": {"buy"},
-           "load_tractor": {"load_tractor"}, "field_work": {"field_work", "sell", "store"}}
+           "load_tractor": {"load_tractor"}, "field_work": {"field_work", "sell", "store"},
+           "haul_tractor": {"haul_tractor", "unload_tractor"}}
 # "Take it back", "put the deckover back (where it was)": back to where Farmhand took it from.
 _BACK = re.compile(r"(?:please\s+)?(?:take|put|bring|drive|move|return)\s+(?:it|them|that|this|everything"
                    r"|(?:the|that|my)\s+(?P<thing>[a-z0-9 ]{1,40}?))\s+back(?:\s+(?:up|over))?"
@@ -651,7 +652,8 @@ class RuleInterpreter:
                                                             "follow_me", "sell"):
                 return None
             if rest["command"] == "haul_tractor":
-                return None                       # its vehicle is the tractor carried, not the one used
+                # "use the gmc to take the deutz to the farm": the truck whose transport carries it.
+                return {**rest, "truck_name": use["name"]}
             return {**rest, "tractor_name": use["name"]}
         if _RESUME.fullmatch(words):
             return {"version": 1, "command": "resume"}

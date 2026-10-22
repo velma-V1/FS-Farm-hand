@@ -144,6 +144,7 @@
         }
       }
     },
+    "truck_name": {"description": "haul_tractor: the truck whose transport trailer carries the tractor ('use the gmc to take the deutz to the farm').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
     "cargo_name": {"description": "move_pair inside a goal: the rig carrying this belted vehicle.", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
     "together": {"description": "hitch_pair in a sequence: the tractor and the implement just bought ('hitch them together').", "const": true},
     "carry": {"description": "load_tractor: the implement mounted on the tractor goes along ('load the tractor and plow'): hitched first if it is not.", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},

@@ -656,6 +656,23 @@ class HaulGoalTests(unittest.TestCase):
         self.assertEqual((c.last.state, c.last.reason), ("FAILED", "AD_NO_ROUTE"), c.last.states)
         self.assertIsNotNone(c.kept)
 
+    def test_one_transport_throughout_the_named_trucks_when_there_are_two(self):
+        # Live 2026-10-22: the farm also has the 379 with an LB 56 26 lowboy; the load took the
+        # lowboy nearest the Series 9, not the Deckover the haul had staged.
+        world, truck, deck, series9 = haul_world(hitched=True)
+        lowboy = replace(world.items[deck.id], id="lb-1", name="LB 56 26", attached_to="pb-1",
+                         position=(12.0, -10.0), belt_markers=tuple((m[0] - 28.0, m[1], m[2] - 30.0, m[3] - 28.0, m[4],
+                                                                     m[5] - 30.0) for m in world.items[deck.id].belt_markers))
+        peterbilt = replace(world.items[truck.id], id="pb-1", name="379", attached_to="lb-1", position=(12.0, -1.0),
+                            ai_root=Pose(12.0, -1.0, 0.0))
+        world.items.update({lowboy.id: lowboy, peterbilt.id: peterbilt})
+        c, notices = self.run_goal(world, "use the gmc to take the deutz to field 3 and unload it")
+        job = c.last
+        self.assertEqual((job.state, job.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), job.states)
+        self.assertIn(deck.id, job.equipment)
+        self.assertNotIn(lowboy.id, job.equipment)
+        self.assertEqual(world.items[lowboy.id].position, lowboy.position)          # never touched
+
     def test_when_autodrive_does_not_move_the_loaded_rig_the_player_drives_it(self):
         # Assisted, never counted as autonomous: AutoDrive's drive ended with what it waited on;
         # the goal is kept, "continue" before the rig is there does not hand it back to AutoDrive,
