@@ -162,6 +162,18 @@ _FIELD_WORK = re.compile(
     r"|field\s+(?:number\s+)?(?P<number>\d{1,5}))(?:\s+please)?$")
 
 
+# "plow field 3, seed it with wheat, then fertilize it": a field operation on the field just
+# named ("it", "that", "the field"), the crop when sown; one field's operations make one job.
+_FIELD_IT = re.compile(rf"^(?:and\s+)?(?:then\s+)?(?P<verb>{_FIELD_VERB})\s+(?:it|that|the\s+field|that\s+field|there)"
+                       r"(?:\s+(?:with|to)\s+(?:some\s+)?(?P<crop>[a-z]{2,15}(?:\s+[a-z]{2,15})?))?(?:\s+please)?$")
+
+
+# "the harvester still has wheat in it, unload it and sell it": a clause saying what a combine
+# holds makes "it" the combine for the clauses after it (unload it -> unload the combine).
+_COMBINE_SUBJECT = re.compile(r"^(?:the|my|our)\s+(?:combines?|harvesters?)\s+(?:is|s|still|has|have|got|are)\b.*$")
+_UNLOAD_IT = re.compile(r"^(?:and\s+)?(?:then\s+)?(?:unload|empty)\s+(?:it|that|them)(?:\s+please)?$")
+
+
 TEST_AREA_M2 = 400        # "a small area of field 7": about a minute of work for one implement
 
 
@@ -169,7 +181,7 @@ TEST_AREA_M2 = 400        # "a small area of field 7": about a minute of work fo
 # tractor to the forage wagon then take it to the barn" is one fetch).
 _COVERS = {"fetch_pair": {"hitch_pair", "fetch_pair", "move_pair"}, "buy": {"buy"},
            "load_tractor": {"load_tractor"}, "field_work": {"field_work", "sell", "store"},
-           "haul_tractor": {"haul_tractor", "unload_tractor"}}
+           "haul_tractor": {"haul_tractor", "unload_tractor", "move_pair"}}
 # "Take it back", "put the deckover back (where it was)": back to where Farmhand took it from.
 _BACK = re.compile(r"(?:please\s+)?(?:take|put|bring|drive|move|return)\s+(?:it|them|that|this|everything"
                    r"|(?:the|that|my)\s+(?P<thing>[a-z0-9 ]{1,40}?))\s+back(?:\s+(?:up|over))?"
@@ -191,8 +203,17 @@ _TRACTOR_TO = re.compile(r"^(?:please\s+)?(?:take|bring|haul|deliver|transport|m
 _UNLOAD_TAIL = re.compile(r"\s+(?:and\s+)?(?:then\s+)?unload\s+(?:it|him|that|the tractor)(?:\s+there)?$")
 # Clause breaks of a sequence: commas, "then", "and then", ", and", semicolons.
 _VERB = (r"(?:load|unload|buy|purchase|deliver|bring|take|haul|hitch|unhitch|detach|move|drive|park|follow|save|use|sell|store"
+         # a field verb only with its field after it ("and plow it", "and seed field 3"; "the tractor
+         # and plow" is the implement)
+         r"|(?:plow|plough|cultivate|till|seed|sow|plant|drill|fertili[sz]e|spray|harvest)"
+         r"(?=\s+(?:it|that|there|the\s+field|field\s+\d|(?:the\s+|our\s+|my\s+)?field\s+\d))"
          r"|do(?=\s+(?:a|an|the)\s+(?:[a-z]+\s+)?contract))\b")
 _CLAUSE_BREAK = re.compile(r"\s*,\s*(?:and\s+)?(?:then\s+)?|\s+(?:and\s+)?then\s+|\s*;\s*"
+                           # "harvest field 5 and while that runs take the deutz to the farm": the
+                           # helper works on while the next job goes (field work is a background worker)
+                           r"|\s+(?:and\s+)?(?:while|whilst)\s+(?:that|it|this|they|the\s+helper)\s+"
+                           r"(?:runs?|works?|harvests?|goes|is\s+(?:running|working|going|harvesting))\s*,?\s+"
+                           r"|\s+and\s+(?:in\s+the\s+)?meanwhile\s+"
                            # "... and load the tractor": "and" before a command verb
                            r"|\s+and\s+(?=" + _VERB + r")"
                            # "load it back up bring it back up": one command running into the next
@@ -212,7 +233,7 @@ _UNLOAD = re.compile(
     r"|(?:take|drive|get|back|run)\s+(?:the\s+|my\s+)?(?P<off>" + _THING + r")\s+off)"
     r"(?:\s+(?:of\s+)?(?:off\s+|from\s+)?(?:the\s+|my\s+)?(?P<trailer>" + _THING + r"))?$")
 # What a transport clause may name: a trailer word, a truck, or the thing itself.
-_TRAILER_WORDS = re.compile(r"\b(?:trailers?|decks?|deckovers?|goosenecks?|lowboys?|lowloaders?|flatbeds?)\b")
+_TRAILER_WORDS = re.compile(r"\b(?:trailers?|decks?|deckovers?|goosenecks?|lowboys?|lowloaders?|low\s+loaders?|flatbeds?)\b")
 _TRANSPORT_NOT = re.compile(r"\b(?:wagon|forage|implement|bales?|pallets?|grain|silage|logs?|wood)\b")
 # Clauses a sequence folds into its load (the load always belts and raises the ramps).
 _ABSORBED = re.compile(r"^(?:then\s+)?(?:(?:secure|strap|belt|tie|chain)\s+(?:it|him|that|the tractor)(?:\s+down)?"
@@ -537,7 +558,10 @@ _VEHICLE_WORDS = re.compile(r"\b(?:tractor|truck|pickup|deutz|fendt|john\s+deere
                             r"|chevrolet|dodge)\b")
 # "use the gmc to take them to the farm": the rest of the sentence, done with that vehicle.
 _USE = re.compile(r"^(?:please\s+)?(?:and\s+)?use\s+(?:the|my|our)\s+(?P<name>[a-z0-9][a-z0-9-]{0,20}"
-                  r"(?:\s+[a-z0-9][a-z0-9-]{0,20})?)\s+to\s+(?P<rest>.+)$")
+                  r"(?:\s+[a-z0-9][a-z0-9-]{0,20})?)"
+                  # "use the 379 and the lowboy to ...": the transport it tows, by its word or name
+                  r"(?:\s+(?:and|with)\s+(?:the|its|my|our)\s+(?P<with>[a-z0-9][a-z0-9 -]{0,30}?))?"
+                  r"\s+to\s+(?P<rest>.+)$")
 
 
 def hitch_named(words: str) -> dict | None:
@@ -625,6 +649,25 @@ def model_name(words: str) -> str | None:
     return None
 
 
+def _merge_field_work(steps: list) -> list:
+    """Consecutive field work on the same field (whole field, no destination) as one job, its
+    operations in the order said, the crop of its sowing."""
+    out = []
+    for step in steps:
+        last = out[-1] if out else None
+        if (last is not None and step["command"] == last["command"] == "field_work"
+                and step["field"] == last["field"] and not ({"area_m2", "destination", "over_crop"} & (set(last) | set(step)))
+                and not set(step["operations"]) & set(last["operations"])
+                and not (step.get("crop") and last.get("crop"))):
+            merged = {**last, "operations": last["operations"] + step["operations"]}
+            if step.get("crop"):
+                merged["crop"] = step["crop"]
+            out[-1] = merged
+        else:
+            out.append(step)
+    return out
+
+
 class RuleInterpreter:
     """Deterministic wording rules for the supported commands."""
 
@@ -637,6 +680,8 @@ class RuleInterpreter:
         single = self._clause(text)
         if _CLAUSE_BREAK.search(text.casefold()):
             several = self._sequence(text)
+            if several is not None and several["command"] != "sequence":
+                return several                # clauses that make one command
             if several is not None and not (single is not None and {s["command"] for s in several["steps"]}
                                             <= _COVERS.get(single["command"], set())):
                 return several
@@ -653,7 +698,19 @@ class RuleInterpreter:
                 return None
             if rest["command"] == "haul_tractor":
                 # "use the gmc to take the deutz to the farm": the truck whose transport carries it.
-                return {**rest, "truck_name": use["name"]}
+                haul = {**rest, "truck_name": use["name"]}
+                if use["with"]:
+                    if not _TRAILER_WORDS.search(use["with"]):
+                        return None
+                    # A kind word ("the lowboy", "the trailer") names nothing beyond the one the
+                    # truck tows; a name ("the deckover", "the lizard trailer") names that one.
+                    generic = re.fullmatch(r"(?:(?:a|the)\s+)?(?:trailers?|decks?|lowboys?|lowloaders?|flatbeds?"
+                                           r"|low\s+loaders?)", use["with"])
+                    if generic is None:
+                        haul["implement_name"] = _trailer_name(use["with"])
+                return haul
+            if use["with"]:
+                return None
             return {**rest, "tractor_name": use["name"]}
         if _RESUME.fullmatch(words):
             return {"version": 1, "command": "resume"}
@@ -725,19 +782,40 @@ class RuleInterpreter:
         of the hitch that follows, belting and the ramps fold into the load, and names carry
         to the steps after them. Any clause not understood: no sequence."""
         clauses = [c.strip(" .!") for c in _CLAUSE_BREAK.split(text.casefold())]
-        steps, towing, trailer = [], None, None
+        steps, towing, trailer, combine = [], None, None, False
         for clause in clauses:
             words = normalize(clause)
             if not words:
                 continue
+            if _COMBINE_SUBJECT.match(words):
+                combine = True                # "it" is the combine from here on
+                continue
+            if combine and _UNLOAD_IT.match(words):
+                steps.append({"version": 1, "command": "unload_combine"})
+                continue
+            if steps and steps[-1]["command"] == "haul_tractor" and _UNLOAD_IT.match(words):
+                continue                      # a haul unloads where it delivers
             take = _TAKE_VEHICLE.match(words)
-            if take is not None and not _KNOWN_THING.search(take.group(1)) and implement_kind(take.group(1)) is None:
+            if (take is not None and not _KNOWN_THING.search(take.group(1)) and implement_kind(take.group(1)) is None
+                    # a vehicle only, never one with a destination ("take the deutz to the farm")
+                    and not re.search(r"\b(?:to|into|onto|off|over|back|here|there)\b", take.group(1))):
                 towing = take.group(1)
                 continue
             if _ABSORBED.match(words):
                 lowering = re.search(r"\b(?:lower|drop|down)\b", words)
                 if not lowering and not any(s["command"] == "load_tractor" for s in steps):
                     return None               # securing or raising with nothing loaded
+                continue
+            field_it = _FIELD_IT.match(words)
+            last_field = next((s for s in reversed(steps) if s["command"] == "field_work"), None)
+            if field_it is not None and last_field is not None and last_field["field"] != "smallest":
+                operation = _FIELD_VERBS[field_it["verb"]]
+                step = {"version": 1, "command": "field_work", "field": last_field["field"], "operations": [operation]}
+                if field_it["crop"]:
+                    if operation != "sow" or set(field_it["crop"].split()) & _NOT_CROPS:
+                        return None
+                    step["crop"] = field_it["crop"]
+                steps.append(step)
                 continue
             step = self._clause(clause)
             if step is None or step["command"] in ("stop", "status", "settings", "report", "unsupported", "sequence",
@@ -750,6 +828,9 @@ class RuleInterpreter:
             if step["command"] in ("load_tractor", "unload_tractor") and trailer and "implement_name" not in step:
                 step["implement_name"] = trailer
             steps.append(step)
+        steps = _merge_field_work(steps)
+        if len(steps) == 1 and (steps[0]["command"] == "field_work" or combine):
+            return steps[0]                   # "plow field 3, seed it with wheat, then fertilize it": one job
         if not 2 <= len(steps) <= 8:
             return None
         return {"version": 1, "command": "sequence", "steps": steps}

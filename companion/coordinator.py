@@ -565,6 +565,8 @@ class Coordinator:
             elif command == "haul_tractor":
                 work = {"tractor_name": proposal.get("tractor_name"), "target": proposal.get("target", "here"),
                         "truck_name": proposal.get("truck_name")}
+                if proposal.get("implement_name"):     # "... and the lowboy": that transport, kept
+                    work["transport"] = proposal["implement_name"]
             elif command == "contract":
                 work = {"field": proposal.get("field"), "kind": proposal.get("kind")}
             elif command == "unload_combine":

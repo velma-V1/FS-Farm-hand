@@ -803,7 +803,9 @@ local function ownedFields(env, farmId)
     if type(fields) ~= "table" then return out end
     local contracted = {}
     for _, m in ipairs(missionList(env)) do
-        if m.farmId == farmId and m.status == "RUNNING" then contracted[m.field] = true end
+        -- Any of this farm's own past CREATED (taken): live 72e4a4c33dde45e9-1, field 10 dropped out
+        -- of the snapshot as its mission went FINISHED, and the work could not be verified.
+        if m.farmId == farmId and m.status ~= "CREATED" then contracted[m.field] = true end
     end
     for _, f in ipairs(fields) do
         if fieldId(f) ~= nil and (fieldOwned(env, f, farmId) or contracted[f]) then out[#out + 1] = f end

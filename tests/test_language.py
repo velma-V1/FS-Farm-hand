@@ -321,3 +321,29 @@ class GuideExamplesTests(unittest.TestCase):
                 proposal = rules.interpret(words)
                 self.assertIsNotNone(proposal)
                 self.assertNotEqual(proposal["command"], "unsupported")
+
+
+class LabelledPhrasingTests(unittest.TestCase):
+    """tests/fixtures/phrasings.json: every labelled sentence reaches its command by the rules
+    alone (no model), and the proposal is valid against protocol/command.schema.json."""
+
+    def test_every_labelled_sentence(self):
+        import json
+        from pathlib import Path
+        from companion.coordinator import COMMAND_VALIDATOR
+        from companion.language import RuleInterpreter
+        data = json.loads((Path(__file__).parent / "fixtures" / "phrasings.json").read_text())
+        rules = RuleInterpreter()
+
+        def matches(got, want):
+            if isinstance(want, dict):
+                return isinstance(got, dict) and all(matches(got.get(k), v) for k, v in want.items())
+            if isinstance(want, list) and want and isinstance(want[0], dict):
+                return isinstance(got, list) and len(got) == len(want) and all(map(matches, got, want))
+            return got == want
+
+        for case in data["phrasings"]:
+            with self.subTest(say=case["say"]):
+                got = rules.interpret(case["say"])
+                self.assertTrue(matches(got, case["expect"]), got)
+                self.assertTrue(COMMAND_VALIDATOR.is_valid(got), got)
