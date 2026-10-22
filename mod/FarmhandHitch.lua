@@ -655,7 +655,8 @@ end
 -- While LOAD / UNLOAD, BACKOFF and ALONGSIDE move (AGENTS.md exceptions 5 and 6), the
 -- whole rig as it stands each moment (every unit's size box at its own pose, pitched as
 -- the unit is, as AutoDrive pitches its boxes: Specialization.lua 1903-1909) is asked of
--- GIANTS' collision world every checkMs, from clearanceM above each box's floor to its top:
+-- GIANTS' collision world every checkMs, from clearanceM above each box's floor (raised by what
+-- its pitch drops the box's ends) to its top:
 -- `contactM` wider and longer all round it must be clear of everything but the rig, the
 -- transport and the terrain (else ENVELOPE_CONTACT, braked), `nearM` wider is recorded
 -- (how often and what came that close). The swept-volume checks before and ahead plan the
@@ -664,14 +665,19 @@ Hitch.ENVELOPE = { checkMs = 100, contactM = 0.15, nearM = 0.5, clearanceM = 0.3
 
 local function unitEnvelope(env, excluded, v, margin, mask, clearance)
     local E, size = Hitch.ENVELOPE, v.size
-    clearance = clearance or E.clearanceM
     local w, l, h = size.width, size.length, size.height
     local wo, lo, ho = size.widthOffset, size.lengthOffset, size.heightOffset
     assert(finite(w) and finite(l) and finite(h) and finite(wo) and finite(lo) and finite(ho))
+    local fx, fy, fz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
+    assert(finite(fx) and finite(fy) and finite(fz))
+    -- A size box's floor is where the wheels meet the ground: pitched over a change of slope
+    -- (the ramps' foot) its ends dip below the ground by up to half its length times the sine
+    -- of the pitch (live bc5716eb69e74af4-1: the Series 9's floor 0.32 m under the yard's
+    -- paving at 14 degrees, "contact" with the paving only). The band starts that much higher.
+    clearance = (clearance or E.clearanceM) + l / 2 * math.abs(fy)
     local half = math.max(0.05, (h - clearance) / 2)
     local x, y, z = env.localToWorld(v.rootNode, wo, ho + clearance + half, lo)
-    local fx, fy, fz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
-    assert(finite(x) and finite(y) and finite(z) and finite(fx) and finite(fy) and finite(fz))
+    assert(finite(x) and finite(y) and finite(z))
     local mission = env.g_currentMission
     local q = { seen = 0, hits = {} }
     function q.onEnvelopeOverlap(_, nodeId)

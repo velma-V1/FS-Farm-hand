@@ -444,6 +444,33 @@ class LuaLoadTests(unittest.TestCase):
                     self.assertIn("first=post", described)
                 self.assertGreater(session.envelopeChecks, 10)
 
+    def test_the_ground_under_a_pitched_unit_is_not_contact_but_something_standing_is(self):
+        # Live bc5716eb69e74af4-1: at 14 degrees on the ramps the Series 9's size-box floor was
+        # 0.32 m under the yard's paving (a static mesh), "contact" with the paving only. The
+        # band starts higher by what the pitch drops the box's ends.
+        for top, expected in ((0.5, "LOADED"), (1.6, "ENVELOPE_CONTACT")):
+            with self.subTest(top=top):
+                w = self.world()
+                x0, z0 = w.steer.x, w.steer.z
+                session, why, _ = self.start(w)
+                self.assertIsNotNone(session, why)
+                pitched = self.lua.eval("""function(w)
+                    local base = w.env.localDirectionToWorld
+                    w.env.localDirectionToWorld = function(n, x, y, z)
+                        local a, b, c = base(n, x, y, z)
+                        if n == w.steer and z == 1 then return a * 0.97, 0.24, c * 0.97 end
+                        return a, b, c
+                    end
+                end""")
+
+                def hook(i, w=w, x0=x0, z0=z0, top=top):
+                    if i == 20:
+                        pitched(w)
+                        a, _ = self.W.travel(w, x0, z0)
+                        w.box(a - 2.4, a - 1.6, -1.0, 1.0, 0, top, None, "paving")
+                code, _ = self.drive(w, session, hook=hook)
+                self.assertEqual(code, expected, self.hitch.describeEnvelope(session))
+
     def test_the_truck_ahead_is_watched_but_the_trailer_under_it_is_not(self):
         # On the deck the tractor's box overlaps the trailer it is on (excluded) every check;
         # the truck is not excluded: one moved up to the deck's front is contact.
