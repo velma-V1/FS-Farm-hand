@@ -527,6 +527,12 @@ local function hitNames(env, hits)
     for i = 1, math.min(#hits, 4) do
         local ok, name = pcall(env.getName, hits[i])
         names[i] = ok and tostring(name) or tostring(hits[i])
+        -- The object the shape belongs to (a vehicle's or placeable's name), for diagnosis.
+        pcall(function()
+            local object = env.g_currentMission:getNodeObject(hits[i])
+            local owner = object ~= nil and (type(object.getName) == "function" and object:getName() or object.typeName)
+            if owner ~= nil then names[i] = names[i] .. "@" .. tostring(owner) end
+        end)
     end
     return table.concat(names, ",")
 end
@@ -1935,8 +1941,26 @@ end
 -- names, or "UNKNOWN".
 local function loadVolume(env, s, a0, a1)
     local D = Hitch.LOAD
-    return clearVolume(env, s, a0, a1, D.lateralMarginM, D.stepM, D.floorClearanceM,
-                       s.rigBox.height + s.deck.height + D.topMarginM, s.masks.obstacles)
+    if not s.runIn or s.sign < 0 then
+        return clearVolume(env, s, a0, a1, D.lateralMarginM, D.stepM, D.floorClearanceM,
+                           s.rigBox.height + s.deck.height + D.topMarginM, s.masks.obstacles)
+    end
+    -- Run-in: the corridor from where the rig stands onto the axis up to the ramps' foot, the
+    -- rig's own straight width on the axis from there (live 987f65f7d073425c-1: one wide
+    -- corridor over the ramps and deck met the trailer's surroundings).
+    if a0 > a1 then a0, a1 = a1, a0 end
+    local lMin, lMax = s.lMin, s.lMax
+    local function part(b0, b1, l0, l1)
+        if b1 - b0 <= 1e-6 then return nil end
+        s.lMin, s.lMax = l0, l1
+        local hit, names = clearVolume(env, s, b0, b1, D.lateralMarginM, D.stepM, D.floorClearanceM,
+                                       s.rigBox.height + s.deck.height + D.topMarginM, s.masks.obstacles)
+        s.lMin, s.lMax = lMin, lMax
+        return hit, names
+    end
+    local hit, names = part(a0, math.min(a1, s.rampFoot), lMin, lMax)
+    if hit ~= nil then return hit, names end
+    return part(math.max(a0, s.rampFoot), a1, -s.halfWidth, s.halfWidth)
 end
 
 -- Prepare LOAD (direction 1) or UNLOAD (-1). `args`: tractor, trailer, direction, farmId,
@@ -2052,9 +2076,15 @@ function Hitch.newLoad(env, args)
         if s.travelM <= 0 or s.travelM > D.rampM + D.runInM + (trailerBox.aMax - trailerBox.aMin) then
             return "LOAD_TOO_FAR"
         end
-        -- The corridor from where the rig stands to the axis it steers onto.
-        s.lMin = math.min(rigBox.lMin, rigBox.lMin - s.startLateral)
-        s.lMax = math.max(rigBox.lMax, rigBox.lMax - s.startLateral)
+        -- The rig's own half width straight on the axis (its size boxes), and the run-in
+        -- corridor from where it stands onto the axis.
+        s.halfWidth = 0
+        for _, unit in ipairs(units) do
+            s.halfWidth = math.max(s.halfWidth, unit.size.width / 2 + math.abs(unit.size.widthOffset or 0))
+        end
+        s.lMin = math.min(rigBox.lMin, -s.halfWidth)
+        s.lMax = math.max(rigBox.lMax, s.halfWidth)
+        if not s.runIn then s.lMin, s.lMax = rigBox.lMin, rigBox.lMax end
         local okMasks, masks = pcall(collisionMasks, env)
         if not okMasks then return "LOAD_QUERY_UNKNOWN" end
         s.masks = masks

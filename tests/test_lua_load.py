@@ -196,6 +196,15 @@ class LuaLoadTests(unittest.TestCase):
         self.assertIsNotNone(session, why)
         self.assertEqual(self.drive(w, session)[0], "LOADED", self.hitch.describeLoad(session))
         self.assertEqual(tuple(self.start(self.world(ahead=18.0, side=3.0)))[1], "LOAD_NOT_LINED_UP")    # too far off
+        # Live 987f65f7d073425c-1: beside the deck, outside the rig's straight corridor on the axis
+        # (axis at l 1.2, half width 1.3 + 0.3) but inside the run-in's start span: no refusal.
+        w = self.world(ahead=18.0, side=1.2)
+        w.box(15.0, 18.0, -1.2, -0.8, 0, 2.0, None, "post")
+        session, why, refused = self.start(w)
+        self.assertIsNotNone(session, (why, self.hitch.describeLoad(refused)))
+        w = self.world(ahead=18.0, side=1.2)
+        w.box(15.0, 18.0, 1.0, 1.4, 1.2, 2.0, None, "beam")             # over the deck on the axis: refused
+        self.assertEqual(tuple(self.start(w))[1], "LOAD_PATH_BLOCKED")
 
     def test_limits_are_hard_capped(self):
         for overrides in ({"maxSpeedKmh": 3.5}, {"maxSpeedKmh": 0.5}, {"timeoutMs": 61000}, {"isReserved": False}):
