@@ -27,7 +27,7 @@ _QUESTION = re.compile(r"^(?:where|why|did|is|are|was|were|has|have|had|who|when
 _GENERIC = frozenset({"field", "the field", "there", "over there", "that", "it", "this",
                       "place", "somewhere", "building", "a building", "anywhere"})
 # Trailing words about time or manner, not the place ("to the barn in a minute").
-_TRAILING = re.compile(r"\s+(?:please|now|right now|right away|asap|quickly|soon|again|thanks|thank you|"
+_TRAILING = re.compile(r"\s+(?:please|now|right now|right away|asap|quickly|soon|again|thanks|thank you|for me|for us|"
                        r"in a (?:minute|moment|bit|sec|second)|when you can)$", re.IGNORECASE)
 _SETTINGS = re.compile(r"^(?:(?:open|show|change|choose|select|pick|set up|setup)\s+)?(?:the\s+)?(?:farmhand\s+)?"
                        r"(?:ai|a i|model|ai model|language model|settings|options|menu)(?:\s+(?:settings|model|menu))?$")
@@ -152,7 +152,8 @@ def refuses(text: str) -> bool:
 # Field work: "plow, seed and fertilize field 7", "seed the smallest field".
 _FIELD_VERBS = {"plow": "plow", "plough": "plow", "cultivate": "cultivate", "till": "cultivate",
                 "seed": "sow", "sow": "sow", "plant": "sow", "drill": "sow",
-                "fertilize": "fertilize", "fertilise": "fertilize", "spray": "fertilize", "harvest": "harvest"}
+                "fertilize": "fertilize", "fertilise": "fertilize", "spray": "fertilize", "harvest": "harvest",
+                "combine": "harvest", "cut": "harvest"}
 _FIELD_VERB = r"(?:" + "|".join(_FIELD_VERBS) + r")"
 _FIELD_WORK = re.compile(
     rf"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?P<verbs>{_FIELD_VERB}(?:\s+(?:(?:and|then|and\s+then)\s+)?{_FIELD_VERB})*)"
@@ -196,7 +197,8 @@ TEST_AREA_M2 = 400        # "a small area of field 7": about a minute of work fo
 # tractor to the forage wagon then take it to the barn" is one fetch).
 _COVERS = {"fetch_pair": {"hitch_pair", "fetch_pair", "move_pair"}, "buy": {"buy"},
            "load_tractor": {"load_tractor"}, "field_work": {"field_work", "sell", "store"},
-           "haul_tractor": {"haul_tractor", "unload_tractor", "move_pair"}}
+           # "... and take it off there" after a haul is its unload, not an unhitch
+           "haul_tractor": {"haul_tractor", "unload_tractor", "move_pair", "detach_pair"}}
 # "Take it back", "put the deckover back (where it was)": back to where Farmhand took it from.
 _BACK = re.compile(r"(?:please\s+)?(?:take|put|bring|drive|move|return)\s+(?:it|them|that|this|everything"
                    r"|(?:the|that|my)\s+(?P<thing>[a-z0-9 ]{1,40}?))\s+back(?:\s+(?:up|over))?"
@@ -215,7 +217,12 @@ _INSTEAD = re.compile(r"^(?:no\s+|actually\s+|wait\s+)?(?:(?:(?:take|bring|deliv
 _TRACTOR_TO = re.compile(r"^(?:please\s+)?(?:take|bring|haul|deliver|transport|move)\s+(?:the|my|our)\s+(?:tractor|deutz[a-z0-9 ]*?|series\s+\d+)"
                          r"\s+(?:to|over\s+to)\s+\S")
 # "... and unload it (there)": the end of a haul goal.
-_UNLOAD_TAIL = re.compile(r"\s+(?:and\s+)?(?:then\s+)?unload\s+(?:it|him|that|the tractor)(?:\s+there)?$")
+_UNLOAD_TAIL = re.compile(r"\s+(?:and\s+)?(?:then\s+)?(?:unload\s+(?:it|him|that|the tractor)|(?:take|drop|get|put)\s+(?:it|him|that)"
+                          r"\s+off)(?:\s+there)?$")
+# "... on the 379", "... with the gmc's trailer": the truck whose transport carries the tractor.
+_ON_TRUCK = re.compile(r"\s+(?:on|with|using|in)\s+(?:the\s+|my\s+|our\s+)?(?P<truck>[a-z0-9][a-z0-9-]{0,20})(?:\s+s)?"
+                       r"(?:\s+(?:truck|trailer|lowboy|low\s+loader|lowloader|deckover|flatbed|gooseneck|transport))?"
+                       r"(?=\s+(?:and|then)\b|$)")
 # Clause breaks of a sequence: commas, "then", "and then", ", and", semicolons.
 _VERB = (r"(?:load|unload|buy|purchase|deliver|bring|take|haul|hitch|unhitch|detach|move|drive|park|follow|save|use|sell|store"
          # a field verb only with its field after it ("and plow it", "and seed field 3"; "the tractor
@@ -435,6 +442,7 @@ _HARVEST_TO = re.compile(rf"\s+(?:and\s+|then\s+)+(?:(?P<sell>sell\b.*)"
 
 
 def field_work(words: str) -> dict | None:
+    words = _TRAILING.sub("", words)            # "go cut field 5 for me"
     destination = None
     if words.startswith("harvest"):
         to = _HARVEST_TO.search(words)
@@ -614,7 +622,8 @@ def hitch_named(words: str) -> dict | None:
 
 # "unload the combine", "unload the harvester on field 3": its grain transferred into a trailer,
 # nothing more (a helper harvesting: the field said, else the one being harvested).
-_UNLOAD_COMBINE = re.compile(r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?:unload|empty)\s+(?:the|my|our)\s+(?:combines?|harvesters?)"
+_UNLOAD_COMBINE = re.compile(r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?:unload|empty|dump)\s+(?:the|my|our)\s+(?:combines?|harvesters?)"
+                             r"(?:\s+s)?(?:\s+(?:tank|grain|hopper))?(?:\s+(?:into|in)\s+(?:a|the)\s+(?:trailer|wagon|cart))?"
                              r"(?:\s+(?:on|in|at)\s+field\s+(?P<field>\d{1,5}))?(?:\s+please)?$")
 
 
@@ -777,7 +786,12 @@ class RuleInterpreter:
             end = len(words)
         else:
             end = unload.start()
-        prefix = _DEUTZ.sub("deutz", words[:end])
+        prefix = re.sub(r"\s+back(?=\s+to\b)", "", _DEUTZ.sub("deutz", words[:end]))   # "haul the 3650 back to the farm"
+        truck = None
+        on_truck = _ON_TRUCK.search(prefix)
+        if on_truck is not None and unload is not None and not implement_kind(on_truck["truck"]) \
+                and on_truck["truck"] not in ("it", "this", "that", "farm", "field", "road"):
+            truck, prefix = on_truck["truck"], prefix[:on_truck.start()]
         move = self._interpret_one(prefix)
         if move is not None and move.get("command") == "unsupported" and move.get("reason") == "tractor_only":
             # "take the tractor to field 3 and unload it": the tractor on the transport.
@@ -789,6 +803,8 @@ class RuleInterpreter:
         proposal = {"version": 1, "command": "haul_tractor"}
         if move.get("tractor_name"):
             proposal["tractor_name"] = move["tractor_name"]
+        if truck:
+            proposal["truck_name"] = truck
         if "target" in move:
             proposal["target"] = move["target"]
         return proposal

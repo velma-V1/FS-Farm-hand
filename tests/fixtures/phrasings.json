@@ -226,6 +226,34 @@
         "land_action": "sell",
         "field": 7
       }
+    },
+    {
+      "say": "haul the 3650 back to the farm on the 379 and take it off there",
+      "expect": {
+        "command": "haul_tractor",
+        "tractor_name": "3650",
+        "truck_name": "379",
+        "target": {
+          "type": "place",
+          "name": "farm"
+        }
+      }
+    },
+    {
+      "say": "dump the combine's tank into a trailer",
+      "expect": {
+        "command": "unload_combine"
+      }
+    },
+    {
+      "say": "go cut field 5 for me",
+      "expect": {
+        "command": "field_work",
+        "field": 5,
+        "operations": [
+          "harvest"
+        ]
+      }
     }
   ]
 }

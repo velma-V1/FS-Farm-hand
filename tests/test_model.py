@@ -86,13 +86,16 @@ class ModelInterpreterTests(unittest.TestCase):
         for command, say in cases:
             with self.subTest(say=say):
                 _, interpreter = self.serve(lambda body, c=command, w=say: chat(json.dumps({"command": c, "say": w})))
-                proposal = interpreter.interpret("whatever the player said")
+                proposal = interpreter.interpret(say)         # grounded: the player said these words
                 self.assertEqual(proposal, rules.interpret(say))
                 self.assertEqual(proposal["command"], command)
                 self.assertTrue(COMMAND_VALIDATOR.is_valid(proposal))
-        for command in ("stop", "status"):
-            _, interpreter = self.serve(lambda body, c=command: chat(json.dumps({"command": c, "say": "bring it here"})))
-            self.assertEqual(interpreter.interpret("x"), {"version": 1, "command": command})
+        _, interpreter = self.serve(lambda body: chat(json.dumps({"command": "status", "say": "bring it here"})))
+        self.assertEqual(interpreter.interpret("x"), {"version": 1, "command": "status"})
+        # STOP is the rules' alone (scripts/model_eval.py, Qwen3 1.7B: "don't sell the grain yet"
+        # came back as stop): a model's stop is dropped, never cancelling the player's work.
+        _, interpreter = self.serve(lambda body: chat(json.dumps({"command": "stop", "say": ""})))
+        self.assertIsNone(interpreter.interpret("don't sell the grain yet"))
         # "hitch it and bring it to the barn": the rules make it a fetch to that place.
         _, interpreter = self.serve(lambda body: chat(json.dumps({"command": "hitch_pair",
                                                                   "say": "bring the cultivator to the barn"})))
@@ -230,3 +233,22 @@ class RuntimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GroundingTests(unittest.TestCase):
+    """A model's rewording counts only when it is in the player's own words (scripts/model_eval.py,
+    Qwen3 4B: "collect the straw on field 5 with the forage wagon" came back "cultivate field 5")."""
+
+    def test_invented_operations_fields_and_names_are_dropped(self):
+        from companion.model import to_proposal
+        cases = ((("field_work", "cultivate field 5"), "collect the straw on field 5 with the forage wagon", False),
+                 (("field_work", "cultivate and seed field 4"), "get field 4 cultivated and drilled with barley", True),
+                 (("field_work", "plow field 7"), "plow field 3", False),
+                 (("haul_tractor", "use the gmc to take the deutz to field 3 and unload it"),
+                  "put the deutz on the gmc's trailer and drop it off at field 3", True),
+                 (("haul_tractor", "use the 379 to take the deutz to field 3 and unload it"),
+                  "put the deutz on the gmc's trailer and drop it off at field 3", False))
+        for (command, say), text, kept in cases:
+            with self.subTest(text=text, say=say):
+                got = to_proposal({"command": command, "say": say}, text)
+                self.assertEqual(got is not None, kept, got)

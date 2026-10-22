@@ -1,0 +1,31 @@
+{
+  "about": "Wording the deterministic rules may miss, labelled with the command Farmhand must reach (expect: the fields that must match; null: nothing may be done - chat, questions, roleplay, or what Farmhand cannot do yet). scripts/model_eval.py scores a local model behind the rules on it: correct, abstained (safe), wrong (an executable proposal other than the label: the dangerous kind). The user, 2026-10-22: a 1-4B model must use the mod reliably.",
+  "cases": [
+    {"say": "put the deutz on the gmc's trailer and drop it off at field 3", "expect": {"command": "haul_tractor", "truck_name": "gmc", "target": {"type": "field_entrance", "field": 3}}},
+    {"say": "haul the 3650 back to the farm on the 379 and take it off there", "expect": {"command": "haul_tractor", "truck_name": "379"}},
+    {"say": "the harvester's full of wheat, empty it", "expect": {"command": "unload_combine"}},
+    {"say": "dump the combine's tank into a trailer", "expect": {"command": "unload_combine"}},
+    {"say": "empty the combine and after that sell the grain", "expect": {"command": "sequence"}},
+    {"say": "cash in the wheat we've got in the trailer", "expect": {"command": "sell"}},
+    {"say": "put the harvest in our own silo", "expect": {"command": "store"}},
+    {"say": "work field 3: plow it, plant wheat and then fertilize", "expect": {"command": "field_work", "field": 3}},
+    {"say": "get field 4 cultivated and drilled with barley", "expect": {"command": "field_work", "field": 4}},
+    {"say": "go cut field 5 for me", "expect": {"command": "field_work", "field": 5, "operations": ["harvest"]}},
+    {"say": "purchase the farmland around field 12", "expect": {"command": "land", "land_action": "buy", "field": 12}},
+    {"say": "i want to get rid of field 12", "expect": {"command": "land", "land_action": "sell", "field": 12}},
+    {"say": "find us a job off the contract board and do it", "expect": {"command": "contract"}},
+    {"say": "take on the best paying contract", "expect": {"command": "contract"}},
+    {"say": "keep going with what you were doing", "expect": {"command": "resume"}},
+    {"say": "whoa whoa stop everything", "expect": {"command": "stop"}},
+    {"say": "how's it going over there", "expect": {"command": "status"}},
+    {"say": "store the game for me", "expect": {"command": "save_game"}},
+    {"say": "fetch the plow over here", "expect": {"command": "fetch_pair"}},
+    {"say": "hook the seeder up to a tractor", "expect": {"command": "hitch_pair"}},
+    {"say": "what's the weather going to be tomorrow", "expect": null},
+    {"say": "tell me about crop rotation", "expect": null},
+    {"say": "pretend you're a grumpy old farmer", "expect": null},
+    {"say": "don't sell the grain yet", "expect": null},
+    {"say": "did you plow field 3", "expect": null},
+    {"say": "collect the straw on field 5 with the forage wagon", "expect": null}
+  ]
+}

@@ -25,6 +25,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from pathlib import Path, PurePosixPath
 import subprocess
 import sys
@@ -86,6 +87,7 @@ LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({})).open
 # (grammars/README.md "Can't mix properties w/ anyOf / oneOf").
 # The commands a sentence can be rewritten into; "unknown" for anything else.
 MODEL_COMMANDS = ["fetch_pair", "move_pair", "hitch_pair", "detach_pair", "field_work", "buy", "save_game",
+                  "haul_tractor", "contract", "sell", "store", "unload_combine", "land", "sequence", "resume",
                   "stop", "status", "unknown"]
 MODEL_SCHEMA = {
     "type": "object",
@@ -107,17 +109,30 @@ PROMPT = """You rewrite one sentence from a Farming Simulator player for Farmhan
 - detach_pair: unhitch an implement where it stands.
 - field_work: plow, cultivate, seed or fertilize a field (or a small test area of one).
 - buy: buy a plow, a named truck or a gooseneck trailer from the store.
+- haul_tractor: carry a tractor on a truck's transport trailer to a place and unload it there.
+- contract: take a field contract, do it and collect the reward.
+- sell / store: take the harvested grain to be sold, or into the farm's own silo.
+- unload_combine: empty a combine into a trailer.
+- land: buy or sell the land a field lies on.
+- sequence: several of these, one after another.
+- resume: go on with what was stopped.
 - save_game: save the game.
 - stop: stop or cancel what it is doing.
 - status: say what it is doing.
 Answer with JSON only: {"command": one of fetch_pair, move_pair, hitch_pair, detach_pair, field_work, buy, save_game, \
-stop, status, unknown, "say": the same request in Farmhand's own words, exactly in one of these forms}:
+haul_tractor, contract, sell, store, unload_combine, land, sequence, resume, stop, status, unknown, \
+"say": the same request in Farmhand's own words, exactly in one of these forms}:
 bring a tractor and the forage wagon here | bring the <implement> here | bring the <implement> to <place> | \
 bring the <implement> to field <n> | ... with the <vehicle name> | come here | take this to <place> | \
 take this to field <n> | hitch the <implement> | hitch the <model number> <implement> | unhitch the <implement> | \
 unhitch it | <plow|cultivate|seed|fertilize> [and ...] field <n> | ... a small area of field <n> | \
 ... the smallest field | ... anyway (only if the player says to work over a crop) | buy a large plow | \
-buy the <name> truck | buy a gooseneck | save the game. For stop and status "say" is "".
+buy the <name> truck | buy a gooseneck | save the game | \
+use the <truck> to take the <tractor> to <place> and unload it | use the <truck> to take the <tractor> to field <n> and unload it | \
+do a contract | do the <plow|cultivate|fertilize> contract on field <n> | sell the grain | store the grain | \
+unload the combine | harvest field <n> | harvest field <n> and sell the grain | \
+<plow|cultivate> field <n>, seed it with <crop>, then fertilize it | buy field <n> | sell field <n> | continue; \
+a sequence is its parts in these forms joined by ", then ". For stop and status "say" is "".
 Use "unknown" with "say" "" for anything else, and for questions or negations. Keep the player's own place and \
 vehicle names; never invent a place, a field number, a name or an amount.
 Examples:
@@ -129,25 +144,73 @@ Examples:
 "could you get field 3 plowed and seeded" -> {"command": "field_work", "say": "plow and seed field 3"}
 "pick up a big plow from the dealer for us" -> {"command": "buy", "say": "buy a large plow"}
 "put the farm on disk" -> {"command": "save_game", "say": "save the game"}
+"put the deutz on the gmc's trailer and bring it out to field 3" -> {"command": "haul_tractor", "say": "use the gmc to take the deutz to field 3 and unload it"}
+"grab us one of those jobs off the board" -> {"command": "contract", "say": "do a contract"}
+"the combine's tank is full, dump it" -> {"command": "unload_combine", "say": "unload the combine"}
+"cash in the wheat" -> {"command": "sell", "say": "sell the grain"}
+"get the plow through field 3, drill wheat after that and spread fertilizer" -> {"command": "field_work", "say": "plow field 3, seed it with wheat, then fertilize it"}
+"pick up the land at field 12 for us" -> {"command": "land", "say": "buy field 12"}
+"get rid of field 12" -> {"command": "land", "say": "sell field 12"}
+"carry on where you were" -> {"command": "resume", "say": "continue"}
+"empty the combine and then sell what's in the trailer" -> {"command": "sequence", "say": "unload the combine, then sell the grain"}
 "how far along are you" -> {"command": "status", "say": ""}
 "hold it right there" -> {"command": "stop", "say": ""}
 "tell me a joke about cows" -> {"command": "unknown", "say": ""}"""
 
 
-def to_proposal(answer) -> dict | None:
-    """The command proposal for a schema-valid model answer, or None: stop and status as
-    they are; anything else is what the rules read from the answer's wording, and only
-    if they reach the model's command (hitching to a place is a fetch to it)."""
+# A field operation counts only when the player said one of its words (measured: Qwen3 4B
+# rewrote "collect the straw on field 5 with the forage wagon" as "cultivate field 5").
+OPERATION_WORDS = {
+    "plow": ("plow", "plough", "turn over", "turn the soil"),
+    "cultivate": ("cultivat", "till", "disc", "disk", "harrow", "work the ground", "prepare", "prep"),
+    "sow": ("sow", "seed", "plant", "drill"),
+    "fertilize": ("fertili", "spray", "spread", "lime", "manure", "slurry", "feed the"),
+    "harvest": ("harvest", "cut", "combine", "thresh", "reap", "bring in the"),
+}
+
+
+def grounded(proposal: dict, text: str) -> bool:
+    """Whether what the model's rewording asks for is in the player's own sentence: every
+    number (a field, an amount), every named vehicle's words, every field operation by one of
+    its words. Anything else is the model inventing (AGENTS.md: the model never supplies what
+    the player did not say)."""
+    said = " ".join(re.findall(r"[0-9a-z]+", text.casefold()))
+    numbers = set(re.findall(r"\d+", said))
+    steps = proposal.get("steps") or [proposal]
+    for step in steps:
+        if isinstance(step.get("field"), int) and str(step["field"]) not in numbers:
+            return False
+        for key in ("tractor_name", "truck_name", "implement_name"):
+            name = step.get(key)
+            if name and not all(word in said for word in name.split()):
+                return False
+        for operation in step.get("operations") or ():
+            if not any(word in said for word in OPERATION_WORDS.get(operation, (operation,))):
+                return False
+    return True
+
+
+def to_proposal(answer, text: str | None = None) -> dict | None:
+    """The command proposal for a schema-valid model answer, or None: status as it is;
+    anything else is what the rules read from the answer's wording, only if they reach the
+    model's command (hitching to a place is a fetch to it) and, given the player's ``text``,
+    only if it is grounded in it."""
     if not MODEL_VALIDATOR.is_valid(answer) or answer["command"] == "unknown":
         return None
-    if answer["command"] in ("stop", "status"):
+    if answer["command"] == "stop":
+        # STOP is the rules' alone (they read every stop word first); a stop from the model is a
+        # misreading that could cancel the player's work (measured: "don't sell the grain yet").
+        return None
+    if answer["command"] == "status":
         return {"version": 1, "command": answer["command"]}
     proposal = RULES.interpret(answer["say"])
     if proposal is None:
         return None
     agrees = proposal["command"] == answer["command"] or (answer["command"], proposal["command"]) == (
         "hitch_pair", "fetch_pair")
-    return proposal if agrees and COMMAND_VALIDATOR.is_valid(proposal) else None
+    if not agrees or not COMMAND_VALIDATOR.is_valid(proposal):
+        return None
+    return proposal if text is None or grounded(proposal, text) else None
 
 
 class ModelInterpreter:
@@ -177,7 +240,7 @@ class ModelInterpreter:
         except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
             log.info("model: no answer (%s)", type(error).__name__)
             return None
-        proposal = to_proposal(answer)
+        proposal = to_proposal(answer, text)
         log.info("model %.1fs: %r -> %s -> %s", time.monotonic() - started, text, answer, proposal)
         return proposal
 
