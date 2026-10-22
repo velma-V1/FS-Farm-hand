@@ -523,11 +523,17 @@ class ProductionSequenceTests(unittest.TestCase):
         self.assertTrue(world.reserve(("11", "12"), "owner"))
         with game.lock:
             game.vehicles[11]["speed_kmh"] = 4.0
+        world.RELEASE_SETTLE_S = 0.6                  # still rolling after it: refused
         with self.assertRaises(ValueError):
             world.release("owner")
         self.assertIn("owner", world._reservations)
-        with game.lock:
-            game.vehicles[11]["speed_kmh"] = 0.0
+        # Rolling to rest within it (live 4902eb24a6264922-1: released mid-roll after a stop): released.
+        world.RELEASE_SETTLE_S = 5.0
+
+        def rest():
+            with game.lock:
+                game.vehicles[11]["speed_kmh"] = 0.0
+        threading.Timer(0.5, rest).start()
         world.release("owner")
         self.assertEqual(world._reservations, {})
 

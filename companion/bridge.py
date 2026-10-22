@@ -325,19 +325,28 @@ class FS25World:
             raise StepFailed("NOT_RESERVED")
         return reservation[1]
 
+    RELEASE_SETTLE_S = 10.0       # a stopped rig may roll this long (live 4902eb24a6264922-1: released mid-roll)
+
     def release(self, owner: str) -> None:
-        with self._lock:
-            reservation = self._reservations.get(owner)
-            if reservation is None:
-                return
-            items = {e.id: e for e in self._observe().equipment}
-            if any(i not in items or not items[i].stopped for i in reservation[1]):
+        deadline = time.monotonic() + self.RELEASE_SETTLE_S
+        while True:
+            with self._lock:
+                reservation = self._reservations.get(owner)
+                if reservation is None:
+                    return
+                items = {e.id: e for e in self._observe().equipment}
+                missing = any(i not in items for i in reservation[1])
+                moving = not missing and any(not items[i].stopped for i in reservation[1])
+                if not missing and not moving:
+                    if any(items[i].busy for i in reservation[1]):
+                        # An AI job or AutoDrive still controls it: not idle, not released.
+                        raise ValueError("Cannot release equipment still under AI control")
+                    del self._reservations[owner]
+                    log.info("released %s", reservation[1])
+                    return
+            if missing or time.monotonic() >= deadline:
                 raise ValueError("Cannot release moving or missing equipment")
-            if any(items[i].busy for i in reservation[1]):
-                # An AI job or AutoDrive still controls it: not idle, not released.
-                raise ValueError("Cannot release equipment still under AI control")
-            del self._reservations[owner]
-            log.info("released %s", reservation[1])
+            time.sleep(0.5)
 
     def reservation(self, owner: str) -> tuple[str, str] | None:
         """The (tractor, wagon) ids ``owner`` holds, if any."""
