@@ -39,7 +39,7 @@ VALIDATION = [
     ("get the forage wagon hooked up and over to me", "fetch_pair"),
     ("drag that combo back to the barn", "move_pair"),
     ("how far along are you", "status"),
-    ("kill the engine and stay put", "stop"),
+    ("put the deutz on the gmc's trailer and drop it off at field 3", "haul_tractor"),   # STOP is the rules' alone
     ("could you get field 3 plowed", "field_work"),
     ("pick up a big plow from the dealer for us", "buy"),
     ("tell me a joke about cows", "unknown"),
@@ -195,7 +195,7 @@ class OllamaInterpreter:
             log.info("ollama %s: no answer (%s)", self.name, type(error).__name__)
             return None
         self.unreachable = False
-        return managed.to_proposal(answer)
+        return managed.to_proposal(answer, text)
 
 
 def _speech_installed(folder: Path | None) -> bool:

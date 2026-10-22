@@ -16,9 +16,10 @@ from typing import Protocol
 _ADDRESS = re.compile(r"^(?:(?:hey|ok|okay|hi|yo)\s+)?(?:farm\s*hand|farmhand)\b\s*|^(?:please|pls|could you|can you|would you)\s+")
 _STOP_WORDS = ("stop", "halt", "cancel", "abort", "freeze", "wait", "whoa", "woah")
 _STOP_PHRASES = ("hold on", "hold it", "never mind", "nevermind", "stand down", "forget it", "stay there",
-                 "stay put", "stand still", "no stop")
+                 "stay put", "stand still", "no stop", "kill the engine", "shut it down", "shut down", "pull over",
+                 "park it there", "that s enough", "enough")
 # A request that ends in a stop ("bring it back here and stop") is a stop.
-_STOP_TAIL = re.compile(r"\b(?:and|then|now)\s+(?:stop|halt|cancel)$")
+_STOP_TAIL = re.compile(r"\b(?:and|then|now)\s+(?:stop|halt|cancel|stay\s+put|stay\s+there|stand\s+still)$")
 # Words that make a sentence not an order: never move on a negation or a question.
 _NEGATION = re.compile(r"\b(?:don t|dont|do not|does not|doesn t|not|never|no|didn t|didnt|won t|wont)\b")
 _QUESTION = re.compile(r"^(?:where|why|did|is|are|was|were|has|have|had|who|when|which|what|whose|does|do)\b")

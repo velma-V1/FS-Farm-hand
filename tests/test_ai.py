@@ -64,7 +64,8 @@ class FakeOllama:
 
 # The rules' wording for each command (companion/model.py PROMPT).
 SAY = {"fetch_pair": "bring a tractor and the forage wagon here", "move_pair": "take this to the barn",
-       "field_work": "plow field 3", "buy": "buy a large plow", "hitch_pair": "hitch the forage wagon"}
+       "field_work": "plow field 3", "buy": "buy a large plow", "hitch_pair": "hitch the forage wagon",
+       "haul_tractor": "use the gmc to take the deutz to field 3 and unload it"}
 
 
 def answer(command, say=None):
