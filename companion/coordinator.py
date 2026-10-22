@@ -1086,6 +1086,7 @@ class Coordinator:
 
         if "harvest" in work["operations"]:
             self._empty_full_combines(job, cancel, entered)
+            self._part_rigs(job, cancel, entered)
         for operation in work["operations"]:
             ahead = started[-1] if started else None
             if ahead is not None and not wait_for(lambda: ahead not in self.workers or (
@@ -1164,6 +1165,15 @@ class Coordinator:
             if combine.farm_id == self.farm() and combine_full(combine, self.COMBINE_FULL_SHARE):
                 log.info("job %d combine %s full: emptied first", job.number, combine.id)
                 self._overload_and_sell(job, cancel, entered, combine.name)
+
+    def _part_rigs(self, job: Job, cancel: threading.Event, entered) -> None:
+        """Before a harvest: a trailer rig left beside a combine is taken on past it first
+        (GIANTS' agent starts neither while they stand together)."""
+        intent = {"version": 1, "request_id": f"{job.owner}-p", "farm_id": self.farm(),
+                  "target": "player_at_acceptance", "task": "part"}
+        self.running = intent["request_id"]
+        result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
+        log.info("job %d part: %s %s", job.number, result.status, result.reason)
 
     def _combine_full(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """A harvesting combine found full (its helper stopped by the watcher): emptied into a

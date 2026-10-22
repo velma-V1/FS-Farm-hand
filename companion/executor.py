@@ -1412,6 +1412,85 @@ class Executor:
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, rig_ids + combine_ids[:1], tuple(states))
 
+    PART_NEAR_M = 12.0        # a trailer rig this near a combine blocks GIANTS' agent for both
+
+    def _part(self, command, enter, states) -> Result:
+        """A trailer rig left beside a combine (GIANTS' agent then starts neither; live
+        931324a7d25a48d7-1, FIELDWORK_STALLED "blocked"): the pipe out, the rig on past the
+        combine along the pipe's line (ALONGSIDE, AGENTS.md exception 6), the pipe in.
+        COMPLETE PARTED, or NOTHING_TO_PART with nothing moved."""
+        owner, farm_id = command["request_id"], command["farm_id"]
+        combine_owner = f"{owner}-c"
+        reserved, piped, moved, rig_ids, combine_ids = [], False, False, (), ()
+        status, reason = "BLOCKED", "NOTHING_TO_PART"
+        try:
+            enter("FIND")
+            items = sorted(self.world.snapshot(), key=lambda i: i.id)
+            observed = {i.id: i for i in items}
+            pairs = []
+            for combine in items:
+                if not (combine.category == "harvester" and combine.pipe is not None and combine.attached_to
+                        and usable(combine, farm_id) and combine.stopped):
+                    continue
+                for tractor in items:
+                    trailer = observed.get(tractor.attached_to)
+                    if (tractor.category == "tractor" and trailer is not None and trailer.attached_to == tractor.id
+                            and "trailer" in trailer.kinds and all(usable(x, farm_id) and x.stopped for x in (tractor, trailer))):
+                        near = min(math.dist(x.position, combine.position) for x in (tractor, trailer))
+                        if near <= self.PART_NEAR_M:
+                            pairs.append((near, combine, tractor, trailer))
+            if not pairs:
+                return Result("BLOCKED", reason, states=tuple(states))
+            _, combine, tractor, trailer = min(pairs, key=lambda p: (p[0], p[1].id, p[2].id))
+            rig_ids, combine_ids = (tractor.id, trailer.id), (combine.id, combine.attached_to)
+            enter("RESERVE")
+            if not self.world.reserve(combine_ids, combine_owner):
+                return Result("BLOCKED", "RESERVATION_CONFLICT", (combine.id,), tuple(states))
+            reserved.append(combine_owner)
+            if not self.world.reserve(rig_ids, owner):
+                return Result("BLOCKED", "RESERVATION_CONFLICT", rig_ids, tuple(states))
+            reserved.append(owner)
+            self.active = rig_ids
+            enter("PIPE_OUT")
+            self.world.pipe(combine.id, True, combine_owner)
+            piped = True
+            enter("PASS")
+            moved = True
+            self.world.alongside(tractor.id, combine.id, owner, combine_owner, past=True)
+            self._settled_transport(rig_ids)
+            enter("PIPE_IN")
+            self.world.pipe(combine.id, False, combine_owner)
+            piped = False
+            status, reason = "COMPLETE", "PARTED"
+        except Cancelled:
+            status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
+        except ObservationMismatch as error:
+            status, reason = "UNVERIFIED", str(error)
+        except StepUnverified as error:
+            status, reason = "UNVERIFIED", error.code
+        except StepFailed as error:
+            status, reason = "FAILED", error.code
+        except (RuntimeError, ValueError, KeyError) as error:
+            status, reason = "FAILED", getattr(error, "code", None) or type(error).__name__
+        finally:
+            try:
+                if piped:
+                    self.world.pipe(combine_ids[0], False, combine_owner)
+                if moved:
+                    enter("STOP")
+                    if not self.world.stop(rig_ids[0], owner):
+                        raise ObservationMismatch("STOP_NOT_CONFIRMED")
+                if reserved:
+                    enter("RELEASE")
+                    for who in reserved:
+                        self.world.release(who)
+            except Exception as error:
+                log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
+                status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        self.active = ()
+        log.info("result %s %s states %s", status, reason, ",".join(states))
+        return Result(status, reason, rig_ids + combine_ids[:1], tuple(states))
+
     def _transport_pair(self, ids):
         observed = {i.id: i for i in self.world.snapshot()}
         if any(i not in observed for i in ids):
@@ -1705,6 +1784,8 @@ class Executor:
             return self._autodrive_rig(command, enter, states)
         if command["task"] == "overload":
             return self._overload(command, enter, states)
+        if command["task"] == "part":
+            return self._part(command, enter, states)
         if command["task"] == "save_game":
             try:
                 enter("SAVE")

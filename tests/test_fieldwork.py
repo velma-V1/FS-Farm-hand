@@ -970,6 +970,23 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertEqual(world.farm().money, FARM.money + 9000.0 * world.mock_price)
         self.assertEqual([w.tractor for w in c.workers if w.operation == "harvest"], ["c-1"])   # harvesting on
 
+    def test_a_rig_left_beside_the_combine_is_taken_past_it_before_the_harvest(self):
+        # Live 931324a7d25a48d7-1: the EDK rig stood beside the MF 8570 (from an overload before
+        # PASS existed); GIANTS' agent started neither, FIELDWORK_STALLED "blocked".
+        world = self.full_combine_world()
+        unit = world.items["c-1"].fill_units[1]
+        world.items["c-1"] = replace(world.items["c-1"], fill_units=(world.items["c-1"].fill_units[0],
+                                                                     replace(unit, level=0.0)))
+        for i, at in (("t-5", (106.0, 104.0)), ("w-5", (106.0, 97.0))):
+            world.items[i] = replace(world.items[i], position=at, heading=0.0,
+                                     ai_root=Pose(*at, 0.0) if i == "t-5" else None)
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"), c.last)
+        self.assertEqual(world.mock_passed, ("t-5",))
+        self.assertFalse(world.items["c-1"].pipe[0])
+
     def test_sell_uses_giants_deliver_helper_without_autodrive(self):
         world = self.world(cargo=8000.0)
         tractor = world.items["t-5"]
