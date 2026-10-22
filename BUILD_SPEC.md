@@ -395,3 +395,74 @@ They extend the completion plan above (stages 1-7) and supersede "Voice: deferre
    diagnostics before retries; valid prior evidence kept. Farmhand is not finished because
    selected examples pass.
 
+
+## Universal production release (user, 2026-10-22) — extends the product requirements
+
+The same plan, widened: Farmhand is a universal, conversational, world-aware companion for
+arbitrary FS25 maps and compatible (including modded) content, built from the smallest
+maintainable architecture on what exists (coordinator, planner, local model, game bridge,
+GIANTS interfaces, AutoDrive, Courseplay where installed). Gates G10-G13 in
+tests/ACCEPTANCE.md; the current stage is finished and verified first.
+
+10. **Universal world discovery.** Vehicles, equipment, locations (fields, farms, shops,
+    production, storage, sell points, loading areas, roads, yards, user-named places),
+    buyables (vehicles, land, buildings, supplies), the player and passengers, and world
+    state (ownership, availability, cargo, fill, pose, activity, current tasks) come from
+    runtime observation and supported APIs; nothing assumes a particular object, shop,
+    field, route or vehicle exists; new compatible content is discovered without per-item
+    logic.
+11. **Universal selection under constraints.** The model extracts the objective,
+    references and constraints only; the deterministic planner resolves real objects and
+    ranks feasible resources: required capabilities, power and towing suitability, hitch
+    compatibility, trailer capacity, dimensions, cargo and availability, loading/unloading
+    method, ownership, reservations and commitments, access, then distance and time.
+    Feasibility and explicit user constraints outrank convenience and proximity. Nothing
+    the game does not expose is invented (unknown capability: conservative, said so). A
+    named vehicle ("use the GMC", "truck 478", "this tractor") is kept, and a confirmed
+    incompatibility is explained, never silently substituted; "a truck", "an empty
+    trailer", "another trailer" select generically; contextual destinations ("there", "the
+    farm") are resolved from context, asked only when truly ambiguous. The model never
+    invents IDs; the executor binds identities and keeps them through the job and restart
+    recovery; equal names never cause a silent swap.
+12. **Reusable capability operations.** Navigate, approach, align, attach/detach,
+    load/secure/carry/unload, operate controls, field operations, refuel/refill, buy,
+    sell, collect, store, park, bounded recovery: one capability-discovery and execution
+    contract over verified GIANTS/mod interfaces. No business logic per truck, trailer or
+    model; a vehicle-specific adapter only for a real API difference.
+13. **Universal navigation and field work.** Actual map and world information (no
+    hardcoded coordinates or routes): rig dimensions, articulation, terrain, obstacles,
+    road-to-field/yard transitions, safe loading/turning/parking places, dynamic blocks.
+    Reaching an AutoDrive waypoint is not reaching the destination. Field work from the
+    real field geometry, implement width and operation. No teleporting, no ignored
+    collisions, no arrival or completion without observation; an unsafe route keeps state
+    and reports the blocker. One prepared route working is not universal navigation.
+14. **Dependency-aware multi-step plans** from objectives ("a suitable truck and an empty
+    trailer, pick up Z from the store, bring it to my new field, unload it, park
+    everything"): resolve, select, sequence, execute, observe, adapt within the user's
+    constraints, verify; durable job state with exact identities; no recipe per
+    vehicle/equipment/map combination.
+15. **One conversational companion.** Casual talk, farming and technical questions,
+    business advice, roleplay, game-state and job-status questions, work requests and
+    mixtures of them, by voice and text. Conversation is kept apart from validated
+    executable intents (talk and roleplay never buy or act); responsive while jobs run;
+    new messages never silently cancel or replace a job; STOP independent of inference.
+16. **Release capabilities to finish:** persistent homes and parking, task queue and
+    progress with restart recovery, multi-step load/transport/unload/delivery, land and
+    equipment purchase, filling stations and resources, universal equipment controls,
+    passengers, field preparation through harvest (weeds, stones), pallets (handle,
+    store, sell, transport), long-distance and 16x navigation, farm-business workflows.
+    The truck → trailer → equipment → field → farm sequence is an integration test, not a
+    hardcoded workflow. Excavator/forestry manipulation stays in its later phase.
+17. **Universality verified, not assumed:** two or more vehicles of different capability
+    and distance; trailers with different cargo and configurations; explicit versus
+    generic selection; duplicate names; different maps, fields, destinations and roads;
+    different implements through shared operations; loaded and empty transport; partly
+    compatible modded equipment; obstruction, inaccessibility, insufficient capacity,
+    restart; conversation during jobs. Automated tests for resolution, feasibility,
+    state, identity, recovery and planning; live play for physical work; regressions
+    from discovered failures, not hand-authored vehicle rules. Architecture-level
+    generality, tested compatibility and unverified scenarios are reported apart.
+18. **Production package:** install, update, dependencies, state preservation, recovery,
+    offline operation within supported limits, uninstall and FS25 runtime performance
+    verified on the real distributable, with no developer-only steps. A fundamental
+    failure of selection, planning or operation contracts blocks release.
