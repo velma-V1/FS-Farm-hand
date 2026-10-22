@@ -177,6 +177,13 @@ have precedence; report conflicts instead of silently changing the scope.
   latched, never retried by itself); both readings are logged with a speed trace (every
   0.1 s for 2 s, then 0.5 s). The limit is
   never raised to make a run pass, and a run that went over it is not qualified.
+- Travel speed (the user, 2026-10-22: "the speed limit for farmhand is 40mph"; AutoDrive took
+  the loaded GMC at up to 103 km/h, it lost control over rail tracks and ended against a wall):
+  every drive Farmhand hands to AutoDrive runs under AutoDrive's own road and field limits
+  stepped down to 64 km/h (its decreaseSpeedLimit calls) before it starts; a drive Farmhand ends
+  gives the player's limits back; an AutoDrive whose limits cannot be read or set is not
+  started. Every op logs its vehicle's peak travel speed; GIANTS' own helpers (GOTO, Deliver,
+  field work) have no limit Farmhand sets yet, and their observed peaks decide what is needed.
 - Motion envelope: while LOAD / UNLOAD, BACKOFF and ALONGSIDE move, every unit of the rig
   (the tractor, a mounted implement, a towed trailer) at its own pose, pitched as it is, is
   asked of GIANTS' collision world every 0.1 s: anything within 0.15 m of a unit (but the rig,

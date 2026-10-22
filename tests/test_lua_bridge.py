@@ -36,6 +36,14 @@ function W.new()
         setMode = function(_, mode) call("setMode:" .. mode) end,
         isActive = function() return w.adActive end,
         getStartHelper = function() return w.startHelper == true end,   -- StateModule.lua:406-408
+        -- The HUD's speed limits (StateModule.lua 1180-1214: steps of 1, floor 2).
+        speedLimit = 103, fieldSpeedLimit = 30,
+        getSpeedLimit = function(self) return self.speedLimit end,
+        getFieldSpeedLimit = function(self) return self.fieldSpeedLimit end,
+        decreaseSpeedLimit = function(self) if self.speedLimit > 2 then self.speedLimit = self.speedLimit - 1 end end,
+        increaseSpeedLimit = function(self) self.speedLimit = self.speedLimit + 1 end,
+        decreaseFieldSpeedLimit = function(self) if self.fieldSpeedLimit > 2 then self.fieldSpeedLimit = self.fieldSpeedLimit - 1 end end,
+        increaseFieldSpeedLimit = function(self) self.fieldSpeedLimit = self.fieldSpeedLimit + 1 end,
     }
     function tractor:getLastSpeed() return w.speed end
     function tractor:getIsEntered() return w.entered end
@@ -282,6 +290,23 @@ class LuaBridgeTests(unittest.TestCase):
                 self.assertIn("wp=(6.0,2.0) steer=0.5", logged[0])         # where it steers to
                 if hit:
                     self.assertIn("frontSensor[series9_main_component1@Series 9]", logged[0])
+
+    def test_autodrive_is_capped_at_40_mph_while_farmhand_drives_and_given_back(self):
+        # The user, 2026-10-22: AutoDrive took the loaded GMC at 103 km/h, it lost control over
+        # rail tracks and ended against a wall. Farmhand's cap is 40 mph (64 km/h): AutoDrive's
+        # own limits are stepped down before it starts and back when the drive ends.
+        self.adopt()
+        st = self.w.tractor.ad.stateModule
+        self.send(1, "drive", {"tractor": 11, "marker": 3})
+        self.W.run(self.w, 300)
+        self.assertEqual((st.speedLimit, st.fieldSpeedLimit), (64, 30))
+        self.assertIn("StartDriving", " ".join(self.calls()))
+        self.W.run(self.w, 500)
+        self.w.x = 50.0                                        # it drove, then AutoDrive ended
+        self.w.adActive = False
+        self.W.run(self.w, 3000)
+        self.assertEqual(st.speedLimit, 103)                   # the player's own limit back
+        self.assertTrue(any("AutoDrive speed limits 103/30 -> 64/30" in p for p in self.printed))
 
     def test_a_drive_ended_where_it_started_or_with_no_route_is_said_so(self):
         # Live 2026-10-22: the waypoint nearest the rig was on a dead end; AutoDrive's path
@@ -1927,7 +1952,13 @@ class AutoDriveSellTests(unittest.TestCase):
         local v = { ownerFarmId = 1, active = false, ad = {} }
         function v:raiseActive() self.raised = (self.raised or 0) + 1 end
         v.ad.stateModule = { getStartHelper = function() return false end, setMode = function(_, m) v.mode = m end,
-                             isActive = function() return v.active end }
+                             isActive = function() return v.active end, speedLimit = 80, fieldSpeedLimit = 20,
+                             getSpeedLimit = function(self) return self.speedLimit end,
+                             getFieldSpeedLimit = function(self) return self.fieldSpeedLimit end,
+                             decreaseSpeedLimit = function(self) self.speedLimit = self.speedLimit - 1 end,
+                             increaseSpeedLimit = function(self) self.speedLimit = self.speedLimit + 1 end,
+                             decreaseFieldSpeedLimit = function(self) self.fieldSpeedLimit = self.fieldSpeedLimit - 1 end,
+                             increaseFieldSpeedLimit = function(self) self.fieldSpeedLimit = self.fieldSpeedLimit + 1 end }
         function v:getIsEntered() return false end
         function v:getIsAIActive() return false end
         function v:getLastSpeed() return 0 end

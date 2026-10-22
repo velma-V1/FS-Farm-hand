@@ -178,9 +178,57 @@ function starters.drive(env, spec)
         end
     end
     local okAt, x, _, z = pcall(env.getWorldTranslation, v.rootNode)
+    local saved = Bridge.capAdSpeed(v)
     v.ad.stateModule:setMode(AD.MODE_DRIVETO)
     AD:StartDriving(v, spec.marker, spec.marker)
-    return { seen = false, startAt = okAt and finite(x) and finite(z) and { x, z } or nil }
+    return { seen = false, startAt = okAt and finite(x) and finite(z) and { x, z } or nil,
+             onEnd = function() Bridge.restoreAdSpeed(v, saved) end }
+end
+
+-- Farmhand's travel speed cap (the user, 2026-10-22: 40 mph; AutoDrive took the loaded GMC at
+-- up to 103 km/h, it lost control over rail tracks and ended against a wall). AutoDrive's own
+-- per-vehicle limits (ADStateModule speedLimit / fieldSpeedLimit 48-49, the HUD's) bound every
+-- speed it drives (DrivePathModule 286-333 only lowers it for corners, steering, fields), and
+-- its own calls step them (decreaseSpeedLimit / decreaseFieldSpeedLimit 1191-1214, floor 2).
+-- Lowered to the cap before Farmhand starts it; a drive Farmhand ends gives the player's back.
+Bridge.TRAVEL_MAX_KMH = 64
+
+local function stepLimit(get, step, want, up)
+    for _ = 1, 400 do
+        local now = get()
+        if not finite(now) or (up and now >= want) or (not up and now <= want) then break end
+        step()
+    end
+    return get()
+end
+
+function Bridge.capAdSpeed(v)
+    local st = v.ad.stateModule
+    local saved = { road = st:getSpeedLimit(), field = st:getFieldSpeedLimit() }
+    local road = stepLimit(function() return st:getSpeedLimit() end, function() st:decreaseSpeedLimit() end,
+                           Bridge.TRAVEL_MAX_KMH, false)
+    local field = stepLimit(function() return st:getFieldSpeedLimit() end, function() st:decreaseFieldSpeedLimit() end,
+                            Bridge.TRAVEL_MAX_KMH, false)
+    log("AutoDrive speed limits %s/%s -> %s/%s km/h (road/field; Farmhand's cap %d)", tostring(saved.road),
+        tostring(saved.field), tostring(road), tostring(field), Bridge.TRAVEL_MAX_KMH)
+    return saved
+end
+
+function Bridge.restoreAdSpeed(v, saved)
+    local st = v.ad.stateModule
+    stepLimit(function() return st:getSpeedLimit() end, function() st:increaseSpeedLimit() end, saved.road, true)
+    stepLimit(function() return st:getFieldSpeedLimit() end, function() st:increaseFieldSpeedLimit() end, saved.field, true)
+end
+
+-- A task's end hook (once): a drive gives AutoDrive's limits back.
+local function finish(task)
+    if task.ended then return end
+    task.ended = true
+    if task.onEnd ~= nil then pcall(task.onEnd) end
+    if task.peakKmh ~= nil and task.peakKmh >= 5 then
+        log("%s peak travel %.0f km/h%s", tostring(task.op), task.peakKmh,
+            task.peakKmh > Bridge.TRAVEL_MAX_KMH and string.format(" OVER Farmhand's %d", Bridge.TRAVEL_MAX_KMH) or "")
+    end
 end
 
 -- What AutoDrive is doing, read only, for the log and for a drive that does not move: its
@@ -1208,6 +1256,7 @@ function starters.ad_unload(env, spec)
     if not ok or fillType == nil then return nil, "FIELD_CROP_UNKNOWN" end
     local unload, why = Bridge.bestSellMarker(env, v, fillType)
     if unload == nil then return nil, why end
+    Bridge.capAdSpeed(v)              -- handed on to AutoDrive: it keeps Farmhand's cap
     v.ad.stateModule:setMode(AD.MODE_UNLOAD)
     AD:StartDriving(v, spec.marker, unload)
     log("ad_unload: waiting at marker %s, unloading at marker %s", tostring(spec.marker), tostring(unload))
@@ -1247,10 +1296,11 @@ function starters.ad_sell(env, spec)
     if not ok or fillType == nil then return nil, "NOTHING_TO_SELL" end
     local marker, why = Bridge.bestSellMarker(env, v, fillType)
     if marker == nil then return nil, why end
+    local saved = Bridge.capAdSpeed(v)
     v.ad.stateModule:setMode(AD.MODE_DELIVERTO)
     AD:StartDriving(v, marker, marker)
     log("ad_sell: to marker %s", tostring(marker))
-    return { seen = false }
+    return { seen = false, onEnd = function() Bridge.restoreAdSpeed(v, saved) end }
 end
 
 steppers.ad_sell = steppers.drive
@@ -2246,14 +2296,32 @@ function Bridge.start(env, spec)
     return task
 end
 
+-- Every op's vehicle's peak travel speed (root travel over each second), logged at its end:
+-- whether a provider kept Farmhand's TRAVEL_MAX_KMH (GIANTS' helpers have no limit Farmhand sets).
+local function samplePeak(env, task)
+    local v = task.spec and task.spec.tractor
+    if v == nil or task.elapsed < (task.peakAt or 0) then return end
+    task.peakAt = task.elapsed + 1000
+    local ok, x, y, z = pcall(env.getWorldTranslation, v.rootNode)
+    if not (ok and finite(x) and finite(z)) then return end
+    if task.peakFrom ~= nil and task.elapsed > task.peakFrom.t then
+        local d = math.sqrt((x - task.peakFrom.x) ^ 2 + ((y or 0) - task.peakFrom.y) ^ 2 + (z - task.peakFrom.z) ^ 2)
+        local kmh = d / (task.elapsed - task.peakFrom.t) * 3600
+        if kmh > (task.peakKmh or 0) then task.peakKmh = kmh end
+    end
+    task.peakFrom = { x = x, y = y or 0, z = z, t = task.elapsed }
+end
+
 function Bridge.step(env, task, dt)
     if task.status ~= nil then return task.status, task.code end
     task.elapsed = task.elapsed + dt
+    pcall(samplePeak, env, task)
     local ok, status, code = pcall(steppers[task.op], env, task, dt)
     if not ok then status, code = "UNVERIFIED", "UNKNOWN_OBSERVATION" end
     if status ~= nil then
         if status ~= "DONE" then Bridge.abort(env, task, code) end
         task.status, task.code = status, code
+        finish(task)
     end
     return status, code
 end
@@ -2264,6 +2332,7 @@ function Bridge.abort(env, task, code)
     task.aborted = true
     pcall(aborts[task.op], env, task)
     if task.status == nil then task.status, task.code = "FAILED", code or "STOPPED" end
+    finish(task)
 end
 
 -- ----------------------------------------------------------- companion link
