@@ -393,6 +393,37 @@ class LuaBridgeTests(unittest.TestCase):
         self.W.run(self.w, 200)
         self.assertEqual(self.results(3)[-1], (3, "DONE", "STOPPED"))
 
+    def test_a_pre_empted_motion_logs_its_record(self):
+        # Live 902c1b52e05742ec-1: STOP ended a LOAD braked, but its speed and envelope record
+        # was never logged. Every motion's abort logs it as any other end.
+        real = self.bridge.Hitch
+        calls = self.lua.table()
+        fake = self.lua.eval("""function(real, calls)
+            local t = setmetatable({}, { __index = real })
+            t.abort = function(env, s, code) table.insert(calls, "abort " .. code) end
+            for _, n in ipairs({ "describe", "describePull", "describeUnpark", "describeLoad", "describeBackOff",
+                                 "describeAlongside" }) do t[n] = function() return n end end
+            t.describeSpeed = function() return "speed[x]" end
+            t.describeEnvelope = function() return "envelope[x]" end
+            t.speedTrace = function() return { "16:trace" } end
+            return t
+        end""")(real, calls)
+        self.bridge.Hitch = fake
+        try:
+            for op in ("maneuver", "align", "pull_clear", "unpark", "load", "backoff", "alongside"):
+                with self.subTest(op=op):
+                    self.printed.clear()
+                    task = self.lua.table_from({"op": op, "session": self.lua.table_from({})})
+                    self.bridge.abort(self.w.env, task, "STOPPED")
+                    ends = [p for p in self.printed if f"{op} end STOPPED" in p]
+                    self.assertEqual(len(ends), 1, self.printed)
+                    self.assertIn("speed[x]", ends[0])
+                    self.assertIn("envelope[x]", ends[0])
+                    self.assertTrue(any(f"{op} trace 1 16:trace" in p for p in self.printed))
+            self.assertEqual(len(list(calls.values())), 7)
+        finally:
+            self.bridge.Hitch = real
+
     def test_a_stop_during_a_stop_joins_it(self):
         self.adopt()
         self.w.gotoStarts = True

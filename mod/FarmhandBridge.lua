@@ -128,6 +128,12 @@ local function logMotionEnd(op, code, session, describe)
         Bridge.Hitch.describeEnvelope(session))
     for i, line in ipairs(Bridge.Hitch.speedTrace(session, 8)) do log("%s trace %d %s", op, i, line) end
 end
+-- A running motion pre-empted (STOP, a lost session): braked by the latch, and its record
+-- logged as at any other end (live 902c1b52e05742ec-1: a STOPPED LOAD left none).
+local function abortMotion(op, env, task, describe)
+    Bridge.Hitch.abort(env, task.session, "STOPPED")
+    if task.session ~= nil then logMotionEnd(op, "STOPPED", task.session, describe) end
+end
 local gateCandidates          -- (open_gates) also read by unpark
 Bridge.pendingGoto = {}       -- tractor -> ms left to watch an aborted, unseen GOTO
 
@@ -522,7 +528,7 @@ function steppers.maneuver(env, task, dt)
 end
 
 function aborts.maneuver(env, task)
-    Bridge.Hitch.abort(env, task.session, "STOPPED")
+    abortMotion("maneuver", env, task, function() return "" end)
 end
 
 -- ------------------------------------------------------------------ align
@@ -547,7 +553,7 @@ function steppers.align(env, task, dt)
 end
 
 function aborts.align(env, task)
-    Bridge.Hitch.abort(env, task.session, "STOPPED")
+    abortMotion("align", env, task, Bridge.Hitch.describe)
 end
 
 -- ----------------------------------------------------------------- attach
@@ -653,7 +659,7 @@ function steppers.pull_clear(env, task, dt)
 end
 
 function aborts.pull_clear(env, task)
-    Bridge.Hitch.abort(env, task.session, "STOPPED")
+    abortMotion("pull_clear", env, task, Bridge.Hitch.describePull)
 end
 
 -- ----------------------------------------------------------------- unpark
@@ -730,7 +736,7 @@ function steppers.unpark(env, task, dt)
 end
 
 function aborts.unpark(env, task)
-    Bridge.Hitch.abort(env, task.session, "STOPPED")
+    abortMotion("unpark", env, task, Bridge.Hitch.describeUnpark)
 end
 
 -- ------------------------------------------------------------------- load
@@ -771,7 +777,7 @@ function steppers.load(env, task, dt)
 end
 
 function aborts.load(env, task)
-    Bridge.Hitch.abort(env, task.session, "STOPPED")
+    abortMotion("load", env, task, Bridge.Hitch.describeLoad)
 end
 
 -- ---------------------------------------------------------------- backoff
@@ -804,7 +810,7 @@ function steppers.backoff(env, task, dt)
 end
 
 function aborts.backoff(env, task)
-    Bridge.Hitch.abort(env, task.session, "STOPPED")
+    abortMotion("backoff", env, task, Bridge.Hitch.describeBackOff)
 end
 
 -- -------------------------------------------------------------- alongside
@@ -844,7 +850,7 @@ function steppers.alongside(env, task, dt)
 end
 
 function aborts.alongside(env, task)
-    Bridge.Hitch.abort(env, task.session, "STOPPED")
+    abortMotion("alongside", env, task, Bridge.Hitch.describeAlongside)
 end
 
 -- ----------------------------------------------------------------- follow

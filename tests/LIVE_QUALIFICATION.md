@@ -237,3 +237,5 @@ ramps; the Farm Barn has an AutoDrive marker). Speeds are Farmhand's governed ro
 Not yet qualified from these runs: STOP or takeover during LOAD / UNLOAD / BACKOFF and the AutoDrive
 leg; ALONGSIDE under the new governor; the approach without UNPARK (the 8 m UNPARK towards the
 trailer was within exception 4 as written, but is not the intended path).
+| b8c4fae run (job 2, after the haul) "load the deutz on the deckover" | 3f3e1d2 mod / 674db1c companion | FAILED LOAD_APPROACH_FAILED (fixed b8c4fae): the Series 9 stood where UNLOAD left it, lined up 0.00 m / 0.1 deg at the ramps' foot; the companion took it for neither lined up nor in the run-in, BACKOFF_PATH_BLOCKED, GOTO NAVIGATE_STUCK |
+| 902c1b52e05742ec-1 "load the deutz on the deckover", STOP 6 s into LOAD | b8c4fae companion | PASS STOP: LOAD FAILED STOPPED the instant STOP arrived (3 m along, then braked), STOP, RELEASE; the tractor at rest, ramps still down, nothing belted. Gap (fixed in the next mod build): no speed/envelope record logged for a pre-empted motion |
