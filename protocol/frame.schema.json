@@ -238,9 +238,9 @@
         "total_m2": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 100000000}, {"type": "null"}]},
         "fruit": {"oneOf": [{"type": "null"},
                             {"type": "object", "maxProperties": 16, "propertyNames": {"$ref": "#/$defs/token"},
-                             "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 64}}]},
-        "sampled": {"type": "integer", "minimum": 0, "maximum": 64},
-        "cut": {"type": "integer", "minimum": 0, "maximum": 64}
+                             "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 256}}]},
+        "sampled": {"type": "integer", "minimum": 0, "maximum": 256},
+        "cut": {"type": "integer", "minimum": 0, "maximum": 256}
       }
     },
     "field": {

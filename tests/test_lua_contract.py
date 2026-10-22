@@ -620,6 +620,11 @@ class LuaContractTests(unittest.TestCase):
         points = [tuple(p.values()) for p in grid(triangle, 120, 4).values()]
         self.assertTrue(points and all(x + z < 100 for x, z in points))
         self.assertEqual(len(grid(self.lua.eval("{ {0, 0}, {10, 0}, {10, 10}, {0, 10} }"), 120, 4)), 4)   # 4 m apart
+        # The frame schema takes the grid and the track's 12 (live 2026-10-22: a 64 cap dropped every frame).
+        import json
+        schema = json.loads((ROOT / "protocol/frame.schema.json").read_text())
+        coverage = next(v for k, v in schema["$defs"].items() if "sampled" in v.get("properties", {}))
+        self.assertGreaterEqual(coverage["properties"]["sampled"]["maximum"], self.observe.FRUIT_GRID + 12)
 
     def test_owned_fields_and_their_coverage_are_observed(self):
         world = self.stubs.world()
