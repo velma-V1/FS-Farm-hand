@@ -1089,13 +1089,13 @@ if __name__ == "__main__":
 
 
 class LiveSaveTests(unittest.TestCase):
-    """The user, 2026-10-20: save 2 is the live development save; a test on another
-    loaded save is refused, never reported as qualification."""
+    """The user: saves 2 (2026-10-20) and 1 (2026-10-21) are the live development saves; a
+    test on another loaded save is refused, never reported as qualification."""
 
     def test_only_the_live_save_is_tested(self):
         import scripts.fs25_live_test as client
         status = lambda save: {"result": {"live": {"farm": {"info": {"savegame": save}}}}}
-        self.assertEqual(client.LIVE_SAVE, 2)
+        self.assertEqual(client.LIVE_SAVES, (1, 2))
         self.assertEqual(client.loaded_save(status(2)), 2)
         self.assertIsNone(client.loaded_save(status(None)))
         self.assertIsNone(client.loaded_save(status(True)))

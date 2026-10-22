@@ -44,7 +44,8 @@ HITCH_WAIT_S = 23500.0         # beyond the longest job: a field-work plan of th
 EXIT = {"COMPLETE": 0, "FAILED": 1, "BLOCKED": 3, "UNVERIFIED": 4, "CANCELLED": 5}
 INFRASTRUCTURE = 10
 WRONG_SAVE = 12
-LIVE_SAVE = 2                  # the user, 2026-10-20: save 2 (FourFields) is the live development save
+LIVE_SAVES = (1, 2)            # the user: save 2 (FourFields, 2026-10-20) and save 1 (Riverbend Springs, 2026-10-21:
+                               # hitched GMC + trailer, Series 9 + plow, unowned land for contracts)
 SIGN_IN = 11                   # load_save: the host's Xbox sign-in failed for this launch
 
 
@@ -299,10 +300,10 @@ def command_hitch(wait: float = HITCH_WAIT_S, poll: float = 3.0, text: str | Non
     # Qualification only on the live development save; another loaded save is refused,
     # an unreported one is said in the output.
     save = loaded_save(call("status"))
-    if save is not None and save != LIVE_SAVE:
-        emit(event="refused", code="WRONG_SAVE", loaded=save, expected=LIVE_SAVE)
+    if save is not None and save not in LIVE_SAVES:
+        emit(event="refused", code="WRONG_SAVE", loaded=save, expected=list(LIVE_SAVES))
         return WRONG_SAVE
-    emit(event="save", loaded=save, expected=LIVE_SAVE, verified=save == LIVE_SAVE)
+    emit(event="save", loaded=save, expected=list(LIVE_SAVES), verified=save in LIVE_SAVES)
     started = call("run-hitch-test") if text is None else call("run-request-test", {"text": text})
     if not started.get("ok"):
         emit(event="refused", code=started.get("code"), result=started.get("result"))
