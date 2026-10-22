@@ -35,7 +35,8 @@
         "retarget",
         "follow_me",
         "contract",
-        "sell"
+        "sell",
+        "unload_combine"
       ]
     },
     "steps": {
@@ -121,7 +122,7 @@
       ]
     },
     "field": {
-      "description": "field_work: an owned field's number, or the smallest owned field. contract: the contract's field number.",
+      "description": "field_work: an owned field's number, or the smallest owned field. contract: the contract's field number. unload_combine: the field a helper harvests (default: the one being harvested).",
       "oneOf": [{"type": "integer", "minimum": 1, "maximum": 100000}, {"const": "smallest"}]
     },
     "wants": {
@@ -132,7 +133,7 @@
         "additionalProperties": false,
         "required": ["kind"],
         "properties": {
-          "kind": {"enum": ["plow", "truck", "trailer", "tractor"]},
+          "kind": {"enum": ["plow", "truck", "trailer", "tractor", "spreader", "sprayer"]},
           "size": {"enum": ["large"]},
           "name": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[A-Za-z0-9 -]+$"},
         "hitch": {"enum": ["gooseneck", "drop hitch", "fifth wheel"]},
@@ -202,7 +203,8 @@
               "sequence",
               "follow_me",
               "contract",
-              "sell"
+              "sell",
+              "unload_combine"
             ]
           }
         }
@@ -278,7 +280,7 @@
       "else": {"not": {"required": ["together"]}}
     },
     {
-      "if": {"properties": {"command": {"enum": ["field_work", "contract"]}}},
+      "if": {"properties": {"command": {"enum": ["field_work", "contract", "unload_combine"]}}},
       "else": {"not": {"required": ["field"]}}
     },
     {

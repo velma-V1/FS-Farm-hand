@@ -265,6 +265,10 @@ HEADING_START_RAD = math.radians(5.0)   # = Hitch.LOAD.headingStartDeg
 # The tractor's front this far behind the trailer's rear (inside LOAD's 0..RAMP_M window),
 # in the order GIANTS' GOTO is asked for them.
 FRONT_GAPS_M = (1.5, 2.25, 0.75)
+# First the front this far behind (on the axis, facing along it), so the last GOTO is a short
+# straight run: live f41b44f422974e15-5, GIANTS turned in from the side with a plow on and
+# ended 0.68 m and 12.4 deg off, and would not start again that close to the ramps.
+RUN_UP_GAP_M = 10.0
 DECK_SLACK_M = 0.25              # = the mod's UNLOAD_NOT_ON_DECK slack
 DECK_LATERAL_M = 0.75            # a tractor centred on the deck within this
 
@@ -309,9 +313,9 @@ def deck_box(trailer: Equipment) -> tuple[float, float, float, float] | None:
     return along[0] - pad, along[-1] + pad, min(lateral), max(lateral)
 
 
-def load_aims(tractor: Equipment, trailer: Equipment) -> tuple[Pose, ...]:
-    """GIANTS GOTO poses (of the tractor's AI root) that put its front FRONT_GAPS_M behind
-    the trailer's rear, on its axis, facing along it; () when the geometry is unknown."""
+def load_aims(tractor: Equipment, trailer: Equipment, gaps=FRONT_GAPS_M) -> tuple[Pose, ...]:
+    """GIANTS GOTO poses (of the tractor's AI root) that put its front ``gaps`` behind the
+    trailer's rear, on its axis, facing along it; () when the geometry is unknown."""
     tractor_ends, trailer_ends = _ends(tractor), _ends(trailer)
     if (tractor_ends is None or trailer_ends is None or tractor.ai_root is None or tractor.heading is None
             or trailer.heading is None):
@@ -322,7 +326,7 @@ def load_aims(tractor: Equipment, trailer: Equipment) -> tuple[Pose, ...]:
              + tractor_ends[1])
     fx, fz = _unit(trailer.heading)
     aims = []
-    for gap in FRONT_GAPS_M:
+    for gap in gaps:
         a = trailer_ends[0] - gap - front
         aims.append(Pose(trailer.position[0] + fx * a, trailer.position[1] + fz * a, trailer.heading))
     return tuple(aims)

@@ -11,6 +11,7 @@ from pathlib import Path
 import unittest
 import unittest.mock
 
+from adapters.world import StepFailed
 from companion.executor import Executor
 from protocol.model import Equipment, InputJoint, OutputJoint, Pose
 from simulator.world import MockWorld
@@ -219,6 +220,30 @@ class TractorTransportTests(unittest.TestCase):
             self.assertAlmostEqual(l, 0.0, places=9)
             self.assertAlmostEqual(aim.yaw, deck.heading)
             self.assertAlmostEqual(a + 0.3 + 2.6, -5.0 - gap)       # its front (offset + half length)
+
+    def test_the_approach_runs_up_straight_behind_the_ramps_first(self):
+        # Live f41b44f422974e15-5: GIANTS turned in from the side (a plow on) and ended 12.4 deg
+        # off, then would not start that close to the ramps; a run-up makes the last leg straight.
+        from companion import hitch as transport
+
+        class Recording(MockWorld):
+            refuse_run_up = False
+
+            def navigate(self, tractor_id, pose, owner):
+                self.aims = getattr(self, "aims", []) + [pose]
+                if self.refuse_run_up and len(self.aims) == 1:
+                    raise StepFailed("NAVIGATE_GOTO_INVALID")
+                super().navigate(tractor_id, pose, owner)
+
+        for refused in (False, True):
+            world, tractor, deck, _ = transport_world(cls=Recording)
+            world.refuse_run_up = refused
+            result = Executor(world).execute(load())
+            self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+            fronts = [transport.to_frame(deck, (a.x, a.z))[0] + 0.3 + 2.6 for a in world.aims]
+            self.assertAlmostEqual(fronts[0], -5.0 - transport.RUN_UP_GAP_M)
+            self.assertAlmostEqual(fronts[1], -5.0 - transport.FRONT_GAPS_M[0])
+            self.assertEqual(len(world.aims), 2)
 
     def test_unload_releases_the_belts_lowers_the_ramps_backs_off_and_raises_them(self):
         from companion import hitch as transport
@@ -1044,6 +1069,26 @@ class BuyHitchLoadHaulTests(unittest.TestCase):
         self.assertEqual((load["carry"], load["tractor_name"], load["implement_name"]), ("plow", "series 9 2019", "gooseneck"))
         context["loaded"] = True
         self.assertEqual(with_context(steps[3], context)["tractor_name"], "gmc")      # the truck, not the cargo
+
+    def test_buy_a_spreader_hitch_it_to_a_tractor_and_do_a_contract(self):
+        # The user (2026-10-21, save 1): "buy anything needed" for the fertilize contract.
+        from companion.coordinator import remember, with_context
+        from companion.executor import STORE_KINDS, _matches
+        from companion.language import RuleInterpreter
+        from protocol.model import Result, StoreItem
+        steps = RuleInterpreter().interpret("buy a fertilizer spreader, hitch it to the 3650 and do a contract")["steps"]
+        self.assertEqual(steps, [{"version": 1, "command": "buy", "wants": [{"kind": "spreader"}]},
+                                 {"version": 1, "command": "hitch_pair", "together": True, "tractor_name": "3650"},
+                                 {"version": 1, "command": "contract"}])
+        context = {}
+        remember(context, steps[0], Result("COMPLETE", "BOUGHT", (), ()), ())
+        hitch = with_context(steps[1], context)
+        self.assertEqual({k: hitch.get(k) for k in ("together", "implement", "tractor_name")},
+                         {"together": None, "implement": "sprayer", "tractor_name": "3650"})
+        self.assertIn("FERTILIZERSPREADER", STORE_KINDS["spreader"])
+        item = lambda categories: StoreItem(1, "ZA-TS", "AMAZONE", categories, 9000.0, False, 18.0, 50.0, None)
+        self.assertTrue(_matches(item(("FERTILIZERSPREADERS",)), {"kind": "spreader"}))
+        self.assertFalse(_matches(item(("SPRAYERS",)), {"kind": "spreader"}))
 
     def test_hitch_them_together_with_nothing_bought_asks_which(self):
         from companion import coordinator as coordination

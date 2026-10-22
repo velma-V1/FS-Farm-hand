@@ -887,6 +887,29 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertIn("NO_UNLOADER", notices)
         self.assertEqual([w.tractor for w in c.workers], ["c-1"])
 
+    def test_unload_the_combine_sends_an_unloader_hitched_after_the_harvest_began(self):
+        # Live f41b44f422974e15-4: the harvest began with no unloader; the player hitches a
+        # trailer to an AutoDrive tractor and says "unload the combine".
+        world = self.world(unloader=False)
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", "NO_COMBINE_HARVESTING"))
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        c.wait(10)
+        self.assertIn("NO_UNLOADER", notices)
+        rig = self.world().items
+        world.items.update({k: rig[k] for k in ("t-5", "w-5")})
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "UNLOADER_STARTED"), c.last)
+        self.assertEqual(sorted((w.tractor, w.operation) for w in c.workers), [("c-1", "harvest"), ("t-5", "unload")])
+        c.submit({"version": 1, "command": "unload_combine", "field": 7})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "UNLOADER_ALREADY_WORKING"))
+        world.finish_worker("c-1")
+        self.assertTrue(until(lambda: c.workers == []))
+
     def test_sell_the_grain_is_complete_only_on_the_money(self):
         world = self.world(cargo=8000.0)
         c, notices = coordinated(world)
@@ -908,3 +931,10 @@ class UnloadAndSellTests(unittest.TestCase):
             self.assertNotEqual((r.interpret(words) or {}).get("command"), "sell")
         self.assertEqual(r.interpret("harvest field 3 and sell the grain"),
                          {"version": 1, "command": "field_work", "field": 3, "operations": ["harvest"]})
+        self.assertEqual(r.interpret("unload the combine"), {"version": 1, "command": "unload_combine"})
+        self.assertEqual(r.interpret("unload the harvester on field 3"),
+                         {"version": 1, "command": "unload_combine", "field": 3})
+        self.assertEqual(r.interpret("unload the tractor"), {"version": 1, "command": "unload_tractor"})
+        # The unloader hitched by the store names (live save 1: the Fliegl EDK 650, the 3650).
+        self.assertEqual(r.interpret("hitch the edk 650 to the 3650"),
+                         {"version": 1, "command": "hitch_pair", "implement_name": "edk 650", "tractor_name": "3650"})

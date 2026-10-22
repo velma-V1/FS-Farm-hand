@@ -64,7 +64,8 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "follow_me": ("follow_me", "ACCEPTED_FOLLOW", "COMPLETE_FOLLOW"),
         "contract": ("contract", "ACCEPTED_CONTRACT", "COMPLETE_CONTRACT"),
         "worker_return": ("worker_return", "ACCEPTED_RETURN", "COMPLETE_RETURN"),
-        "sell": ("sell", "ACCEPTED_SELL", "COMPLETE_SELL")}
+        "sell": ("sell", "ACCEPTED_SELL", "COMPLETE_SELL"),
+        "unload_combine": ("unload_harvester", "ACCEPTED_UNLOAD_COMBINE", "COMPLETE_UNLOAD_COMBINE")}
 # The proposal fields that pass into a job command's intent.
 NAMES = ("tractor_name", "implement_name", "cargo_name")
 
@@ -90,7 +91,8 @@ def owned_like(items: tuple[Equipment, ...], farm_id: str, wants) -> int:
         for want in wants:
             if want.get("name") and named(item, want["name"].casefold()):
                 count += 1
-            elif not want.get("name") and want["kind"] == "plow" and of_kind(item, "plow"):
+            elif not want.get("name") and want["kind"] in ("plow", "spreader", "sprayer") \
+                    and of_kind(item, "plow" if want["kind"] == "plow" else "sprayer"):
                 count += 1
     return count
 
@@ -103,11 +105,12 @@ def with_context(step: dict, context: dict) -> dict:
     if step.get("together"):
         # "hitch them together": the tractor and the implement just bought.
         bought = context.get("bought", {})
+        # "hitch it to the 3650": the implement just bought, to that tractor.
         implement = next((k for k in bought if k not in ("tractor", "truck", "trailer")), None)
-        if "tractor" in bought and implement:
+        if implement and ("tractor" in bought or step.get("tractor_name")):
             step.pop("together")
-            step["implement"] = implement
-            if bought["tractor"]:
+            step["implement"] = "sprayer" if implement == "spreader" else implement   # GIANTS' Sprayer spreads too
+            if bought.get("tractor") and not step.get("tractor_name"):
                 step["tractor_name"] = bought["tractor"]
             if bought[implement]:
                 step["implement_name"] = bought[implement]
@@ -457,6 +460,8 @@ class Coordinator:
                 work = {"tractor_name": proposal.get("tractor_name"), "target": proposal.get("target", "here")}
             elif command == "contract":
                 work = {"field": proposal.get("field"), "kind": proposal.get("kind")}
+            elif command == "unload_combine":
+                work = {"field": proposal.get("field")}
             return self.start(command, proposal.get("target", "here"), spoken, proposal.get("implement"), work)
         return None
 
@@ -665,6 +670,8 @@ class Coordinator:
                 result = self._contract(job, cancel, entered, work)
             elif command == "worker_return":
                 result = self._run_steps(job, cancel, entered, work["steps"], "r")
+            elif command == "unload_combine":
+                result = self._unload_combine(job, cancel, entered, work)
             else:
                 intent = {"version": 1, "request_id": job.owner, "task": task,
                           "farm_id": self.farm(), "target": "player_at_acceptance" if target == "here" else target}
@@ -1115,7 +1122,23 @@ class Coordinator:
             return Result("COMPLETE", "WORKERS_STARTED", tuple(equipment), tuple(states))
         return Result("COMPLETE", "FIELD_WORK_OBSERVED", tuple(equipment), tuple(states))
 
-    def _start_unloader(self, job: Job, cancel: threading.Event, entered, field_id: int) -> None:
+    def _unload_combine(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
+        """"Unload the combine": an unloader for the field a helper harvests (the one said,
+        else the only one), as each harvest start does."""
+        with self._lock:
+            fields = sorted({w.field for w in self.workers if w.operation == "harvest"})
+        field_id = work.get("field")
+        if field_id is None and len(fields) != 1:
+            return Result("BLOCKED", "NO_COMBINE_HARVESTING" if not fields else "SAY_WHICH_FIELD")
+        field_id = fields[0] if field_id is None else field_id
+        if field_id not in fields:
+            return Result("BLOCKED", "NO_COMBINE_HARVESTING")
+        with self._lock:
+            if any(w.field == field_id and w.operation == "unload" for w in self.workers):
+                return Result("COMPLETE", "UNLOADER_ALREADY_WORKING")
+        return self._start_unloader(job, cancel, entered, field_id)
+
+    def _start_unloader(self, job: Job, cancel: threading.Event, entered, field_id: int) -> Result:
         """Unloading while harvesting (the user 2026-10-21): an AutoDrive rig with a
         trailer that has room runs AutoDrive's combine unloader for this field, a worker
         until the combine is done. Without one the combine waits when full (said so)."""
@@ -1129,6 +1152,7 @@ class Coordinator:
             self.notify("UNLOADER_STARTED", job.spoken)
         else:
             self.notify("NO_UNLOADER", job.spoken)
+        return result
 
     def _run_after(self, job: Job, cancel: threading.Event, entered, worker: Worker) -> Result:
         """The ended worker's follow-up steps now (taken off the waiting list), in order."""

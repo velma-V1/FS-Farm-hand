@@ -468,11 +468,11 @@ def describe(coverage: FieldCoverage | None) -> str:
 
 # ------------------------------------------------------------------ procurement
 # What to buy for a want, from the store's own catalog (mod/FarmhandObserve.lua
-# Observe.storeItem). A want is {"kind": "plow" | "truck" | "trailer", "size":
+# Observe.storeItem). A want is {"kind": "plow" | "truck" | "trailer" | "tractor" | "spreader" | "sprayer", "size":
 # "large" | None, "name": words the player named | None}; the purchase itself and its
 # verification are the executor's (task "buy").
 STORE_KINDS = {"plow": ("PLOW",), "truck": ("CAR", "TRUCK", "PICKUP"), "trailer": ("TRAILER",),
-               "tractor": ("TRACTOR",)}
+               "tractor": ("TRACTOR",), "spreader": ("FERTILIZERSPREADER",), "sprayer": ("SPRAYER",)}
 BUY_MONEY_TOLERANCE = 0.99        # the money must fall by at least this share of the price
 CATALOG_WAIT_S = 90.0             # the game builds the catalog after a load (25 items per snapshot)
 
@@ -1285,7 +1285,14 @@ class Executor:
 
     def _approach(self, tractor, trailer, owner):
         """GIANTS GOTO to right behind the ramps; the first aim GIANTS reaches and that
-        lines the tractor up for LOAD. LOAD itself re-checks the window."""
+        lines the tractor up for LOAD, after a run-up straight behind them (where GIANTS
+        refuses it, straight on). LOAD itself re-checks the window."""
+        for run_up in transport.load_aims(tractor, trailer, (transport.RUN_UP_GAP_M,)):
+            try:
+                self._navigate(tractor.id, run_up, owner, free=True)
+                tractor, trailer = self._settled_transport((tractor.id, trailer.id))
+            except StepFailed as failure:
+                log.info("APPROACH run-up %s: %s", run_up, failure.code)
         for aim in transport.load_aims(tractor, trailer):
             try:
                 self._navigate(tractor.id, aim, owner, free=True)
