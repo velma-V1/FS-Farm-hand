@@ -17,7 +17,7 @@ from lupa import lua51, lua54
 from tests.test_lua_unpark import STUBS
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMAND_KMH = 3 * 0.85         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
+COMMAND_KMH = 3 * 0.65         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
 
 TRAILER = dict(back=7.0, width=2.5, length=6.0, height=2.6)
 

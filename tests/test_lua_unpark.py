@@ -19,7 +19,7 @@ from lupa import lua51, lua54
 from companion import executor as companion_executor
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMAND_KMH = 3 * 0.85         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
+COMMAND_KMH = 3 * 0.65         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
 
 STUBS = r"""
 local Hitch = ...
@@ -315,7 +315,7 @@ class LuaUnparkTests(unittest.TestCase):
 
     def test_limits_are_hard_capped(self):
         for overrides in ({"maxDistanceM": 20.5}, {"maxSpeedKmh": 3.5}, {"maxSpeedKmh": 0.5},
-                          {"timeoutMs": 41000}, {"isReserved": False}):
+                          {"timeoutMs": 61000}, {"isReserved": False}):
             with self.subTest(**overrides):
                 w = self.world()
                 w.shed(-9, 6, 4, 4.5)

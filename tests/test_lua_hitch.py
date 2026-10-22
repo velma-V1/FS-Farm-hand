@@ -10,7 +10,7 @@ import unittest
 from lupa import lua51, lua54
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMAND_KMH = 3 * 0.85         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
+COMMAND_KMH = 3 * 0.65         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
 
 STUBS = r"""
 local Hitch = ...
@@ -525,7 +525,7 @@ class LuaHitchTests(unittest.TestCase):
             w = self.world()
             session, _ = self.align(w, maxSpeedKmh=speed)
             self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CONTINUE")
-            self.assertEqual(self.hitch.commandKmh(speed), max(speed * 0.85, min(speed, 1)))   # under the limit
+            self.assertEqual(self.hitch.commandKmh(speed), max(speed * 0.65, min(speed, 1)))   # under the limit
             self.assertLessEqual(self.drives(w)[-1]["maxSpeed"], self.hitch.commandKmh(speed))   # eased in from 1.5
 
     def test_over_the_limit_the_reverse_stops_braked(self):

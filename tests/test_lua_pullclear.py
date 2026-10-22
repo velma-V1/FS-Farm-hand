@@ -17,7 +17,7 @@ from companion import hitch as companion_hitch
 from tests.test_lua_maneuver import STUBS
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMAND_KMH = 3 * 0.85         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
+COMMAND_KMH = 3 * 0.65         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
 
 # Just unhitched: the tractor's joint 0.12 m ahead of the implement's, on its axis.
 DETACHED = dict(ahead=0.12, lateral=-0.05, heading=0.0)
@@ -173,7 +173,7 @@ class LuaPullClearTests(unittest.TestCase):
              "PERSON_TOO_CLOSE"),
             (lambda w, i: i == 10 and setattr(w.eye, "x", w.eye.x + 0.5), "IMPLEMENT_MOVED"),
             (lambda w, i: i == 10 and setattr(w, "stuck", True), "STALLED"),
-            (lambda w, i: i == 10 and setattr(w.steer, "z", w.steer.z - 0.5), "SEPARATION_LOST"),
+            (lambda w, i: i == 10 and setattr(w.steer, "z", w.steer.z - 0.2), "SEPARATION_LOST"),
             (lambda w, i: i == 10 and setattr(w.steer, "x", w.steer.x + 0.8), "DIVERGED"),
         ]
         for hook, reason in cases:

@@ -328,7 +328,9 @@ end
 -- drive: the brakes, AIVehicleUtil 87-94); above the limit the motion ends braked:
 -- OVERSPEED. GIANTS' own reading (getLastSpeed, smoothed) and the horizontal speed are
 -- recorded beside it, and a trace every traceMs, for the log.
-Hitch.SPEED = { windowMs = 250, commandShare = 0.85, coastShare = 0.9, brakeShare = 0.97,
+-- The shares since live 3389dfbd1b564660-5 (0.85 / 0.9 / 0.97 until then): LOAD's run-in hunted
+-- +-0.5 km/h about its target (0.25 s readings 1.58-2.79) and touched 3.03 just after the soft start.
+Hitch.SPEED = { windowMs = 250, commandShare = 0.65, coastShare = 0.8, brakeShare = 0.9,
                 traceMs = 500, traceMax = 240,
                 -- Downhill in the direction of travel (live c696741383fe4388-1: UNLOAD rolling off
                 -- the ramps' foot backwards went 2.88 -> 3.04 km/h while only coasting): it brakes
@@ -839,7 +841,7 @@ end
 Hitch.LOCAL_LIMITS = { workRadiusM = 25, maxPathM = 70, timeoutMs = 180000, minTurnRadiusM = 3,
                        maxTurnRadiusM = 8 }
 Hitch.LOCAL = {
-    timeoutMs = 120000,       -- the whole maneuver: 70 m at 3 km/h is 84 s
+    timeoutMs = 180000,       -- the whole maneuver: 70 m at the governor's 1.95 km/h is 129 s
     turnMargin = 1.1,         -- plan 10% wider than the tractor's own minimum radius
     lineupAheadM = { 3.5, 4.5, 5.5, 6.5, 7 },  -- candidate line-up points (planned joint ahead)
     -- Only when none of those keeps the margins: a joint over the steering axle (a gooseneck
@@ -1509,7 +1511,7 @@ Hitch.PULL = {
     -- the two measures of a three-point joint differ (live 8d1f4ada61c14239-3: 4.01 m
     -- here from the joint's post-detach point, 3.70 m from GIANTS' load-time offsets).
     clearM = 4.5,
-    timeoutMs = 20000,        -- 8 m at 3 km/h is 9.6 s
+    timeoutMs = 20000,        -- 8 m at the governor's 1.95 km/h is 14.8 s
     lookaheadM = 3,
     divergeM = 0.5,           -- farther than this off the starting line: DIVERGED
     separationSlackM = 0.05,  -- the separation may never shrink more than this: SEPARATION_LOST
@@ -1729,7 +1731,8 @@ end
 -- the lateral margin either side, from just above the terrain (the supporting surface)
 -- to above its top. Only the rig's own collision nodes and the terrain are excluded;
 -- an unreadable or unproven query is never clear. Nothing is made passable.
-Hitch.UNPARK_LIMITS = { maxDistanceM = 20, maxSpeedKmh = 3, timeoutMs = 40000 }
+-- 60 s: 20 m at the governor's 1.95 km/h is 37 s plus the 1.5 s soft start.
+Hitch.UNPARK_LIMITS = { maxDistanceM = 20, maxSpeedKmh = 3, timeoutMs = 60000 }
 Hitch.UNPARK = {
     lateralMarginM = 0.5,     -- either side of the rig over the whole swept volume
     floorClearanceM = 0.3,    -- boxes start this far above the terrain under them
@@ -2130,7 +2133,8 @@ end
 -- above the terrain to the tractor's top on the deck, PULL_CLEAR's guards, the line
 -- followed by GIANTS' driveToPoint, and every exit restoring the vehicle-control state.
 -- Nothing is teleported, no collision is disabled, and the truck and trailer must not move.
-Hitch.LOAD_LIMITS = { maxSpeedKmh = 3, timeoutMs = 60000, rampM = 3 }
+-- 90 s: up to 12 m of run-in, 3 m of ramps and a 15 m deck at the governor's 1.95 km/h is 55 s.
+Hitch.LOAD_LIMITS = { maxSpeedKmh = 3, timeoutMs = 90000, rampM = 3 }
 Hitch.LOAD = {
     rampM = 3,                -- the ramps on the ground: the tractor's leading end at most this behind the trailer
     lateralStartM = 0.5,      -- the steering node this close to the trailer's axis at the start

@@ -160,11 +160,14 @@ have precedence; report conflicts instead of silently changing the scope.
   measures the speed itself (the root's travel over the last 0.25 s) and governs that; GIANTS'
   own per-frame reading is logged beside it but jitters (live 3389dfbd1b564660-4: 0.88-3.22
   km/h 0.12 s apart while the root travelled 1.2-2.2 km/h), so a GIANTS reading alone, such
-  as the 4.14, is reported, not the enforced measure. It commands 85 % of the limit (never under
-  1 km/h), eases the motor's target in from 1.5 km/h to that over the first 1.5 s and throttles
-  in proportion to the margin left under a ceiling eased in from 0.15 to full over that time, takes the throttle off above 90 %, brakes a frame above 97 % (downhill above the
-  command), and above the limit ends the motion braked (OVERSPEED, latched, never retried by
-  itself); both readings are logged with a speed trace (every 0.1 s for 2 s, then 0.5 s). The limit is
+  as the 4.14, is reported, not the enforced measure. It commands 65 % of the limit (never
+  under 1 km/h; 85 % until live 3389dfbd1b564660-5, where the motor hunted +-0.5 km/h about
+  its target and touched 3.03), eases the motor's target in from 1.5 km/h to that over the
+  first 1.5 s, throttles in proportion to the margin left under a ceiling eased in from 0.15
+  to full over that time, takes the throttle off above 80 %, brakes a frame above 90 %
+  (downhill above the command), and above the limit ends the motion braked (OVERSPEED,
+  latched, never retried by itself); both readings are logged with a speed trace (every
+  0.1 s for 2 s, then 0.5 s). The limit is
   never raised to make a run pass, and a run that went over it is not qualified.
 - Motion envelope: while LOAD / UNLOAD, BACKOFF and ALONGSIDE move, every unit of the rig
   (the tractor, a mounted implement, a towed trailer) at its own pose, pitched as it is, is

@@ -19,7 +19,7 @@ from lupa import lua51, lua54
 from tests.test_lua_unpark import STUBS
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMAND_KMH = 3 * 0.85         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
+COMMAND_KMH = 3 * 0.65         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
 
 # The transport in the tractor's start frame (a ahead, l to its local +x side): a 10 m
 # trailer whose root is 9.1 m ahead of the tractor's steering node, four belts 2 m apart
@@ -209,7 +209,7 @@ class LuaLoadTests(unittest.TestCase):
         self.assertEqual(tuple(self.start(w))[1], "LOAD_PATH_BLOCKED")
 
     def test_limits_are_hard_capped(self):
-        for overrides in ({"maxSpeedKmh": 3.5}, {"maxSpeedKmh": 0.5}, {"timeoutMs": 61000}, {"isReserved": False}):
+        for overrides in ({"maxSpeedKmh": 3.5}, {"maxSpeedKmh": 0.5}, {"timeoutMs": 91000}, {"isReserved": False}):
             with self.subTest(**overrides):
                 self.assert_refused(self.world(), "INVALID_LIMITS", **overrides)
         self.assert_refused(self.world(), "INVALID_LIMITS", direction=0)
@@ -452,11 +452,11 @@ class LuaLoadTests(unittest.TestCase):
         self.assertEqual(dict(session.speedModes)["over"], 0)
 
     def test_it_coasts_and_brakes_to_stay_under_the_limit(self):
-        # The motor overshoots (10 % over what it is told) and the rig keeps 2.95 km/h while not
-        # accelerating: Farmhand coasts above 90 % of the limit and brakes above 97 %; it loads
+        # The motor overshoots (30 % over what it is told) and the rig keeps 2.95 km/h while not
+        # accelerating: Farmhand coasts above 80 % of the limit and brakes above 90 %; it loads
         # and its measured speed never exceeds the limit.
         w = self.world(plow=PLOW)
-        w.speedFactor, w.coastKmh = 1.1, 2.95
+        w.speedFactor, w.coastKmh = 1.3, 2.95
         session, why, _ = self.start(w)
         self.assertIsNotNone(session, why)
         code, _ = self.drive(w, session)
