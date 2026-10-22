@@ -1104,6 +1104,31 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertEqual(world.items["w-5"].fill_units[0].level, 9000.0)      # and filled
         self.assertEqual(world.items["c-1"].fill_units[1].level, 0.0)
 
+    def test_a_tractor_standing_on_its_dropped_implement_is_cleared_before_the_hitch(self):
+        # Live fbbcfc1e99724b07-1: the 3650 stood on the joint of the RZK 300H it had dropped
+        # (no pull-clear then): AGAINST_IMPLEMENT. The implement is hitched back where the joints
+        # touch, unhitched with its pull-clear, then the trailer hitched and the grain moved.
+        world = self.full_combine_world()
+        t, w = world.items["t-5"], world.items["w-5"]
+        root = Pose(160.0, 60.0, 1.0)
+        world.items["t-5"] = replace(t, attached_to=None, name="MT600 Series",
+                                     output_joints=(OutputJoint(1, "implement", 0.0, -2.0, True),
+                                                    OutputJoint(2, "trailer", 0.0, -2.0, True)))
+        world.items["k-2"] = Equipment("k-2", "implement", "farm-a", root.to_world(0.0, -4.0),
+                                       kinds=frozenset({"cultivator", "ai_implement"}), heading=1.0,
+                                       required_pto_torque=0.0, size=(3.0, 3.0, 1.0, 0.0), name="Cultivator 980",
+                                       input_joints=(InputJoint(1, "implement", root.to_world(0.0, -2.05), True),))
+        free_at = (150.0, 30.0)
+        world.items["w-5"] = replace(w, attached_to=None, name="EDK 650", position=free_at, heading=0.0,
+                                     input_joints=(InputJoint(1, "trailer", (free_at[0], free_at[1] + 3.0), True),))
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "COMBINE_UNLOADED"), (c.last, notices))
+        self.assertIsNone(world.items["k-2"].attached_to)
+        self.assertEqual(world.items["w-5"].attached_to, "t-5")
+        self.assertEqual(world.items["w-5"].fill_units[0].level, 9000.0)
+
     def test_harvest_with_a_full_combine_empties_it_first(self):
         world = self.full_combine_world()
         c, notices = coordinated(world)

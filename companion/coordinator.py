@@ -26,7 +26,7 @@ from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified
 from companion import hitch as transport   # its tractor-transport section
-from companion.executor import (COVERAGE_REQUIRED, Executor, OPERATIONS, already_done, crop_problem, named, of_kind,
+from companion.executor import (COVERAGE_REQUIRED, Executor, HITCHABLE_KINDS, OPERATIONS, already_done, crop_problem, named, of_kind,
                                 resolve_field, seed_position, usable)
 from protocol.model import Equipment, Result
 
@@ -1413,9 +1413,37 @@ class Coordinator:
             freed = self._execute(job, cancel, entered, "gf", task="detach_pair", tractor_name=name)
             if freed.status != "COMPLETE":
                 return freed
+        cleared = self._clear_of_dropped_implement(job, cancel, entered, name)
+        if cleared is not None and cleared.status != "COMPLETE":
+            return cleared
         log.info("job %d grain rig: the %s to the %s", job.number, name, trailer.name)
         return self._execute(job, cancel, entered, "gh", task="hitch_pair", implement="trailer",
                              implement_name=_words(trailer.name), tractor_name=name)
+
+    def _clear_of_dropped_implement(self, job: Job, cancel: threading.Event, entered, tractor_name: str):
+        """A tractor left standing on the joint of an implement it dropped earlier (live
+        fbbcfc1e99724b07-1: the 3650 against its RZK 300H, AGAINST_IMPLEMENT; PULL_CLEAR only
+        straight after Farmhand's own detach): that implement hitched back where the joints
+        touch (no motion), then unhitched with its pull-clear. None when nothing is against it."""
+        items = tuple(self.world.snapshot())
+        tractor = next((i for i in items if i.category == "tractor" and named(i, tractor_name)), None)
+        if tractor is None or tractor.attached_to is not None:
+            return None
+        loose = [i for i in items if i.id != tractor.id and i.attached_to is None
+                 and transport.against_loose_implement(tractor, [i]) and _words(i.name)]
+        if not loose:
+            return None
+        dropped = loose[0]
+        kind = next((k for k in sorted(HITCHABLE_KINDS) if of_kind(dropped, k)), None)
+        if kind is None:
+            return Result("BLOCKED", "AGAINST_IMPLEMENT")
+        log.info("job %d: the %s stands on the %s's joint; hitched back and unhitched clear", job.number,
+                 tractor_name, dropped.name)
+        back = self._execute(job, cancel, entered, "cb", task="hitch_pair", implement=kind,
+                             implement_name=_words(dropped.name), tractor_name=tractor_name)
+        if back.status != "COMPLETE":
+            return back
+        return self._execute(job, cancel, entered, "cd", task="detach_pair", tractor_name=tractor_name)
 
     def _unload_combine(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """"Unload the combine": its grain transferred into a trailer, nothing more. With no
