@@ -1077,6 +1077,33 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertGreater(world.farm().money, FARM.money)                  # and sold
         self.assertIn("unload_combine:ALONGSIDE", c.last.states)
 
+    def test_with_no_rig_a_tractor_is_freed_and_hitched_to_the_free_trailer_first(self):
+        # Live f0a179a567804793-1: the EDK 650 stood unhitched and every tractor had an implement
+        # on (BLOCKED NO_TRAILER_FOR_THE_GRAIN). The tractor's ordinary implement is unhitched
+        # where it has room ahead, the trailer with room hitched, then the grain transferred.
+        world = self.full_combine_world()
+        t, w = world.items["t-5"], world.items["w-5"]
+        cultivator = Equipment("k-2", "implement", "farm-a", Pose(160.0, 60.0, 1.0).to_world(0.0, -4.0),
+                               kinds=frozenset({"cultivator", "ai_implement"}), heading=1.0, attached_to="t-5",
+                               required_pto_torque=0.0, size=(3.0, 3.0, 1.0, 0.0), name="Cultivator 980",
+                               input_joints=(InputJoint(1, "implement", Pose(160.0, 60.0, 1.0).to_world(0.0, -2.0),
+                                                        True),))
+        world.items["t-5"] = replace(t, attached_to="k-2", name="MT600 Series",
+                                     output_joints=(OutputJoint(1, "implement", 0.0, -2.0, False),
+                                                    OutputJoint(2, "trailer", 0.0, -2.0, True)))
+        free_at = (150.0, 30.0)
+        world.items["w-5"] = replace(w, attached_to=None, name="EDK 650", position=free_at, heading=0.0,
+                                     input_joints=(InputJoint(1, "trailer", (free_at[0], free_at[1] + 3.0), True),))
+        world.items["k-2"] = cultivator
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "COMBINE_UNLOADED"), (c.last, notices))
+        self.assertIsNone(world.items["k-2"].attached_to)                     # the cultivator left where it was
+        self.assertEqual(world.items["w-5"].attached_to, "t-5")               # the trailer hitched
+        self.assertEqual(world.items["w-5"].fill_units[0].level, 9000.0)      # and filled
+        self.assertEqual(world.items["c-1"].fill_units[1].level, 0.0)
+
     def test_harvest_with_a_full_combine_empties_it_first(self):
         world = self.full_combine_world()
         c, notices = coordinated(world)

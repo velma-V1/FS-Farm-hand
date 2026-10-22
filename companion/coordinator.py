@@ -1356,6 +1356,14 @@ class Coordinator:
             if delivered.status == "COMPLETE":
                 result = self._execute(job, cancel, entered, "o2", **fields)
         if result.status == "BLOCKED" and result.reason == "NO_TRAILER_FOR_THE_GRAIN":
+            # No tractor tows a trailer with room (live f0a179a567804793-1: the EDK 650 unhitched,
+            # every tractor with an implement on): make that rig, then the transfer.
+            made = self._make_grain_rig(job, cancel, entered)
+            if made is not None and made.status != "COMPLETE":
+                return made
+            if made is not None:
+                result = self._execute(job, cancel, entered, "o3", **fields)
+        if result.status == "BLOCKED" and result.reason == "NO_TRAILER_FOR_THE_GRAIN":
             self.notify("COMBINE_FULL_NO_TRAILER", job.spoken)     # say sell / store the grain, then continue
             return result
         self.notify(result_notice(result.status, result.reason, "COMBINE_UNLOADED"), job.spoken)
@@ -1376,6 +1384,38 @@ class Coordinator:
                 self.notify(result_notice(delivered.status, delivered.reason, f"COMPLETE_{destination.upper()}"),
                             job.spoken)
         return result
+
+    def _make_grain_rig(self, job: Job, cancel: threading.Event, entered) -> Result | None:
+        """A tractor and a trailer with room for grain, hitched, when none is: the trailer that
+        stands free with the most room; a free tractor, else one freed (its ordinary implement
+        unhitched where it has room ahead, _tractor_to_free). None when there is no such
+        trailer or tractor (nothing done); else the hitch's (or the unhitch's) result."""
+        items, farm = tuple(self.world.snapshot()), self.farm()
+
+        def room(t):
+            return sum((u.capacity or 0.0) - (u.level or 0.0) for u in t.fill_units
+                       if not u.supported or any(f not in self.executor.NOT_CARGO for f in u.supported))
+        trailers = sorted((t for t in items if usable(t, farm) and t.attached_to is None and "trailer" in t.kinds
+                           and t.fill_units and not transport.is_transport(t) and room(t) > 0 and _words(t.name)),
+                          key=lambda t: (-room(t), t.id))
+        if not trailers:
+            return None
+        trailer = trailers[0]
+        free = [t for t in items if t.category == "tractor" and usable(t, farm) and t.stopped and t.attached_to is None
+                and {"move", "attach", "stop"} <= t.capabilities and _words(t.name)]
+        if free:
+            name = _words(min(free, key=lambda t: (math.dist(t.position, trailer.position), t.id)).name)
+        else:
+            name = _tractor_to_free(items, "trailer", farm)
+            if name is None:
+                return None
+            log.info("job %d grain rig: freeing the %s for the %s", job.number, name, trailer.name)
+            freed = self._execute(job, cancel, entered, "gf", task="detach_pair", tractor_name=name)
+            if freed.status != "COMPLETE":
+                return freed
+        log.info("job %d grain rig: the %s to the %s", job.number, name, trailer.name)
+        return self._execute(job, cancel, entered, "gh", task="hitch_pair", implement="trailer",
+                             implement_name=_words(trailer.name), tractor_name=name)
 
     def _unload_combine(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """"Unload the combine": its grain transferred into a trailer, nothing more. With no
