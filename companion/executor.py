@@ -1923,7 +1923,9 @@ class Executor:
             if failure.code in UNPARK_REFUSALS:
                 log.info("UNPARK refused unmoved (%s)", failure.code)
             raise
-        vehicle = next((i for i in self.world.snapshot() if i.id == vehicle_id), None)
+        # At rest first (live c2316ec3fbb54123-1: braked from 1.78 km/h, the snapshot right after
+        # still showed it rolling, UNPARK_NOT_OBSERVED after a 1.01 m exit).
+        vehicle = self._at_rest((vehicle_id,)).get(vehicle_id)
         if (vehicle is None or not vehicle.stopped or not valid_position(vehicle.position)
                 or not UNPARK_MIN_M <= math.dist(start, vehicle.position) <= UNPARK_MAX_M + UNPARK_TOLERANCE_M):
             raise ObservationMismatch("UNPARK_NOT_OBSERVED")

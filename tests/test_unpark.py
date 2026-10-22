@@ -43,6 +43,32 @@ class DeliverFromAShedTests(unittest.TestCase):
                 self.assertEqual(world.unparked, (tractor.id,))
                 self.assertEqual(world.items[tractor.id].attached_to, wagon.id)
 
+    def test_the_extraction_is_judged_once_the_vehicle_is_at_rest(self):
+        # Live c2316ec3fbb54123-1: UNPARK braked from 1.78 km/h after a 1.01 m exit; the snapshot
+        # straight after still showed it rolling (UNPARK_NOT_OBSERVED). It is judged at rest.
+        class Rolling(MockWorld):
+            rolls = 0
+
+            def unpark(self, tractor_id, owner):
+                out = super().unpark(tractor_id, owner)
+                self.items[tractor_id] = replace(self.items[tractor_id], stopped=False)
+                self.rolls = 1
+                return out
+
+            def snapshot(self):
+                items = super().snapshot()
+                if self.rolls:
+                    self.rolls -= 1
+                    for i, item in self.items.items():
+                        self.items[i] = replace(item, stopped=True)
+                return items
+
+        world, (tractor, wagon) = boxed_pair(2)
+        world.__class__ = Rolling
+        result = Executor(world).execute(move())
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertIn("UNPARK", result.states)
+
     def test_a_closed_door_near_it_is_never_opened_nor_driven_round(self):
         # Live bfbc32565ecb4472-1 / the user, 2026-10-20: opening the Large Shed's wall shoved
         # four vehicles up to 11.7 m; building doors are not Farmhand's to open, and UNPARK
