@@ -296,6 +296,25 @@ def _hitched(items, kind, crop=None) -> bool:
                and (crop is None or seed_position(observed[i.attached_to], crop) is not None) for i in items)
 
 
+FREE_AHEAD_M, FREE_SIDE_M = 10.0, 3.0   # PULL_CLEAR's way out after the unhitch: nothing there
+
+
+def _boxed_ahead(tractor: Equipment, items) -> bool:
+    """Something stands in the way straight ahead of the tractor (live 6f538eb5c4f641fc-1: the
+    Series 9 unhitched its plow facing the Deckover's ramps and could not pull clear)."""
+    if tractor.heading is None:
+        return True
+    fx, fz = math.sin(tractor.heading), math.cos(tractor.heading)
+    for other in items:
+        if other.id in (tractor.id, tractor.attached_to) or other.attached_to == tractor.id:
+            continue
+        dx, dz = other.position[0] - tractor.position[0], other.position[1] - tractor.position[1]
+        along, side = dx * fx + dz * fz, dx * fz - dz * fx
+        if 0.0 < along <= FREE_AHEAD_M and abs(side) <= FREE_SIDE_M:
+            return True
+    return False
+
+
 def _tractor_to_free(items, kind: str, farm_id: str) -> str | None:
     """With no free tractor: the store name of the tractor nearest an implement of ``kind``
     whose own hitched implement is an ordinary one (not a transport, not of that kind), so it
@@ -310,7 +329,11 @@ def _tractor_to_free(items, kind: str, farm_id: str) -> str | None:
     for t in tractors:
         held = observed.get(t.attached_to)
         if (held is None or held.attached_to != t.id or not usable(held, farm_id) or of_kind(held, kind)
-                or transport.is_transport(held) or held.belted or not t.name):
+                or transport.is_transport(held) or held.belted or not t.name or _boxed_ahead(t, items)):
+            continue
+        # A joint the implement can go on (a truck has no three-point joint for a spreader).
+        types = {o.joint_type.casefold() for o in t.output_joints}
+        if not any(j.joint_type.casefold() in types for w in wanted for j in w.input_joints):
             continue
         near = min((math.dist(t.position, w.position) for w in wanted), default=math.inf)
         choices.append((near, t.id, t))

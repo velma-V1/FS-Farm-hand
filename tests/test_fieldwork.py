@@ -813,6 +813,11 @@ class FreeATractorTests(unittest.TestCase):
         steps, _ = field_steps(tuple(near + far + [spreader]), "fertilize", 7, "farm-a")
         self.assertEqual(steps[:2], [{"task": "detach_pair", "tractor_name": "series 9 2019"},
                                      {"task": "hitch_pair", "implement": "sprayer", "tractor_name": "series 9 2019"}])
+        # The nearest one facing something close ahead (live: the Series 9 at the Deckover's ramps)
+        # could not pull clear after the unhitch: the other one is freed.
+        deck = Equipment("d-1", "implement", "farm-a", (10.0, 16.0), heading=0.0)
+        steps, _ = field_steps(tuple(near + far + [spreader, deck]), "fertilize", 7, "farm-a")
+        self.assertEqual(steps[0], {"task": "detach_pair", "tractor_name": "3650"})
         free = rep(far[0], attached_to=None)
         steps, _ = field_steps(tuple(near + [free, spreader]), "fertilize", 7, "farm-a")
         self.assertEqual(steps[0], {"task": "hitch_pair", "implement": "sprayer"})     # one is free: nothing unhitched

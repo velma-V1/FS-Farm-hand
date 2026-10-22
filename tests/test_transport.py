@@ -1104,6 +1104,8 @@ class BuyHitchLoadHaulTests(unittest.TestCase):
         for words in ("hitch the plow to the deutz", "hitch the deutz to the plow"):
             self.assertEqual(r.interpret(words), {"version": 1, "command": "hitch_pair", "implement": "plow",
                                                   "tractor_name": "deutz"})
+        self.assertEqual(r.interpret("hitch the plow to the series 9"),          # live 6f538eb5c4f641fc-2: a place
+                         {"version": 1, "command": "hitch_pair", "implement": "plow", "tractor_name": "series 9"})
         self.assertEqual(r.interpret("buy a fendt 942 and the 1124 deckover")["wants"],
                          [{"kind": "tractor", "name": "fendt 942"}, {"kind": "trailer", "name": "1124 deckover"}])
         self.assertEqual(r.interpret("buy a john deere plow")["wants"], [{"kind": "plow", "name": "john deere"}])

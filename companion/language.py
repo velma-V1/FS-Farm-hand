@@ -517,7 +517,8 @@ def hitch_named(words: str) -> dict | None:
     for implement, tractor in ((match["a"], match["b"]), (match["b"], match["a"])):
         kind = implement_kind(implement)
         if kind and not implement_kind(tractor) and not _TRAILER_WORDS.search(tractor) \
-                and _VEHICLE_WORDS.search(tractor) and not re.search(r"\b(?:and|then|it|them)\b", implement):
+                and (_VEHICLE_WORDS.search(tractor) or re.search(r"[0-9]", tractor)) \
+                and not re.search(r"\b(?:and|then|it|them)\b", implement):
             proposal = {"version": 1, "command": "hitch_pair", "implement": kind,
                         "tractor_name": re.sub(r"\s*\btractor\b\s*", " ", tractor).strip() or None}
             if not proposal["tractor_name"]:
