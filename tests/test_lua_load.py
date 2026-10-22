@@ -233,7 +233,7 @@ class LuaLoadTests(unittest.TestCase):
             ("LOAD_BELTS_FASTENED", dict(fastened=True), None),
             ("LOAD_NOT_LINED_UP", dict(side=0.8), None),                 # beside the axis
             ("LOAD_NOT_LINED_UP", dict(turn=0.15), None),                # turned 8.6 deg off it
-            ("LOAD_NOT_BEHIND_RAMPS", dict(ahead=25.0), None),           # 17.4 m behind the trailer: past the run-in
+            ("LOAD_NOT_BEHIND_RAMPS", dict(ahead=29.0), None),           # 21.4 m behind the trailer: past the run-in
             ("LOAD_NOT_LINED_UP", dict(ahead=9.6, side=1.0), None),      # off the axis at the ramps: no room to steer
             ("LOAD_NOT_BEHIND_RAMPS", dict(ahead=1.0), None),            # already on the deck
             ("LOAD_DOES_NOT_FIT", dict(), dict(width=2.6, length=8.6, height=3.0)),

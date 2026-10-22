@@ -268,15 +268,18 @@ HEADING_START_RAD = math.radians(5.0)   # = Hitch.LOAD.headingStartDeg
 # The tractor's front this far behind the trailer's rear (inside LOAD's 0..RAMP_M window),
 # in the order GIANTS' GOTO is asked for them.
 FRONT_GAPS_M = (1.5, 2.25, 0.75)
-# First the front this far behind (on the axis, facing along it), so the last GOTO is a short
-# straight run: live f41b44f422974e15-5, GIANTS turned in from the side with a plow on and
-# ended 0.68 m and 12.4 deg off, and would not start again that close to the ramps. In the middle
-# of LOAD's run-in window (4.5-11.5 m): live 0788b0f2b8af4c34-1 GIANTS stopped short of a 10 m aim,
-# 13.1 m back, lined up but outside the window, and would not start again closer.
-RUN_UP_GAP_M = 8.0
+# First the front this far behind the trailer's rear (on the axis, facing along it), so the last
+# GOTO is a short straight run: live f41b44f422974e15-5, GIANTS turned in from the side with a
+# plow on and ended 0.68 m and 12.4 deg off, and would not start again that close to the ramps.
+# The middle of LOAD's run-in window (7.5-15.5 m behind the ramps' foot, RAMP_M behind the rear):
+# GIANTS' GOTO ends on position alone, 0.9-3.1 m off its aim (live 0788b0f2b8af4c34-1 stopped
+# 3.1 m short; 95b84283873043d7-1, at the old 8 m from the rear, its front stood only 4.1 m
+# behind the foot, 19 deg turned, and LOAD reached the foot still 10.5 deg off).
+RUN_UP_GAP_M = 11.5 + RAMP_M
 # LOAD's run-in (= Hitch.LOAD.runInM, minRunInM, lateralRunInM, headingRunInDeg): from this far
-# behind the ramps' foot and this close to the axis LOAD steers onto it itself.
-RUN_IN_M, MIN_RUN_IN_M = 12.0, 4.0
+# behind the ramps' foot and this close to the axis LOAD steers onto it itself; not closer than
+# MIN_RUN_IN_M unless already inside the start window.
+RUN_IN_M, MIN_RUN_IN_M = 16.0, 7.0
 LATERAL_RUN_IN_M = 2.5
 HEADING_RUN_IN_RAD = math.radians(25.0)
 DECK_SLACK_M = 0.25              # = the mod's UNLOAD_NOT_ON_DECK slack
@@ -347,18 +350,22 @@ def _angle(a: float, b: float) -> float:
 
 
 def can_run_in(tractor: Equipment, trailer: Equipment) -> bool:
-    """Inside LOAD's run-in window: its front MIN_RUN_IN_M..RUN_IN_M behind the ramps' foot,
-    within LATERAL_RUN_IN_M and HEADING_RUN_IN_RAD of the axis (LOAD decides at the start)."""
+    """Inside LOAD's run-in window: its front up to RUN_IN_M behind the ramps' foot, within
+    LATERAL_RUN_IN_M and HEADING_RUN_IN_RAD of the axis, and at least MIN_RUN_IN_M behind it
+    unless already inside the start window (LOAD decides at the start)."""
     tractor_ends, trailer_ends = _ends(tractor), _ends(trailer)
     if tractor_ends is None or trailer_ends is None or tractor.heading is None or trailer.heading is None:
         return False
     a, l = to_frame(trailer, tractor.position)
     front, foot = a + tractor_ends[1], trailer_ends[0] - RAMP_M
-    return (foot - RUN_IN_M + 0.5 <= front <= foot - MIN_RUN_IN_M - 0.5 and abs(l) <= LATERAL_RUN_IN_M - 0.3
-            and _angle(tractor.heading, trailer.heading) <= HEADING_RUN_IN_RAD - math.radians(2.0))
+    turn = _angle(tractor.heading, trailer.heading)
+    straight = abs(l) <= LATERAL_START_M - 0.1 and turn <= HEADING_START_RAD - math.radians(1.0)
+    nearest = foot - 0.5 if straight else foot - MIN_RUN_IN_M - 0.5
+    return (foot - RUN_IN_M + 0.5 <= front <= nearest and abs(l) <= LATERAL_RUN_IN_M - 0.3
+            and turn <= HEADING_RUN_IN_RAD - math.radians(2.0))
 
 
-BACKOFF_NEAR_M = 8.0             # = mod/FarmhandHitch.lua Hitch.BACKOFF.nearM
+BACKOFF_NEAR_M = 10.0            # = mod/FarmhandHitch.lua Hitch.BACKOFF.nearM
 
 
 def close_behind(tractor: Equipment, trailer: Equipment) -> bool:

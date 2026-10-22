@@ -2155,8 +2155,10 @@ Hitch.LOAD = {
     -- headingRunInDeg of the axis, it steers onto the axis (driveToPoint at lookaheadRunInM);
     -- at the ramps' foot it must be inside the start window, else NOT_LINED_UP_AT_RAMPS, braked.
     -- 25 deg since live 3389dfbd1b564660-1: GIANTS' run-up GOTO ends on position alone and left
-    -- the Series 9 15.6, 17.2 and 18.4 deg turned (1.6 m off, heading for the axis).
-    runInM = 12, minRunInM = 4, lateralRunInM = 2.5, headingRunInDeg = 25, lookaheadRunInM = 4,
+    -- the Series 9 15.6, 17.2 and 18.4 deg turned (1.6 m off, heading for the axis). 7-16 m
+    -- (4-12 until) since live 95b84283873043d7-1: from 4.1 m, 19 deg and 1.5 m off it reached
+    -- the foot 0.31 m off but still 10.5 deg turned.
+    runInM = 16, minRunInM = 7, lateralRunInM = 2.5, headingRunInDeg = 25, lookaheadRunInM = 4,
 }
 
 -- The one implement a LOAD may carry: mounted on the tractor's three-point joint (GIANTS
@@ -2543,7 +2545,9 @@ end
 -- collision query and no other vehicle (the transport aside) or person near the path; LOAD's
 -- guards while moving and the transport watched; restore-on-every-exit. Nothing is teleported.
 Hitch.BACKOFF = {
-    maxSpeedKmh = 3, timeoutMs = 30000, travelM = 8, nearM = 8,
+    -- nearM 10 (8 until live 95b84283873043d7-1): LOAD's run-in needs 7 m behind the ramps'
+    -- foot, 10 m behind the rear; a tractor nearer backs off into it.
+    maxSpeedKmh = 3, timeoutMs = 30000, travelM = 8, nearM = 10,
     divergeM = 0.3, lookaheadM = 3,
     lateralMarginM = 0.3, floorClearanceM = 0.3, topMarginM = 0.3, stepM = 0.5, aheadEndM = 0.5,
     minLookaheadM = 2, reactionS = 1, decelMs2 = 1, movedM = 0.25,

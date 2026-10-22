@@ -1075,6 +1075,9 @@ class Executor:
                             if failure.code not in LOAD_RETRY_CODES or attempt == LOAD_ATTEMPTS - 1:
                                 raise
                             log.info("LOAD %s: back off and in again", failure.code)
+                            # At rest first (live 95b84283873043d7-1-h2: BACKOFF 16 ms after LOAD
+                            # braked from 2.69 km/h was refused NOT_STOPPED).
+                            self._settled_transport(ids)
                             enter("BACKOFF")
                             self.world.backoff(tractor.id, trailer.id, owner)
                             tractor, trailer = self._settled_transport(ids)

@@ -271,6 +271,65 @@ class TractorTransportTests(unittest.TestCase):
         self.assertNotIn("BACKOFF", result.states)
         self.assertAlmostEqual(transport.HEADING_RUN_IN_RAD, math.radians(25.0))
 
+    def test_a_turned_tractor_needs_seven_metres_of_run_in_a_straight_one_does_not(self):
+        # Live 95b84283873043d7-1: from 4.1 m behind the ramps' foot, 19 deg turned and 1.5 m off,
+        # LOAD reached the foot still 10.5 deg off (NOT_LINED_UP_AT_RAMPS).
+        from companion import hitch as transport
+        _, tractor, deck, _ = transport_world()
+        foot = -5.0 - transport.RAMP_M
+        fx, fz = math.sin(deck.heading), math.cos(deck.heading)
+
+        def standing(front, lateral, turn):
+            a = front - 0.3 - 2.6                        # the root, its front 2.6 m + 0.3 m ahead
+            x = deck.position[0] + fx * a + fz * lateral
+            z = deck.position[1] + fz * a - fx * lateral
+            return replace(tractor, position=(x, z), heading=deck.heading + turn,
+                           ai_root=Pose(x, z, deck.heading + turn))
+
+        turned = math.radians(19.0)
+        self.assertFalse(transport.can_run_in(standing(foot - 4.1, -1.5, turned), deck))
+        self.assertTrue(transport.can_run_in(standing(foot - 9.0, -1.5, turned), deck))
+        self.assertTrue(transport.can_run_in(standing(foot - 15.0, -1.5, turned), deck))
+        self.assertFalse(transport.can_run_in(standing(foot - 16.0, -1.5, turned), deck))
+        self.assertTrue(transport.can_run_in(standing(foot - 4.1, 0.1, 0.0), deck))      # straight: any distance
+
+    def test_a_load_stopped_not_lined_up_backs_off_only_once_at_rest(self):
+        # Live 95b84283873043d7-1: BACKOFF sent 16 ms after LOAD braked from 2.69 km/h was refused
+        # NOT_STOPPED. The retry waits for a snapshot with the tractor at rest.
+        events = []
+
+        class Rolling(MockWorld):
+            loads = 0
+
+            def load(self, tractor_id, trailer_id, direction, owner):
+                self.loads += 1
+                if self.loads == 1:
+                    with self._lock:
+                        self.items[tractor_id] = replace(self.items[tractor_id], stopped=False)
+                    events.append("load failed")
+                    raise StepFailed("NOT_LINED_UP_AT_RAMPS")
+                return super().load(tractor_id, trailer_id, direction, owner)
+
+            def snapshot(self):
+                items = super().snapshot()
+                if "load failed" in events and events[-1] != "at rest":
+                    events.append("at rest")
+                    with self._lock:
+                        for i, item in self.items.items():
+                            self.items[i] = replace(item, stopped=True)
+                return items
+
+            def backoff(self, tractor_id, trailer_id, owner):
+                events.append("backoff" if self.items[tractor_id].stopped else "backoff while moving")
+                return super().backoff(tractor_id, trailer_id, owner)
+
+        world, *_ = transport_world(cls=Rolling)
+        result = Executor(world).execute(load())
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+        self.assertIn("backoff", events)
+        self.assertNotIn("backoff while moving", events)
+        self.assertLess(events.index("at rest"), events.index("backoff"))
+
     def test_a_tractor_stuck_right_behind_the_ramps_backs_off_and_runs_up_again(self):
         # Live 49b5344a47ec418a-1: the Series 9 + plow left at the ramps, turned; GIANTS
         # BLOCKED_AT_START there, UNPARK refused (in the open): BACKOFF 8 m, then the run-up.
