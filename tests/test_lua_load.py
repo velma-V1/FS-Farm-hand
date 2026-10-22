@@ -436,7 +436,7 @@ class LuaLoadTests(unittest.TestCase):
         self.assertAlmostEqual(targets[-1], COMMAND_KMH)
 
     def test_giants_jittery_reading_is_logged_and_the_root_travel_decides(self):
-        # Live 3389dfbd1b564660-4: GIANTS read 2.56, 0.88, 1.50, 3.22 km/h 0.12 s apart while the
+        # Live c8668155205849e2-1: GIANTS read 2.56, 0.88, 1.50, 3.22 km/h 0.12 s apart while the
         # root travelled 1.2-2.2 km/h; it ended OVERSPEED on that reading. Here GIANTS reads 3.4
         # every other frame while the root moves at the command: it loads, GIANTS' peak logged.
         w = self.world()

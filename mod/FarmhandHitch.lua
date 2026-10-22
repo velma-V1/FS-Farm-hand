@@ -328,7 +328,7 @@ end
 -- drive: the brakes, AIVehicleUtil 87-94); above the limit the motion ends braked:
 -- OVERSPEED. GIANTS' own reading (getLastSpeed, smoothed) and the horizontal speed are
 -- recorded beside it, and a trace every traceMs, for the log.
--- The shares since live 3389dfbd1b564660-5 (0.85 / 0.9 / 0.97 until then): LOAD's run-in hunted
+-- The shares since live 1b18d8f457ce42fe-1 (0.85 / 0.9 / 0.97 until then): LOAD's run-in hunted
 -- +-0.5 km/h about its target (0.25 s readings 1.58-2.79) and touched 3.03 just after the soft start.
 Hitch.SPEED = { windowMs = 250, commandShare = 0.65, coastShare = 0.8, brakeShare = 0.9,
                 traceMs = 500, traceMax = 240,
@@ -401,7 +401,7 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
         s.peakReportedKmh, s.peakReportedAlong = reported, s.lastAlong
     end
     -- The root's travel decides; GIANTS' per-frame reading is only logged: live
-    -- 3389dfbd1b564660-4 it read 2.56, 0.88, 1.50, 3.22 km/h 0.12 s apart while the root
+    -- c8668155205849e2-1 it read 2.56, 0.88, 1.50, 3.22 km/h 0.12 s apart while the root
     -- travelled 0.04-0.07 m in each (1.2-2.2 km/h).
     local mode = "drive"
     if v ~= nil and v > cap then

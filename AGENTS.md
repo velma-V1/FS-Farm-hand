@@ -100,7 +100,8 @@ have precedence; report conflicts instead of silently changing the scope.
        unfolded on the way. Nothing towed comes along. Geometry assumed: the implement's size
        box contains it lifted (its low point over the ramps' foot is only observed live).
        Live: 5f19b1c28f614266-1 (Series 9 + Titan plow) loaded and belted, but its end speed
-       read 4.14 km/h over the 3 km/h cap: not qualified; requalification pending.
+       read 4.14 km/h over the 3 km/h cap: not qualified. Requalified once under the governor:
+       7209dc3bcab34075-1 loaded and belted, peak 2.69 km/h, envelope no contact.
      - Run-in (the user, 2026-10-21, "figure this out"; that instruction authorizes trying it,
        it is not evidence that it is safe): LOAD may start up to 16 m behind the ramps' foot
        and, unless already inside the start window, at least 6 m behind it, within 2.5 m and
@@ -114,11 +115,14 @@ have precedence; report conflicts instead of silently changing the scope.
        a mounted implement swings out behind the tractor while it steers; the wide corridor
        is assumed to cover it (not computed), so the live envelope check below is what shows
        the clearance. Live: 5f19b1c28f614266-1 at the foot 0.01 m off, 4.43 degrees (speed
-       not qualified, as above).
+       not qualified, as above); 7209dc3bcab34075-1 from 5.7 degrees / 0.92 m off: at the foot
+       0.03 m, 2.40 degrees, peak 2.69 km/h (the attempt before it stopped at the foot 5.8
+       degrees off, NOT_LINED_UP_AT_RAMPS, braked, as designed).
      - UNLOAD: belts released and observed released, ramps down, straight back off the ramps
        under the same guards and caps until its front is 3 m behind the trailer's rear, then
        the ramps up. Live: once (Series 9 alone, 2026-10-21, end reading 3.26 km/h): not
-       qualified on speed; requalification pending.
+       qualified on speed; 7209dc3bcab34075-1 (Series 9 + plow) 14.86 m, peak 2.49 km/h,
+       downhill braking, envelope no contact.
      - BACKOFF (the user, 2026-10-21, "figure this out"; as for the run-in): a tractor (alone
        or with that mounted implement) waiting at most 10 m behind the transport's rear (8 m until
        live 95b84283873043d7-1, where the run-in's 6 m minimum made it needed), which
@@ -128,7 +132,8 @@ have precedence; report conflicts instead of silently changing the scope.
        allows; the transport watched while it moves; so GIANTS GOTO can line it up from the
        run-up. Geometry assumed: straight back, the implement leading; its swept volume is the
        rig box. Live: 2f6986868b5245f1-2 (Series 9 + plow) 8.01 m, lateral 0.00, end reading
-       3.02 km/h: requalification pending.
+       3.02 km/h: not qualified; 7209dc3bcab34075-1 twice 8.00 m, peak 2.20 km/h, envelope no
+       contact.
      Every one of them: GIANTS' collision query proven on the rig before it moves, the swept
      volume clear, takeover, seat, reservation, AI, divergence (0.3 m), distance, stall, timeout,
      other vehicles and the player watched each frame, the trailer and truck unmoved (25 cm),
@@ -161,10 +166,10 @@ have precedence; report conflicts instead of silently changing the scope.
   Every self-driven motion above has its session's limit (3 km/h, ALIGN/LOCAL at most 5 by
   argument, default 3); driveToPoint's maxSpeed is only GIANTS' motor target, so Farmhand
   measures the speed itself (the root's travel over the last 0.25 s) and governs that; GIANTS'
-  own per-frame reading is logged beside it but jitters (live 3389dfbd1b564660-4: 0.88-3.22
+  own per-frame reading is logged beside it but jitters (live c8668155205849e2-1: 0.88-3.22
   km/h 0.12 s apart while the root travelled 1.2-2.2 km/h), so a GIANTS reading alone, such
   as the 4.14, is reported, not the enforced measure. It commands 65 % of the limit (never
-  under 1 km/h; 85 % until live 3389dfbd1b564660-5, where the motor hunted +-0.5 km/h about
+  under 1 km/h; 85 % until live 1b18d8f457ce42fe-1, where the motor hunted +-0.5 km/h about
   its target and touched 3.03), eases the motor's target in from 1.5 km/h to that over the
   first 1.5 s, throttles in proportion to the margin left under a ceiling eased in from 0.15
   to full over that time, takes the throttle off above 80 %, brakes a frame above 90 %

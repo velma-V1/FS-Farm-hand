@@ -216,3 +216,24 @@ contract (field 84) and a fertilize contract (field 71).
 | "load the series 9 and plow on the deckover and use the gmc to take them to the farm" (the Series 9 + plow right behind the ramps) | 2f6986868b5245f1-2 | 6b44fad | BACKOFF PASS (8.01 m straight back, lateral 0.00, 3 km/h); then GIANTS GOTO: run-up `target_reached` 1.6 m off still turned, the near aims `not_reachable` / NAVIGATE_STUCK: FAILED LOAD_APPROACH_FAILED (fixed: LOAD's run-in) |
 | same | 987f65f7d073425c-1 | d099b42 | LOAD refused unmoved LOAD_PATH_BLOCKED (`col`) from the run-in (1.47 m off, 13.6 deg): one wide corridor over the ramps and deck (fixed: tapered corridor) |
 | same | 5f19b1c28f614266-1 | 78db8d8 | LOAD PASS: from the run-in (start 1.47 m off the axis, 13.57 deg turned, 22 m back) it steered onto the axis: at the ramps' foot 0.01 m off and 4.43 deg (inside 0.5 m / 5 deg), LOADED, belts holding the Series 9 and the plow (615, 614), ramps up (fold verified). Speed read 4.14 km/h at the end (cap 3 passed to driveToPoint; noted). The move leg: BLOCKED LOADED_NO_DRIVER (the documented gap: no installed driver moves a trailer with a belted vehicle on it; the player drives the GMC there and says continue) |
+
+## Riverbend Springs, save 1: one-request haul (2026-10-22)
+
+Same save and mods. Request each time: "use the gmc to take the deutz to the farm and unload it"
+(GMC + 1124 Deckover staged at AutoDrive waypoint 5767, Series 9 + Titan Vineyard Plow behind the
+ramps; the Farm Barn has an AutoDrive marker). Speeds are Farmhand's governed root travel over
+0.25 s (limit 3 km/h); GIANTS' own reading is given as "GIANTS".
+
+| Test | Build | Result |
+|---|---|---|
+| 3389dfbd1b564660-1 | 653dab3 | FAILED LOAD_APPROACH_FAILED (fixed 57dc58a): GIANTS' run-up GOTO ended on position alone, the Series 9 18.4 deg turned (run-in window then 20); the near aims NAVIGATE_STUCK 90 s each |
+| 3ff0adef7bf3440a-1 | 57dc58a | FAILED OVERSPEED: governor deciding on GIANTS' reading, 3.24 at 0.15 s from rest (root 0.05 m) |
+| c8668155205849e2-1 | ec66022 | FAILED OVERSPEED (false; fixed 241fa8f): soft start worked (root 1.2-2.2 km/h), but GIANTS read 2.56, 0.88, 1.50, 3.22 km/h 0.12 s apart: the root's travel decides again |
+| 1b18d8f457ce42fe-1 | 241fa8f | FAILED OVERSPEED 3.03 at 1.57 s (fixed f9f82bc): the motor hunted +-0.5 km/h about the 2.55 command; the command is now 1.95 (65 %) |
+| 95b84283873043d7-1 | f9f82bc | LOAD under the limit (peak 2.56, 7.6 s), NOT_LINED_UP_AT_RAMPS: from 4.1 m behind the foot, 19.3 deg, it reached the foot 0.31 m off, 10.5 deg; BACKOFF refused NOT_STOPPED 16 ms after (fixed 3f3e1d2: run-in 6-16 m, BACKOFF at rest) |
+| 6601d036cf7b4334-1 | 3f3e1d2 | FAILED LOAD_APPROACH_FAILED (fixed 674db1c): left at the ramps' foot, GIANTS did not start it and UNPARK (start ROOF `collision`) drove it 1 m on towards the ramps; BACKOFF 8.00 m (peak 2.18) left it at the old 7.5 m edge |
+| 7209dc3bcab34075-1 | 674db1c | **PASS COMPLETE HAULED_AND_UNLOADED, autonomous, one request.** Stage: ROUTED. Load: run-up GOTO not started, UNPARK 8.00 m forward towards the trailer (start ROOF `collision`; peak 2.70, GIANTS 3.84), run-up BLOCKED_AT_START, BACKOFF 8.00 m (peak 2.20), LOAD run-in from 9.8 deg / 1.47 m off reached the foot 0.13 m / 5.8 deg (NOT_LINED_UP_AT_RAMPS, peak 2.52), BACKOFF 8.01 m (peak 2.20), LOAD run-in from 5.7 deg / 0.92 m: foot 0.03 m / 2.40 deg, LOADED (40 s, peak 2.69, GIANTS 3.73, 333 coast frames, envelope 362 checks, no contact, near 0), belts holding 616 + 615, ramps up. Drive: AutoDrive to the Farm Barn marker, 194 route points, DELIVERY_OBSERVED (AutoDrive's own road speeds up to 103 km/h reported). Unload: belts released, ramps down, UNLOADED 14.86 m back (peak 2.49, GIANTS 2.65, 369 brake frames, 1748 downhill frames, envelope 280 checks, no contact), ramps up |
+
+Not yet qualified from these runs: STOP or takeover during LOAD / UNLOAD / BACKOFF and the AutoDrive
+leg; ALONGSIDE under the new governor; the approach without UNPARK (the 8 m UNPARK towards the
+trailer was within exception 4 as written, but is not the intended path).
