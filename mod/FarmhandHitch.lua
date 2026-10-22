@@ -1858,6 +1858,11 @@ Hitch.LOAD = {
     -- area's front less this; the implement may overhang the belt area only onto the
     -- trailer's own deck, at least this inside its rear.
     frontMarginM = 0.3, rearMarginM = 0.25,
+    -- Run-in (live 2f6986868b5245f1-2: GIANTS GOTO left the rig 1.6 m off and 12 deg turned
+    -- and took no closer aim): from up to runInM behind the ramps, within lateralRunInM and
+    -- headingRunInDeg of the axis, it steers onto the axis (driveToPoint at lookaheadRunInM);
+    -- at the ramps' foot it must be inside the start window, else NOT_LINED_UP_AT_RAMPS, braked.
+    runInM = 12, minRunInM = 4, lateralRunInM = 2.5, headingRunInDeg = 20, lookaheadRunInM = 4,
 }
 
 -- The one implement a LOAD may carry: mounted on the tractor's three-point joint (GIANTS
@@ -2008,7 +2013,10 @@ function Hitch.newLoad(env, args)
         s.startAlong, s.startLateral = inFrame(s, sx, sz)
         s.turn = unitTurn(env, s, tractor)
         if math.abs(s.startLateral) > D.lateralStartM or math.abs(s.turn) > D.headingStartDeg then
-            return "LOAD_NOT_LINED_UP"
+            if sign < 0 or math.abs(s.startLateral) > D.lateralRunInM or math.abs(s.turn) > D.headingRunInDeg then
+                return "LOAD_NOT_LINED_UP"
+            end
+            s.runIn = true
         end
         local length = tractorBox.aMax - tractorBox.aMin
         if length > deck.aMax - deck.aMin then return "LOAD_DOES_NOT_FIT" end
@@ -2016,9 +2024,12 @@ function Hitch.newLoad(env, args)
         -- implement along: the rig forward to the belt area's front); UNLOAD from the deck back
         -- until its leading end is behind the ramps.
         if sign > 0 then
-            if rigBox.aMax > trailerBox.aMin or rigBox.aMax < trailerBox.aMin - D.rampM then
+            s.rampFoot = trailerBox.aMin - D.rampM
+            if rigBox.aMax > trailerBox.aMin or rigBox.aMax < s.rampFoot - D.runInM then
                 return "LOAD_NOT_BEHIND_RAMPS"
             end
+            if s.runIn and rigBox.aMax > s.rampFoot - D.minRunInM then return "LOAD_NOT_LINED_UP" end
+            if not s.runIn and rigBox.aMax < s.rampFoot then s.runIn = true end
             if #units == 1 then
                 s.travelM = (deck.aMin + deck.aMax) / 2 - (tractorBox.aMin + tractorBox.aMax) / 2
             else
@@ -2038,8 +2049,12 @@ function Hitch.newLoad(env, args)
             s.sweepFrom, s.sweepTo = rigBox.aMin, rigBox.aMin - s.travelM - D.aheadEndM
         end
         -- Never more than the ramps plus the trailer.
-        if s.travelM <= 0 or s.travelM > D.rampM + (trailerBox.aMax - trailerBox.aMin) then return "LOAD_TOO_FAR" end
-        s.lMin, s.lMax = rigBox.lMin, rigBox.lMax
+        if s.travelM <= 0 or s.travelM > D.rampM + D.runInM + (trailerBox.aMax - trailerBox.aMin) then
+            return "LOAD_TOO_FAR"
+        end
+        -- The corridor from where the rig stands to the axis it steers onto.
+        s.lMin = math.min(rigBox.lMin, rigBox.lMin - s.startLateral)
+        s.lMax = math.max(rigBox.lMax, rigBox.lMax - s.startLateral)
         local okMasks, masks = pcall(collisionMasks, env)
         if not okMasks then return "LOAD_QUERY_UNKNOWN" end
         s.masks = masks
@@ -2101,7 +2116,20 @@ local function loadDrive(env, s, dt)
         if distance(ux, uz, w.wx, w.wz) > D.movedM then return "TRANSPORT_MOVED" end
     end
     if not rampsDown(s.trailer) then return "RAMPS_MOVED" end
-    if math.abs(lateral) > D.divergeM then return "DIVERGED" end
+    local onRun = s.runIn and s.sign > 0 and s.rigBox.aMax + progress < s.rampFoot
+    if s.runIn and s.sign > 0 and not onRun and not s.footChecked then
+        -- At the ramps' foot: lined up as a LOAD start, or stopped there.
+        s.footChecked = true
+        s.footLateral, s.footTurn = lateral, unitTurn(env, s, s.tractor)
+        if math.abs(lateral) > D.lateralStartM or math.abs(s.footTurn) > D.headingStartDeg then
+            return "NOT_LINED_UP_AT_RAMPS"
+        end
+    end
+    if onRun then
+        if math.abs(lateral) > math.abs(s.startLateral) + D.divergeM then return "DIVERGED" end
+    elseif math.abs(lateral) > D.divergeM and not (s.footChecked and math.abs(lateral) <= D.lateralStartM) then
+        return "DIVERGED"
+    end
     if progress > s.travelM + 0.5 then return "DISTANCE_LIMIT" end
     if s.elapsed > s.timeoutMs then return "TIMEOUT" end
     for _, other in ipairs(s.others) do
@@ -2139,7 +2167,7 @@ local function loadDrive(env, s, dt)
     tractor:raiseActive()
     local steer = s.sign > 0 and node or (tractor:getAIReverserNode() or node)
     local _, wy = env.getWorldTranslation(steer)
-    local gx, gz = fromFrame(s, along + s.sign * D.lookaheadM, 0)
+    local gx, gz = fromFrame(s, along + s.sign * (onRun and D.lookaheadRunInM or D.lookaheadM), 0)
     local lx, _, lz = env.worldToLocal(steer, gx, wy, gz)
     env.AIVehicleUtil.driveToPoint(tractor, dt, 1, true, s.sign > 0, lx, lz, s.maxSpeedKmh)
     return "CONTINUE"
@@ -2170,10 +2198,10 @@ function Hitch.describeLoad(s)
     local function f(n) return n and string.format("%.2f", n) or "?" end
     local t, d, b = s.trailerBox or {}, s.deck or {}, s.tractorBox or {}
     return string.format("direction=%s trailer=[%s,%s] deck=[%s,%s]x[%s,%s] h=%s tractor=[%s,%s] w=%s h=%s "
-        .. "start=(%s,%s) turn=%s travel=%s along=%s lateral=%s speed=%s t=%dms pathHits=%s aheadHits=%s",
+        .. "start=(%s,%s) turn=%s runIn=%s foot=(%s,%s) travel=%s along=%s lateral=%s speed=%s t=%dms pathHits=%s aheadHits=%s",
         tostring(s.sign), f(t.aMin), f(t.aMax), f(d.aMin), f(d.aMax), f(d.lMin), f(d.lMax), f(d.height), f(b.aMin),
         f(b.aMax), b.lMax and f(b.lMax - b.lMin) or "?", f(b.height), f(s.startAlong), f(s.startLateral), f(s.turn),
-        f(s.travelM), f(s.lastAlong), f(s.lastLateral), f(s.lastSpeed), s.elapsed or 0, tostring(s.pathHits or "-"),
+        tostring(s.runIn == true), f(s.footLateral), f(s.footTurn), f(s.travelM), f(s.lastAlong), f(s.lastLateral), f(s.lastSpeed), s.elapsed or 0, tostring(s.pathHits or "-"),
         tostring(s.aheadHits or "-"))
 end
 

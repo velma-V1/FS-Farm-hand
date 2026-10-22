@@ -269,6 +269,11 @@ FRONT_GAPS_M = (1.5, 2.25, 0.75)
 # straight run: live f41b44f422974e15-5, GIANTS turned in from the side with a plow on and
 # ended 0.68 m and 12.4 deg off, and would not start again that close to the ramps.
 RUN_UP_GAP_M = 10.0
+# LOAD's run-in (= Hitch.LOAD.runInM, minRunInM, lateralRunInM, headingRunInDeg): from this far
+# behind the ramps' foot and this close to the axis LOAD steers onto it itself.
+RUN_IN_M, MIN_RUN_IN_M = 12.0, 4.0
+LATERAL_RUN_IN_M = 2.5
+HEADING_RUN_IN_RAD = math.radians(20.0)
 DECK_SLACK_M = 0.25              # = the mod's UNLOAD_NOT_ON_DECK slack
 DECK_LATERAL_M = 0.75            # a tractor centred on the deck within this
 
@@ -334,6 +339,18 @@ def load_aims(tractor: Equipment, trailer: Equipment, gaps=FRONT_GAPS_M) -> tupl
 
 def _angle(a: float, b: float) -> float:
     return abs((a - b + math.pi) % (2 * math.pi) - math.pi)
+
+
+def can_run_in(tractor: Equipment, trailer: Equipment) -> bool:
+    """Inside LOAD's run-in window: its front MIN_RUN_IN_M..RUN_IN_M behind the ramps' foot,
+    within LATERAL_RUN_IN_M and HEADING_RUN_IN_RAD of the axis (LOAD decides at the start)."""
+    tractor_ends, trailer_ends = _ends(tractor), _ends(trailer)
+    if tractor_ends is None or trailer_ends is None or tractor.heading is None or trailer.heading is None:
+        return False
+    a, l = to_frame(trailer, tractor.position)
+    front, foot = a + tractor_ends[1], trailer_ends[0] - RAMP_M
+    return (foot - RUN_IN_M + 0.5 <= front <= foot - MIN_RUN_IN_M - 0.5 and abs(l) <= LATERAL_RUN_IN_M - 0.3
+            and _angle(tractor.heading, trailer.heading) <= HEADING_RUN_IN_RAD - math.radians(2.0))
 
 
 def lined_up(tractor: Equipment, trailer: Equipment, share: float = 1.0) -> bool:

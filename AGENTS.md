@@ -92,7 +92,11 @@ have precedence; report conflicts instead of silently changing the scope.
      whole rig fits (the tractor inside the belt area, the rig forward to its front, the
      implement over the trailer's own deck), with the swept volume and every check covering
      the rig, refused unmoved otherwise; it stops if the implement is lowered or unfolded
-     on the way. Nothing towed comes along. BACKOFF (the user, 2026-10-21, "figure this out"): a
+     on the way. Nothing towed comes along. Run-in (the user, 2026-10-21, "figure this out"): LOAD
+     may start up to 12 m behind the ramps' foot, within 2.5 m and 20 degrees of the trailer's
+     axis, steering onto the axis with GIANTS' driveToPoint under the same caps and guards over
+     the corridor from where it stands; at the ramps' foot it must be inside the start window
+     (0.5 m, 5 degrees) or it stops there braked. BACKOFF (the user, 2026-10-21, "figure this out"): a
      tractor (alone or with that mounted implement) waiting at most 8 m behind the transport's
      rear, which GIANTS' agent will not start there, goes straight back along its own heading,
      at most 8 m at 3 km/h, under the same guards (swept volume behind clear, the transport

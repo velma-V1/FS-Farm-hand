@@ -142,6 +142,9 @@ PULL_CLEAR_TOLERANCE_M = 0.25
 # same target once more, which must move it. At most once per vehicle per job (a plan's
 # steps and the next-tractor attempts are one job).
 START_BLOCKED_CODES = frozenset({"NAVIGATE_BLOCKED_AT_START", "STAGE_BLOCKED_AT_START"})
+# LOAD stopped or refused for its line-up only: BACKOFF and in again, at most LOAD_ATTEMPTS in all.
+LOAD_RETRY_CODES = frozenset({"NOT_LINED_UP_AT_RAMPS", "LOAD_NOT_LINED_UP", "DIVERGED"})
+LOAD_ATTEMPTS = 3
 # UNPARK's cap (= mod/FarmhandHitch.lua Hitch.UNPARK_LIMITS.maxDistanceM; a test checks it)
 # and how much more a snapshot of the root may show.
 UNPARK_MAX_M, UNPARK_TOLERANCE_M = 20.0, 1.0
@@ -1041,7 +1044,20 @@ class Executor:
                         self._approach(tractor, trailer, owner)
                     enter("LOAD")
                     moved = True
-                    self.world.load(tractor.id, trailer.id, 1, owner)
+                    for attempt in range(LOAD_ATTEMPTS):
+                        try:
+                            self.world.load(tractor.id, trailer.id, 1, owner)
+                            break
+                        except StepFailed as failure:
+                            # Stopped at the ramps' foot not lined up (or refused there): straight back
+                            # along its now straighter heading and in again (BACKOFF, exception 5).
+                            if failure.code not in LOAD_RETRY_CODES or attempt == LOAD_ATTEMPTS - 1:
+                                raise
+                            log.info("LOAD %s: back off and in again", failure.code)
+                            enter("BACKOFF")
+                            self.world.backoff(tractor.id, trailer.id, owner)
+                            tractor, trailer = self._settled_transport(ids)
+                            enter("LOAD")
                     tractor, trailer = self._settled_transport(ids)
                     if not transport.on_deck(tractor, trailer):
                         raise ObservationMismatch("NOT_ON_DECK")
@@ -1542,6 +1558,10 @@ class Executor:
                     tractor, trailer = self._settled_transport((tractor.id, trailer.id))
                 except StepFailed as again:
                     log.info("APPROACH after BACKOFF: %s", again.code)
+        tractor, trailer = self._settled_transport((tractor.id, trailer.id))
+        if transport.can_run_in(tractor, trailer):
+            log.info("APPROACH: in LOAD's run-in window; LOAD lines it up")
+            return
         for aim in transport.load_aims(tractor, trailer):
             try:
                 self._navigate(tractor.id, aim, owner, free=True)

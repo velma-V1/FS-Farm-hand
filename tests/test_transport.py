@@ -242,8 +242,11 @@ class TractorTransportTests(unittest.TestCase):
             self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
             fronts = [transport.to_frame(deck, (a.x, a.z))[0] + 0.3 + 2.6 for a in world.aims]
             self.assertAlmostEqual(fronts[0], -5.0 - transport.RUN_UP_GAP_M)
-            self.assertAlmostEqual(fronts[1], -5.0 - transport.FRONT_GAPS_M[0])
-            self.assertEqual(len(world.aims), 2)
+            if refused:                        # still off to the side: GIANTS to right behind the ramps
+                self.assertAlmostEqual(fronts[1], -5.0 - transport.FRONT_GAPS_M[0])
+                self.assertEqual(len(world.aims), 2)
+            else:                              # in LOAD's run-in: LOAD lines it up itself
+                self.assertEqual(len(world.aims), 1)
 
     def test_a_tractor_stuck_right_behind_the_ramps_backs_off_and_runs_up_again(self):
         # Live 49b5344a47ec418a-1: the Series 9 + plow left at the ramps, turned; GIANTS

@@ -177,6 +177,26 @@ class LuaLoadTests(unittest.TestCase):
         self.assertFalse(self.drives(w)[-1]["allowed"])
         self.assertEqual(set(w.returns.values()), {True})
 
+    def test_from_the_run_in_it_steers_onto_the_axis_and_must_be_lined_up_at_the_ramps(self):
+        # Live 2f6986868b5245f1-2: GIANTS left the rig 1.6 m off and 12 deg turned, 10 m back.
+        # The stub cannot steer: started off the axis it reaches the ramps' foot still off and
+        # stops there braked (NOT_LINED_UP_AT_RAMPS); every drive point lies toward the axis.
+        w = self.world(ahead=18.0, side=1.2)
+        session, why, refused = self.start(w)
+        self.assertIsNotNone(session, (why, self.hitch.describeLoad(refused)))
+        self.assertTrue(session.runIn)
+        code, _ = self.drive(w, session)
+        self.assertEqual(code, "NOT_LINED_UP_AT_RAMPS", self.hitch.describeLoad(session))
+        moving = self.moving(w)
+        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == 3 and d["lx"] > 0 for d in moving))   # the axis to its +x
+        self.assert_ended_braked_and_restored(w)
+        # On the axis, from as far back: it runs in and loads.
+        w = self.world(ahead=18.0)
+        session, why, _ = self.start(w)
+        self.assertIsNotNone(session, why)
+        self.assertEqual(self.drive(w, session)[0], "LOADED", self.hitch.describeLoad(session))
+        self.assertEqual(tuple(self.start(self.world(ahead=18.0, side=3.0)))[1], "LOAD_NOT_LINED_UP")    # too far off
+
     def test_limits_are_hard_capped(self):
         for overrides in ({"maxSpeedKmh": 3.5}, {"maxSpeedKmh": 0.5}, {"timeoutMs": 61000}, {"isReserved": False}):
             with self.subTest(**overrides):
@@ -192,6 +212,9 @@ class LuaLoadTests(unittest.TestCase):
         self.assertEqual(D.lateralStartM, companion_hitch.LATERAL_START_M)
         self.assertAlmostEqual(math.radians(D.headingStartDeg), companion_hitch.HEADING_START_RAD)
         self.assertTrue(all(0 < g < D.rampM for g in companion_hitch.FRONT_GAPS_M))
+        self.assertEqual((D.runInM, D.minRunInM, D.lateralRunInM),
+                         (companion_hitch.RUN_IN_M, companion_hitch.MIN_RUN_IN_M, companion_hitch.LATERAL_RUN_IN_M))
+        self.assertAlmostEqual(math.radians(D.headingRunInDeg), companion_hitch.HEADING_RUN_IN_RAD)
 
     def test_every_precondition_is_checked_before_any_motion(self):
         cases = [
@@ -199,7 +222,8 @@ class LuaLoadTests(unittest.TestCase):
             ("LOAD_BELTS_FASTENED", dict(fastened=True), None),
             ("LOAD_NOT_LINED_UP", dict(side=0.8), None),                 # beside the axis
             ("LOAD_NOT_LINED_UP", dict(turn=0.15), None),                # turned 8.6 deg off it
-            ("LOAD_NOT_BEHIND_RAMPS", dict(ahead=12.0), None),           # 4.4 m behind the trailer
+            ("LOAD_NOT_BEHIND_RAMPS", dict(ahead=25.0), None),           # 17.4 m behind the trailer: past the run-in
+            ("LOAD_NOT_LINED_UP", dict(ahead=9.6, side=1.0), None),      # off the axis at the ramps: no room to steer
             ("LOAD_NOT_BEHIND_RAMPS", dict(ahead=7.0), None),            # already on the ramps
             ("LOAD_DOES_NOT_FIT", dict(), dict(width=2.6, length=8.6, height=3.0)),
             ("LOAD_TRACTOR_NOT_ALONE", dict(), "attach"),
