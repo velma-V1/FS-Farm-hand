@@ -189,7 +189,8 @@ class LuaLoadTests(unittest.TestCase):
         code, _ = self.drive(w, session)
         self.assertEqual(code, "NOT_LINED_UP_AT_RAMPS", self.hitch.describeLoad(session))
         moving = self.moving(w)
-        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == COMMAND_KMH and d["lx"] > 0 for d in moving))   # the axis to its +x
+        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == COMMAND_KMH and d["lx"] >= 0 for d in moving)
+                        and moving[0]["lx"] == 0 and moving[-1]["lx"] > 0)   # the axis to its +x, the steering eased in
         self.assert_ended_braked_and_restored(w)
         # On the axis, from as far back: it runs in and loads.
         w = self.world(ahead=18.0)

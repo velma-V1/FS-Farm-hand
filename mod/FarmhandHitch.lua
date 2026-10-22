@@ -260,7 +260,7 @@ function Hitch.newAlign(env, args)
         local tx, _, tz = world(env, tractorJoint.jointTransform)
         local fx, _, fz = env.localDirectionToWorld(wagon.rootNode, 0, 0, 1)
         assert(finite(fx) and finite(fz))
-        local s = {
+        local s = { easeSteering = false,   -- the final reverse steers from its first frame
             tractor = tractor, wagon = wagon, farmId = args.farmId, isReserved = args.isReserved,
             tractorJointIndex = args.tractorJoint, wagonJointIndex = args.wagonJoint,
             tractorJoint = tractorJoint, wagonJoint = wagonJoint,
@@ -338,7 +338,12 @@ Hitch.SPEED = { windowMs = 250, commandShare = 0.85, coastShare = 0.9, brakeShar
                 -- 15fc...: LOAD from rest at full throttle, steering onto the axis, overshot to
                 -- 3.05 km/h within 0.5 s): throttleGainKmh of margin is full throttle, never under
                 -- throttleMin; before the first reading, startThrottle.
-                throttleGainKmh = 1.0, throttleMin = 0.15, startThrottle = 0.3 }
+                throttleGainKmh = 1.0, throttleMin = 0.15, startThrottle = 0.3,
+                -- The steering target eased in over steerRampMs from straight ahead (live
+                -- b1d3f6cdc2ca44e3-1: LOAD's run-in from 2 m off and 17 deg turned moved 0.21 m in
+                -- the first 0.25 s, 3.00 km/h, GIANTS 4.25, at a third of the throttle), and the
+                -- trace every fastTraceMs for the first fastTraceUntilMs.
+                steerRampMs = 1500, fastTraceMs = 100, fastTraceUntilMs = 2000 }
 
 -- The tractor's measured speed in km/h (3D and horizontal) over the window, or nil before
 -- the window has filled.
@@ -373,6 +378,9 @@ end
 
 function Hitch.drive(env, s, dt, forwards, lx, lz)
     local S, cap = Hitch.SPEED, s.maxSpeedKmh
+    s.driveStartMs = s.driveStartMs or (s.elapsed or 0)
+    local driven = (s.elapsed or 0) - s.driveStartMs
+    if s.easeSteering ~= false then lx = lx * math.min(1, driven / S.steerRampMs) end
     local command = Hitch.commandKmh(cap)
     local okF, _, fy = pcall(env.localDirectionToWorld, s.tractor.rootNode, 0, 0, 1)
     local downhill = okF and finite(fy) and ((forwards and fy < -S.downhillSine) or (not forwards and fy > S.downhillSine))
@@ -397,7 +405,7 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
     s.speedModes = s.speedModes or { drive = 0, coast = 0, brake = 0, over = 0 }
     s.speedModes[mode] = s.speedModes[mode] + 1
     if (s.elapsed or 0) >= (s.traceAt or 0) or mode == "over" then
-        s.traceAt = (s.elapsed or 0) + S.traceMs
+        s.traceAt = (s.elapsed or 0) + (driven < S.fastTraceUntilMs and S.fastTraceMs or S.traceMs)
         s.speedRows = s.speedRows or {}
         if #s.speedRows < S.traceMax then
             local okP, pitch = pcall(pitchDeg, env, s.tractor)

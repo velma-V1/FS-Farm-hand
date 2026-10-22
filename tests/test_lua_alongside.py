@@ -133,7 +133,7 @@ class LuaAlongsideTests(unittest.TestCase):
         code, _ = self.runner(w, session, 3000, None)
         self.assertEqual(code, "ALONGSIDE_NOT_UNDER", self.hitch.describeAlongside(session))
         moving = [d for d in self.drives(w) if d["allowed"]]
-        self.assertTrue(moving and all(d["lx"] > 0 and d["forwards"] for d in moving))   # the line to its +x side
+        self.assertTrue(moving and all(d["lx"] >= 0 and d["forwards"] for d in moving) and moving[-1]["lx"] > 0)   # toward the line, eased in
         self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
 
     def test_after_the_overload_it_passes_the_combine_and_stops_clear_of_its_front(self):
