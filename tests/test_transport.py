@@ -287,12 +287,15 @@ class TractorTransportTests(unittest.TestCase):
                            ai_root=Pose(x, z, deck.heading + turn))
 
         turned = math.radians(19.0)
+        RAMP_ON_M = transport.RAMP_M - 0.1                    # its front past the trailer's rear
         self.assertFalse(transport.can_run_in(standing(foot - 4.1, -1.5, turned), deck))
         self.assertFalse(transport.can_run_in(standing(foot - 6.2, -1.5, turned), deck))
         self.assertTrue(transport.can_run_in(standing(foot - 7.0, -1.5, turned), deck))
         self.assertTrue(transport.can_run_in(standing(foot - 15.0, -1.5, turned), deck))
         self.assertFalse(transport.can_run_in(standing(foot - 16.0, -1.5, turned), deck))
         self.assertTrue(transport.can_run_in(standing(foot - 4.1, 0.1, 0.0), deck))      # straight: any distance
+        self.assertTrue(transport.can_run_in(standing(foot, 0.0, 0.002), deck))          # where UNLOAD leaves it
+        self.assertFalse(transport.can_run_in(standing(foot + RAMP_ON_M, 0.0, 0.0), deck))  # on the ramps
 
     def test_a_turned_tractor_right_behind_the_ramps_backs_off_before_any_goto(self):
         # Live 6601d036cf7b4334-1-h2: left at the ramps' foot, GIANTS did not start it and UNPARK
