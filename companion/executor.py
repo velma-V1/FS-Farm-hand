@@ -1285,9 +1285,9 @@ class Executor:
         unloader serves only a combine whose helper runs). FIND the combine with the most
         grain and the nearest tractor with a trailer that takes it -> RESERVE both ->
         PIPE_OUT -> APPROACH (GIANTS GOTO onto the pipe's line behind it) -> ALONGSIDE
-        (straight forward until the trailer's middle is under the pipe; AGENTS.md exception 6)
-        -> OVERLOAD (GIANTS' own discharge) -> PIPE_IN -> VERIFY (the grain moved into the
-        trailer) -> STOP -> RELEASE."""
+        (onto the pipe's line until the trailer's middle is under the pipe; AGENTS.md exception 6)
+        -> OVERLOAD (GIANTS' own discharge) -> PASS (on past the combine) -> PIPE_IN -> VERIFY
+        (the grain moved into the trailer) -> STOP -> RELEASE."""
         owner, farm_id = command["request_id"], command["farm_id"]
         combine_owner = f"{owner}-c"
         rig_ids, combine_ids, reserved, moved, piped = (), (), [], False, False
@@ -1364,6 +1364,14 @@ class Executor:
                         raise
             if done is None:
                 raise StepFailed("NOT_UNDER_THE_PIPE")
+            # On past the combine, the pipe still out (live 15dbb6c7eb994721-1: GIANTS would not
+            # start the rig from beside it); a refusal here leaves it where it is.
+            enter("PASS")
+            try:
+                self.world.alongside(tractor.id, combine.id, owner, combine_owner, past=True)
+                self._settled_transport(rig_ids)
+            except StepFailed as failure:
+                log.info("PASS: %s", failure.code)
             enter("PIPE_IN")
             self.world.pipe(combine.id, False, combine_owner)
             piped = False

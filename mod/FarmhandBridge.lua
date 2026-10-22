@@ -597,12 +597,16 @@ end
 -- ALONGSIDE (AGENTS.md exception 6): the reserved tractor with its towed trailer straight
 -- forward until the trailer's middle is under the reserved standing combine's pipe
 -- (Hitch.newAlongside). The pipe is the companion's step (pipe); this op only drives.
+-- direction 1: under the pipe; -1 (pass): after the overload, on along the line until the rig
+-- is past the combine, so GIANTS' agent can start it again.
 function starters.alongside(env, spec)
     local denied = idle(env, spec.tractor, spec.farmId)
     if denied ~= nil then return nil, denied end
     if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    if spec.direction ~= 1 and spec.direction ~= -1 then return nil, "INVALID_DIRECTION" end
     local session, reason, refused = Bridge.Hitch.newAlongside(env, {
         tractor = spec.tractor, combine = spec.wagon, farmId = spec.farmId, isReserved = spec.owned,
+        pass = spec.direction == -1,
     })
     if session == nil then
         log("alongside refused %s: %s", tostring(reason), Bridge.Hitch.describeAlongside(refused))
@@ -619,7 +623,9 @@ function steppers.alongside(env, task, dt)
         task.endLogged = true
         log("alongside end %s %s", code, Bridge.Hitch.describeAlongside(task.session))
     end
-    if code ~= "UNDER_PIPE" then return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code end
+    if code ~= "UNDER_PIPE" and code ~= "PASSED" then
+        return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code
+    end
     return settle(task, code)
 end
 
@@ -2124,7 +2130,7 @@ Bridge.NOTICES = {
     COMBINE_UNLOADED = "Farmhand: combine emptied into the trailer",
     COMBINE_FULL = "Farmhand: the combine is full; emptying it, selling the grain, then harvesting on",
     NOTHING_TO_HITCH_TOGETHER = "Farmhand: say which tractor and implement to hitch (or buy them in the same sentence)",
-    ACCEPTED_SELL = "Farmhand: taking the load to the best paid sell point (AutoDrive)",
+    ACCEPTED_SELL = "Farmhand: taking the load to the best paid sell point",
     COMPLETE_SELL = "Farmhand: sold; the load is gone and the money is in",
     COMPLETE_CONTRACT = "Farmhand: contract done and the reward collected",
     NO_SUCH_TRACTOR = "no tractor by that name",

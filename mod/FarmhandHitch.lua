@@ -2201,6 +2201,8 @@ Hitch.ALONGSIDE = {
                               -- GIANTS reached the aim 0.3 m off but turned about 7 deg, the pipe 1.9 m aside)
     trailerStartDeg = 30,     -- the trailer at most this far swung (live 6c66894767044432-1: 19-21 deg)
     lateralTolM = 0.8,        -- the trailer's middle this close to the pipe point at the end
+    passClearM = 2,           -- pass: on until the rig's rear is this far past the combine's front (live
+                              -- 15dbb6c7eb994721-1: GIANTS' deliver helper would not start the rig beside it)
     divergeM = 0.3,           -- the steering node never farther off the line than at the start plus this
     lookaheadM = 6,
     lateralMarginM = 0.3, floorClearanceM = 0.3, topMarginM = 0.3, stepM = 0.5, aheadEndM = 0.5,
@@ -2230,12 +2232,13 @@ local function alongsideVolume(env, s, a0, a1)
                        s.masks.obstacles)
 end
 
--- `args`: tractor, combine, farmId, isReserved. The frame is the pipe's line: through the
--- pipe point along the combine's heading (a ahead, l to its local +x side), the point at 0.
+-- `args`: tractor, combine, farmId, isReserved; pass: on along the line until the rig is past
+-- the combine (after the overload, the pipe still out). The frame is the pipe's line: through
+-- the pipe point along the combine's heading (a ahead, l to its local +x side), the point at 0.
 -- A session, or nil, a reason and the half-built session (for the log).
 function Hitch.newAlongside(env, args)
     local D = Hitch.ALONGSIDE
-    local s = { tractor = args.tractor, wagon = args.combine, combine = args.combine, farmId = args.farmId,
+    local s = { tractor = args.tractor, wagon = args.combine, combine = args.combine, farmId = args.farmId, pass = args.pass == true,
                 isReserved = args.isReserved, maxSpeedKmh = D.maxSpeedKmh, timeoutMs = D.timeoutMs, sign = 1,
                 elapsed = 0, sinceProgress = 0, best = -math.huge, result = nil, others = {} }
     if type(args.isReserved) ~= "function" then return nil, "INVALID_LIMITS" end
@@ -2273,9 +2276,11 @@ function Hitch.newAlongside(env, args)
         if math.abs(s.trailerTurn) > D.trailerStartDeg then return "ALONGSIDE_RIG_NOT_STRAIGHT" end
         local mx, mz = middleOf(env, s.trailer)
         s.middleAlong, s.middleLateral = inFrame(s, mx, mz)
-        if s.middleAlong >= 0 then return "ALONGSIDE_PAST_THE_PIPE" end
-        s.travelM = -s.middleAlong
-        if s.travelM > D.maxTravelM then return "ALONGSIDE_TOO_FAR" end
+        if not s.pass then
+            if s.middleAlong >= 0 then return "ALONGSIDE_PAST_THE_PIPE" end
+            s.travelM = -s.middleAlong
+            if s.travelM > D.maxTravelM then return "ALONGSIDE_TOO_FAR" end
+        end
         local rigBox = nil
         for _, unit in ipairs(units) do
             local okBox, box = pcall(unitBox, env, s, unit)
@@ -2285,6 +2290,21 @@ function Hitch.newAlongside(env, args)
                                                 height = math.max(rigBox.height, box.height) }
         end
         s.rigBox = rigBox
+        if s.pass then
+            -- The combine's front (the combine and what hangs on it, its header) in the frame.
+            local okC, cUnits = pcall(rigUnits, combine)
+            if not okC then return "ALONGSIDE_GEOMETRY_UNKNOWN" end
+            local front = -math.huge
+            for _, unit in ipairs(cUnits) do
+                local okBox, box = pcall(unitBox, env, s, unit)
+                if not okBox then return "ALONGSIDE_GEOMETRY_UNKNOWN" end
+                front = math.max(front, box.aMax)
+            end
+            s.combineFront = front
+            s.travelM = front + D.passClearM - rigBox.aMin
+            if s.travelM <= 0 then return "ALONGSIDE_ALREADY_CLEAR" end
+            if s.travelM > D.maxTravelM then return "ALONGSIDE_TOO_FAR" end
+        end
         -- The corridor: from where the rig stands to where it ends on the line.
         s.lMin = math.min(rigBox.lMin, rigBox.lMin - s.startLateral)
         s.lMax = math.max(rigBox.lMax, rigBox.lMax - s.startLateral)
@@ -2332,7 +2352,7 @@ local function alongsideDrive(env, s, dt)
     if #units ~= 2 or units[2] ~= s.trailer then return "RIG_CHANGED" end
     local cx, _, cz = world(env, s.combine.rootNode)
     if distance(cx, cz, s.combineAt.wx, s.combineAt.wz) > D.movedM then return "COMBINE_MOVED" end
-    if pipePoint(env, s.combine) == nil then return "PIPE_MOVED" end
+    if not s.pass and pipePoint(env, s.combine) == nil then return "PIPE_MOVED" end
     if math.abs(lateral) > math.abs(s.startLateral) + D.divergeM then return "DIVERGED" end
     if progress > s.travelM + 1.0 then return "DISTANCE_LIMIT" end
     if s.elapsed > s.timeoutMs then return "TIMEOUT" end
@@ -2344,10 +2364,11 @@ local function alongsideDrive(env, s, dt)
     s.others, s.player = others, player
     local bad = pullConflict(s, { { along, lateral } }, Hitch.LOCAL.vehicleStopM, Hitch.LOCAL.playerStopM)
     if bad ~= nil then return bad end
+    if s.pass and progress >= s.travelM then return "PASSED" end
     -- The trailer's own middle reaching the pipe point ends it; under it only if close.
     local mx, mz = middleOf(env, s.trailer)
     s.middleAlong, s.middleLateral = inFrame(s, mx, mz)
-    if s.middleAlong >= 0 then
+    if not s.pass and s.middleAlong >= 0 then
         if math.abs(s.middleLateral) > D.lateralTolM then return "ALONGSIDE_NOT_UNDER" end
         return "UNDER_PIPE"
     end
@@ -2381,8 +2402,8 @@ local function alongsideDrive(env, s, dt)
     return "CONTINUE"
 end
 
--- One update: "CONTINUE", "UNDER_PIPE" (braked there) or a failure as LOAD's, plus
--- COMBINE_MOVED and PIPE_MOVED. Latched: later calls only brake.
+-- One update: "CONTINUE", "UNDER_PIPE" / "PASSED" (braked there) or a failure as LOAD's,
+-- plus COMBINE_MOVED, PIPE_MOVED and ALONGSIDE_NOT_UNDER. Latched: later calls only brake.
 function Hitch.alongsideStep(env, s, dt)
     if s.result ~= nil then
         Hitch.halt(env, s, dt)

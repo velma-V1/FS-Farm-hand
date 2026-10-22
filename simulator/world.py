@@ -16,6 +16,7 @@ MOCK_PIPE_REACH_M = 6.0           # mock-only: a combine's pipe point to its lef
 MOCK_PIPE_HIT_M = 1.5             # mock-only: how near the trailer's middle must be
 MOCK_ALONGSIDE_LATERAL_M = 2.5    # = mod/FarmhandHitch.lua Hitch.ALONGSIDE.startLateralM
 MOCK_ALONGSIDE_MAX_M = 25.0       # = Hitch.ALONGSIDE.maxTravelM
+MOCK_PASS_M = 12.0                # mock-only: how far on past the combine
 MOCK_REVERSE_REACH_M = 10.0      # the mod's reverse cap (Hitch.LIMITS.maxDistanceM)
 MOCK_LOCAL_RADIUS_M = 25.0       # the mod's local work radius (Hitch.LOCAL_LIMITS.workRadiusM)
 MOCK_PULL_CLEAR_M = 4.5          # the mod's pull-clear separation (Hitch.PULL.clearM)
@@ -318,6 +319,7 @@ class MockWorld:
     mock_workers = {}             # mock-only: tractor id -> a handed-off helper's job
     mock_sell_at = None           # mock-only: where the best paid sell point is; None: none reachable
     mock_no_deliver = False       # mock-only: GIANTS' Deliver helper refuses the rig
+    mock_passed = ()              # mock-only: the rigs ALONGSIDE took on past a combine
     mock_price = 2.0              # mock-only: money per litre sold
 
     def _cargo(self, tractor_id):
@@ -351,7 +353,7 @@ class MockWorld:
             self.items[vehicle_id] = replace(v, pipe=(bool(out), x, z))
             return "PIPE_OUT" if out else "PIPE_IN"
 
-    def alongside(self, tractor_id, combine_id, owner, combine_owner):
+    def alongside(self, tractor_id, combine_id, owner, combine_owner, past=False):
         # Mock-only teleport straight ahead until the trailer's middle is level with the pipe
         # point, refused like the mod unless that point is on the trailer's middle line.
         with self._lock:
@@ -362,6 +364,11 @@ class MockWorld:
                 raise StepFailed("PIPE_NOT_OUT")
             heading = tractor.heading or 0.0
             fx, fz = math.sin(heading), math.cos(heading)
+            if past:                       # on past the combine: MOCK_PASS_M ahead
+                self._carry(tractor, Pose(tractor.position[0] + fx * MOCK_PASS_M,
+                                          tractor.position[1] + fz * MOCK_PASS_M, heading))
+                self.mock_passed = self.mock_passed + (tractor_id,)
+                return "PASSED"
             middle = Pose(*trailer.position, trailer.heading or 0.0).to_world(0.0, (trailer.size or (0, 0, 0, 0.0))[3])
             dx, dz = combine.pipe[1] - middle[0], combine.pipe[2] - middle[1]
             travel, lateral = dx * fx + dz * fz, dx * fz - dz * fx

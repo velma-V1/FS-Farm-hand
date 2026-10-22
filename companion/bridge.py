@@ -419,12 +419,13 @@ class FS25World:
         self._unit(vehicle_id, owner)
         return self._run("pipe", tractor=int(vehicle_id), direction=1 if out else -1)
 
-    def alongside(self, tractor_id: str, combine_id: str, owner: str, combine_owner: str) -> str:
-        """ALONGSIDE (AGENTS.md exception 6): the reserved tractor's trailer straight forward
-        under the reserved combine's pipe (mod/FarmhandBridge.lua starters.alongside)."""
+    def alongside(self, tractor_id: str, combine_id: str, owner: str, combine_owner: str, past: bool = False) -> str:
+        """ALONGSIDE (AGENTS.md exception 6): the reserved tractor's trailer onto the pipe's line
+        and under the reserved combine's pipe, or (``past``) on along it until clear of the
+        combine (mod/FarmhandBridge.lua starters.alongside)."""
         self._reserved(tractor_id, owner)
         self._unit(combine_id, combine_owner)
-        return self._run("alongside", tractor=int(tractor_id), wagon=int(combine_id))
+        return self._run("alongside", tractor=int(tractor_id), wagon=int(combine_id), direction=-1 if past else 1)
 
     def giants_deliver(self, tractor_id: str, owner: str) -> str:
         """SELL: GIANTS' own Deliver helper takes the reserved rig's cargo to the best paid

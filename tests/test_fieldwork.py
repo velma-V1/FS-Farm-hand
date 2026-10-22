@@ -936,6 +936,7 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "COMBINE_UNLOADED"), c.last)
         self.assertEqual(world.items["c-1"].fill_units[1].level, 0.0)
         self.assertFalse(world.items["c-1"].pipe[0])                          # pipe back in
+        self.assertEqual(world.mock_passed, ("t-5",))                         # on past the combine first
         self.assertEqual(world.farm().money, FARM.money + 9000.0 * world.mock_price)   # sold after
         self.assertEqual(notices[-3:-1], ["COMBINE_UNLOADED", "COMPLETE_SELL"])
         self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))

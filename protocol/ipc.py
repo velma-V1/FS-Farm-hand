@@ -132,7 +132,7 @@ COMMAND_ARGS = {
     "ad_sell": ("tractor",),                      # AutoDrive delivers the rig's cargo to the best paid sell point
     "pipe": ("tractor", "direction"),            # a combine's pipe out (1) or in (-1), GIANTS Pipe
     "overload": ("tractor", "wagon"),            # a standing combine discharges into the trailer under its pipe
-    "alongside": ("tractor", "wagon"),           # the tractor's trailer straight forward under the combine's pipe
+    "alongside": ("tractor", "wagon", "direction"),  # the trailer under the combine's pipe (1) or on past the combine (-1)
     "deliver": ("tractor",),                     # GIANTS' Deliver helper: the cargo to the best paid selling station
     "stop": ("tractor",),
 }

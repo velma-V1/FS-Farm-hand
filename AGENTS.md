@@ -107,7 +107,10 @@ have precedence; report conflicts instead of silently changing the scope.
      header aside) or person is near; LOAD's guards while moving (it may never get farther off
      the line than at the start), and it stops
      if the combine moves or its pipe comes in; restore-on-every-exit as UNPARK. The grain
-     moves by GIANTS' own discharge. Nothing is teleported and no collision is disabled.
+     moves by GIANTS' own discharge. After the overload, the pipe still out, the rig goes on
+     along the same line under the same guards and caps until its rear is 2 m past the
+     combine's front (GIANTS would not start it from beside the combine, live 2026-10-22).
+     Nothing is teleported and no collision is disabled.
 - Keep Python orchestration in companion/, pure contracts in protocol/ and
   adapters/, game-side Lua in mod/, synthetic state in simulator/, tests in tests/.
   Never import simulator into companion or mod. No simulated success in real adapters.

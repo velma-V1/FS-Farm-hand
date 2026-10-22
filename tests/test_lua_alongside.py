@@ -77,8 +77,8 @@ class LuaAlongsideTests(unittest.TestCase):
         self.combine(COMBINE, self.W, w, self.lua.table(**opts))
         return w
 
-    def start(self, w):
-        out = self.hitch.newAlongside(w.env, self.W.args(w, self.lua.table(combine=w.combine)))
+    def start(self, w, past=False):
+        out = self.hitch.newAlongside(w.env, self.W.args(w, self.lua.table(combine=w.combine, **({"pass": True} if past else {}))))
         out = out if isinstance(out, tuple) else (out,)
         return out + (None,) * (3 - len(out))
 
@@ -134,6 +134,24 @@ class LuaAlongsideTests(unittest.TestCase):
         moving = [d for d in self.drives(w) if d["allowed"]]
         self.assertTrue(moving and all(d["lx"] > 0 and d["forwards"] for d in moving))   # the line to its +x side
         self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
+
+    def test_after_the_overload_it_passes_the_combine_and_stops_clear_of_its_front(self):
+        # Live 15dbb6c7eb994721-1: GIANTS' deliver helper would not start the rig from beside
+        # the combine. The combine's front 4 m past the pipe point, the trailer's rear 15 m behind
+        # it: on 4 + 2 + 15 = 21 m.
+        w = self.world()
+        x0, z0 = w.steer.x, w.steer.z
+        session, why, _ = self.start(w, past=True)
+        self.assertIsNotNone(session, why)
+        self.assertAlmostEqual(session.travelM, 21.0, places=6)
+        code, _ = self.runner(w, session, 3000, None)
+        self.assertEqual(code, "PASSED", self.hitch.describeAlongside(session))
+        along, _ = self.W.travel(w, x0, z0)
+        self.assertGreater(along, 20.99)
+        self.assertLess(along, 21.2)
+        self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
+        far = self.world(ahead=12)                                       # its front 11 m on: 28 m > 25
+        self.assertEqual(tuple(self.start(far, past=True))[1], "ALONGSIDE_TOO_FAR")
 
     def test_refused_unmoved_unless_everything_holds(self):
         self.assert_refused(self.world(pipeState=1), "PIPE_NOT_OUT")
