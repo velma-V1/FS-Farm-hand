@@ -1713,6 +1713,14 @@ class Executor:
         refuses it, straight on; waiting right behind the ramps not lined up, BACKOFF once).
         LOAD itself re-checks the window."""
         self._backed_off = False
+        if not transport.can_run_in(tractor, trailer) and transport.close_behind(tractor, trailer):
+            # Right behind the ramps, outside the run-in: straight back first (live
+            # 6601d036cf7b4334-1-h2: GIANTS did not start it at the ramps' foot and UNPARK, taking
+            # something static over it for a roof, drove it 1 m on towards them).
+            tractor, trailer = self._back_off_and_run_up(tractor, trailer, owner)
+            if transport.can_run_in(tractor, trailer):
+                log.info("APPROACH: in LOAD's run-in window after BACKOFF")
+                return
         for run_up in transport.load_aims(tractor, trailer, (transport.RUN_UP_GAP_M,)):
             try:
                 self._navigate(tractor.id, run_up, owner, free=True)

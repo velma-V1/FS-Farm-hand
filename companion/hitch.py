@@ -271,15 +271,15 @@ FRONT_GAPS_M = (1.5, 2.25, 0.75)
 # First the front this far behind the trailer's rear (on the axis, facing along it), so the last
 # GOTO is a short straight run: live f41b44f422974e15-5, GIANTS turned in from the side with a
 # plow on and ended 0.68 m and 12.4 deg off, and would not start again that close to the ramps.
-# The middle of LOAD's run-in window (7.5-15.5 m behind the ramps' foot, RAMP_M behind the rear):
+# The middle of LOAD's run-in window (6.5-15.5 m behind the ramps' foot, RAMP_M behind the rear):
 # GIANTS' GOTO ends on position alone, 0.9-3.1 m off its aim (live 0788b0f2b8af4c34-1 stopped
 # 3.1 m short; 95b84283873043d7-1, at the old 8 m from the rear, its front stood only 4.1 m
 # behind the foot, 19 deg turned, and LOAD reached the foot still 10.5 deg off).
-RUN_UP_GAP_M = 11.5 + RAMP_M
+RUN_UP_GAP_M = 11.0 + RAMP_M
 # LOAD's run-in (= Hitch.LOAD.runInM, minRunInM, lateralRunInM, headingRunInDeg): from this far
 # behind the ramps' foot and this close to the axis LOAD steers onto it itself; not closer than
 # MIN_RUN_IN_M unless already inside the start window.
-RUN_IN_M, MIN_RUN_IN_M = 16.0, 7.0
+RUN_IN_M, MIN_RUN_IN_M = 16.0, 6.0
 LATERAL_RUN_IN_M = 2.5
 HEADING_RUN_IN_RAD = math.radians(25.0)
 DECK_SLACK_M = 0.25              # = the mod's UNLOAD_NOT_ON_DECK slack

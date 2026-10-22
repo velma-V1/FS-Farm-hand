@@ -103,7 +103,7 @@ have precedence; report conflicts instead of silently changing the scope.
        read 4.14 km/h over the 3 km/h cap: not qualified; requalification pending.
      - Run-in (the user, 2026-10-21, "figure this out"; that instruction authorizes trying it,
        it is not evidence that it is safe): LOAD may start up to 16 m behind the ramps' foot
-       and, unless already inside the start window, at least 7 m behind it, within 2.5 m and
+       and, unless already inside the start window, at least 6 m behind it, within 2.5 m and
        25 degrees of the axis, steering onto the axis with driveToPoint (until 2026-10-22
        4-12 m and 20 degrees; widened by Farmhand under the same instruction, not by the user:
        live 3389dfbd1b564660-1 GIANTS' run-up left the Series 9 18.4 degrees turned, and
@@ -121,7 +121,7 @@ have precedence; report conflicts instead of silently changing the scope.
        qualified on speed; requalification pending.
      - BACKOFF (the user, 2026-10-21, "figure this out"; as for the run-in): a tractor (alone
        or with that mounted implement) waiting at most 10 m behind the transport's rear (8 m until
-       live 95b84283873043d7-1, where the run-in's 7 m minimum made it needed), which
+       live 95b84283873043d7-1, where the run-in's 6 m minimum made it needed), which
        GIANTS' agent will not start there, straight back along its own heading, at most 8 m
        at 3 km/h; refused unmoved unless the swept volume behind is clear in GIANTS' collision
        query, no other vehicle (the transport aside) or person is near and the rig is as LOAD
