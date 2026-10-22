@@ -226,10 +226,12 @@ def _words(name: str | None) -> str | None:
     return " ".join(words)[:40].strip() or None
 
 
-def haul_step(items: tuple[Equipment, ...], farm_id: str, name: str | None, target, delivered: bool):
+def haul_step(items: tuple[Equipment, ...], farm_id: str, name: str | None, target, delivered: bool,
+              staged: bool = True):
     """The next executor step of a haul goal from observed state, as an intent fragment,
     or (None, why): HAULED when it is done; NO_SUCH_TRACTOR, TRACTOR_AMBIGUOUS,
-    NO_TRANSPORT when it cannot go on."""
+    NO_TRANSPORT when it cannot go on. Not yet ``staged``: before the load, the empty
+    transport is taken where AutoDrive has a route to the target (stage_transport)."""
     observed = {i.id: i for i in items}
     transports = [i for i in items if transport.is_transport(i) and i.farm_id == farm_id]
     tractors = _tractor_for(items, farm_id, name, transports)
@@ -252,6 +254,8 @@ def haul_step(items: tuple[Equipment, ...], farm_id: str, name: str | None, targ
         return {"task": "load_tractor", "target": "player_at_acceptance", "tractor_name": words,
                 "implement_name": _words(trailer.name)}, None
     hitched = [t for t in transports if observed.get(t.attached_to) is not None]
+    if hitched and not staged and destination:
+        return {"task": "stage_transport", **destination}, None
     if hitched:
         return {"task": "load_tractor", "target": "player_at_acceptance", "tractor_name": words}, None
     if transports:
@@ -1024,11 +1028,13 @@ class Coordinator:
         name, target = work.get("tractor_name"), work["target"]
         states, used = [], []
         work.setdefault("delivered", False)       # kept with the goal: a resume never unloads early
+        work.setdefault("staged", False)          # the empty transport where AutoDrive has a route
         for n in range(1, self.MAX_HAUL_STEPS + 1):
             if cancel.is_set():
                 return Result("CANCELLED", "CANCELLED_BY_REQUESTER", tuple(used), tuple(states))
             self._settle()
-            step, failure = haul_step(tuple(self.world.snapshot()), self.farm(), name, target, work["delivered"])
+            step, failure = haul_step(tuple(self.world.snapshot()), self.farm(), name, target, work["delivered"],
+                                      work["staged"])
             if step is None:
                 if failure == "HAULED":
                     return Result("COMPLETE", "HAULED_AND_UNLOADED", tuple(used), tuple(states))
@@ -1040,6 +1046,9 @@ class Coordinator:
             states += [f"{step['task']}:{s}" for s in result.states]
             used += [i for i in result.equipment_ids if i not in used]
             log.info("job %d haul step %d %s result %s %s", job.number, n, step["task"], result.status, result.reason)
+            if step["task"] == "stage_transport" and result.status in ("COMPLETE", "BLOCKED"):
+                work["staged"] = True             # routed, staged, or nothing to stage with: load here
+                continue
             if result.status != "COMPLETE":
                 return Result(result.status, result.reason, tuple(used), tuple(states))
             if step["task"] == "move_pair":

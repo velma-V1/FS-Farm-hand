@@ -553,7 +553,7 @@ class HaulGoalTests(unittest.TestCase):
         self.assertEqual((job.state, job.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), job.states)
         tasks = [s.split(":")[0] for s in job.states]
         self.assertEqual([t for i, t in enumerate(tasks) if i == 0 or tasks[i - 1] != t],
-                         ["hitch_pair", "load_tractor", "move_pair", "unload_tractor"])
+                         ["hitch_pair", "stage_transport", "load_tractor", "move_pair", "unload_tractor"])
         self.assertIn("load_tractor:BELTS", job.states)                           # secured before it went
         self.assertIn("move_pair:DELIVER", job.states)                            # AutoDrive drove it
         after = world.items
@@ -562,6 +562,48 @@ class HaulGoalTests(unittest.TestCase):
         self.assertEqual((after[deck.id].fold, after[deck.id].belts_fastened), (0.0, False))
         self.assertIsNone(c.kept)
         self.assertEqual(notices[-1], "COMPLETE_HAUL")
+
+    def test_autodrives_saved_network_is_read_as_it_writes_it(self):
+        # AutoDrive_config.xml's <waypoints> (as the user's Riverbend Springs file holds them):
+        # a dead end 1-2 by the rig, the routed road 3-4-5 to the marker at waypoint 5.
+        from companion.hitch import ad_route_start, ad_routed, parse_ad_graph
+        text = """<?xml version="1.0"?>\n<AutoDrive><waypoints>
+            <id>1,2,3,4,5</id><x>0,4,60,100,500</x><y>1,1,1,1,1</y><z>0,0,0,0,0</z>
+            <out>2;-1;4;5;-1</out><incoming>-1;1;-1;3;4</incoming><flags>2,2,2,2,2</flags>
+            </waypoints><mapmarker><mm1><id>5.000000</id><name>Farm Barn</name></mm1></mapmarker></AutoDrive>"""
+        graph = parse_ad_graph(text)
+        self.assertEqual(graph.out, {1: (2,), 2: (), 3: (4,), 4: (5,), 5: ()})
+        self.assertFalse(ad_routed(graph, (1.0, 0.0), (500.0, 0.0)))          # its nearest is the dead end
+        (x, z), yaw, wp = ad_route_start(graph, (1.0, 0.0), (500.0, 0.0))
+        self.assertEqual((wp, (x, z)), (3, (60.0, 0.0)))
+        self.assertAlmostEqual(yaw, math.pi / 2)                               # along the road to 4
+        self.assertTrue(ad_routed(graph, (61.0, 0.0), (500.0, 0.0)))
+        self.assertIsNone(ad_routed(graph, (1.0, 0.0), (250.0, 9.0)))          # not a marker on the network
+        self.assertIsNone(ad_route_start(graph, (1.0, 0.0), (500.0, 0.0), max_m=30.0))
+
+    def test_the_empty_transport_is_staged_where_autodrive_has_a_route_before_it_is_loaded(self):
+        # Live 2026-10-22 (Riverbend Springs): the waypoint nearest the GMC was on a dead end,
+        # AutoDrive "could not calculate path". Its saved network (read only) says so; GIANTS
+        # GOTO takes the empty GMC and Deckover onto the nearest waypoint that has a route, the
+        # Series 9 is loaded there and AutoDrive drives it to "Field 3".
+        from companion.hitch import ADGraph as Graph
+        world, truck, deck, series9 = haul_world()
+        world.mock_ad_graph = Graph(points={1: (52.0, 25.0), 2: (56.0, 25.0),             # the dead end
+                                            10: (120.0, 25.0), 11: (300.0, 300.0), 12: (900.0, 900.0)},
+                                    out={1: (2,), 2: (), 10: (11,), 11: (12,), 12: ()})
+        c, notices = self.run_goal(world)
+        job = c.last
+        self.assertEqual((job.state, job.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), job.states)
+        self.assertIn("stage_transport:STAGE", job.states)
+        self.assertLess(job.states.index("stage_transport:STAGE"), job.states.index("load_tractor:LOAD"))
+        self.assertLess(math.dist(world.items[truck.id].position, (900.0, 900.0)), 1.0)
+        # Without staging (already loaded where there is no route): AutoDrive refuses up front
+        # (AD_NO_ROUTE) and the player drives it.
+        world, truck, deck, series9 = haul_world(loaded=True)
+        world.mock_ad_graph = Graph(points={1: (52.0, 25.0), 12: (900.0, 900.0)}, out={1: (), 12: ()})
+        c, notices = self.run_goal(world)
+        self.assertEqual((c.last.state, c.last.reason), ("FAILED", "AD_NO_ROUTE"), c.last.states)
+        self.assertIsNotNone(c.kept)
 
     def test_when_autodrive_does_not_move_the_loaded_rig_the_player_drives_it(self):
         # Assisted, never counted as autonomous: AutoDrive's drive ended with what it waited on;
@@ -591,7 +633,7 @@ class HaulGoalTests(unittest.TestCase):
         self.assertEqual((job.state, job.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), job.states)
 
     def test_from_partly_done_states_nothing_completed_is_repeated(self):
-        for label, prep, first in (("hitched", dict(hitched=True), "load_tractor"),
+        for label, prep, first in (("hitched", dict(hitched=True), "stage_transport"),
                                    ("loaded and belted", dict(loaded=True), "move_pair"),
                                    ("loaded, ramps left down", dict(loaded=True, ramps_down=True), "load_tractor")):
             with self.subTest(label):

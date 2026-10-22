@@ -4,8 +4,11 @@ where the bounded reverse can take over.
 No game calls and no steering. GIANTS remains the authority on whether the pair
 can actually attach (attachableInfo); this only says where to put the tractor.
 """
+from collections import deque
 import math
 from dataclasses import dataclass
+from pathlib import Path
+import re
 
 from protocol.model import Equipment, HitchPlan, Pose
 
@@ -382,3 +385,104 @@ def off_ramps(tractor: Equipment, trailer: Equipment) -> bool:
         return False
     a, _ = to_frame(trailer, tractor.position)
     return a + tractor_ends[1] <= trailer_ends[0] - RAMP_M + DECK_SLACK_M
+
+
+# ----------------------------------------------------- AutoDrive's road network
+# AutoDrive's network as it saved it (AutoDrive_config.xml in the savegame), read only.
+# AutoDrive drives from the network waypoint nearest the vehicle (getClosestWayPoint) along
+# ADGraphManager:pathFromTo to its destination marker; with no route from that waypoint its
+# path finder gives up at once (live 2026-10-22, Riverbend Springs: the waypoint nearest the
+# loaded rig was on a 7-waypoint dead end). Farmhand never edits the network: this says whether
+# a rig standing somewhere has a route, and where the nearest waypoint that has one is, so GIANTS
+# GOTO can take an empty transport there before it is loaded. The file's <waypoints> holds
+# comma-separated <id>, <x>, <z> and ';'-separated per-waypoint <out> lists (comma-separated
+# ids, -1 for none), as AutoDrive writes them.
+AD_TARGET_MATCH_M = 1.0          # a marker's position is its waypoint's
+AD_ROUTE_START_MAX_M = 150.0     # how far the empty transport may be taken to reach a routed waypoint
+
+
+@dataclass(frozen=True)
+class ADGraph:
+    points: dict[int, tuple[float, float]]
+    out: dict[int, tuple[int, ...]]
+
+    def closest(self, position) -> tuple[int | None, float]:
+        best, distance = None, math.inf
+        for wp, point in self.points.items():
+            d = math.dist(point, position)
+            if d < distance:
+                best, distance = wp, d
+        return best, distance
+
+    def reaching(self, target: int) -> set[int]:
+        """Every waypoint with a route to ``target`` (target included)."""
+        into: dict[int, list[int]] = {}
+        for a, bs in self.out.items():
+            for b in bs:
+                into.setdefault(b, []).append(a)
+        seen, queue = {target}, deque([target])
+        while queue:
+            for a in into.get(queue.popleft(), ()):
+                if a not in seen:
+                    seen.add(a)
+                    queue.append(a)
+        return seen
+
+
+def _ad_field(block: str, name: str) -> str:
+    match = re.search(rf"<{name}>(.*?)</{name}>", block, re.S)
+    if match is None:
+        raise ValueError(f"AutoDrive config without <{name}>")
+    return match.group(1).strip()
+
+
+def parse_ad_graph(text: str) -> "ADGraph":
+    start, end = text.index("<waypoints>"), text.index("</waypoints>")
+    block = text[start:end]
+    ids = [int(float(v)) for v in _ad_field(block, "id").split(",")]
+    xs = [float(v) for v in _ad_field(block, "x").split(",")]
+    zs = [float(v) for v in _ad_field(block, "z").split(",")]
+    outs = _ad_field(block, "out").split(";")
+    if not (len(ids) == len(xs) == len(zs) == len(outs)):
+        raise ValueError("AutoDrive config waypoint lists differ in length")
+    points = {i: (x, z) for i, x, z in zip(ids, xs, zs)}
+    out = {i: tuple(int(float(v)) for v in o.split(",") if v.strip() and float(v) >= 0) for i, o in zip(ids, outs)}
+    return ADGraph(points, out)
+
+
+def load_ad_graph(path: Path) -> "ADGraph":
+    return parse_ad_graph(path.read_text(encoding="utf-8-sig"))
+
+
+def _ad_target(graph: "ADGraph", position) -> int | None:
+    wp, distance = graph.closest(position)
+    return wp if distance <= AD_TARGET_MATCH_M else None
+
+
+def ad_routed(graph: "ADGraph", position, target_position) -> bool | None:
+    """Whether AutoDrive has a route from where a vehicle stands to the marker at
+    ``target_position``; None when the marker is not on the saved network."""
+    target = _ad_target(graph, target_position)
+    if target is None:
+        return None
+    start, _ = graph.closest(position)
+    return start in graph.reaching(target)
+
+
+def ad_route_start(graph: "ADGraph", position, target_position, max_m: float = AD_ROUTE_START_MAX_M):
+    """The nearest waypoint within ``max_m`` that has a route to the marker and leads on toward
+    it: ((x, z), yaw along its next routed edge, waypoint id), or None."""
+    target = _ad_target(graph, target_position)
+    if target is None:
+        return None
+    reach = graph.reaching(target)
+    for wp in sorted(reach, key=lambda w: math.dist(graph.points[w], position)):
+        point = graph.points[wp]
+        if math.dist(point, position) > max_m:
+            return None
+        nxt = next((b for b in graph.out.get(wp, ()) if b in reach), None)
+        if nxt is None:
+            continue
+        nx, nz = graph.points[nxt]
+        return point, math.atan2(nx - point[0], nz - point[1]), wp
+    return None

@@ -81,6 +81,10 @@ class MockWorld:
             return "FOLLOW_ENDED"
 
     mock_ad_places = {}           # mock-only: a building's position -> where AutoDrive's network passes it
+    mock_ad_graph = None          # mock-only: AutoDrive's saved road network (companion/hitch.py ADGraph)
+
+    def ad_graph(self):
+        return self.mock_ad_graph
 
     def ad_marker(self, field=None, place=None):
         # Mock-only: AutoDrive's own marker "Field N" where its network meets field N, or one
@@ -666,6 +670,11 @@ class MockWorld:
                 raise ValueError("Invalid attachment")
             if self.mock_ad_loaded_stall and any(i.belted_to == wagon.id for i in self.items.values()):
                 raise StepFailed(self.mock_ad_loaded_stall)
+            target = self.destination_map.get(destination_id)
+            if self.mock_ad_graph is not None and target is not None:
+                from companion.hitch import ad_routed   # mock-only: AutoDrive's own route query, as starters.drive asks it
+                if not ad_routed(self.mock_ad_graph, tractor.position, target.position):
+                    raise StepFailed("AD_NO_ROUTE")
             destination = self.destination_map.get(destination_id)
             if destination is None or not all(math.isfinite(v) for v in destination.position):
                 raise ValueError("Unknown destination")

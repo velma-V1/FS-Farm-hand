@@ -183,7 +183,11 @@ have precedence; report conflicts instead of silently changing the scope.
   only what is mounted on the vehicle itself: that missed AttacherJoints' recursion and was
   wrong). Why live 831d6868b9df40b0-1 (AutoDrive 3.0.1.4, FourFields) never moved is not known:
   its drive now reports what AutoDrive waits on (planning onto its network, a sensor and what is
-  in its box, paused) and ends FAILED with it after 3 minutes unmoved. So the loaded rig goes by
+  in its box, paused) and ends FAILED with it after 3 minutes unmoved. Found live 2026-10-22: a
+  vehicle Farmhand hands to AutoDrive must be kept awake (raised active each frame) or AutoDrive's
+  own update never runs, and AutoDrive drives only from a network waypoint with a route (the one
+  nearest the GMC at Riverbend's store is a dead end). Before loading, an empty transport that has
+  no route is taken by GIANTS GOTO onto the nearest waypoint that has one. So the loaded rig goes by
   AutoDrive to a marker (made AutoDrive's own way where there is none: "Field N", or a farm
   building by its own name); only when AutoDrive did not move it, or there is no AutoDrive or
   marker, is the player asked for the smallest help (drive it to the destination, then

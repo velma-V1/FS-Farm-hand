@@ -114,6 +114,7 @@ local function settle(task, code)
 end
 
 local starters, steppers, aborts = {}, {}, {}
+local adGraph                 -- AutoDrive's graph manager (ad_marker below); also read by drive
 
 -- A self-driven motion's end: its own description, the speed it kept (Hitch.describeSpeed:
 -- the limit, Farmhand's measured peak, GIANTS' reading, the governor's frames), the rig's
@@ -146,9 +147,30 @@ function starters.drive(env, spec)
     if v.ad.stateModule:getStartHelper() ~= false then return nil, "AD_START_HELPER_ON" end
     local markers = AD:GetAvailableDestinations()
     if type(spec.marker) ~= "number" or markers[spec.marker] == nil then return nil, "UNKNOWN_MARKER" end
+    -- AutoDrive drives from the network waypoint nearest the vehicle (getClosestWayPoint; past
+    -- 30 m its path finder first plans onto it, DriveToDestinationTask.lua 18-24, and gives up at
+    -- once without a route on: PathFinderModule:startPathPlanningToWayPoint 215-226 needs
+    -- ADGraphManager:pathFromTo(closest, destination)). Live 2026-10-22 the waypoint nearest the
+    -- rig was on a 7-waypoint dead end ("Could not calculate path - shutting down"): asked here,
+    -- read only, so a route gap is said for what it is.
+    local graph = adGraph(env)
+    if graph ~= nil and type(graph.pathFromTo) == "function" and type(graph.getMapMarkerById) == "function" then
+        local okRoute, routed, closest, distance = pcall(function()
+            local target = graph:getMapMarkerById(spec.marker).id
+            local from, d = v:getClosestWayPoint()
+            local path = graph:pathFromTo(from, target)
+            return path ~= nil and #path >= 1, from, d
+        end)
+        if okRoute and not routed then
+            log("drive refused AD_NO_ROUTE: no route on AutoDrive's network from waypoint %s (%.1f m from the vehicle) to %s",
+                tostring(closest), distance or -1, tostring(markers[spec.marker].name))
+            return nil, "AD_NO_ROUTE"
+        end
+    end
+    local okAt, x, _, z = pcall(env.getWorldTranslation, v.rootNode)
     v.ad.stateModule:setMode(AD.MODE_DRIVETO)
     AD:StartDriving(v, spec.marker, spec.marker)
-    return { seen = false }
+    return { seen = false, startAt = okAt and finite(x) and finite(z) and { x, z } or nil }
 end
 
 -- What AutoDrive is doing, read only, for the log and for a drive that does not move: its
@@ -303,6 +325,13 @@ function steppers.drive(env, task)
     end
     -- Set on AutoDrive's own error stops (DrivePathModule.lua:67,100, TaskModule.lua:142).
     if v.ad.isStoppingWithError == true then return "FAILED", "AD_STOPPED_WITH_ERROR" end
+    -- Ended where it started: AutoDrive gave up (its path finder's "could not calculate path"
+    -- stops it without the error flag, DriveToDestinationTask.lua 35-37).
+    local okAt, x, _, z = pcall(env.getWorldTranslation, v.rootNode)
+    if task.startAt ~= nil and okAt and finite(x) and finite(z)
+            and math.sqrt((x - task.startAt[1]) ^ 2 + (z - task.startAt[2]) ^ 2) < Bridge.AD_STALL_M then
+        return "FAILED", "AD_ENDED_UNMOVED"
+    end
     return settle(task, "AD_ENDED")
 end
 
@@ -884,7 +913,7 @@ end
 Bridge.AD_FIELD_EDGE_M = 30
 Bridge.AD_MARKER_TIMEOUT_MS = 5000
 
-local function adGraph(env)
+function adGraph(env)
     local AD = (Bridge.Observe and Bridge.Observe.autoDrive and Bridge.Observe.autoDrive(env)) or env.AutoDrive
     if type(AD) ~= "table" or type(AD.GetAvailableDestinations) ~= "function" or type(env.getfenv) ~= "function" then
         return nil
@@ -2506,6 +2535,8 @@ Bridge.REASONS = {
     AD_WAITING_ON_OBSTACLE = "AutoDrive waited on something in its way and never moved",
     AD_NOT_MOVING = "AutoDrive was driving but never moved",
     AD_PAUSED = "AutoDrive paused and never moved on",
+    AD_NO_ROUTE = "AutoDrive's road network has no route from where the vehicle stands to there",
+    AD_ENDED_UNMOVED = "AutoDrive gave up without moving",
     AD_NO_WAYPOINT_AT_PLACE = "AutoDrive has no road near that building",
     AD_PLACE_NOT_FOUND = "no farm building there for AutoDrive",
     NO_STORAGE = "the farm has no storage that takes this crop",

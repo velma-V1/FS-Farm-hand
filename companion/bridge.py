@@ -29,7 +29,7 @@ import uuid
 
 from adapters.fs25 import Observation, observation_from_snapshot
 from adapters.world import StepFailed, StepUnverified
-from companion.hitch import STAGING_DISTANCE_M
+from companion.hitch import STAGING_DISTANCE_M, load_ad_graph
 from protocol.ipc import MAX_NOTICES, PIPE_PATH, FrameError, FrameReader, encode_command, encode_session
 from protocol.model import Contract, Destination, Equipment, FarmInfo, Field, HitchPlan, Pose, Position, StoreItem
 
@@ -560,6 +560,27 @@ class FS25World:
         if field is not None:
             return self._run("ad_marker", field=int(field), x=0.0, z=0.0)
         return self._run("ad_marker", field=0, x=float(place[0]), z=float(place[1]))
+
+    _ad_graph_cache: tuple | None = None
+
+    def ad_graph(self):
+        """AutoDrive's road network as the loaded save holds it (companion/hitch.py load_ad_graph; the
+        save's own AutoDrive_config.xml, else the profile's active save folder), read only;
+        None when there is none to read."""
+        farm = self._observe().farm
+        folder = getattr(self.link.files, "path", None)
+        candidates = [Path(farm.savegame_dir) / "AutoDrive_config.xml"] if farm and farm.savegame_dir else []
+        if folder is not None:
+            candidates.append(Path(folder).parent.parent / "save" / "AutoDrive_config.xml")
+        for source in candidates:
+            try:
+                stamp = (str(source), source.stat().st_mtime_ns)
+                if self._ad_graph_cache is None or self._ad_graph_cache[0] != stamp:
+                    self._ad_graph_cache = (stamp, load_ad_graph(source))
+                return self._ad_graph_cache[1]
+            except (OSError, ValueError) as error:
+                log.info("AutoDrive network %s unreadable: %s", source, error)
+        return None
 
     def _unit(self, vehicle_id: str, owner: str) -> None:
         with self._lock:

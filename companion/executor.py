@@ -44,7 +44,8 @@ TRACTOR_ARRIVAL_TOLERANCE_M = 3.0
 ARRIVED_BY_HAND_M = 25.0
 # How AutoDrive's drive ends when it never moved (mod/FarmhandBridge.lua adStallCode): for a
 # loaded rig the player then drives it (assisted), and "continue" does not hand it back to AutoDrive.
-AD_STALLS = frozenset({"AD_PATHFINDING_STALLED", "AD_WAITING_ON_OBSTACLE", "AD_PAUSED", "AD_NOT_MOVING"})
+AD_STALLS = frozenset({"AD_PATHFINDING_STALLED", "AD_WAITING_ON_OBSTACLE", "AD_PAUSED", "AD_NOT_MOVING",
+                       "AD_NO_ROUTE", "AD_ENDED_UNMOVED"})
 WAGON_ARRIVAL_TOLERANCE_M = 15.0
 ARRIVAL_SETTLE_S = 10.0
 MAX_TRACTOR_TRIES = 3            # tractors tried for one hitch whose attempt moved nothing
@@ -1455,6 +1456,110 @@ class Executor:
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, rig_ids + combine_ids[:1], tuple(states))
 
+    def _haul_target(self, command):
+        """The haul's destination (place or field) as a PlaceTarget, or (None, why)."""
+        target = command.get("target")
+        if isinstance(target, dict) and target.get("type") == "place":
+            return resolve_place(target["name"], self.world.destinations(), self.world.places())
+        if isinstance(target, dict) and target.get("type") == "field_entrance":
+            number = target["field"]
+            marker = next((d for d in self.world.destinations() if isinstance(d, Destination)
+                           and _normalized_name(d.name or "") == f"field {number}"), None)
+            place = next((p for p in self.world.field_places() if p.id == f"field-{number}"), None)
+            if marker is None and place is None:
+                return None, "FIELD_NOT_MAPPED"
+            return PlaceTarget(f"field {number}", marker, place), None
+        return None, "DESTINATION_NOT_FOUND"
+
+    def _stage_transport(self, command, enter, states) -> Result:
+        """Before a transport is loaded: AutoDrive will drive the loaded rig from the network
+        waypoint nearest it, and from a dead end it cannot (live 2026-10-22: the waypoint nearest
+        the GMC was on a 7-waypoint stub, "Could not calculate path"). Its saved network
+        (companion/hitch.py, read only) says whether there is a route to the haul's marker
+        (made AutoDrive's own way when missing); if not, GIANTS GOTO takes the empty transport
+        (truck and trailer, nothing on it: GOTO drives that) onto the nearest waypoint that has
+        one, facing along it. FIND -> (ROUTED, nothing moved) or RESERVE -> STAGE (GOTO) ->
+        VERIFY (the nearest waypoint now has the route) -> STOP -> RELEASE. BLOCKED, nothing
+        moved, when there is no AutoDrive, no network to read or no routed waypoint near."""
+        owner, farm_id = command["request_id"], command["farm_id"]
+        ids, reserved, moved = (), False, False
+        status, reason = "BLOCKED", "NO_TRANSPORT"
+        try:
+            enter("FIND")
+            items = sorted(self.world.snapshot(), key=lambda i: i.id)
+            observed = {i.id: i for i in items}
+            rigs = [(t, observed[t.attached_to]) for t in items
+                    if t.attached_to in observed and transport.is_transport(observed[t.attached_to])
+                    and observed[t.attached_to].attached_to == t.id and named(t, command.get("tractor_name"))
+                    and all(usable(x, farm_id) and x.stopped for x in (t, observed[t.attached_to]))
+                    and not any(i.belted_to == t.attached_to for i in items)]
+            if not rigs:
+                return Result("BLOCKED", "NO_TRANSPORT", states=tuple(states))
+            truck, trailer = rigs[0]
+            ids = (truck.id, trailer.id)
+            if "autodrive" not in truck.capabilities:
+                return Result("BLOCKED", "LOADED_NEEDS_AUTODRIVE", ids, tuple(states))
+            target, failure = self._haul_target(command)
+            if target is None:
+                return Result("BLOCKED", failure, ids, tuple(states))
+            marker = target.marker
+            if marker is None:
+                marker, failure = self._place_marker(target, truck)
+                if marker is None:
+                    return Result("BLOCKED", failure, ids, tuple(states))
+            graph = self.world.ad_graph()
+            if graph is None:
+                return Result("BLOCKED", "AD_NETWORK_UNREADABLE", ids, tuple(states))
+            routed = transport.ad_routed(graph, truck.position, marker.position)
+            if routed is None:
+                return Result("BLOCKED", "AD_MARKER_NOT_ON_NETWORK", ids, tuple(states))
+            if routed:
+                return Result("COMPLETE", "ROUTED", ids, tuple(states))
+            start = transport.ad_route_start(graph, truck.position, marker.position)
+            if start is None:
+                return Result("BLOCKED", "AD_NO_ROUTED_WAYPOINT_NEAR", ids, tuple(states))
+            (x, z), yaw, wp = start
+            log.info("STAGE: no AutoDrive route from %s to %s; to waypoint %s at (%.1f, %.1f), %.0f m off",
+                     truck.position, marker.name, wp, x, z, math.dist(truck.position, (x, z)))
+            enter("RESERVE")
+            if not self.world.reserve(ids, owner):
+                return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
+            reserved = True
+            self.active = ids
+            enter("STAGE")
+            moved = True
+            self._navigate(truck.id, Pose(x, z, yaw), owner, trailer.id)
+            enter("VERIFY")
+            after = self._at_rest(ids)
+            if not transport.ad_routed(graph, after[truck.id].position, marker.position):
+                raise ObservationMismatch("STAGE_NOT_ROUTED")
+            status, reason = "COMPLETE", "STAGED"
+        except Cancelled:
+            status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
+        except ObservationMismatch as error:
+            status, reason = "UNVERIFIED", str(error)
+        except StepUnverified as error:
+            status, reason = "UNVERIFIED", error.code
+        except StepFailed as error:
+            status, reason = "FAILED", error.code
+        except (RuntimeError, ValueError, KeyError) as error:
+            status, reason = "FAILED", getattr(error, "code", None) or type(error).__name__
+        finally:
+            if reserved:
+                try:
+                    if moved:
+                        enter("STOP")
+                        if not self.world.stop(ids[0], owner):
+                            raise ObservationMismatch("STOP_NOT_CONFIRMED")
+                    enter("RELEASE")
+                    self.world.release(owner)
+                except Exception as error:
+                    log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
+                    status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        self.active = ()
+        log.info("result %s %s states %s", status, reason, ",".join(states))
+        return Result(status, reason, ids, tuple(states))
+
     PART_NEAR_M = 12.0        # a trailer rig this near a combine blocks GIANTS' agent for both
 
     def _part(self, command, enter, states) -> Result:
@@ -1846,6 +1951,8 @@ class Executor:
             return self._overload(command, enter, states)
         if command["task"] == "part":
             return self._part(command, enter, states)
+        if command["task"] == "stage_transport":
+            return self._stage_transport(command, enter, states)
         if command["task"] == "save_game":
             try:
                 enter("SAVE")

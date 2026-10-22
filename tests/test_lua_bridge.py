@@ -200,6 +200,7 @@ class LuaBridgeTests(unittest.TestCase):
         # Kept awake every frame while AutoDrive drives it (asleep, AutoDrive's own update
         # never ran: live 2026-10-22, forceIsActive true, isActive false, no task).
         self.assertGreaterEqual(self.w.raised, 19)
+        self.w.x = 150.0                                                    # it drove
         self.w.adActive = False
         self.w.speed = 3.0
         self.W.run(self.w, 300)
@@ -277,6 +278,31 @@ class LuaBridgeTests(unittest.TestCase):
                 self.assertTrue(logged)
                 if hit:
                     self.assertIn("frontSensor[series9_main_component1@Series 9]", logged[0])
+
+    def test_a_drive_ended_where_it_started_or_with_no_route_is_said_so(self):
+        # Live 2026-10-22: the waypoint nearest the rig was on a dead end; AutoDrive's path
+        # finder gave up at once ("Could not calculate path") without its error flag.
+        self.adopt()
+        self.send(1, "drive", {"tractor": 11, "marker": 3})
+        self.W.run(self.w, 500)
+        self.w.adActive = False
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "AD_ENDED_UNMOVED"))
+        # Asked first of AutoDrive's own graph (pathFromTo from its closest waypoint): no route,
+        # nothing started.
+        self.lua.execute("""local w = ...
+            local graph = { getMapMarkerById = function(_, id) return { id = 560 } end,
+                            pathFromTo = function(_, a, b) return {} end,
+                            createMapMarker = function() end, getMapMarkerByName = function() end,
+                            getWayPoints = function() return {} end }
+            local env = setmetatable({ ADGraphManager = graph }, { __index = _G })
+            w.env.getfenv = function() return env end
+            function w.tractor:getClosestWayPoint() return 11802, 30.7 end
+        """, self.w)
+        self.send(2, "drive", {"tractor": 11, "marker": 3})
+        self.assertEqual(self.results(2)[-1], (2, "FAILED", "AD_NO_ROUTE"))
+        self.assertEqual(self.calls().count("StartDriving:3:3"), 1)                 # only the first one started
+        self.assertTrue(any("AD_NO_ROUTE" in p and "11802" in p for p in self.printed))
 
     def test_drive_refuses_when_autodrive_would_hand_off_to_another_ai(self):
         self.adopt()
@@ -499,6 +525,7 @@ class LuaBridgeTests(unittest.TestCase):
                 self.send(1, op, args)
                 self.beating(3000)
                 self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])     # running, not OCCUPIED
+                self.w.x = 150.0                                                  # it drove somewhere
                 self.w.aiActive, self.w.adActive = False, False
                 self.W.run(self.w, 500)
                 self.assertEqual(self.results(1)[-1][1], "DONE")
