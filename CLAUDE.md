@@ -69,8 +69,8 @@ ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snap
   (GIANTS TensionBelts), `load` (a tractor alone straight onto a transport's deck or back off it), `ad_marker`
   (an AutoDrive destination for a field, AutoDrive's own call, after a backup of its network), `follow`
   (FollowMe, only on the player's "follow me"), `fieldwork` (optionally the crop to sow), `contract` (take or
-  collect a GIANTS field contract), `pipe` / `overload` (a standing combine's pipe out and GIANTS' own discharge into
-  the trailer under it),
+  collect a GIANTS field contract), `pipe` / `overload` / `alongside` (a standing combine's pipe out, the trailer straight under it, GIANTS'
+  own discharge into it),
   `open_gates`, `block`, `buy`, `save`, `stop`. ACCEPTED/DONE is never success; the game stops a
   session's motion if the heartbeat is lost for 10 s. Player key presses arrive as
   `request` frames (a fixed `action` or typed `text`).
@@ -117,6 +117,7 @@ The only self-driven motion allowed is HITCH's capped LOCAL_MANEUVER (forward, i
 (straight, at most 20 m at 3 km/h, only after GIANTS could not start a vehicle and no closed
 door is near it; AGENTS.md exception 4) and LOAD / UNLOAD (a tractor alone, straight along a
 transport trailer's axis up its verified-down ramps or back off, at most 3 km/h and the ramps
-plus the deck; AGENTS.md exception 5); all other travel is
+plus the deck; AGENTS.md exception 5) and ALONGSIDE (a tractor's towed trailer straight forward
+under a standing combine's pipe, at most 3 km/h and 20 m; exception 6); all other travel is
 delegated to AutoDrive (optional; marker destinations only) or GIANTS GOTO
 (`navigate`, `stage`), whose navigation agent plans for the attached wagon.

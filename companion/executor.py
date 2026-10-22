@@ -1258,8 +1258,9 @@ class Executor:
 
     # Not grain: what a vehicle burns or breathes (GIANTS' propellant and air fill units).
     NOT_CARGO = frozenset({"DIESEL", "DEF", "AIR", "ELECTRICCHARGE", "METHANE", "UNKNOWN"})
-    # Where the trailer's middle goes, along the combine from right under its pipe.
-    OVERLOAD_SHIFTS_M = (0.0, 1.5, -1.5)
+    # GIANTS GOTO puts the trailer's middle this far behind the pipe point, on its line, then
+    # ALONGSIDE drives it under (live 3dc00834639340f7-1: GIANTS took no spot right under it).
+    OVERLOAD_RUN_UPS_M = (12.0, 18.0)
 
     def _grain(self, vehicle):
         return sum(u.level or 0.0 for u in vehicle.fill_units
@@ -1270,9 +1271,10 @@ class Executor:
         user 2026-10-21: the combine full, its helper would not work on, and AutoDrive's
         unloader serves only a combine whose helper runs). FIND the combine with the most
         grain and the nearest tractor with a trailer that takes it -> RESERVE both ->
-        PIPE_OUT -> APPROACH (GIANTS GOTO: the trailer's middle under the pipe, alongside the
-        combine) -> OVERLOAD (GIANTS' own discharge) -> PIPE_IN -> VERIFY (the grain moved
-        into the trailer) -> STOP -> RELEASE."""
+        PIPE_OUT -> APPROACH (GIANTS GOTO onto the pipe's line behind it) -> ALONGSIDE
+        (straight forward until the trailer's middle is under the pipe; AGENTS.md exception 6)
+        -> OVERLOAD (GIANTS' own discharge) -> PIPE_IN -> VERIFY (the grain moved into the
+        trailer) -> STOP -> RELEASE."""
         owner, farm_id = command["request_id"], command["farm_id"]
         combine_owner = f"{owner}-c"
         rig_ids, combine_ids, reserved, moved, piped = (), (), [], False, False
@@ -1327,21 +1329,25 @@ class Executor:
             behind = (middle[0] - tractor.ai_root.x) * tx + (middle[1] - tractor.ai_root.z) * tz
             cx, cz = math.sin(combine.heading or 0.0), math.cos(combine.heading or 0.0)
             done = None
-            for shift in self.OVERLOAD_SHIFTS_M:
-                ahead = shift - behind
+            for run_up in self.OVERLOAD_RUN_UPS_M:
+                # GIANTS GOTO to the pipe's line, the trailer's middle run_up behind the pipe point
+                # (GIANTS will not take a spot right under it); then ALONGSIDE straight forward.
+                ahead = -run_up - behind
                 aim = Pose(combine.pipe[1] + cx * ahead, combine.pipe[2] + cz * ahead, combine.heading or 0.0)
                 enter("APPROACH")
                 moved = True
                 try:
                     self._navigate(tractor.id, aim, owner, free=False)
                     self._settled_transport(rig_ids)
+                    enter("ALONGSIDE")
+                    self.world.alongside(tractor.id, combine.id, owner, combine_owner)
+                    self._settled_transport(rig_ids)
                     enter("OVERLOAD")
                     done = self.world.overload(combine.id, trailer.id, combine_owner)
                     break
                 except StepFailed as failure:
-                    log.info("OVERLOAD aim %s (shift %.1f m): %s", aim, shift, failure.code)
-                    if failure.code not in ("NOT_OVERLOADING", "NAVIGATE_STALLED", "NAVIGATE_GOTO_INVALID",
-                                            "NAVIGATE_NOT_REACHABLE"):
+                    log.info("OVERLOAD run-up %.0f m, aim %s: %s", run_up, aim, failure.code)
+                    if not (failure.code.startswith(("ALONGSIDE_", "NAVIGATE_")) or failure.code == "NOT_OVERLOADING"):
                         raise
             if done is None:
                 raise StepFailed("NOT_UNDER_THE_PIPE")

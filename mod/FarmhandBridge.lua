@@ -593,6 +593,40 @@ function aborts.load(env, task)
     Bridge.Hitch.abort(env, task.session, "STOPPED")
 end
 
+-- -------------------------------------------------------------- alongside
+-- ALONGSIDE (AGENTS.md exception 6): the reserved tractor with its towed trailer straight
+-- forward until the trailer's middle is under the reserved standing combine's pipe
+-- (Hitch.newAlongside). The pipe is the companion's step (pipe); this op only drives.
+function starters.alongside(env, spec)
+    local denied = idle(env, spec.tractor, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local session, reason, refused = Bridge.Hitch.newAlongside(env, {
+        tractor = spec.tractor, combine = spec.wagon, farmId = spec.farmId, isReserved = spec.owned,
+    })
+    if session == nil then
+        log("alongside refused %s: %s", tostring(reason), Bridge.Hitch.describeAlongside(refused))
+        return nil, reason
+    end
+    log("alongside start: %s", Bridge.Hitch.describeAlongside(session))
+    return { session = session }
+end
+
+function steppers.alongside(env, task, dt)
+    local code = Bridge.Hitch.alongsideStep(env, task.session, dt)
+    if code == "CONTINUE" then return nil end
+    if not task.endLogged then
+        task.endLogged = true
+        log("alongside end %s %s", code, Bridge.Hitch.describeAlongside(task.session))
+    end
+    if code ~= "UNDER_PIPE" then return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code end
+    return settle(task, code)
+end
+
+function aborts.alongside(env, task)
+    Bridge.Hitch.abort(env, task.session, "STOPPED")
+end
+
 -- ----------------------------------------------------------------- follow
 -- "Follow me", only when the player asks (AGENTS.md): FollowMe's own start, its registered
 -- vehicle function initiateFollowVehicle(leader) (FollowVehicle.lua 556-571: FollowMe's job
@@ -1730,7 +1764,7 @@ function aborts.stop() end
 -- --------------------------------------------------------------- runner
 
 Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true, load = true,
-                       overload = true }
+                       overload = true, alongside = true }
 Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true, ad_marker = true, contract = true }   -- ops that act on no vehicle
 
 function Bridge.start(env, spec)
@@ -2243,6 +2277,11 @@ Bridge.REASONS = {
     PIPE_NOT_ALLOWED = "the combine's pipe cannot move now",
     PIPE_TIMEOUT = "the combine's pipe did not finish moving",
     NOT_OVERLOADING = "nothing came out of the pipe into the trailer",
+    ALONGSIDE_NOT_LINED_UP = "the trailer did not end up on the pipe's line",
+    ALONGSIDE_PATH_BLOCKED = "something stands in the way beside the combine",
+    ALONGSIDE_BLOCKED = "another vehicle is too close to the way beside the combine",
+    ALONGSIDE_RIG_NOT_STRAIGHT = "the trailer is not straight behind the tractor",
+    COMBINE_MOVED = "the combine moved",
     NOTHING_TO_HITCH_TOGETHER = "say which tractor and implement to hitch (or buy them in the same sentence)",
     NOTHING_TO_SELL = "the trailer is empty",
     NO_SELL_POINT = "no sell point buys that",

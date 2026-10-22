@@ -69,6 +69,11 @@ class World(Protocol):
         (GIANTS Pipe); DONE once there."""
         ...
 
+    def alongside(self, tractor_id: str, combine_id: str, owner: str, combine_owner: str) -> str:
+        """ALONGSIDE: the reserved tractor drives straight forward until its trailer's middle
+        is under the reserved combine's pipe (AGENTS.md exception 6); UNDER_PIPE at rest."""
+        ...
+
     def overload(self, combine_id: str, trailer_id: str, owner: str) -> str:
         """OVERLOAD: the reserved standing combine (pipe out) discharges into the trailer
         under its pipe, GIANTS' own discharge; EMPTIED, TRAILER_FULL or OVERLOAD_STOPPED.

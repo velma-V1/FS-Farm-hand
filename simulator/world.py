@@ -14,6 +14,8 @@ MOCK_POSE_TOLERANCE_M = 0.5
 MOCK_TRAILER_OFFSET_M = 7.0
 MOCK_PIPE_REACH_M = 6.0           # mock-only: a combine's pipe point to its left
 MOCK_PIPE_HIT_M = 1.5             # mock-only: how near the trailer's middle must be
+MOCK_ALONGSIDE_LATERAL_M = 0.8    # = mod/FarmhandHitch.lua Hitch.ALONGSIDE.lateralTolM
+MOCK_ALONGSIDE_MAX_M = 20.0       # = Hitch.ALONGSIDE.maxTravelM
 MOCK_REVERSE_REACH_M = 10.0      # the mod's reverse cap (Hitch.LIMITS.maxDistanceM)
 MOCK_LOCAL_RADIUS_M = 25.0       # the mod's local work radius (Hitch.LOCAL_LIMITS.workRadiusM)
 MOCK_PULL_CLEAR_M = 4.5          # the mod's pull-clear separation (Hitch.PULL.clearM)
@@ -347,6 +349,27 @@ class MockWorld:
             x, z = Pose(*v.position, v.heading or 0.0).to_world(-MOCK_PIPE_REACH_M, 0.0)
             self.items[vehicle_id] = replace(v, pipe=(bool(out), x, z))
             return "PIPE_OUT" if out else "PIPE_IN"
+
+    def alongside(self, tractor_id, combine_id, owner, combine_owner):
+        # Mock-only teleport straight ahead until the trailer's middle is level with the pipe
+        # point, refused like the mod unless that point is on the trailer's middle line.
+        with self._lock:
+            tractor = self._owned(tractor_id, owner)
+            combine = self.items[combine_id]
+            trailer = self.items[tractor.attached_to]
+            if combine.reserved_by != combine_owner or not (combine.pipe and combine.pipe[0]):
+                raise StepFailed("PIPE_NOT_OUT")
+            heading = tractor.heading or 0.0
+            fx, fz = math.sin(heading), math.cos(heading)
+            middle = Pose(*trailer.position, trailer.heading or 0.0).to_world(0.0, (trailer.size or (0, 0, 0, 0.0))[3])
+            dx, dz = combine.pipe[1] - middle[0], combine.pipe[2] - middle[1]
+            travel, lateral = dx * fx + dz * fz, dx * fz - dz * fx
+            if abs(lateral) > MOCK_ALONGSIDE_LATERAL_M:
+                raise StepFailed("ALONGSIDE_NOT_LINED_UP")
+            if not 0 < travel <= MOCK_ALONGSIDE_MAX_M:
+                raise StepFailed("ALONGSIDE_TOO_FAR" if travel > 0 else "ALONGSIDE_PAST_THE_PIPE")
+            self._carry(tractor, Pose(tractor.position[0] + fx * travel, tractor.position[1] + fz * travel, heading))
+            return "UNDER_PIPE"
 
     def overload(self, combine_id, trailer_id, owner):
         # Mock-only: a trailer whose middle is within MOCK_PIPE_HIT_M of the pipe's point
