@@ -358,6 +358,20 @@ def can_run_in(tractor: Equipment, trailer: Equipment) -> bool:
             and _angle(tractor.heading, trailer.heading) <= HEADING_RUN_IN_RAD - math.radians(2.0))
 
 
+BACKOFF_NEAR_M = 8.0             # = mod/FarmhandHitch.lua Hitch.BACKOFF.nearM
+
+
+def close_behind(tractor: Equipment, trailer: Equipment) -> bool:
+    """Waiting right behind the ramps, near the axis: where BACKOFF applies (its front within
+    BACKOFF_NEAR_M behind the trailer's rear, within the run-in's lateral reach)."""
+    tractor_ends, trailer_ends = _ends(tractor), _ends(trailer)
+    if tractor_ends is None or trailer_ends is None or trailer.heading is None:
+        return False
+    a, l = to_frame(trailer, tractor.position)
+    front = a + tractor_ends[1]
+    return trailer_ends[0] - BACKOFF_NEAR_M <= front <= trailer_ends[0] and abs(l) <= LATERAL_RUN_IN_M
+
+
 def lined_up(tractor: Equipment, trailer: Equipment, share: float = 1.0) -> bool:
     """Inside ``share`` of LOAD's start window (the mod decides at the start; this chooses
     whether GOTO is needed and whether its end will do)."""

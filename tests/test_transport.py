@@ -260,6 +260,23 @@ class TractorTransportTests(unittest.TestCase):
         self.assertIn("BACKOFF", result.states)
         self.assertEqual(world.backed_off, (tractor.id,))
 
+    def test_whichever_aim_fails_a_tractor_left_turned_right_behind_the_ramps_backs_off(self):
+        # Live 15fc3a8297604156-1: the run-up ended UNPARK_HANDOFF_BLOCKED and the near aims
+        # BLOCKED_AT_START, the Series 9 right behind the ramps 0.35 m off and 15.6 deg turned:
+        # BACKOFF once, then the run-in.
+        class Refusing(MockWorld):
+            def navigate(self, tractor_id, pose, owner):
+                if not self.backed_off:
+                    raise StepFailed("UNPARK_HANDOFF_BLOCKED")
+                super().navigate(tractor_id, pose, owner)
+
+        world, tractor, deck, _ = transport_world(cls=Refusing, tractor_ahead=-9.0, tractor_side=0.35)
+        world.items[tractor.id] = replace(world.items[tractor.id], heading=deck.heading + 0.27,
+                                          ai_root=Pose(*tractor.position, deck.heading + 0.27))
+        result = Executor(world).execute(load())
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+        self.assertEqual(result.states.count("BACKOFF"), 1)
+
     def test_unload_releases_the_belts_lowers_the_ramps_backs_off_and_raises_them(self):
         from companion import hitch as transport
         world, tractor, deck, _ = transport_world()

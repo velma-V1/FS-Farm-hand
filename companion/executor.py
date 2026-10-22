@@ -1688,10 +1688,28 @@ class Executor:
             raise ObservationMismatch("RAMPS_NOT_OBSERVED")
         log.info("%s: trailer %s fold %.2f", state, trailer_id, after.fold)
 
+    def _back_off_and_run_up(self, tractor, trailer, owner):
+        """BACKOFF (AGENTS.md exception 5) straight back from the ramps, once per approach,
+        then the run-up again; refusals are logged and the tractor stays where it is."""
+        self._backed_off = True
+        try:
+            self._enter("BACKOFF")
+            self.world.backoff(tractor.id, trailer.id, owner)
+            tractor, trailer = self._settled_transport((tractor.id, trailer.id))
+            if transport.can_run_in(tractor, trailer):
+                return tractor, trailer
+            run_up = transport.load_aims(tractor, trailer, (transport.RUN_UP_GAP_M,))[0]
+            self._navigate(tractor.id, run_up, owner, free=False)
+        except StepFailed as again:
+            log.info("APPROACH after BACKOFF: %s", again.code)
+        return self._settled_transport((tractor.id, trailer.id))
+
     def _approach(self, tractor, trailer, owner):
         """GIANTS GOTO to right behind the ramps; the first aim GIANTS reaches and that
         lines the tractor up for LOAD, after a run-up straight behind them (where GIANTS
-        refuses it, straight on). LOAD itself re-checks the window."""
+        refuses it, straight on; waiting right behind the ramps not lined up, BACKOFF once).
+        LOAD itself re-checks the window."""
+        self._backed_off = False
         for run_up in transport.load_aims(tractor, trailer, (transport.RUN_UP_GAP_M,)):
             try:
                 self._navigate(tractor.id, run_up, owner, free=True)
@@ -1702,19 +1720,18 @@ class Executor:
                     continue
                 # Waiting right behind the ramps, not lined up, and GIANTS will not start it there
                 # (live 49b5344a47ec418a-1): straight back (BACKOFF), then the run-up again.
-                try:
-                    self._enter("BACKOFF")
-                    self.world.backoff(tractor.id, trailer.id, owner)
-                    tractor, trailer = self._settled_transport((tractor.id, trailer.id))
-                    run_up = transport.load_aims(tractor, trailer, (transport.RUN_UP_GAP_M,))[0]
-                    self._navigate(tractor.id, run_up, owner, free=False)
-                    tractor, trailer = self._settled_transport((tractor.id, trailer.id))
-                except StepFailed as again:
-                    log.info("APPROACH after BACKOFF: %s", again.code)
+                tractor, trailer = self._back_off_and_run_up(tractor, trailer, owner)
         tractor, trailer = self._settled_transport((tractor.id, trailer.id))
         if transport.can_run_in(tractor, trailer):
             log.info("APPROACH: in LOAD's run-in window; LOAD lines it up")
             return
+        if not self._backed_off and transport.close_behind(tractor, trailer):
+            # Live 15fc3a8297604156-1: after UNPARK the Series 9 stood right behind the ramps,
+            # 0.35 m off, 15.6 deg turned, and GIANTS started it nowhere closer: BACKOFF.
+            tractor, trailer = self._back_off_and_run_up(tractor, trailer, owner)
+            if transport.can_run_in(tractor, trailer):
+                log.info("APPROACH: in LOAD's run-in window after BACKOFF")
+                return
         for aim in transport.load_aims(tractor, trailer):
             try:
                 self._navigate(tractor.id, aim, owner, free=True)

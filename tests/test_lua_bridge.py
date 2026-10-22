@@ -2070,6 +2070,7 @@ class GiantsDeliverTests(unittest.TestCase):
         function trailer:getFillUnitFillLevel(i) return self.levels[i] end
         function trailer:getFillUnitFillType(i) return 7 end
         local v = { ownerFarmId = 1, ai = false, speed = 0 }
+        function v:raiseActive() end
         function v:getIsEntered() return false end
         function v:getIsAIActive() return self.ai end
         function v:getLastSpeed() return self.speed end

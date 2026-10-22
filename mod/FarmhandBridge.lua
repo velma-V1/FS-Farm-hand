@@ -54,7 +54,11 @@ Bridge.FIELDWORK_TIMEOUT_MS = 7200000 -- 2 h: a small owned field takes minutes
 Bridge.FIELDWORK_STALL_MS = 300000    -- running but unmoved (< 2 m) for 5 min: stopped
 Bridge.FIELDWORK_CHECK_MS = 3000      -- a bounded test area is re-measured this often
 Bridge.FIELDWORK_MAX_AREA_M2 = 20000  -- the largest bounded test area
-Bridge.DRIVE_TIMEOUT_MS = 1200000
+-- Travel (AutoDrive drive and sell, GIANTS GOTO, Deliver) is judged by progress: each has its
+-- own unmoved watch (AD_STALL_MS, NAVIGATE_STALL_MS, DELIVER_STALL_MS); this is only a safety
+-- bound, long enough for a 16x map (the user, 2026-10-22: a healthy long drive must not fail on a
+-- short fixed timeout; was 20 min).
+Bridge.DRIVE_TIMEOUT_MS = 14400000
 -- A navigate whose tractor gains no NAVIGATE_PROGRESS_M for NAVIGATE_STALL_MS is
 -- stopped: GIANTS keeps a BLOCKED agent waiting (AIDrivable:onUpdate 314-316).
 Bridge.NAVIGATE_STALL_MS = 90000
@@ -1277,7 +1281,8 @@ function aborts.fold() end          -- GIANTS finishes the fold it started; noth
 -- spec_silo.unloadingStation.owningPlaceable to the silo) on a placeable the farm owns, taking
 -- the cargo (getIsFillTypeAISupported); never an animal feeder or a production's input; nothing
 -- is sold.
-Bridge.DELIVER_TIMEOUT_MS = 1800000
+Bridge.DELIVER_TIMEOUT_MS = 14400000    -- a safety bound (as DRIVE_TIMEOUT_MS); progress is DELIVER_STALL_MS
+Bridge.DELIVER_STALL_MS = 600000        -- GIANTS' helper running but unmoved 2 m for 10 min (tipping included)
 
 local function deliverStation(env, spec, job, fillType, v)
     local store = spec.direction == -1
@@ -1343,7 +1348,16 @@ function steppers.deliver(env, task)
     local active = v:getIsAIActive()
     if active == true then
         task.seen = true
+        v:raiseActive()
         if task.elapsed > Bridge.DELIVER_TIMEOUT_MS then return "FAILED", "TIMEOUT" end
+        local okAt, x, _, z = pcall(env.getWorldTranslation, v.rootNode)
+        if okAt and finite(x) and finite(z) then
+            if task.fromX == nil or math.sqrt((x - task.fromX) ^ 2 + (z - task.fromZ) ^ 2) >= 2 then
+                task.fromX, task.fromZ, task.fromAt = x, z, task.elapsed
+            elseif task.elapsed - task.fromAt > Bridge.DELIVER_STALL_MS then
+                return "FAILED", "DELIVER_STALLED"
+            end
+        end
         return nil
     end
     if not task.seen then
