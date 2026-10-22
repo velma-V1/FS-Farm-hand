@@ -270,8 +270,10 @@ HEADING_START_RAD = math.radians(5.0)   # = Hitch.LOAD.headingStartDeg
 FRONT_GAPS_M = (1.5, 2.25, 0.75)
 # First the front this far behind (on the axis, facing along it), so the last GOTO is a short
 # straight run: live f41b44f422974e15-5, GIANTS turned in from the side with a plow on and
-# ended 0.68 m and 12.4 deg off, and would not start again that close to the ramps.
-RUN_UP_GAP_M = 10.0
+# ended 0.68 m and 12.4 deg off, and would not start again that close to the ramps. In the middle
+# of LOAD's run-in window (4.5-11.5 m): live 0788b0f2b8af4c34-1 GIANTS stopped short of a 10 m aim,
+# 13.1 m back, lined up but outside the window, and would not start again closer.
+RUN_UP_GAP_M = 8.0
 # LOAD's run-in (= Hitch.LOAD.runInM, minRunInM, lateralRunInM, headingRunInDeg): from this far
 # behind the ramps' foot and this close to the axis LOAD steers onto it itself.
 RUN_IN_M, MIN_RUN_IN_M = 12.0, 4.0
