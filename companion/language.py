@@ -174,6 +174,21 @@ _COMBINE_SUBJECT = re.compile(r"^(?:the|my|our)\s+(?:combines?|harvesters?)\s+(?
 _UNLOAD_IT = re.compile(r"^(?:and\s+)?(?:then\s+)?(?:unload|empty)\s+(?:it|that|them)(?:\s+please)?$")
 
 
+# "buy field 12", "buy the land at field 12", "sell field 12", "sell the farmland of field 12":
+# the farmland parcel the field lies on, bought or sold (never the grain: "sell the grain").
+_LAND = re.compile(r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?P<verb>buy|purchase|sell)\s+(?:me\s+|us\s+)?(?:the\s+|that\s+)?"
+                   r"(?:(?:land|farmland|parcel|plot|ground)\s+(?:(?:at|of|on|for|with|under|around)\s+)?(?:the\s+)?)?"
+                   r"field\s+(?:number\s+)?(?P<number>\d{1,5})(?:\s+please)?$")
+
+
+def land(words: str) -> dict | None:
+    match = _LAND.match(words)
+    if match is None or int(match["number"]) < 1:
+        return None
+    return {"version": 1, "command": "land", "land_action": "sell" if match["verb"] == "sell" else "buy",
+            "field": int(match["number"])}
+
+
 TEST_AREA_M2 = 400        # "a small area of field 7": about a minute of work for one implement
 
 
@@ -690,6 +705,9 @@ class RuleInterpreter:
     def _clause(self, text: str) -> dict | None:
         """One command: the goal and reference rules first, then the plain rules."""
         words = normalize(text)
+        parcel = land(words)
+        if parcel is not None:
+            return parcel
         use = _USE.match(words)
         if use is not None and not implement_kind(use["name"]):
             rest = self._clause(use["rest"])

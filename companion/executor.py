@@ -1046,6 +1046,61 @@ class Executor:
         except (RuntimeError, ValueError, KeyError) as error:
             return Result("FAILED", getattr(error, "code", None) or type(error).__name__, states=tuple(states))
 
+    LAND_VERIFY_S = 10.0
+
+    def _land(self, command, enter, states) -> Result:
+        """FIND (the field's farmland parcel, its owner and price) -> BUY_LAND / SELL_LAND
+        (GIANTS' own request at the parcel's price) -> VERIFY: the owner changed and the money
+        moved (bought: fell by the price; sold: rose). Refused unchanged when already the farm's,
+        not for sale, not the farm's to sell, or the balance short."""
+        field, buying = command["field"], command["land_action"] == "buy"
+        try:
+            enter("FIND")
+            parcel = next((p for p in self.world.land() if p.field == field), None)
+            if parcel is None or parcel.farmland is None or parcel.owner is None:
+                return Result("BLOCKED", "FIELD_NOT_FOUND", states=tuple(states))
+            farm = self.world.farm()
+            money = farm.money if farm is not None else None
+            if buying:
+                if parcel.owner == "mine":
+                    return Result("BLOCKED", "LAND_ALREADY_OWNED", states=tuple(states))
+                if parcel.owner != "none":
+                    return Result("BLOCKED", "LAND_NOT_FOR_SALE", states=tuple(states))
+                if parcel.price is None or money is None:
+                    return Result("BLOCKED", "LAND_PRICE_UNKNOWN", states=tuple(states))
+                if money < parcel.price:
+                    return Result("BLOCKED", "NOT_ENOUGH_MONEY", states=tuple(states))
+            elif parcel.owner != "mine":
+                return Result("BLOCKED", "LAND_NOT_OWNED", states=tuple(states))
+            log.info("land: field %d farmland %d %s for %s (balance %s)", field, parcel.farmland,
+                     "buying" if buying else "selling", parcel.price, money)
+            enter("BUY_LAND" if buying else "SELL_LAND")
+            self.world.land_change(field, buying)
+            enter("VERIFY")
+            want = "mine" if buying else "none"
+            deadline = time.monotonic() + self.LAND_VERIFY_S
+            while True:
+                now = next((p for p in self.world.land() if p.field == field), None)
+                after = self.world.farm()
+                spent = (money - after.money) if (money is not None and after is not None and after.money is not None) else None
+                paid = (spent is not None and parcel.price is not None and spent >= parcel.price * BUY_MONEY_TOLERANCE
+                        if buying else spent is not None and spent < 0)
+                if now is not None and now.owner == want and paid:
+                    log.info("land: field %d now %s; money %s -> %s", field, want, money, after.money)
+                    return Result("COMPLETE", "LAND_BOUGHT" if buying else "LAND_SOLD", states=tuple(states))
+                if time.monotonic() >= deadline:
+                    log.info("land: field %d owner %s, money %s -> %s", field, now and now.owner, money,
+                             after and after.money)
+                    return Result("UNVERIFIED", "LAND_NOT_OBSERVED" if now is None or now.owner != want
+                                  else "PAYMENT_NOT_OBSERVED", states=tuple(states))
+                time.sleep(0.5)
+        except Cancelled:
+            return Result("CANCELLED", "CANCELLED_BY_REQUESTER", states=tuple(states))
+        except StepUnverified as error:
+            return Result("UNVERIFIED", error.code, states=tuple(states))
+        except StepFailed as error:
+            return Result("BLOCKED" if states[-1:] == ["FIND"] else "FAILED", error.code, states=tuple(states))
+
     # ------------------------------------------------------------ transport
     def _transport(self, command, enter, states) -> Result:
         """Tractor transport (AGENTS.md exception 5), each step verified from a fresh snapshot.
@@ -2056,6 +2111,8 @@ class Executor:
 
         if command["task"] == "buy":
             return self._buy(command, enter, states)
+        if command["task"] == "land":
+            return self._land(command, enter, states)
         if command["task"] in ("load_tractor", "unload_tractor"):
             return self._transport(command, enter, states)
         if command["task"] == "follow_me":

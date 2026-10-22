@@ -255,6 +255,25 @@ class MockWorld:
                 self.farm_info = replace(self.farm_info, money=self.farm_info.money - item.price)
             return "BOUGHT"
 
+    mock_land = ()                # mock-only: LandParcels; land_change sets the owner and charges/credits the price
+
+    def land(self):
+        with self._lock:
+            return tuple(self.mock_land)
+
+    def land_change(self, field, buy):
+        with self._lock:
+            parcel = next((p for p in self.mock_land if p.field == field), None)
+            if parcel is None:
+                raise StepFailed("FIELD_NOT_FOUND")
+            if buy and parcel.owner != "none" or not buy and parcel.owner != "mine":
+                raise StepFailed("LAND_NOT_FOR_SALE" if buy else "LAND_NOT_OWNED")
+            self.mock_land = tuple(replace(p, owner="mine" if buy else "none") if p.field == field else p
+                                   for p in self.mock_land)
+            if self.farm_info is not None and self.farm_info.money is not None and parcel.price is not None:
+                self.farm_info = replace(self.farm_info, money=self.farm_info.money + (-1 if buy else 1) * parcel.price)
+            return "LAND_BOUGHT" if buy else "LAND_SOLD"
+
     def farm(self):
         with self._lock:
             return self.farm_info

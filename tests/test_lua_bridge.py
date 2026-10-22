@@ -1919,6 +1919,65 @@ class ContractOpTests(unittest.TestCase):
         self.assertEqual(self.run(self.bridge, self.env, 22, -1), (None, "NO_CONTRACT_ON_FIELD"))    # not ours
 
 
+class LandTests(unittest.TestCase):
+    """land: the field's farmland parcel bought or sold through GIANTS' own request
+    (FarmlandStateEvent at the parcel's price, as FarmlandManager's own buy/sell send it),
+    DONE once getFarmlandOwner shows the change; and every field's parcel observed."""
+    ENV = r"""
+        local env = { sent = {}, money = 100000 }
+        local owners = { [37] = 0, [31] = 2 }
+        env.owners = owners
+        env.FarmlandManager = { NO_OWNER_FARM_ID = 0, NOT_BUYABLE_FARM_ID = 255 }
+        env.g_farmlandManager = { getFarmlandOwner = function(_, id) return owners[id] or 0 end }
+        env.FarmlandStateEvent = { new = function(id, farmId, price) return { id = id, farmId = farmId, price = price } end }
+        env.g_client = { getServerConnection = function() return { sendEvent = function(_, e)
+            env.sent[#env.sent + 1] = e
+            owners[e.id] = e.farmId                     -- GIANTS' server applies it
+        end } end }
+        env.g_farmManager = { getFarmById = function() return { getBalance = function() return env.money end } end }
+        env.g_fieldManager = { fields = {
+            { fieldId = 12, posX = 10, posZ = 20, farmland = { id = 37, price = 48000, areaInHa = 1.6 } },
+            { fieldId = 11, posX = 30, posZ = 40, farmland = { id = 31, price = 9000, areaInHa = 0.4 } } } }
+        return env
+    """
+
+    def setUp(self):
+        self.lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        self.lua.globals().print = lambda *a: None
+        self.observe = self.lua.execute((ROOT / "mod/FarmhandObserve.lua").read_text())
+        self.bridge = self.lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        self.bridge.Observe = self.observe
+        self.env = self.lua.execute(self.ENV)
+        self.run = self.lua.eval("""function(B, env, field, direction)
+            local task, code = B.start(env, { op = 'land', field = field, direction = direction, farmId = 1,
+                                             owned = function() return true end })
+            if task == nil then return nil, code end
+            task.elapsed = 0
+            return task, B.step(env, task, 16) end""")
+
+    def test_buying_sends_giants_request_at_the_parcels_price_and_waits_for_the_owner(self):
+        task, status, code = self.run(self.bridge, self.env, 12, 1)
+        self.assertEqual((status, code), ("DONE", "LAND_BOUGHT"))
+        sent = self.env.sent[1]
+        self.assertEqual((sent.id, sent.farmId, sent.price), (37, 1, 48000))      # never the console's 0
+        task, status, code = self.run(self.bridge, self.env, 12, -1)
+        self.assertEqual((status, code), ("DONE", "LAND_SOLD"))
+        self.assertEqual((self.env.sent[2].farmId, self.env.sent[2].price), (0, 48000))
+
+    def test_refusals_send_nothing(self):
+        self.env.money = 1000
+        self.assertEqual(self.run(self.bridge, self.env, 12, 1), (None, "NOT_ENOUGH_MONEY"))
+        self.assertEqual(self.run(self.bridge, self.env, 11, 1), (None, "LAND_NOT_FOR_SALE"))    # another farm's
+        self.assertEqual(self.run(self.bridge, self.env, 12, -1), (None, "LAND_NOT_OWNED"))
+        self.assertEqual(self.run(self.bridge, self.env, 99, 1), (None, "FIELD_NOT_FOUND"))
+        self.assertEqual(len(list(self.env.sent.values())), 0)
+
+    def test_every_fields_parcel_is_observed_as_a_buyable(self):
+        places = {p.id: p for p in self.observe.fieldPlaces(self.env, 1).values()}
+        self.assertEqual((places[12].farmland, places[12].owner, places[12].price, places[12].area_ha), (37, "none", 48000, 1.6))
+        self.assertEqual(places[11].owner, "other")
+
+
 class AutoDriveSellTests(unittest.TestCase):
     """ad_unload / ad_sell: AutoDrive's own combine unloader and deliver mode to the best
     paid sell point as AutoDrive finds it (ADTriggerManager getHighestPayingSellStation /

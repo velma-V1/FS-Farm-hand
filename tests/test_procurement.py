@@ -283,3 +283,59 @@ class HitchOptionTests(unittest.TestCase):
             {"kind": "truck", "name": "gmc"}, {"kind": "trailer", "name": "1124 deckover"}]})
         c.wait(5)
         self.assertEqual(sent[0], {"kind": "truck", "name": "gmc", "hitch": "gooseneck"})
+
+
+class LandTests(unittest.TestCase):
+    """"buy field 12" / "sell field 12": the field's farmland parcel through GIANTS' own request,
+    complete only when the owner changed and the money moved (mock-only land and money)."""
+
+    def world(self, owner="none", price=48000.0, money=100000.0):
+        from protocol.model import FarmInfo, LandParcel
+        from simulator.world import MockWorld
+        world = MockWorld([], {"farm-a": (0.0, 0.0)}, (), farm=FarmInfo(money, True, True, True))
+        world.mock_land = (LandParcel(11, 31, "other", 9000.0), LandParcel(12, 37, owner, price, 1.6))
+        return world
+
+    def land(self, action, field=12):
+        from tests.test_farmhand import intent
+        return {**intent(f"land-{action}-{field}"), "task": "land", "field": field, "land_action": action}
+
+    def test_buying_and_selling_change_the_owner_and_move_the_money(self):
+        from companion.executor import Executor
+        world = self.world()
+        result = Executor(world).execute(self.land("buy"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "LAND_BOUGHT"), result)
+        self.assertEqual(result.states, ("FIND", "BUY_LAND", "VERIFY"))
+        self.assertEqual(world.farm().money, 52000.0)
+        self.assertEqual(next(p for p in world.land() if p.field == 12).owner, "mine")
+        result = Executor(world).execute(self.land("sell"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "LAND_SOLD"), result)
+        self.assertEqual(world.farm().money, 100000.0)
+
+    def test_refusals_change_nothing(self):
+        from companion.executor import Executor
+        for world, action, field, reason in ((self.world(owner="mine"), "buy", 12, "LAND_ALREADY_OWNED"),
+                                             (self.world(), "buy", 11, "LAND_NOT_FOR_SALE"),
+                                             (self.world(money=1000.0), "buy", 12, "NOT_ENOUGH_MONEY"),
+                                             (self.world(), "sell", 12, "LAND_NOT_OWNED"),
+                                             (self.world(), "buy", 99, "FIELD_NOT_FOUND")):
+            with self.subTest(reason=reason):
+                money = world.farm().money
+                result = Executor(world).execute(self.land(action, field))
+                self.assertEqual((result.status, result.reason), ("BLOCKED", reason), result)
+                self.assertEqual(world.farm().money, money)
+
+    def test_an_owner_change_without_the_money_is_not_complete(self):
+        from companion.executor import Executor
+        world = self.world()
+        original = world.land_change
+
+        def free(field, buy):
+            money = world.farm_info
+            out = original(field, buy)
+            world.farm_info = money                  # owner changed, nothing charged
+            return out
+        world.land_change = free
+        with unittest.mock.patch("companion.executor.Executor.LAND_VERIFY_S", 0.2):
+            result = Executor(world).execute(self.land("buy"))
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "PAYMENT_NOT_OBSERVED"), result)

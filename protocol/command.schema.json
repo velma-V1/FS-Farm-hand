@@ -13,7 +13,7 @@
       "const": 1
     },
     "command": {
-      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to, the pair nearest the requester, where it stands. unsupported: understood, but not something Farmhand does yet (reason). load_tractor: drive a free tractor (tractor_name) up a transport trailer's ramps (implement_name), belt it and raise the ramps ('load the tractor and secure it'). unload_tractor: release the belts and back the tractor off ('unload it'). sequence: several job commands in order (steps). follow_me: the named rig (tractor_name) follows the vehicle the player drives, with FollowMe, until stopped; only on the player's explicit 'follow me'. resume: continue the goal that was stopped, taken over or blocked, from what is already done ('continue'). retarget: give the goal a new destination ('take it to field 2 instead'). haul_tractor: take the named tractor (tractor_name) to the target on a transport and unload it there, from whatever is already done ('take the deutz to field 3 and unload it'). sell: the rig with the most cargo (tractor_name if said) takes it to the best paid sell point ('sell the grain'). store: the rig with the most cargo (tractor_name if said) takes it to the farm's own storage ('store the grain', 'put the grain in the silo'). harvest_policy: where harvested crop goes from now on, saved (destination; 'from now on sell the harvest'). contract: a GIANTS field contract taken, worked and collected (field, kind optional; 'do a contract', 'do the plow contract on field 12'). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop.",
+      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to, the pair nearest the requester, where it stands. unsupported: understood, but not something Farmhand does yet (reason). load_tractor: drive a free tractor (tractor_name) up a transport trailer's ramps (implement_name), belt it and raise the ramps ('load the tractor and secure it'). unload_tractor: release the belts and back the tractor off ('unload it'). sequence: several job commands in order (steps). follow_me: the named rig (tractor_name) follows the vehicle the player drives, with FollowMe, until stopped; only on the player's explicit 'follow me'. resume: continue the goal that was stopped, taken over or blocked, from what is already done ('continue'). retarget: give the goal a new destination ('take it to field 2 instead'). haul_tractor: take the named tractor (tractor_name) to the target on a transport and unload it there, from whatever is already done ('take the deutz to field 3 and unload it'). sell: the rig with the most cargo (tractor_name if said) takes it to the best paid sell point ('sell the grain'). store: the rig with the most cargo (tractor_name if said) takes it to the farm's own storage ('store the grain', 'put the grain in the silo'). harvest_policy: where harvested crop goes from now on, saved (destination; 'from now on sell the harvest'). contract: a GIANTS field contract taken, worked and collected (field, kind optional; 'do a contract', 'do the plow contract on field 12'). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop. land: buy or sell the farmland parcel a field lies on (land_action, field; 'buy field 12', 'sell field 12').",
       "enum": [
         "fetch_pair",
         "move_pair",
@@ -38,9 +38,11 @@
         "sell",
         "unload_combine",
         "store",
-        "harvest_policy"
+        "harvest_policy",
+        "land"
       ]
     },
+    "land_action": {"description": "land: buy or sell.", "enum": ["buy", "sell"]},
     "steps": {
       "description": "sequence: the player's job commands in the order said, each run only after the one before completed ('take the gmc, hitch the deckover, load the tractor, ...').",
       "type": "array", "minItems": 2, "maxItems": 8, "items": {"$ref": "#"}
@@ -289,7 +291,7 @@
       "else": {"not": {"required": ["together"]}}
     },
     {
-      "if": {"properties": {"command": {"enum": ["field_work", "contract", "unload_combine"]}}},
+      "if": {"properties": {"command": {"enum": ["field_work", "contract", "unload_combine", "land"]}}},
       "else": {"not": {"required": ["field"]}}
     },
     {
@@ -313,6 +315,11 @@
     {
       "if": {"properties": {"command": {"enum": ["field_work", "harvest_policy"]}}},
       "else": {"not": {"required": ["destination"]}}
+    },
+    {
+      "if": {"properties": {"command": {"const": "land"}}},
+      "then": {"required": ["field", "land_action"], "properties": {"field": {"type": "integer"}}},
+      "else": {"not": {"required": ["land_action"]}}
     }
   ]
 }

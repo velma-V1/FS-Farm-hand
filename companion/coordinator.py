@@ -67,6 +67,7 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "sell": ("sell", "ACCEPTED_SELL", "COMPLETE_SELL"),
         "store": ("store", "ACCEPTED_STORE", "COMPLETE_STORE"),
         "unload_combine": ("unload_harvester", "ACCEPTED_UNLOAD_COMBINE", "COMPLETE_UNLOAD_COMBINE"),
+        "land": ("land", "ACCEPTED_LAND", "COMPLETE_LAND"),
         "combine_full": ("overload", "COMBINE_FULL", "COMPLETE_UNLOAD_COMBINE")}
 # The proposal fields that pass into a job command's intent.
 NAMES = ("tractor_name", "implement_name", "cargo_name")
@@ -220,6 +221,8 @@ def work_for(proposal: dict) -> dict | None:
         return {"field": proposal.get("field"), "kind": proposal.get("kind")}
     if command == "unload_combine":
         return {"field": proposal.get("field")}
+    if command == "land":
+        return {"field": proposal["field"], "land_action": proposal["land_action"]}
     return None
 
 
@@ -970,6 +973,9 @@ class Coordinator:
             return self._combine_full(job, cancel, entered, work)
         if command == "load_tractor" and work and work.get("carry"):
             return self._load_with(job, cancel, entered, work)
+        if command == "land":
+            return self._execute(job, cancel, entered, "l", task="land", field=work["field"],
+                                 land_action=work["land_action"])
         intent = {"version": 1, "request_id": job.owner, "task": JOBS[command][0],
                   "farm_id": self.farm(), "target": "player_at_acceptance" if target == "here" else target}
         if implement is not None:

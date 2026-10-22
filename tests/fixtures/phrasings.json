@@ -1,38 +1,231 @@
 {
   "about": "Labelled player sentences -> the command proposal Farmhand must reach (companion/language.py rules; the optional local model is measured on the same set by scripts/model_eval.py). 'expect' lists the fields that must match; absent fields are free. Every entry is a regression: rules must reach it without a model.",
   "phrasings": [
-    {"say": "use the gmc to take the deutz to field 3 and unload it",
-     "expect": {"command": "haul_tractor", "tractor_name": "deutz", "truck_name": "gmc", "target": {"type": "field_entrance", "field": 3}}},
-    {"say": "use the 379 and the lowboy to take the 3650 to the farm and unload it",
-     "expect": {"command": "haul_tractor", "tractor_name": "3650", "truck_name": "379", "target": {"type": "place", "name": "farm"}}},
-    {"say": "use the 379 to take the 3650 to field 10 and unload it",
-     "expect": {"command": "haul_tractor", "tractor_name": "3650", "truck_name": "379", "target": {"type": "field_entrance", "field": 10}}},
-    {"say": "use the gmc and the deckover to take the deutz to field 3 and unload it",
-     "expect": {"command": "haul_tractor", "truck_name": "gmc", "implement_name": "deckover"}},
-    {"say": "do a contract", "expect": {"command": "contract"}},
-    {"say": "do the fertilizer contract on field 10", "expect": {"command": "contract", "kind": "fertili", "field": 10}},
-    {"say": "unload the combine", "expect": {"command": "unload_combine"}},
-    {"say": "the combine is full, unload it", "expect": {"command": "unload_combine"}},
-    {"say": "the harvester still has wheat in it, unload it and sell it",
-     "expect": {"command": "sequence", "steps": [{"command": "unload_combine"}, {"command": "sell"}]}},
-    {"say": "sell the grain", "expect": {"command": "sell"}},
-    {"say": "harvest field 3 and sell the grain",
-     "expect": {"command": "field_work", "field": 3, "operations": ["harvest"], "destination": "sell"}},
-    {"say": "plow field 3, seed it with wheat, then fertilize it",
-     "expect": {"command": "field_work", "field": 3, "operations": ["plow", "sow", "fertilize"], "crop": "wheat"}},
-    {"say": "plow field 3 and seed it with wheat",
-     "expect": {"command": "field_work", "field": 3, "operations": ["plow", "sow"], "crop": "wheat"}},
-    {"say": "plow field 3 then seed it with wheat then fertilize it",
-     "expect": {"command": "field_work", "field": 3, "operations": ["plow", "sow", "fertilize"], "crop": "wheat"}},
-    {"say": "harvest field 5 and while that runs take the deutz to the farm",
-     "expect": {"command": "sequence", "steps": [{"command": "field_work", "field": 5, "operations": ["harvest"]},
-                                                 {"command": "haul_tractor", "tractor_name": "deutz"}]}},
-    {"say": "harvest field 5 and meanwhile use the gmc to take the deutz to field 3 and unload it",
-     "expect": {"command": "sequence", "steps": [{"command": "field_work", "field": 5},
-                                                 {"command": "haul_tractor", "truck_name": "gmc"}]}},
-    {"say": "load the tractor and plow on the gooseneck",
-     "expect": {"command": "load_tractor", "carry": "plow", "implement_name": "gooseneck"}},
-    {"say": "stop", "expect": {"command": "stop"}},
-    {"say": "continue", "expect": {"command": "resume"}}
+    {
+      "say": "use the gmc to take the deutz to field 3 and unload it",
+      "expect": {
+        "command": "haul_tractor",
+        "tractor_name": "deutz",
+        "truck_name": "gmc",
+        "target": {
+          "type": "field_entrance",
+          "field": 3
+        }
+      }
+    },
+    {
+      "say": "use the 379 and the lowboy to take the 3650 to the farm and unload it",
+      "expect": {
+        "command": "haul_tractor",
+        "tractor_name": "3650",
+        "truck_name": "379",
+        "target": {
+          "type": "place",
+          "name": "farm"
+        }
+      }
+    },
+    {
+      "say": "use the 379 to take the 3650 to field 10 and unload it",
+      "expect": {
+        "command": "haul_tractor",
+        "tractor_name": "3650",
+        "truck_name": "379",
+        "target": {
+          "type": "field_entrance",
+          "field": 10
+        }
+      }
+    },
+    {
+      "say": "use the gmc and the deckover to take the deutz to field 3 and unload it",
+      "expect": {
+        "command": "haul_tractor",
+        "truck_name": "gmc",
+        "implement_name": "deckover"
+      }
+    },
+    {
+      "say": "do a contract",
+      "expect": {
+        "command": "contract"
+      }
+    },
+    {
+      "say": "do the fertilizer contract on field 10",
+      "expect": {
+        "command": "contract",
+        "kind": "fertili",
+        "field": 10
+      }
+    },
+    {
+      "say": "unload the combine",
+      "expect": {
+        "command": "unload_combine"
+      }
+    },
+    {
+      "say": "the combine is full, unload it",
+      "expect": {
+        "command": "unload_combine"
+      }
+    },
+    {
+      "say": "the harvester still has wheat in it, unload it and sell it",
+      "expect": {
+        "command": "sequence",
+        "steps": [
+          {
+            "command": "unload_combine"
+          },
+          {
+            "command": "sell"
+          }
+        ]
+      }
+    },
+    {
+      "say": "sell the grain",
+      "expect": {
+        "command": "sell"
+      }
+    },
+    {
+      "say": "harvest field 3 and sell the grain",
+      "expect": {
+        "command": "field_work",
+        "field": 3,
+        "operations": [
+          "harvest"
+        ],
+        "destination": "sell"
+      }
+    },
+    {
+      "say": "plow field 3, seed it with wheat, then fertilize it",
+      "expect": {
+        "command": "field_work",
+        "field": 3,
+        "operations": [
+          "plow",
+          "sow",
+          "fertilize"
+        ],
+        "crop": "wheat"
+      }
+    },
+    {
+      "say": "plow field 3 and seed it with wheat",
+      "expect": {
+        "command": "field_work",
+        "field": 3,
+        "operations": [
+          "plow",
+          "sow"
+        ],
+        "crop": "wheat"
+      }
+    },
+    {
+      "say": "plow field 3 then seed it with wheat then fertilize it",
+      "expect": {
+        "command": "field_work",
+        "field": 3,
+        "operations": [
+          "plow",
+          "sow",
+          "fertilize"
+        ],
+        "crop": "wheat"
+      }
+    },
+    {
+      "say": "harvest field 5 and while that runs take the deutz to the farm",
+      "expect": {
+        "command": "sequence",
+        "steps": [
+          {
+            "command": "field_work",
+            "field": 5,
+            "operations": [
+              "harvest"
+            ]
+          },
+          {
+            "command": "haul_tractor",
+            "tractor_name": "deutz"
+          }
+        ]
+      }
+    },
+    {
+      "say": "harvest field 5 and meanwhile use the gmc to take the deutz to field 3 and unload it",
+      "expect": {
+        "command": "sequence",
+        "steps": [
+          {
+            "command": "field_work",
+            "field": 5
+          },
+          {
+            "command": "haul_tractor",
+            "truck_name": "gmc"
+          }
+        ]
+      }
+    },
+    {
+      "say": "load the tractor and plow on the gooseneck",
+      "expect": {
+        "command": "load_tractor",
+        "carry": "plow",
+        "implement_name": "gooseneck"
+      }
+    },
+    {
+      "say": "stop",
+      "expect": {
+        "command": "stop"
+      }
+    },
+    {
+      "say": "continue",
+      "expect": {
+        "command": "resume"
+      }
+    },
+    {
+      "say": "buy field 12",
+      "expect": {
+        "command": "land",
+        "land_action": "buy",
+        "field": 12
+      }
+    },
+    {
+      "say": "buy the land at field 12",
+      "expect": {
+        "command": "land",
+        "land_action": "buy",
+        "field": 12
+      }
+    },
+    {
+      "say": "sell field 12",
+      "expect": {
+        "command": "land",
+        "land_action": "sell",
+        "field": 12
+      }
+    },
+    {
+      "say": "sell the farmland of field 7",
+      "expect": {
+        "command": "land",
+        "land_action": "sell",
+        "field": 7
+      }
+    }
   ]
 }
