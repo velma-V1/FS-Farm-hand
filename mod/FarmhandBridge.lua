@@ -204,6 +204,17 @@ function Bridge.adState(env, v)
         d.collision = v.ad.collisionDetectionModule.detectedCollision == true
     end)
     pcall(function() d.folded = AD.getAllImplementsFolded(v) == true end)
+    -- Whether its task ever began (live 2026-10-22 "take the deutz to the farm": no task text, no route, nothing in the
+    -- way): its first marker (ADStateModule:getFirstMarkerName 873-879), the active task and the
+    -- queue (ADTaskModule:getActiveTask 34-36, getNumberOfTasks 198-200), the fold wait
+    -- (Specialization.lua 446: foldStartTime + AutoDrive.foldTimeout against g_time), and whether
+    -- GIANTS updates the vehicle at all (forceIsActive, onStartAutoDrive 1294-1295; isActive).
+    pcall(function() d.marker = tostring(v.ad.stateModule:getFirstMarkerName()) end)
+    pcall(function() d.active = v.ad.taskModule:getActiveTask() ~= nil end)
+    pcall(function() d.queued = v.ad.taskModule:getNumberOfTasks() end)
+    pcall(function() d.foldWaitMs = (v.ad.foldStartTime or 0) + AD.foldTimeout - env.g_time end)
+    pcall(function() d.forced = v.forceIsActive == true; d.updated = v.isActive == true end)
+    pcall(function() d.motor = v:getIsMotorStarted() == true end)
     pcall(function() d.speed = v:getLastSpeed() end)
     local triggered, seen = {}, {}
     pcall(function()
@@ -226,9 +237,11 @@ end
 
 local function describeAd(d)
     local function f(n) return type(n) == "number" and string.format("%.1f", n) or "?" end
-    return string.format("task=%s network=%s route=%s/%s paused=%s obstacle=%s collision=%s folded=%s speed=%s sensors=%s",
+    return string.format("task=%s network=%s route=%s/%s paused=%s obstacle=%s collision=%s folded=%s speed=%s sensors=%s "
+        .. "marker=%s activeTask=%s queued=%s foldWaitMs=%s forceIsActive=%s isActive=%s motor=%s",
         tostring(d.task), f(d.network), tostring(d.at), tostring(d.route), tostring(d.paused), tostring(d.obstacle),
-        tostring(d.collision), tostring(d.folded), f(d.speed), d.sensors ~= "" and d.sensors or "-")
+        tostring(d.collision), tostring(d.folded), f(d.speed), d.sensors ~= "" and d.sensors or "-", tostring(d.marker),
+        tostring(d.active), tostring(d.queued), f(d.foldWaitMs), tostring(d.forced), tostring(d.updated), tostring(d.motor))
 end
 
 -- What a drive that does not move waits on: AutoDrive's own path planning onto its network
