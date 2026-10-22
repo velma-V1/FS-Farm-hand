@@ -321,3 +321,77 @@ Voice: deferred.
 Implementation order: (1) and (3) with the goal form of the transport request; (2)
 destination resolution to AutoDrive; (4) pause/resume/change; (6) references; (5)
 persistence and reconciliation; (9) progress; (7), (8), (10), (11), (12).
+
+## Product requirements (user, 2026-10-22) — the finished companion
+The goal is a fully usable local gaming companion and worker, not a set of individually
+demonstrated commands. Completion is judged against these areas; each has release gate
+G1-G9 in tests/ACCEPTANCE.md, with implemented / automated-test / live status kept apart.
+They extend the completion plan above (stages 1-7) and supersede "Voice: deferred".
+
+1. **Complete natural-language jobs.** "Buy this", "sell that", "use the truck and
+   trailer to move the tractor to the farm / field 3 / the store", "plow field 6, seed it
+   with wheat, then fertilize it": references, equipment, compatibility, prerequisites,
+   supplies, destinations and authorized purchases resolved; the whole job executed and
+   verified without the player listing mechanical actions. Selected equipment keeps its
+   identity through the job; a change of circumstance is replanned explicitly, never by
+   silently switching rigs (live 2026-10-22: the load took another trailer than the one
+   staged; fixed: a haul keeps one transport).
+2. **Equipment functions.** Observe and operate what GIANTS and the installed equipment
+   expose: attach/detach, raise/lower, fold/unfold, turn on/off; tailgates, ramps, belts,
+   covers, pipes, discharge; lights, turn signals, beacons where supported; crop/fill
+   selection, operating modes, adjustable working widths; configurations. Capabilities
+   discovered from the equipment and supported APIs; runtime controls kept apart from
+   options needing purchase or workshop customization; no invented controls, forced
+   animation states or confused fold actions. Reachable by words and used automatically
+   by jobs; unsupported functions reported specifically.
+3. **Independent work and riding along.** Farmhand works on while the player walks,
+   drives other vehicles, uses menus or does unrelated work; that never cancels a job.
+   Passenger occupancy (FS25's own passenger mechanism, where a vehicle has it) is not a
+   driver takeover; a vehicle without passenger seats is said so, never silently driven
+   from its driver seat. Manual driving of a vehicle Farmhand controls has one explicit
+   handoff; never two controllers. STOP by text in Farmhand's chat and by local voice,
+   responsive while interpretation or another task is busy; the goal kept for "continue".
+   Collision stops and genuine faults pause with the reason shown, the job kept.
+4. **Complete travel, large maps.** Departure, road travel, the road-to-yard/field
+   transition, final approach, delivery and parking. The end of a road or recorded route is
+   not the end of a delivery: provider handoffs (GIANTS GOTO, AutoDrive, Courseplay where
+   installed) and reachable final approaches; route connectivity and whole-rig clearance
+   inspected before dispatch; an installed mod is not assumed to give a usable route.
+   Long journeys on 16x maps: progress judged by actual movement and provider state, not a
+   short fixed timeout. 16x support is claimed only after qualification on a 16x map;
+   physically inaccessible destinations are never claimed.
+5. **Implements returned after each field operation.** Before an implement is collected its
+   parking pose, orientation and access space are remembered (kept across pauses and
+   reloads); after its operation it is made ready for transport, returned there, detached
+   and left usable, then the next implement is fetched. Obstructed: the location is kept and
+   reported, or an authorized nearby alternative used. An explicit "take it to ..." overrides
+   it; newly bought equipment gets a designated home (the store spawn is not a home).
+6. **Supplies and land.** Compatible tools and supplies; filling through the actual station
+   interfaces, the fill type and quantity verified; the designated free fieldwork fill
+   station after its capabilities and cost are verified (no simulated filling, no assumed
+   supply). Explicitly requested land purchases through the game's own mechanism: the right
+   parcel, price, funds, ownership change, no duplicate after an interruption.
+7. **Visible task control.** An in-game Farmhand chat/task view: the original request, the
+   current step and its equipment, observed progress and the next step, queued jobs and
+   background workers, any waiting/blocking reason, stop/pause/continue. Never "driving"
+   without movement or "complete" when a helper only started; routine messages unobtrusive,
+   the player notified when done or needed. Local voice input is in the release scope,
+   sharing the text path and STOP.
+8. **Final integrated acceptance scenario** (through the player-facing interface on a
+   backed-up test save, fully autonomous: no developer commands, manual positioning or
+   hidden corrections; assisted runs diagnose but never pass): buy a compatible truck,
+   transport trailer, tractor and plow; hitch truck-trailer and tractor-plow; load and secure
+   the tractor with its plow, ramps and equipment in travel configuration; transport them to a
+   small field far from the store; buy that land parcel; unload and plow; load again and
+   transport to the farm; unload, park and unhitch the plow at its designated farm location;
+   attach the seeder and fill it at the designated free fieldwork fill station. The
+   transport combination must actually carry and secure the tractor with its plow. Separately
+   "plow, seed wheat, fertilize" with every implement returned to its pickup place. During
+   qualification the player rides as a supported passenger, uses another vehicle and plays
+   unrelated, a delivery crosses from roads into the destination area, STOP / continue /
+   restart recovery are exercised, and equipment selection and transactions are preserved.
+9. **Execution discipline.** Shared identity and language defects first, then workflows in
+   dependency order; existing implementations reused; related changes batched; decisive
+   diagnostics before retries; valid prior evidence kept. Farmhand is not finished because
+   selected examples pass.
+

@@ -194,6 +194,20 @@ have precedence; report conflicts instead of silently changing the scope.
   "continue"), recorded as assisted, never as autonomous delivery. AutoDrive's global traffic
   detection is never turned off. FollowMe runs only when the player explicitly asks to be
   followed; it never stands in for a point-to-point delivery.
+- One identity per job (the user, 2026-10-22): equipment selected for a job (a transport, a
+  truck, a tractor, an implement) is kept for all its steps; a changed circumstance is replanned
+  explicitly and said, never answered by silently picking other equipment.
+- The player's own play never cancels a job: walking, driving another vehicle, menus. A
+  passenger (FS25's passenger seats, where the vehicle has them) is not a takeover; taking a
+  Farmhand-controlled vehicle's driver seat is the one explicit manual handoff (the job pauses,
+  kept for "continue"), never two controllers.
+- Travel is complete only at the destination's usable spot (yard, field, parking): the end of
+  a road or recorded route hands over to a final approach; long drives are judged by movement
+  and provider state, not short fixed timeouts.
+- Implements go back where they were collected after their operation (pose kept across
+  reloads) unless the player said otherwise; bought equipment gets a designated home.
+- A run is autonomous only with no developer commands, manual positioning or hidden fixes;
+  assisted runs diagnose, they never qualify.
 - Unloading, storing and selling are separate (the user, 2026-10-22). "Unload the combine"
   transfers its crop into a trailer and nothing more. A harvest's crop is sold or stored only
   when the request says so ("harvest field 5 and sell the grain") or the player's saved harvest
