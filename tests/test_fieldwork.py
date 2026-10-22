@@ -1062,6 +1062,21 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertEqual(world.items["w-5"].fill_units[0].level, 9000.0)
         self.assertEqual(world.farm().money, FARM.money)
 
+    def test_the_players_own_words_unload_the_combine_and_sell_the_grain_in_one_go(self):
+        # Live d0b10ed974a1467f-1: "the harvester still has wheat in it, unload it and sell it" as a
+        # sequence made its unload step an executor intent without a field (INVALID_INTENT); a
+        # step runs exactly as the command said alone does.
+        from companion.language import RuleInterpreter
+        world = self.full_combine_world()
+        c, notices = coordinated(world)
+        proposal = RuleInterpreter().interpret("the harvester still has wheat in it, unload it and sell it")
+        c.submit(proposal)
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "SEQUENCE_DONE"), c.last)
+        self.assertEqual(world.items["c-1"].fill_units[1].level, 0.0)       # out of the combine
+        self.assertGreater(world.farm().money, FARM.money)                  # and sold
+        self.assertIn("unload_combine:ALONGSIDE", c.last.states)
+
     def test_harvest_with_a_full_combine_empties_it_first(self):
         world = self.full_combine_world()
         c, notices = coordinated(world)

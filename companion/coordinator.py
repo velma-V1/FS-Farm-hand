@@ -187,6 +187,37 @@ def _tractor_for(items, farm_id: str, name: str | None, transports):
     return found
 
 
+def work_for(proposal: dict) -> dict | None:
+    """What a job command carries into its run, the same whether said alone or as a step of a
+    sequence (one dispatch, Coordinator._dispatch)."""
+    command = proposal["command"]
+    if command == "field_work":
+        return {"field": proposal["field"], "operations": proposal["operations"],
+                "area_m2": proposal.get("area_m2"), "over_crop": proposal.get("over_crop", False),
+                "crop": proposal.get("crop"), "destination": proposal.get("destination")}
+    if command == "buy":
+        return {"wants": proposal["wants"]}
+    if command in ("fetch_pair", "hitch_pair", "move_pair", "load_tractor", "unload_tractor", "follow_me", "sell",
+                   "store"):
+        work = {k: proposal[k] for k in NAMES if k in proposal}
+        if command == "load_tractor" and proposal.get("carry"):
+            work["carry"] = proposal["carry"]
+        return work or None
+    if command == "sequence":
+        return {"steps": proposal["steps"]}
+    if command == "haul_tractor":
+        work = {"tractor_name": proposal.get("tractor_name"), "target": proposal.get("target", "here"),
+                "truck_name": proposal.get("truck_name")}
+        if proposal.get("implement_name"):     # "... and the lowboy": that transport, kept
+            work["transport"] = proposal["implement_name"]
+        return work
+    if command == "contract":
+        return {"field": proposal.get("field"), "kind": proposal.get("kind")}
+    if command == "unload_combine":
+        return {"field": proposal.get("field")}
+    return None
+
+
 def load_with_step(items, farm_id: str, work: dict):
     """The next step of "load the tractor and plow": (intent fragment, None) or (None, why)."""
     observed = {i.id: i for i in items}
@@ -551,27 +582,8 @@ class Coordinator:
         elif command == "harvest_policy":
             self.notify(self._save_policy(proposal["destination"]), spoken)
         else:
-            work = ({"field": proposal["field"], "operations": proposal["operations"],
-                     "area_m2": proposal.get("area_m2"), "over_crop": proposal.get("over_crop", False),
-                     "crop": proposal.get("crop"), "destination": proposal.get("destination")}
-                    if command == "field_work"
-                    else {"wants": proposal["wants"]} if command == "buy" else None)
-            if command in ("fetch_pair", "hitch_pair", "move_pair", "load_tractor", "unload_tractor", "follow_me", "sell",
-                           "store"):
-                names = {k: proposal[k] for k in NAMES if k in proposal}
-                work = names or None
-            elif command == "sequence":
-                work = {"steps": proposal["steps"]}
-            elif command == "haul_tractor":
-                work = {"tractor_name": proposal.get("tractor_name"), "target": proposal.get("target", "here"),
-                        "truck_name": proposal.get("truck_name")}
-                if proposal.get("implement_name"):     # "... and the lowboy": that transport, kept
-                    work["transport"] = proposal["implement_name"]
-            elif command == "contract":
-                work = {"field": proposal.get("field"), "kind": proposal.get("kind")}
-            elif command == "unload_combine":
-                work = {"field": proposal.get("field")}
-            return self.start(command, proposal.get("target", "here"), spoken, proposal.get("implement"), work)
+            return self.start(command, proposal.get("target", "here"), spoken, proposal.get("implement"),
+                              work_for(proposal))
         return None
 
     # ------------------------------------------------------------------ policy
@@ -820,31 +832,7 @@ class Coordinator:
                     self.notify(f"WORKING_{state}", job.spoken)
 
             self.world.cancel = cancel           # the link refuses steps once it is set
-            if command == "field_work":
-                result = self._field_work(job, cancel, entered, work)
-            elif command == "buy":
-                result = self._buy(job, cancel, entered, work)
-            elif command == "sequence":
-                result = self._sequence(job, cancel, entered, work)
-            elif command == "haul_tractor":
-                result = self._haul(job, cancel, entered, work)
-            elif command == "contract":
-                result = self._contract(job, cancel, entered, work)
-            elif command == "worker_return":
-                result = self._run_steps(job, cancel, entered, work["steps"], "r")
-            elif command == "unload_combine":
-                result = self._unload_combine(job, cancel, entered, work)
-            elif command == "combine_full":
-                result = self._combine_full(job, cancel, entered, work)
-            else:
-                intent = {"version": 1, "request_id": job.owner, "task": task,
-                          "farm_id": self.farm(), "target": "player_at_acceptance" if target == "here" else target}
-                if implement is not None:
-                    intent["implement"] = implement
-                intent.update(work or {})            # tractor_name / implement_name
-                log.info("job %d intent %s", job.number, json.dumps(intent))
-                self.running = intent["request_id"]
-                result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
+            result = self._dispatch(job, cancel, entered, command, target, implement, work)
             job.states, job.equipment = tuple(result.states), tuple(result.equipment_ids)
             job.state, job.reason = result.status, result.reason
             log.info("job %d result %s", job.number, json.dumps({
@@ -954,6 +942,37 @@ class Coordinator:
         log.info("goal %s retargeted to %s", kept.command, target)
         self._save_goal()
 
+    def _dispatch(self, job: Job, cancel: threading.Event, entered, command: str, target, implement, work,
+                  parent: str | None = None):
+        """Run one command for ``job``: its own planner for a goal, else one executor intent.
+        ``parent``: the job whose per-job budgets a sequence step shares (UNPARK's, once per job)."""
+        if command == "field_work":
+            return self._field_work(job, cancel, entered, work)
+        if command == "buy":
+            return self._buy(job, cancel, entered, work)
+        if command == "sequence":
+            return self._sequence(job, cancel, entered, work)
+        if command == "haul_tractor":
+            return self._haul(job, cancel, entered, work)
+        if command == "contract":
+            return self._contract(job, cancel, entered, work)
+        if command == "worker_return":
+            return self._run_steps(job, cancel, entered, work["steps"], "r")
+        if command == "unload_combine":
+            return self._unload_combine(job, cancel, entered, work)
+        if command == "combine_full":
+            return self._combine_full(job, cancel, entered, work)
+        if command == "load_tractor" and work and work.get("carry"):
+            return self._load_with(job, cancel, entered, work)
+        intent = {"version": 1, "request_id": job.owner, "task": JOBS[command][0],
+                  "farm_id": self.farm(), "target": "player_at_acceptance" if target == "here" else target}
+        if implement is not None:
+            intent["implement"] = implement
+        intent.update({k: v for k, v in (work or {}).items() if k in NAMES})   # tractor_name / implement_name
+        log.info("job %d intent %s", job.number, json.dumps(intent))
+        self.running = intent["request_id"]
+        return self.executor.execute(intent, cancel=cancel, on_state=entered, job=parent or job.owner)
+
     def _sequence(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """The player's commands in order, one job: each step starts only after the one
         before it completed (COMPLETE, from its own verification) and only if not cancelled;
@@ -984,30 +1003,8 @@ class Coordinator:
             step = with_context(step, work.setdefault("context", {}))
             if step.get("together"):
                 return Result("BLOCKED", "NOTHING_TO_HITCH_TOGETHER", (), tuple(states))
-            if command == "haul_tractor":
-                result = self._haul(sub, cancel, entered, {"tractor_name": step.get("tractor_name"),
-                                                           "target": step.get("target", "here"),
-                                                           "truck_name": step.get("truck_name")})
-            elif command == "load_tractor" and step.get("carry"):
-                result = self._load_with(sub, cancel, entered, step)
-            elif command == "field_work":
-                result = self._field_work(sub, cancel, entered, {
-                    "field": step["field"], "operations": step["operations"], "area_m2": step.get("area_m2"),
-                    "over_crop": step.get("over_crop", False), "crop": step.get("crop")})
-            elif command == "buy":
-                result = self._buy(sub, cancel, entered, {"wants": step["wants"]})
-            elif command == "contract":
-                result = self._contract(sub, cancel, entered, {"field": step.get("field"), "kind": step.get("kind")})
-            else:
-                target = step.get("target", "here")
-                intent = {"version": 1, "request_id": sub.owner, "task": JOBS[command][0], "farm_id": self.farm(),
-                          "target": "player_at_acceptance" if target == "here" else target}
-                if step.get("implement") is not None:
-                    intent["implement"] = step["implement"]
-                intent.update({k: step[k] for k in NAMES if k in step})
-                log.info("job %d step %d intent %s", job.number, n, json.dumps(intent))
-                self.running = intent["request_id"]
-                result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
+            result = self._dispatch(sub, cancel, entered, command, step.get("target", "here"), step.get("implement"),
+                                    work_for(step), parent=job.owner)
             states += [f"{command}:{s}" for s in result.states]
             used += [i for i in result.equipment_ids if i not in used]
             log.info("job %d step %d %s result %s %s", job.number, n, command, result.status, result.reason)
