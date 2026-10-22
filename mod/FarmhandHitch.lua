@@ -2183,21 +2183,26 @@ end
 -- (COULD_NOT_PREPARE, live 3dc00834639340f7-2), AutoDrive's unloader serves only a combine
 -- whose AI runs, and GIANTS GOTO calls a spot under the pipe not_reachable (live
 -- 3dc00834639340f7-1, 15-23 m short). After GIANTS has brought the tractor and its towed
--- trailer onto the pipe's line behind the combine, the tractor drives straight forward
--- along its own heading, at most 3 km/h and maxTravelM, until the trailer's middle (its size
--- box centre) is under the pipe's discharge point (Pipe: getCurrentDischargeNode, the pipe
--- out: spec.unloadingStates[getCurrentPipeState()]). Refused unmoved unless the trailer is
--- swung at most headingStartDeg (driving straight pulls it in behind), the pipe point within
--- lateralTolM of the tractor's line and ahead of the trailer's middle, the swept volume of the whole rig clear in GIANTS'
+-- trailer near the pipe's line behind the combine (the line through the pipe's discharge
+-- point along the combine's heading; Pipe: getCurrentDischargeNode, the pipe out:
+-- spec.unloadingStates[getCurrentPipeState()]), the tractor drives forward onto and along
+-- that line with GIANTS' driveToPoint, at most 3 km/h and maxTravelM, until the trailer's
+-- middle (its size box centre) reaches the pipe point, and must end within lateralTolM of it.
+-- Refused unmoved unless the tractor starts within startLateralM and headingStartDeg of the
+-- line, the trailer swung at most trailerStartDeg, its middle behind the point, the swept
+-- corridor of the whole rig clear in GIANTS'
 -- collision query (the combine is not excluded: a pipe low enough to touch refuses), no other
 -- vehicle (the combine and its header aside) or person near the path; it stops on any of
 -- LOAD's guards, and if the combine moves. Nothing is teleported, no collision is disabled.
 Hitch.ALONGSIDE = {
     maxSpeedKmh = 3, timeoutMs = 90000, maxTravelM = 25,
-    lateralTolM = 0.8,        -- the pipe point this close to the tractor's line, and to the trailer's middle at the end
-    headingStartDeg = 30,     -- the trailer at most this far swung at the start (live 6c66894767044432-1: GIANTS
-                              -- ended with it 19-21 deg off; driving straight pulls it in behind)
-    divergeM = 0.3, lookaheadM = 3,
+    startLateralM = 2.5,      -- the steering node at most this far off the pipe's line at the start
+    headingStartDeg = 15,     -- the tractor at most this far off the line's heading (live 75ef60d7f5ad4735-1:
+                              -- GIANTS reached the aim 0.3 m off but turned about 7 deg, the pipe 1.9 m aside)
+    trailerStartDeg = 30,     -- the trailer at most this far swung (live 6c66894767044432-1: 19-21 deg)
+    lateralTolM = 0.8,        -- the trailer's middle this close to the pipe point at the end
+    divergeM = 0.3,           -- the steering node never farther off the line than at the start plus this
+    lookaheadM = 6,
     lateralMarginM = 0.3, floorClearanceM = 0.3, topMarginM = 0.3, stepM = 0.5, aheadEndM = 0.5,
     minLookaheadM = 2, reactionS = 1, decelMs2 = 1, movedM = 0.25,
 }
@@ -2225,13 +2230,14 @@ local function alongsideVolume(env, s, a0, a1)
                        s.masks.obstacles)
 end
 
--- `args`: tractor, combine, farmId, isReserved. A session, or nil, a reason and the half-built
--- session (for the log).
+-- `args`: tractor, combine, farmId, isReserved. The frame is the pipe's line: through the
+-- pipe point along the combine's heading (a ahead, l to its local +x side), the point at 0.
+-- A session, or nil, a reason and the half-built session (for the log).
 function Hitch.newAlongside(env, args)
     local D = Hitch.ALONGSIDE
     local s = { tractor = args.tractor, wagon = args.combine, combine = args.combine, farmId = args.farmId,
                 isReserved = args.isReserved, maxSpeedKmh = D.maxSpeedKmh, timeoutMs = D.timeoutMs, sign = 1,
-                elapsed = 0, sinceProgress = 0, best = 0, result = nil, others = {} }
+                elapsed = 0, sinceProgress = 0, best = -math.huge, result = nil, others = {} }
     if type(args.isReserved) ~= "function" then return nil, "INVALID_LIMITS" end
     local ok, reason = pcall(function()
         local tractor, combine = s.tractor, s.combine
@@ -2250,27 +2256,25 @@ function Hitch.newAlongside(env, args)
         s.units, s.trailer = units, units[2]
         local px, pz = pipePoint(env, combine)
         if px == nil then return "PIPE_NOT_OUT" end
-        -- The frame: the tractor's steering node, its forward axis.
-        local node = tractor:getAISteeringNode()
-        local ox, _, oz = world(env, node)
-        local fx, _, fz = env.localDirectionToWorld(tractor.rootNode, 0, 0, 1)
+        local fx, _, fz = env.localDirectionToWorld(combine.rootNode, 0, 0, 1)
         assert(finite(fx) and finite(fz))
         local n = math.sqrt(fx * fx + fz * fz)
-        s.ox, s.oz, s.dirX, s.dirZ = ox, oz, fx / n, fz / n
+        s.ox, s.oz, s.dirX, s.dirZ = px, pz, fx / n, fz / n
         s.yaw = atan2(s.dirX, s.dirZ)
         s.last = { wx = s.ox, wz = s.oz }
         s.rig = { [tractor] = true, [s.trailer] = true }
-        s.turn = unitTurn(env, s, s.trailer)
-        if math.abs(s.turn) > D.headingStartDeg then return "ALONGSIDE_RIG_NOT_STRAIGHT" end
+        local node = tractor:getAISteeringNode()
+        local sx, _, sz = world(env, node)
+        s.startAlong, s.startLateral = inFrame(s, sx, sz)
+        s.turn, s.trailerTurn = unitTurn(env, s, tractor), unitTurn(env, s, s.trailer)
+        if math.abs(s.startLateral) > D.startLateralM or math.abs(s.turn) > D.headingStartDeg then
+            return "ALONGSIDE_NOT_LINED_UP"
+        end
+        if math.abs(s.trailerTurn) > D.trailerStartDeg then return "ALONGSIDE_RIG_NOT_STRAIGHT" end
         local mx, mz = middleOf(env, s.trailer)
         s.middleAlong, s.middleLateral = inFrame(s, mx, mz)
-        s.pipeAlong, s.pipeLateral = inFrame(s, px, pz)
-        -- Straight behind at the end: the trailer's middle on the tractor's line, as far
-        -- behind the steering node as it is now.
-        if math.abs(s.pipeLateral) > D.lateralTolM then return "ALONGSIDE_NOT_LINED_UP" end
-        s.trailerBack = math.sqrt(s.middleAlong ^ 2 + s.middleLateral ^ 2)
-        s.travelM = s.pipeAlong + s.trailerBack
-        if s.pipeAlong - s.middleAlong <= 0 then return "ALONGSIDE_PAST_THE_PIPE" end
+        if s.middleAlong >= 0 then return "ALONGSIDE_PAST_THE_PIPE" end
+        s.travelM = -s.middleAlong
         if s.travelM > D.maxTravelM then return "ALONGSIDE_TOO_FAR" end
         local rigBox = nil
         for _, unit in ipairs(units) do
@@ -2280,7 +2284,10 @@ function Hitch.newAlongside(env, args)
                                                 lMin = math.min(rigBox.lMin, box.lMin), lMax = math.max(rigBox.lMax, box.lMax),
                                                 height = math.max(rigBox.height, box.height) }
         end
-        s.rigBox, s.lMin, s.lMax = rigBox, rigBox.lMin, rigBox.lMax
+        s.rigBox = rigBox
+        -- The corridor: from where the rig stands to where it ends on the line.
+        s.lMin = math.min(rigBox.lMin, rigBox.lMin - s.startLateral)
+        s.lMax = math.max(rigBox.lMax, rigBox.lMax - s.startLateral)
         local okMasks, masks = pcall(collisionMasks, env)
         if not okMasks then return "ALONGSIDE_QUERY_UNKNOWN" end
         s.masks = masks
@@ -2297,8 +2304,8 @@ function Hitch.newAlongside(env, args)
         local okAround, others, player = pcall(surroundings, env, s)
         if not okAround then return "LOCAL_AREA_UNKNOWN" end
         s.others, s.player = others, player
-        local conflict = pullConflict(s, { { 0, 0 }, { s.travelM, 0 } }, Hitch.LOCAL.vehicleClearanceM,
-                                      Hitch.LOCAL.playerClearanceM)
+        local conflict = pullConflict(s, { { s.startAlong, s.startLateral }, { s.startAlong + s.travelM, 0 } },
+                                      Hitch.LOCAL.vehicleClearanceM, Hitch.LOCAL.playerClearanceM)
         if conflict == "OTHER_VEHICLE_NEAR" then return "ALONGSIDE_BLOCKED" end
         if conflict == "PERSON_TOO_CLOSE" then return "ALONGSIDE_PERSON" end
         local cx, _, cz = world(env, combine.rootNode)
@@ -2318,6 +2325,7 @@ local function alongsideDrive(env, s, dt)
     local node = s.tractor:getAISteeringNode()
     local x, _, z = world(env, node)
     local along, lateral = inFrame(s, x, z)
+    local progress = along - s.startAlong
     s.lastAlong, s.lastLateral = along, lateral
     pcall(function() s.lastSpeed = s.tractor:getLastSpeed() end)
     local units = rigUnits(s.tractor)
@@ -2325,8 +2333,8 @@ local function alongsideDrive(env, s, dt)
     local cx, _, cz = world(env, s.combine.rootNode)
     if distance(cx, cz, s.combineAt.wx, s.combineAt.wz) > D.movedM then return "COMBINE_MOVED" end
     if pipePoint(env, s.combine) == nil then return "PIPE_MOVED" end
-    if math.abs(lateral) > D.divergeM then return "DIVERGED" end
-    if along > s.travelM + 1.0 then return "DISTANCE_LIMIT" end
+    if math.abs(lateral) > math.abs(s.startLateral) + D.divergeM then return "DIVERGED" end
+    if progress > s.travelM + 1.0 then return "DISTANCE_LIMIT" end
     if s.elapsed > s.timeoutMs then return "TIMEOUT" end
     for _, other in ipairs(s.others) do
         local vx, _, vz = world(env, other.vehicle.rootNode)
@@ -2334,26 +2342,26 @@ local function alongsideDrive(env, s, dt)
     end
     local others, player = surroundings(env, s)
     s.others, s.player = others, player
-    local bad = pullConflict(s, { { along, 0 } }, Hitch.LOCAL.vehicleStopM, Hitch.LOCAL.playerStopM)
+    local bad = pullConflict(s, { { along, lateral } }, Hitch.LOCAL.vehicleStopM, Hitch.LOCAL.playerStopM)
     if bad ~= nil then return bad end
-    -- The trailer's own middle reaching the pipe ends it; under it only if on its line too.
+    -- The trailer's own middle reaching the pipe point ends it; under it only if close.
     local mx, mz = middleOf(env, s.trailer)
     s.middleAlong, s.middleLateral = inFrame(s, mx, mz)
-    if s.middleAlong >= s.pipeAlong then
-        if math.abs(s.middleLateral - s.pipeLateral) > D.lateralTolM then return "ALONGSIDE_NOT_UNDER" end
+    if s.middleAlong >= 0 then
+        if math.abs(s.middleLateral) > D.lateralTolM then return "ALONGSIDE_NOT_UNDER" end
         return "UNDER_PIPE"
     end
     local v = math.abs(s.lastSpeed or 0) / 3.6
     local reach = math.max(D.minLookaheadM, v * D.reactionS + v * v / (2 * D.decelMs2) + 0.5)
-    local lead = s.rigBox.aMax + along
+    local lead = s.rigBox.aMax + progress
     local far = math.min(lead + reach, s.sweepTo)
     if far - lead > 0.05 then
         local hit, names = alongsideVolume(env, s, lead, far)
         if hit == "UNKNOWN" then return "UNKNOWN_OBSERVATION" end
         if hit ~= nil then s.aheadHits = names; return "OBSTACLE_AHEAD" end
     end
-    if along > s.best + Hitch.LOCAL.stallProgressM then
-        s.best, s.sinceProgress = along, 0
+    if progress > s.best + Hitch.LOCAL.stallProgressM then
+        s.best, s.sinceProgress = progress, 0
     else
         s.sinceProgress = s.sinceProgress + dt
         if s.sinceProgress > Hitch.LOCAL.stallMs then return "STALLED" end
@@ -2365,6 +2373,7 @@ local function alongsideDrive(env, s, dt)
     end
     Hitch.holdActive(s)
     tractor:raiseActive()
+    -- Onto the line and along it: GIANTS' driveToPoint at a point on the line ahead.
     local _, wy = env.getWorldTranslation(node)
     local gx, gz = fromFrame(s, along + D.lookaheadM, 0)
     local lx, _, lz = env.worldToLocal(node, gx, wy, gz)
@@ -2392,10 +2401,10 @@ end
 function Hitch.describeAlongside(s)
     if s == nil then return "-" end
     local function f(n) return n and string.format("%.2f", n) or "?" end
-    return string.format("turn=%s middle=(%s,%s) pipe=(%s,%s) travel=%s along=%s lateral=%s speed=%s t=%dms "
-        .. "pathHits=%s aheadHits=%s", f(s.turn), f(s.middleAlong), f(s.middleLateral), f(s.pipeAlong),
-        f(s.pipeLateral), f(s.travelM), f(s.lastAlong), f(s.lastLateral), f(s.lastSpeed), s.elapsed or 0,
-        tostring(s.pathHits or "-"), tostring(s.aheadHits or "-"))
+    return string.format("start=(%s,%s) turn=%s trailerTurn=%s middle=(%s,%s) travel=%s along=%s lateral=%s speed=%s "
+        .. "t=%dms pathHits=%s aheadHits=%s", f(s.startAlong), f(s.startLateral), f(s.turn), f(s.trailerTurn),
+        f(s.middleAlong), f(s.middleLateral), f(s.travelM), f(s.lastAlong), f(s.lastLateral), f(s.lastSpeed),
+        s.elapsed or 0, tostring(s.pathHits or "-"), tostring(s.aheadHits or "-"))
 end
 
 -- ------------------------------------------------------------------ ATTACH

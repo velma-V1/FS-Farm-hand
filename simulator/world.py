@@ -14,7 +14,7 @@ MOCK_POSE_TOLERANCE_M = 0.5
 MOCK_TRAILER_OFFSET_M = 7.0
 MOCK_PIPE_REACH_M = 6.0           # mock-only: a combine's pipe point to its left
 MOCK_PIPE_HIT_M = 1.5             # mock-only: how near the trailer's middle must be
-MOCK_ALONGSIDE_LATERAL_M = 0.8    # = mod/FarmhandHitch.lua Hitch.ALONGSIDE.lateralTolM
+MOCK_ALONGSIDE_LATERAL_M = 2.5    # = mod/FarmhandHitch.lua Hitch.ALONGSIDE.startLateralM
 MOCK_ALONGSIDE_MAX_M = 25.0       # = Hitch.ALONGSIDE.maxTravelM
 MOCK_REVERSE_REACH_M = 10.0      # the mod's reverse cap (Hitch.LIMITS.maxDistanceM)
 MOCK_LOCAL_RADIUS_M = 25.0       # the mod's local work radius (Hitch.LOCAL_LIMITS.workRadiusM)

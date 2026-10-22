@@ -30,7 +30,7 @@ local x0, z0 = w.steer.x, w.steer.z
 local function at(a, l) return x0 + s * a + c * l, z0 + c * a - s * l end
 local rx, rz = at(o.ahead or 5, o.side or 6)
 local px, pz = at(o.pipeA or 5, o.pipeL or 0)
-local combine = { ownerFarmId = 1, rootNode = { x = rx, y = 0, z = rz, yaw = yaw },
+local combine = { ownerFarmId = 1, rootNode = { x = rx, y = 0, z = rz, yaw = yaw + (o.cyaw or 0) },
                   size = { width = 3.5, length = 8, height = 3.8, widthOffset = 0, lengthOffset = 0, heightOffset = 0 } }
 combine.rootVehicle = combine
 w.pipeState, w.combineSpeed = o.pipeState or 2, 0
@@ -122,9 +122,23 @@ class LuaAlongsideTests(unittest.TestCase):
             self.assertEqual(code, expected, self.hitch.describeAlongside(session))
             self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
 
+    def test_it_steers_onto_the_pipes_line_and_must_end_under_the_pipe(self):
+        # Live 75ef60d7f5ad4735-1: GIANTS reached the aim but about 7 deg turned, the pipe 1.9 m
+        # aside. The stub cannot steer (it drives along its heading), so the aim is checked: every
+        # drive point lies toward the line; it ends beside the pipe, refused as not under it.
+        w = self.world(pipeL=1.2)
+        session, why, _ = self.start(w)
+        self.assertIsNotNone(session, why)
+        code, _ = self.runner(w, session, 3000, None)
+        self.assertEqual(code, "ALONGSIDE_NOT_UNDER", self.hitch.describeAlongside(session))
+        moving = [d for d in self.drives(w) if d["allowed"]]
+        self.assertTrue(moving and all(d["lx"] > 0 and d["forwards"] for d in moving))   # the line to its +x side
+        self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
+
     def test_refused_unmoved_unless_everything_holds(self):
         self.assert_refused(self.world(pipeState=1), "PIPE_NOT_OUT")
-        self.assert_refused(self.world(pipeL=1.2), "ALONGSIDE_NOT_LINED_UP")
+        self.assert_refused(self.world(pipeL=3.0), "ALONGSIDE_NOT_LINED_UP")             # 3 m off the pipe's line
+        self.assert_refused(self.world(cyaw=0.35), "ALONGSIDE_NOT_LINED_UP")             # 20 deg off its heading
         self.assert_refused(self.world(pipeA=-9), "ALONGSIDE_PAST_THE_PIPE")
         self.assert_refused(self.world(pipeA=20), "ALONGSIDE_TOO_FAR")   # 20 ahead + 7 behind > 25
         self.assert_refused(self.world(trailer=dict(TRAILER, turn=0.6)), "ALONGSIDE_RIG_NOT_STRAIGHT")   # 34 deg

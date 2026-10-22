@@ -97,13 +97,15 @@ have precedence; report conflicts instead of silently changing the scope.
      small issue"; GIANTS' helper cannot start a full combine, AutoDrive's unloader serves
      only a combine whose AI runs, and GIANTS GOTO takes no spot under the pipe). Only after
      the standing combine's pipe is out (GIANTS Pipe) and GIANTS GOTO has brought the tractor
-     and its one towed trailer onto the pipe's line behind it: the tractor straight forward
-     along its own heading, at most 3 km/h and 25 m, until the trailer's middle is under the
-     pipe's discharge point; refused unmoved unless the trailer is swung at most 30 degrees
-     (driving straight pulls it in behind), that point is within 0.8 m of the tractor's line
-     and ahead of the trailer's middle, and the trailer must end within 0.8 m of it, the whole rig's swept volume is clear
-     in GIANTS' collision query (the combine is not excluded) and no other vehicle (the
-     combine and its header aside) or person is near; LOAD's guards while moving, and it stops
+     and its one towed trailer near the pipe's line behind it (the line through the pipe's
+     discharge point along the combine's heading): the tractor forward onto and along that
+     line with GIANTS' driveToPoint, at most 3 km/h and 25 m, until the trailer's middle
+     reaches the pipe point, and it must end within 0.8 m of it; refused unmoved unless the
+     tractor starts within 2.5 m and 15 degrees of the line, the trailer is swung at most 30
+     degrees, its middle is behind the point, the rig's swept corridor is clear in GIANTS'
+     collision query (the combine is not excluded) and no other vehicle (the combine and its
+     header aside) or person is near; LOAD's guards while moving (it may never get farther off
+     the line than at the start), and it stops
      if the combine moves or its pipe comes in; restore-on-every-exit as UNPARK. The grain
      moves by GIANTS' own discharge. Nothing is teleported and no collision is disabled.
 - Keep Python orchestration in companion/, pure contracts in protocol/ and
