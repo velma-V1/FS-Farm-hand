@@ -296,6 +296,29 @@ def _hitched(items, kind, crop=None) -> bool:
                and (crop is None or seed_position(observed[i.attached_to], crop) is not None) for i in items)
 
 
+def _tractor_to_free(items, kind: str, farm_id: str) -> str | None:
+    """With no free tractor: the store name of the tractor nearest an implement of ``kind``
+    whose own hitched implement is an ordinary one (not a transport, not of that kind), so it
+    can be unhitched where it stands; None when a tractor is free or none qualifies."""
+    tractors = [i for i in items if i.category == "tractor" and usable(i, farm_id) and i.stopped
+                and {"move", "attach", "stop"} <= i.capabilities]
+    if any(t.attached_to is None for t in tractors):
+        return None
+    observed = {i.id: i for i in items}
+    wanted = [i for i in items if of_kind(i, kind) and usable(i, farm_id) and i.attached_to is None]
+    choices = []
+    for t in tractors:
+        held = observed.get(t.attached_to)
+        if (held is None or held.attached_to != t.id or not usable(held, farm_id) or of_kind(held, kind)
+                or transport.is_transport(held) or held.belted or not t.name):
+            continue
+        near = min((math.dist(t.position, w.position) for w in wanted), default=math.inf)
+        choices.append((near, t.id, t))
+    if not choices or not wanted:
+        return None
+    return _words(min(choices, key=lambda c: (c[0], c[1]))[2].name)
+
+
 def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: str, area_m2=None, crop=None):
     """The steps for one operation on ``field`` (an id or "smallest"), as executor
     intent fragments, or (None, why). ``crop`` (sowing only): the player's crop."""
@@ -316,7 +339,14 @@ def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: st
     with_crop = {"crop": crop} if crop else {}
     steps = []
     if not _hitched(items, kind, crop):
-        steps.append({"task": "hitch_pair", "implement": kind, **with_crop})
+        freed = _tractor_to_free(items, kind, farm_id)
+        if freed is not None:
+            # Every tractor has something hitched (live 7dada469b72f44ed-3, a contract taken):
+            # the one nearest the implement needed leaves what it has where it stands.
+            steps.append({"task": "detach_pair", "tractor_name": freed})
+            steps.append({"task": "hitch_pair", "implement": kind, "tractor_name": freed, **with_crop})
+        else:
+            steps.append({"task": "hitch_pair", "implement": kind, **with_crop})
     steps.append({"task": "field_work", "field": field, "operation": work_op, "implement": kind,
                   **({"area_m2": area_m2} if area_m2 else {}), **with_crop})
     # Back where it was taken from, then unhitched there: never left in the field.

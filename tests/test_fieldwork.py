@@ -797,6 +797,27 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.unit(world, "t-1").attached_to, "i-1")              # left where it stopped
 
 
+class FreeATractorTests(unittest.TestCase):
+    """Live 7dada469b72f44ed-3: a fertilize contract taken, every tractor with something
+    hitched (NO_ELIGIBLE_PAIR). The tractor nearest the implement needed leaves its own
+    (never a transport, never the kind needed) where it stands, then takes the needed one."""
+
+    def test_the_tractor_nearest_the_spreader_unhitches_its_plow_first(self):
+        from dataclasses import replace as rep
+        from companion.coordinator import field_steps
+        near = [rep(e, id=e.id + "n", attached_to=(e.attached_to + "n"), name="Series 9 2019" if e.category == "tractor"
+                    else "Titan Vineyard Plow") for e in rig("plow", at=(10.0, 10.0))]
+        far = [rep(e, id=e.id + "f", attached_to=(e.attached_to + "f"), name="3650" if e.category == "tractor" else "EDK 650")
+               for e in rig("cultivator", at=(500.0, 500.0))]
+        spreader = rep(rig("sprayer", level=1000.0, at=(30.0, 10.0))[1], id="s-1", attached_to=None)
+        steps, _ = field_steps(tuple(near + far + [spreader]), "fertilize", 7, "farm-a")
+        self.assertEqual(steps[:2], [{"task": "detach_pair", "tractor_name": "series 9 2019"},
+                                     {"task": "hitch_pair", "implement": "sprayer", "tractor_name": "series 9 2019"}])
+        free = rep(far[0], attached_to=None)
+        steps, _ = field_steps(tuple(near + [free, spreader]), "fertilize", 7, "farm-a")
+        self.assertEqual(steps[0], {"task": "hitch_pair", "implement": "sprayer"})     # one is free: nothing unhitched
+
+
 class HarvestTests(unittest.TestCase):
     """"Harvest field 7": a free combine with its header on, GIANTS' helper, the field
     harvested as GIANTS judges a cut crop (getIsCut on the samples)."""

@@ -879,14 +879,15 @@ class Executor:
         log.info("AutoDrive marker for field %d: %s", number, marker)
         return (marker, None) if marker is not None else (None, "MARKER_NOT_OBSERVED")
 
-    def _choose_attached(self, items, farm_id, requester):
-        """detach_pair: the tractor with its implement (of the job's kind, if named)
-        nearest the requester, ties by opaque ID; decided before reservation."""
+    def _choose_attached(self, items, farm_id, requester, tractor_name=None):
+        """detach_pair: the tractor with its implement (of the job's kind, if named; that
+        tractor, if named) nearest the requester, ties by opaque ID; decided before reservation."""
         observed = {item.id: item for item in items}
         pairs = []
         for tractor in items:
             implement = observed.get(tractor.attached_to)
             if (implement is not None and implement.attached_to == tractor.id and self._compatible(tractor, implement)
+                    and named(tractor, tractor_name)
                     and all(usable(x, farm_id) and x.stopped for x in (tractor, implement))):
                 pairs.append((math.dist(implement.position, requester), tractor.id, tractor, implement))
         if not pairs:
@@ -1893,7 +1894,8 @@ class Executor:
                 plan = travel = None
                 aims = ()
             elif detaching or working:
-                pair, failure = self._choose_attached(items, farm_id, requester or target)
+                pair, failure = self._choose_attached(items, farm_id, requester or target,
+                                                      command.get("tractor_name") if detaching else None)
                 plan = travel = None
                 aims = ()
                 if working and pair is not None:
