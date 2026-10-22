@@ -924,6 +924,53 @@ class HaulGoalTests(unittest.TestCase):
         self.assertEqual(haul_step(items, "farm-a", None, target, False)[0]["task"], "move_pair")   # "the tractor"
 
 
+class TransportSelectionTests(unittest.TestCase):
+    """Feasibility before proximity (BUILD_SPEC 11, the user 2026-10-22): a transport already
+    carrying something or whose deck the rig does not fit is not taken; a named one is kept
+    and why it cannot take the load is said. IDs opaque."""
+
+    def two_transports(self, near_cargo=False, near_short=False):
+        from protocol.model import Equipment as E
+        world, tractor, deck, truck = transport_world()
+        yaw = deck.heading
+        fx, fz = math.sin(yaw), math.cos(yaw)
+
+        def at(a, l=0.0, x0=300.0, z0=-120.0):
+            return (x0 + fx * a + fz * l, z0 + fz * a - fx * l)
+        # A second rig nearer the tractor: a 379 towing a lowboy.
+        x0, z0 = tractor.position[0] + 12.0, tractor.position[1]
+        spacing = (-1.5, -0.5, 0.5, 1.5) if near_short else (-4.0, -2.0, 0.0, 2.0)
+        lowboy = E("w-902", "implement", "farm-a", at(0.0, x0=x0, z0=z0), name="LB 56 26", heading=yaw,
+                   kinds=frozenset({"trailer"}), attached_to="k-14", fold=0.0, folding=False, belts_fastened=False,
+                   size=(10.0, 2.6, 1.2, 0.0), belted=("x-1",) if near_cargo else (),
+                   belt_markers=tuple((*at(a, -1.3, x0, z0)[:1], 1.0, at(a, -1.3, x0, z0)[1],
+                                       *at(a, 1.3, x0, z0)[:1], 1.0, at(a, 1.3, x0, z0)[1]) for a in spacing))
+        truck2 = E("k-14", "tractor", "farm-a", at(9.0, x0=x0, z0=z0), name="379 2050hp", heading=yaw,
+                   attached_to="w-902", size=(7.0, 2.5, 3.0, 0.0))
+        items = tuple(world.snapshot()) + (lowboy, truck2)
+        return items, tractor, deck, lowboy
+
+    def step(self, items, **names):
+        from companion.coordinator import haul_step
+        return haul_step(items, "farm-a", "series 9", {"type": "place", "name": "farm"}, False, staged=True, **names)
+
+    def test_the_nearest_transport_is_taken_when_it_can_take_the_load(self):
+        items, tractor, deck, lowboy = self.two_transports()
+        self.assertEqual(self.step(items)[0]["implement_name"], "lb 56 26")
+
+    def test_a_nearer_transport_carrying_something_or_too_short_is_passed_over(self):
+        for case in ({"near_cargo": True}, {"near_short": True}):
+            with self.subTest(**case):
+                items, tractor, deck, lowboy = self.two_transports(**case)
+                self.assertEqual(self.step(items)[0]["implement_name"], "1124 deckover trailer")
+
+    def test_a_named_transport_that_cannot_take_the_load_is_kept_and_explained(self):
+        items, *_ = self.two_transports(near_cargo=True)
+        self.assertEqual(self.step(items, truck_name="379"), (None, "TRANSPORT_LOADED"))
+        items, *_ = self.two_transports(near_short=True)
+        self.assertEqual(self.step(items, transport_name="lb 56"), (None, "TRANSPORT_TOO_SMALL"))
+
+
 class ResumeTests(unittest.TestCase):
     """Pause, takeover, a changed destination and resume keep the goal; nothing completed
     repeats (BUILD_SPEC completion plan requirement 4; ACCEPTANCE C5-C7)."""

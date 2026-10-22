@@ -258,20 +258,37 @@ def haul_step(items: tuple[Equipment, ...], farm_id: str, name: str | None, targ
         return {"task": "load_tractor", "target": "player_at_acceptance", "tractor_name": words,
                 "implement_name": _words(trailer.name)}, None
     hitched = [t for t in transports if observed.get(t.attached_to) is not None]
+    named_one = bool(transport_name or truck_name)
     if transport_name:
         hitched = [t for t in hitched if named(t, transport_name)]
     elif truck_name:
         hitched = [t for t in hitched if named(observed[t.attached_to], truck_name)]
-    hitched.sort(key=lambda t: (math.dist(t.position, tractor.position), t.id))
+    # Feasibility before distance: a transport already carrying something, or whose deck the
+    # rig does not fit (GIANTS' size boxes; unknown sizes rank after known fits), is not taken.
+    implement = observed.get(tractor.attached_to)
+    implement = implement if implement is not None and implement.attached_to == tractor.id else None
+    feasible = [t for t in hitched if not transport.carrying(t, items)
+                and transport.fits(tractor, implement, t) is not False]
+    if hitched and not feasible and named_one:
+        # The one the player named is kept, and why it cannot take the load is said.
+        return None, ("TRANSPORT_LOADED" if all(transport.carrying(t, items) for t in hitched)
+                      else "TRANSPORT_TOO_SMALL")
+    hitched = feasible
+    hitched.sort(key=lambda t: (transport.fits(tractor, implement, t) is None,
+                                math.dist(t.position, tractor.position), t.id))
     which = {"implement_name": _words(hitched[0].name)} if hitched and _words(hitched[0].name) else {}
     if hitched and not staged and destination:
         return {"task": "stage_transport", **destination, **which}, None
     if hitched:
         return {"task": "load_tractor", "target": "player_at_acceptance", "tractor_name": words, **which}, None
-    if transports:
+    free = sorted((t for t in transports if observed.get(t.attached_to) is None and not transport.carrying(t, items)
+                   and transport.fits(tractor, implement, t) is not False),
+                  key=lambda t: (transport.fits(tractor, implement, t) is None,
+                                 math.dist(t.position, tractor.position), t.id))
+    if free:
         return {"task": "hitch_pair", "target": "player_at_acceptance", "implement": "trailer",
-                "implement_name": _words(transports[0].name)}, None
-    return None, "NO_TRANSPORT"
+                "implement_name": _words(free[0].name)}, None
+    return None, "NO_FREE_TRANSPORT" if transports else "NO_TRANSPORT"
 
 
 # ------------------------------------------------------------- field planning

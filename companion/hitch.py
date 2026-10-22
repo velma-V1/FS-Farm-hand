@@ -311,6 +311,37 @@ def is_transport(item: Equipment) -> bool:
             and item.heading is not None and item.belts_fastened is not None)
 
 
+def carrying(trailer: Equipment, items) -> bool:
+    """Something already on the transport: belted to it, or a vehicle (not its own truck)
+    standing on its deck."""
+    if trailer.belted:
+        return True
+    return any(i.id != trailer.id and i.id != trailer.attached_to and i.size is not None and i.heading is not None
+               and on_deck(i, trailer) for i in items)
+
+
+# The mod's LOAD fit (= Hitch.LOAD.frontMarginM, rearMarginM): the tractor inside the belt
+# area, a mounted implement no farther back than the trailer's rear plus this.
+FIT_FRONT_MARGIN_M, FIT_REAR_MARGIN_M = 0.3, 0.25
+
+
+def fits(tractor: Equipment, implement: Equipment | None, trailer: Equipment) -> bool | None:
+    """Whether the tractor (with the implement on its three-point joint) fits the deck as
+    LOAD requires, from GIANTS' size boxes and the belts; None when a size is not observed.
+    Conservative: the implement's whole length is added behind the tractor."""
+    deck, trailer_ends = deck_box(trailer), _ends(trailer)
+    if deck is None or trailer_ends is None or tractor.size is None:
+        return None
+    length = tractor.size[0]
+    if length > deck[1] - deck[0]:
+        return False
+    if implement is None:
+        return True
+    if implement.size is None:
+        return None
+    return length + implement.size[0] <= (deck[1] - FIT_FRONT_MARGIN_M) - (trailer_ends[0] + FIT_REAR_MARGIN_M)
+
+
 def deck_box(trailer: Equipment) -> tuple[float, float, float, float] | None:
     """(aMin, aMax, lMin, lMax) of the deck in the trailer's frame, from its belts."""
     if trailer.heading is None or len(trailer.belt_markers) < 2:
