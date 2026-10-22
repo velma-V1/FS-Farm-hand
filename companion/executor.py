@@ -900,9 +900,18 @@ class Executor:
             enter("TO_FIELD")
             log.info("field %s not reachable for GIANTS' helper from %s: AutoDrive to %s", field.id, now.position,
                      marker)
+            graph = self.world.ad_graph()
+            if graph is not None:
+                # Onto AutoDrive's network where it has the route (live 57e9dbe9633044fd-1: the
+                # waypoint nearest the 3650 was on a branch with none, AD_NO_ROUTE).
+                self._onto_ad_route(now, ids[1], marker, graph, owner, enter)
+                enter("TO_FIELD")
             self.world.deliver(tractor.id, marker.id, owner)      # the pair, by AutoDrive
         except (StepFailed, StepUnverified) as failure:
             log.info("TO_FIELD by AutoDrive: %s", failure.code)
+            return False
+        except ObservationMismatch as error:
+            log.info("TO_FIELD by AutoDrive: %s", error)
             return False
         self._settled_transport(ids)
         return True
@@ -1505,6 +1514,45 @@ class Executor:
             return PlaceTarget(f"field {number}", marker, place), None
         return None, "DESTINATION_NOT_FOUND"
 
+    def _onto_ad_route(self, vehicle, partner_id, marker, graph, owner, enter) -> str:
+        """The reserved rig onto AutoDrive's network where it has a route to ``marker``: ROUTED
+        (already), LINKED (AutoDrive's dead-end lane from here joined to the routed road it stops
+        short of, AutoDrive's own way, after a backup; nothing moved) or STAGED (GIANTS GOTO, which
+        plans for what is towed, onto the nearest waypoint that has the route, facing along it,
+        verified). StepFailed when none of these got it there."""
+        if transport.ad_routed(graph, vehicle.position, marker.position):
+            return "ROUTED"
+        starts = transport.ad_route_starts(graph, vehicle.position, marker.position)
+        # The network's own gap first (the user 2026-10-22: configure the existing AutoDrive
+        # network by its supported mechanisms): nothing moves.
+        enter("AD_LINK")
+        try:
+            linked = self.world.ad_connect(vehicle.id, marker.id, owner)
+            log.info("STAGE: AutoDrive network %s", linked)
+            return "LINKED"
+        except StepFailed as failure:
+            log.info("STAGE: no AutoDrive link to make (%s); GIANTS GOTO to a routed waypoint", failure.code)
+        if not starts:
+            raise StepFailed("AD_NO_ROUTED_WAYPOINT_NEAR")
+        for n, ((x, z), yaw, wp) in enumerate(starts, 1):
+            log.info("STAGE %d: no AutoDrive route from %s to %s; to waypoint %s at (%.1f, %.1f), %.0f m off", n,
+                     vehicle.position, marker.name, wp, x, z, math.dist(vehicle.position, (x, z)))
+            enter("STAGE")
+            try:
+                self._navigate(vehicle.id, Pose(x, z, yaw), owner, partner_id)
+                break
+            except StepFailed as failure:
+                # GIANTS could not plan or drive there (live: its agent planning 96 s, 72 m off):
+                # the next routed waypoint.
+                if n == len(starts) or not failure.code.startswith(("NAVIGATE_", "GOTO_")):
+                    raise
+                log.info("STAGE %d: %s", n, failure.code)
+        enter("VERIFY")
+        after = self._at_rest((vehicle.id, partner_id))
+        if not transport.ad_routed(graph, after[vehicle.id].position, marker.position):
+            raise ObservationMismatch("STAGE_NOT_ROUTED")
+        return "STAGED"
+
     def _stage_transport(self, command, enter, states) -> Result:
         """Before a transport is loaded: AutoDrive will drive the loaded rig from the network
         waypoint nearest it, and from a dead end it cannot (live 2026-10-22: the waypoint nearest
@@ -1551,44 +1599,14 @@ class Executor:
                 return Result("BLOCKED", "AD_MARKER_NOT_ON_NETWORK", ids, tuple(states))
             if routed:
                 return Result("COMPLETE", "ROUTED", ids, tuple(states))
-            starts = transport.ad_route_starts(graph, truck.position, marker.position)
             enter("RESERVE")
             if not self.world.reserve(ids, owner):
                 return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
             reserved = True
             self.active = ids
-            # The network's own gap first (the user 2026-10-22: configure the existing AutoDrive
-            # network by its supported mechanisms): AutoDrive's lane from here ending just short of
-            # a routed road is joined to it, AutoDrive's own way, after a backup; nothing moves.
-            enter("AD_LINK")
-            try:
-                linked = self.world.ad_connect(truck.id, marker.id, owner)
-                log.info("STAGE: AutoDrive network %s", linked)
-                status, reason = "COMPLETE", "LINKED"
-                return Result(status, reason, ids, tuple(states))
-            except StepFailed as failure:
-                log.info("STAGE: no AutoDrive link to make (%s); GIANTS GOTO to a routed waypoint", failure.code)
-            if not starts:
-                raise StepFailed("AD_NO_ROUTED_WAYPOINT_NEAR")
-            for n, ((x, z), yaw, wp) in enumerate(starts, 1):
-                log.info("STAGE %d: no AutoDrive route from %s to %s; to waypoint %s at (%.1f, %.1f), %.0f m off", n,
-                         truck.position, marker.name, wp, x, z, math.dist(truck.position, (x, z)))
-                enter("STAGE")
-                moved = True
-                try:
-                    self._navigate(truck.id, Pose(x, z, yaw), owner, trailer.id)
-                    break
-                except StepFailed as failure:
-                    # GIANTS could not plan or drive there (live: its agent planning 96 s, 72 m off):
-                    # the next routed waypoint.
-                    if n == len(starts) or not failure.code.startswith(("NAVIGATE_", "GOTO_")):
-                        raise
-                    log.info("STAGE %d: %s", n, failure.code)
-            enter("VERIFY")
-            after = self._at_rest(ids)
-            if not transport.ad_routed(graph, after[truck.id].position, marker.position):
-                raise ObservationMismatch("STAGE_NOT_ROUTED")
-            status, reason = "COMPLETE", "STAGED"
+            moved = True                       # GIANTS GOTO may drive (STOP confirms it at rest)
+            reason = self._onto_ad_route(truck, trailer.id, marker, graph, owner, enter)
+            status = "COMPLETE"
         except Cancelled:
             status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
         except ObservationMismatch as error:

@@ -85,10 +85,17 @@ class FieldWorkTests(unittest.TestCase):
                 world = MockWorld(items, PLAYERS, (Destination("m-7", (205.0, 290.0), "Field 7"),),
                                   fields=(field(7, 0.4), field(9, 1.2)), farm=FARM)
                 world.mock_helper_reach_m = 150.0
+                # AutoDrive's network: the waypoint nearest the rig on a branch with no route
+                # (live 57e9dbe9633044fd-1); a routed road 60 m off leads to the field.
+                from companion.hitch import ADGraph
+                world.mock_ad_graph = ADGraph(points={1: (1100.0, 915.0), 2: (1100.0, 960.0),
+                                                      10: (1160.0, 900.0), 11: (205.0, 290.0)},
+                                              out={1: (2,), 2: (), 10: (11,), 11: ()})
                 result = Executor(world).execute(work("fertilize"))
                 if autodrive:
                     self.assertEqual((result.status, result.reason), ("COMPLETE", "FIELD_WORK_OBSERVED"), result)
                     self.assertIn("TO_FIELD", result.states)
+                    self.assertIn("STAGE", result.states)            # GIANTS GOTO onto the routed road first
                 else:
                     self.assertEqual((result.status, result.reason), ("FAILED", "NOT_REACHABLE"), result)
                     self.assertNotIn("TO_FIELD", result.states)
