@@ -401,6 +401,17 @@ class LuaLoadTests(unittest.TestCase):
         self.assertIn("OVERSPEED=", self.hitch.describeSpeed(session))
         self.assertTrue(any("over" in line for line in self.hitch.speedTrace(session, 8).values()))
 
+    def test_it_starts_gently_and_throttles_by_the_margin_left(self):
+        # Live 15fc3a8297604156-1: LOAD from rest at full throttle overshot to 3.05 km/h in 0.5 s.
+        w = self.world()
+        session, why, _ = self.start(w)
+        self.assertIsNotNone(session, why)
+        self.assertEqual(self.drive(w, session)[0], "LOADED")
+        throttles = [d["acc"] for d in self.drives(w) if d["allowed"]]
+        self.assertEqual(throttles[0], 0.3)                         # before the first reading
+        self.assertTrue(all(0 < t <= 1 for t in throttles))
+        self.assertLess(max(throttles[10:]), 1)                     # never full once moving near the command
+
     def test_it_coasts_and_brakes_to_stay_under_the_limit(self):
         # The motor overshoots (10 % over what it is told) and the rig keeps 2.95 km/h while not
         # accelerating: Farmhand coasts above 90 % of the limit and brakes above 97 %; it loads

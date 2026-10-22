@@ -333,7 +333,12 @@ Hitch.SPEED = { windowMs = 250, commandShare = 0.85, coastShare = 0.9, brakeShar
                 -- Downhill in the direction of travel (live c696741383fe4388-1: UNLOAD rolling off
                 -- the ramps' foot backwards went 2.88 -> 3.04 km/h while only coasting): it brakes
                 -- above the commanded speed, and commands downhillShare of the limit there.
-                downhillSine = 0.02, downhillShare = 0.7 }
+                downhillSine = 0.02, downhillShare = 0.7,
+                -- The throttle in proportion to what is left below the command (live
+                -- 15fc...: LOAD from rest at full throttle, steering onto the axis, overshot to
+                -- 3.05 km/h within 0.5 s): throttleGainKmh of margin is full throttle, never under
+                -- throttleMin; before the first reading, startThrottle.
+                throttleGainKmh = 1.0, throttleMin = 0.15, startThrottle = 0.3 }
 
 -- The tractor's measured speed in km/h (3D and horizontal) over the window, or nil before
 -- the window has filled.
@@ -407,7 +412,12 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
     if mode == "brake" then
         env.AIVehicleUtil.driveToPoint(s.tractor, dt, 0, false, forwards, lx, lz, command)
     else
-        env.AIVehicleUtil.driveToPoint(s.tractor, dt, mode == "coast" and 0 or 1, true, forwards, lx, lz, command)
+        local throttle = 0
+        if mode == "drive" then
+            throttle = v == nil and S.startThrottle
+                or math.max(S.throttleMin, math.min(1, (command - v) / S.throttleGainKmh))
+        end
+        env.AIVehicleUtil.driveToPoint(s.tractor, dt, throttle, true, forwards, lx, lz, command)
     end
     return nil
 end

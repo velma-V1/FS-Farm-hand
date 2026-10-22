@@ -290,7 +290,7 @@ class LuaHitchTests(unittest.TestCase):
         driving = [d for d in drives if d["allowed"]]
         self.assertTrue(driving)
         # Always reverse, never above the session speed, steering left to GIANTS.
-        self.assertTrue(all(not d["forwards"] and d["maxSpeed"] == COMMAND_KMH and d["acc"] == 1 for d in driving))
+        self.assertTrue(all(not d["forwards"] and d["maxSpeed"] == COMMAND_KMH and 0 < d["acc"] <= 1 for d in driving))   # throttle by the margin left
         self.assertEqual(drives[-1], {"dt": 100, "acc": 0, "allowed": False, "forwards": False,
                                       "lx": 0, "lz": 1, "maxSpeed": 3, "active": True})
         # Active while it drove (GIANTS steers only active vehicles), released by the brake.

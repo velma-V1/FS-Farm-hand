@@ -207,7 +207,7 @@ function W.new(o)
     -- moves with it. w.drift: metres sideways per call; w.stuck: no motion.
     env.AIVehicleUtil = {}
     function env.AIVehicleUtil.driveToPoint(v, dt, acc, allowed, forwards, lx, lz, maxSpeed)
-        table.insert(w.drives, { allowed = allowed, forwards = forwards, lx = lx, lz = lz, maxSpeed = maxSpeed })
+        table.insert(w.drives, { allowed = allowed, forwards = forwards, lx = lx, lz = lz, maxSpeed = maxSpeed, acc = acc })
         table.insert(w.events, allowed and (acc > 0 and "drive" or "coast") or "brake")
         -- w.speedFactor: the vehicle runs faster than commanded (as GIANTS' motor did on the
         -- ramps, live 5f19b1c28f614266-1); w.coastKmh: what it keeps while not accelerating
