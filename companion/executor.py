@@ -1713,7 +1713,10 @@ class Executor:
         refuses it, straight on; waiting right behind the ramps not lined up, BACKOFF once).
         LOAD itself re-checks the window."""
         self._backed_off = False
-        if not transport.can_run_in(tractor, trailer) and transport.close_behind(tractor, trailer):
+        if transport.can_run_in(tractor, trailer):
+            log.info("APPROACH: LOAD can start where it stands")
+            return
+        if transport.close_behind(tractor, trailer):
             # Right behind the ramps, outside the run-in: straight back first (live
             # 6601d036cf7b4334-1-h2: GIANTS did not start it at the ramps' foot and UNPARK, taking
             # something static over it for a roof, drove it 1 m on towards them).
@@ -1753,7 +1756,7 @@ class Executor:
             a, l = transport.to_frame(trailer, tractor.position)
             log.info("APPROACH end: ai_root %s, along %.2f lateral %.2f heading %.1f deg off the trailer",
                      tractor.ai_root, a, l, math.degrees(_angle(tractor.heading or 0.0, trailer.heading)))
-            if transport.lined_up(tractor, trailer, share=0.9):
+            if transport.lined_up(tractor, trailer, share=0.9) or transport.can_run_in(tractor, trailer):
                 return
         raise StepFailed("LOAD_APPROACH_FAILED")
 

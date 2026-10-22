@@ -295,7 +295,8 @@ class TractorTransportTests(unittest.TestCase):
         self.assertFalse(transport.can_run_in(standing(foot - 16.0, -1.5, turned), deck))
         self.assertTrue(transport.can_run_in(standing(foot - 4.1, 0.1, 0.0), deck))      # straight: any distance
         self.assertTrue(transport.can_run_in(standing(foot, 0.0, 0.002), deck))          # where UNLOAD leaves it
-        self.assertFalse(transport.can_run_in(standing(foot + RAMP_ON_M, 0.0, 0.0), deck))  # on the ramps
+        self.assertTrue(transport.can_run_in(standing(foot + RAMP_ON_M, 0.0, 0.0), deck))   # up the ramps, straight
+        self.assertFalse(transport.can_run_in(standing(2.9, 0.0, 0.0), deck))              # on the deck
 
     def test_a_turned_tractor_right_behind_the_ramps_backs_off_before_any_goto(self):
         # Live 6601d036cf7b4334-1-h2: left at the ramps' foot, GIANTS did not start it and UNPARK
@@ -322,6 +323,29 @@ class TractorTransportTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
         self.assertEqual(calls[0], "backoff")
         self.assertNotIn("unpark", calls)
+
+    def test_a_tractor_lined_up_behind_or_up_the_ramps_loads_without_any_goto(self):
+        # Live 51899b1bbe434794-1: a STOP left the Series 9 straight with its front over the
+        # trailer's rear; the approach still sent GIANTS GOTO, BACKOFF and UNPARK, and failed.
+        for ahead in (-16.0, -9.5):
+            with self.subTest(ahead=ahead):
+                calls = []
+
+                class Recording(MockWorld):
+                    def navigate(self, tractor_id, pose, owner):
+                        calls.append("navigate")
+                        super().navigate(tractor_id, pose, owner)
+
+                    def backoff(self, tractor_id, trailer_id, owner):
+                        calls.append("backoff")
+                        return super().backoff(tractor_id, trailer_id, owner)
+
+                world, tractor, deck, _ = transport_world(cls=Recording, tractor_ahead=ahead, tractor_side=0.0)
+                world.items[tractor.id] = replace(world.items[tractor.id], heading=deck.heading,
+                                                  ai_root=Pose(*tractor.position, deck.heading))
+                result = Executor(world).execute(load())
+                self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+                self.assertEqual(calls, [])
 
     def test_a_load_stopped_not_lined_up_backs_off_only_once_at_rest(self):
         # Live 95b84283873043d7-1: BACKOFF sent 16 ms after LOAD braked from 2.69 km/h was refused

@@ -360,10 +360,15 @@ def can_run_in(tractor: Equipment, trailer: Equipment) -> bool:
     front, foot = a + tractor_ends[1], trailer_ends[0] - RAMP_M
     turn = _angle(tractor.heading, trailer.heading)
     straight = abs(l) <= LATERAL_START_M - 0.1 and turn <= HEADING_START_RAD - math.radians(1.0)
-    # Straight, LOAD starts from anywhere behind the rear (live after 7209dc3bcab34075-1: UNLOAD
-    # left the Series 9 lined up 0.00 m / 0.1 deg with its front at the ramps' foot).
-    nearest = trailer_ends[0] - 0.25 if straight else foot - MIN_RUN_IN_M - 0.5
-    return (foot - RUN_IN_M + 0.5 <= front <= nearest and abs(l) <= LATERAL_RUN_IN_M - 0.3
+    if straight:
+        # Lined up, LOAD starts from anywhere short of the deck, the ramps included, as the mod
+        # does (live after 7209dc3bcab34075-1: UNLOAD left the Series 9 lined up at the ramps'
+        # foot; 902c1b52e05742ec-1: a STOP left it straight with its front over the trailer's rear).
+        deck = deck_box(trailer)
+        rear = a + tractor_ends[0]
+        return foot - RUN_IN_M + 0.5 <= front and (deck is None and front <= trailer_ends[0] - 0.25
+                                                  or deck is not None and rear < deck[0] - 0.25)
+    return (foot - RUN_IN_M + 0.5 <= front <= foot - MIN_RUN_IN_M - 0.5 and abs(l) <= LATERAL_RUN_IN_M - 0.3
             and turn <= HEADING_RUN_IN_RAD - math.radians(2.0))
 
 
