@@ -454,3 +454,35 @@ class LuaProbeTests(unittest.TestCase):
 
 class Lua51ProbeTests(LuaProbeTests):
     runtime = lua51
+
+
+class ObserveTravelTests(unittest.TestCase):
+    """A vehicle's observed speed is its root's travel between snapshots (live
+    902c1b52e05742ec-2: a Series 9 standing on the ramps read MOVING on GIANTS' reading)."""
+    runtime = lua54
+
+    def setUp(self):
+        self.lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
+        self.observe = self.lua.execute((ROOT / "mod" / "FarmhandObserve.lua").read_text())
+        self.env = self.lua.eval("""function()
+            local p = { x = 10, y = 2, z = 5 }
+            return { getWorldTranslation = function(n) return p.x, p.y, p.z end, p = p }
+        end""")()
+        self.v = self.lua.table_from({"rootNode": "root"})
+
+    def sample(self, dt):
+        self.observe.clockMs = self.observe.clockMs + dt
+        return self.observe.travelKmh(self.env, self.v)
+
+    def test_standing_still_is_zero_whatever_giants_reads_and_travel_is_measured(self):
+        self.assertIsNone(self.sample(0))                    # no earlier sample
+        self.assertEqual(self.sample(1000), 0.0)             # unmoved over 1 s
+        self.env.p.x = self.env.p.x + 1.0
+        self.assertIsNone(self.sample(100))                  # too short: the older sample kept
+        self.assertAlmostEqual(self.sample(900), 3.6)        # 1 m in 1 s
+        self.assertIsNone(self.sample(6000))                 # too long a gap to judge
+        self.assertEqual(self.sample(500), 0.0)
+
+
+class Lua51ObserveTravelTests(ObserveTravelTests):
+    runtime = lua51

@@ -10,8 +10,10 @@ from protocol.model import (Contract, Destination, Equipment, FarmInfo, Field, F
                             Pose, Position)
 
 # AutoDrive treats ``lastSpeedReal * 3600 < 1`` (km/h) as not moving
-# (scripts/Modules/TrailerModule.lua:502); getLastSpeed() reports km/h. Whether
-# this is a safe "stopped" threshold for our delivery check is UNVERIFIED.
+# (scripts/Modules/TrailerModule.lua:502). ``speed_kmh`` is the root's travel between
+# snapshots (mod/FarmhandObserve.lua Observe.travelKmh), GIANTS' getLastSpeed only before
+# a first interval: that reading jitters about 1 km/h (live c8668155205849e2-1) and kept a
+# Series 9 standing on the ramps MOVING (902c1b52e05742ec-2).
 STOPPED_BELOW_KMH = 1.0
 # Never equal to a real ID: IDs are stringified non-negative integers.
 MULTIPLE_ATTACHMENTS = "*multiple*"

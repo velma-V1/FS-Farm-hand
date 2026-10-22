@@ -415,6 +415,31 @@ end
 
 -- Returns one vehicle record, or nil when identity or position cannot be
 -- observed (the vehicle is then counted as skipped).
+-- Each vehicle's root at the previous snapshot (weak keys: a sold vehicle is forgotten) and
+-- the snapshot clock (the dt Observe.snapshot is given, summed).
+Observe.roots = setmetatable({}, { __mode = "k" })
+Observe.clockMs = 0
+Observe.TRAVEL_MIN_MS, Observe.TRAVEL_MAX_MS = 200, 5000
+
+-- km/h over the interval since this vehicle's previous snapshot (3D root travel), or nil
+-- when there is none yet, it is shorter than TRAVEL_MIN_MS or longer than TRAVEL_MAX_MS.
+function Observe.travelKmh(env, v)
+    local x, y, z = env.getWorldTranslation(v.rootNode)
+    if not (finite(x) and finite(y) and finite(z)) then return nil end
+    local now, last = Observe.clockMs, Observe.roots[v]
+    local kmh = nil
+    if last ~= nil then
+        local span = now - last.t
+        if span >= Observe.TRAVEL_MIN_MS and span <= Observe.TRAVEL_MAX_MS then
+            kmh = math.sqrt((x - last.x) ^ 2 + (y - last.y) ^ 2 + (z - last.z) ^ 2) / span * 3600
+        elseif span < Observe.TRAVEL_MIN_MS then
+            return nil                  -- keep the older sample for a long enough interval
+        end
+    end
+    Observe.roots[v] = { x = x, y = y, z = z, t = now }
+    return kmh
+end
+
 function Observe.vehicle(env, v)
     local id = try(function() return env.NetworkUtil.getObjectId(v) end)
     local farmId = try(function() return v.ownerFarmId end)
@@ -443,6 +468,11 @@ function Observe.vehicle(env, v)
 
     local speed = try(function() return v:getLastSpeed() end)
     if not finite(speed) or math.abs(speed) > 1000 then speed = nil end
+    -- The root's travel since the previous snapshot decides, GIANTS' per-frame reading only
+    -- before there is one (live 902c1b52e05742ec-2: a Series 9 standing still on the ramps,
+    -- unmoved 0.1 m in 7 min, read MOVING; GIANTS' reading jitters about 1 km/h).
+    local travelled = Observe.travelKmh(env, v)
+    if travelled ~= nil then speed = travelled end
 
     -- AutoDrive's single-player occupancy rule (AutoDriveUtilFuncs.lua:770-786):
     -- entered or controlled; a missing getIsEntered means not entered, and a
@@ -1157,6 +1187,7 @@ function Observe.snapshot(env, seq, session, dt)
     local farmId = try(function() return env.g_currentMission:getFarmId() end)
     if not integer(farmId) or farmId < 1 or farmId > 255 then return nil, "NO_FARM" end
     pcall(Observe.tickFields, env, farmId, dt or 0)
+    if finite(dt) and dt > 0 then Observe.clockMs = Observe.clockMs + dt end
     local vehicles = try(function() return env.g_currentMission.vehicleSystem.vehicles end)
         or try(function() return env.g_currentMission.vehicles end)
     if type(vehicles) ~= "table" then return nil, "NO_VEHICLES" end
