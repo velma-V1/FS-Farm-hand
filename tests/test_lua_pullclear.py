@@ -82,7 +82,7 @@ class LuaPullClearTests(unittest.TestCase):
         code, _ = self.pull(w, session)
         self.assertEqual(code, "CLEAR")
         moving = [d for d in self.drives(w) if d["allowed"]]
-        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == COMMAND_KMH for d in moving))
+        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] <= COMMAND_KMH + 1e-9 for d in moving))
         travelled = math.dist((w.steer.x, w.steer.z), (x0, z0))
         self.assertLess(travelled, 4.7)                       # stops as soon as it is clear
         self.assertGreaterEqual(self.separation(w), 4.5)

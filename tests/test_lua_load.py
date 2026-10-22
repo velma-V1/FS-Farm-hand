@@ -172,7 +172,7 @@ class LuaLoadTests(unittest.TestCase):
         self.assertLess(along, 8.3)
         self.assertAlmostEqual(lateral, 0.0, places=6)
         moving = self.moving(w)
-        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == COMMAND_KMH for d in moving))
+        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] <= COMMAND_KMH + 1e-9 for d in moving))
         self.assert_ended_braked_and_restored(w)
         self.assertEqual(self.hitch.loadStep(w.env, session, 50), "LOADED")         # latched: brakes only
         self.assertFalse(self.drives(w)[-1]["allowed"])
@@ -189,7 +189,7 @@ class LuaLoadTests(unittest.TestCase):
         code, _ = self.drive(w, session)
         self.assertEqual(code, "NOT_LINED_UP_AT_RAMPS", self.hitch.describeLoad(session))
         moving = self.moving(w)
-        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == COMMAND_KMH and d["lx"] >= 0 for d in moving)
+        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] <= COMMAND_KMH + 1e-9 and d["lx"] >= 0 for d in moving)
                         and moving[0]["lx"] == 0 and moving[-1]["lx"] > 0)   # the axis to its +x, the steering eased in
         self.assert_ended_braked_and_restored(w)
         # On the axis, from as far back: it runs in and loads.
@@ -409,14 +409,15 @@ class LuaLoadTests(unittest.TestCase):
         self.assertIsNotNone(session, why)
         self.assertEqual(self.drive(w, session)[0], "LOADED")
         throttles = [d["acc"] for d in self.drives(w) if d["allowed"]]
-        self.assertEqual(throttles[0], 0.3)                         # before the first reading
+        self.assertEqual(throttles[0], self.hitch.SPEED.startThrottle)    # before the first reading
         self.assertTrue(all(0 < t <= 1 for t in throttles))
         self.assertLess(max(throttles[10:]), 1)                     # never full once moving near the command
 
     def test_the_throttle_ceiling_eases_in_from_the_start(self):
         # Live b1d3f6cdc2ca44e3-1: 3.00 km/h (GIANTS 4.25) 0.47 s after starting at a third of the
-        # throttle. However slow it reads, the throttle stays under a ceiling rising from 0.3 to
-        # full over the first 1.5 s.
+        # throttle (and GIANTS 3.24 after 0.15 s, live 3389dfbd1b564660-3). However slow it reads,
+        # the throttle stays under a ceiling rising to full over the first 1.5 s, and the motor's
+        # target rises from 1.5 km/h to the command over the same time.
         w = self.world()
         w.stuck = True
         session, why, _ = self.start(w)
@@ -429,6 +430,10 @@ class LuaLoadTests(unittest.TestCase):
         for k, t in enumerate(throttles):
             self.assertLessEqual(t, min(1, S.startThrottle + (1 - S.startThrottle) * k * 50 / S.throttleRampMs) + 1e-9)
         self.assertLess(throttles[5], 0.6)
+        targets = [d["maxSpeed"] for d in self.drives(w) if d["allowed"]]
+        self.assertAlmostEqual(targets[0], S.softStartKmh)
+        self.assertEqual(targets, sorted(targets))
+        self.assertAlmostEqual(targets[-1], COMMAND_KMH)
 
     def test_giants_reading_decides_when_it_is_the_higher(self):
         # The window's average lags an acceleration GIANTS' own reading already shows (live
@@ -584,7 +589,7 @@ class LuaBackOffTests(unittest.TestCase):
         self.assertGreater(along, -8.3)
         self.assertAlmostEqual(lateral, 0.0, places=6)
         moving = self.moving(w)
-        self.assertTrue(moving and all(not d["forwards"] and d["maxSpeed"] == COMMAND_KMH for d in moving))
+        self.assertTrue(moving and all(not d["forwards"] and d["maxSpeed"] <= COMMAND_KMH + 1e-9 for d in moving))
         self.assert_ended_braked_and_restored(w)
 
     def test_refused_unmoved_unless_at_the_transport_and_clear_behind(self):

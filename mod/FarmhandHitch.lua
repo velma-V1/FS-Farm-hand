@@ -338,11 +338,14 @@ Hitch.SPEED = { windowMs = 250, commandShare = 0.85, coastShare = 0.9, brakeShar
                 -- 15fc...: LOAD from rest at full throttle, steering onto the axis, overshot to
                 -- 3.05 km/h within 0.5 s): throttleGainKmh of margin is full throttle, never under
                 -- throttleMin; before the first reading, startThrottle.
-                throttleGainKmh = 1.0, throttleMin = 0.15, startThrottle = 0.3,
+                throttleGainKmh = 1.0, throttleMin = 0.15, startThrottle = 0.15,
                 -- The throttle's ceiling eased in from startThrottle to full over throttleRampMs,
                 -- and every decision on the higher of the two readings (live b1d3f6cdc2ca44e3-1:
                 -- at 0.47 s GIANTS read 4.25 km/h while the 0.25 s average still read 3.00).
-                throttleRampMs = 1500,
+                -- and the motor's target (driveToPoint's maxSpeed) eased in from softStartKmh to the
+                -- command over the same time (live 3389dfbd1b564660-3: from rest at 0.3 throttle
+                -- GIANTS read 2.53 km/h after 0.13 s and 3.24 after 0.15 s, OVERSPEED).
+                throttleRampMs = 1500, softStartKmh = 1.5,
                 -- The steering target eased in over steerRampMs from straight ahead (live
                 -- b1d3f6cdc2ca44e3-1: LOAD's run-in from 2 m off and 17 deg turned moved 0.21 m in
                 -- the first 0.25 s, 3.00 km/h, GIANTS 4.25, at a third of the throttle), and the
@@ -425,16 +428,18 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
         s.overKmh = vc
         return "OVERSPEED"
     end
+    local ease = math.min(1, driven / S.throttleRampMs)
+    local target = math.min(command, S.softStartKmh + (command - S.softStartKmh) * ease)
     if mode == "brake" then
-        env.AIVehicleUtil.driveToPoint(s.tractor, dt, 0, false, forwards, lx, lz, command)
+        env.AIVehicleUtil.driveToPoint(s.tractor, dt, 0, false, forwards, lx, lz, target)
     else
         local throttle = 0
         if mode == "drive" then
-            local ceiling = math.min(1, S.startThrottle + (1 - S.startThrottle) * driven / S.throttleRampMs)
+            local ceiling = S.startThrottle + (1 - S.startThrottle) * ease
             throttle = vc == nil and S.startThrottle
-                or math.max(S.throttleMin, math.min(ceiling, (command - vc) / S.throttleGainKmh))
+                or math.max(S.throttleMin, math.min(ceiling, (target - vc) / S.throttleGainKmh))
         end
-        env.AIVehicleUtil.driveToPoint(s.tractor, dt, throttle, true, forwards, lx, lz, command)
+        env.AIVehicleUtil.driveToPoint(s.tractor, dt, throttle, true, forwards, lx, lz, target)
     end
     return nil
 end

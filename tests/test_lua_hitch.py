@@ -290,7 +290,7 @@ class LuaHitchTests(unittest.TestCase):
         driving = [d for d in drives if d["allowed"]]
         self.assertTrue(driving)
         # Always reverse, never above the session speed, steering left to GIANTS.
-        self.assertTrue(all(not d["forwards"] and d["maxSpeed"] == COMMAND_KMH and 0 < d["acc"] <= 1 for d in driving))   # throttle by the margin left
+        self.assertTrue(all(not d["forwards"] and d["maxSpeed"] <= COMMAND_KMH + 1e-9 and 0 < d["acc"] <= 1 for d in driving))   # throttle by the margin left
         self.assertEqual(drives[-1], {"dt": 100, "acc": 0, "allowed": False, "forwards": False,
                                       "lx": 0, "lz": 1, "maxSpeed": 3, "active": True})
         # Active while it drove (GIANTS steers only active vehicles), released by the brake.
@@ -525,7 +525,8 @@ class LuaHitchTests(unittest.TestCase):
             w = self.world()
             session, _ = self.align(w, maxSpeedKmh=speed)
             self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CONTINUE")
-            self.assertEqual(self.drives(w)[-1]["maxSpeed"], max(speed * 0.85, min(speed, 1)))   # under the limit
+            self.assertEqual(self.hitch.commandKmh(speed), max(speed * 0.85, min(speed, 1)))   # under the limit
+            self.assertLessEqual(self.drives(w)[-1]["maxSpeed"], self.hitch.commandKmh(speed))   # eased in from 1.5
 
     def test_over_the_limit_the_reverse_stops_braked(self):
         w = self.world(gap=6)

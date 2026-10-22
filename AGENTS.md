@@ -159,8 +159,8 @@ have precedence; report conflicts instead of silently changing the scope.
   argument, default 3); driveToPoint's maxSpeed is only GIANTS' motor target, so Farmhand
   measures the speed itself (the root's travel over the last 0.25 s) and governs it on the
   higher of that and GIANTS' own per-frame reading: it commands 85 % of the limit (never under
-  1 km/h), throttles in proportion to the margin left under a ceiling eased in from 0.3 to full
-  over 1.5 s, takes the throttle off above 90 %, brakes a frame above 97 % (downhill above the
+  1 km/h), eases the motor's target in from 1.5 km/h to that over the first 1.5 s and throttles
+  in proportion to the margin left under a ceiling eased in from 0.15 to full over that time, takes the throttle off above 90 %, brakes a frame above 97 % (downhill above the
   command), and above the limit ends the motion braked (OVERSPEED, latched, never retried by
   itself); both readings are logged with a speed trace (every 0.1 s for 2 s, then 0.5 s). The limit is
   never raised to make a run pass, and a run that went over it is not qualified.

@@ -105,7 +105,7 @@ class LuaAlongsideTests(unittest.TestCase):
         self.assertLess(along, 12.2)
         self.assertAlmostEqual(lateral, 0.0, places=6)
         moving = [d for d in self.drives(w) if d["allowed"]]
-        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == COMMAND_KMH for d in moving))
+        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] <= COMMAND_KMH + 1e-9 for d in moving))
         self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
         self.assertNotEqual(w.tractor.forceIsActive, True)
         self.assertEqual(self.hitch.alongsideStep(w.env, session, 50), "UNDER_PIPE")    # latched: brakes only

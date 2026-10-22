@@ -655,7 +655,7 @@ class LuaManeuverTests(unittest.TestCase):
         w = self.world(**CASE_A)
         session, _ = self.start(w, maxSpeedKmh=4)
         self.run_to_end(w, session, steps=50)
-        self.assertTrue(all(d["maxSpeed"] == 4 * 0.85 for d in self.drives(w) if d["allowed"]))   # under the 4 km/h limit
+        self.assertTrue(all(d["maxSpeed"] <= 4 * 0.85 + 1e-9 for d in self.drives(w) if d["allowed"]))   # under the 4 km/h limit (eased in from 1.5)
 
     # ------------------------------------------------- review regressions
     def test_a_start_just_beside_the_wagon_may_still_drive_away(self):

@@ -328,7 +328,7 @@ class LuaUnparkTests(unittest.TestCase):
         session, code, along, lateral = self.extract(w)
         self.assertEqual(code, "CLEAR", self.hitch.describeUnpark(session))
         moving = self.moving(w)
-        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == COMMAND_KMH for d in moving))
+        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] <= COMMAND_KMH + 1e-9 for d in moving))
         # The tractor's rear (2.6 m behind its node) out from under the roof (6 m): 8.6 m,
         # planned in 0.5 m slabs; never farther than that exit.
         self.assertAlmostEqual(session.exitM, 9.0)
