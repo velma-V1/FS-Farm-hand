@@ -598,6 +598,19 @@ function Observe.vehicle(env, v)
         end
         return out
     end)
+    -- A combine's pipe (GIANTS Pipe: getCurrentPipeState 763-765, 1 folded; out when the state
+    -- is one of spec.unloadingStates) and where it discharges (getCurrentDischargeNode, as
+    -- AIDriveStrategyCombine:getDriveData 105-108): the point a trailer stands under.
+    local pipe = try(function()
+        local spec = v.spec_pipe
+        if spec == nil or type(spec.unloadingStates) ~= "table" then return nil end
+        local state = v:getCurrentPipeState()
+        local node = v:getCurrentDischargeNode()
+        assert(integer(state) and node ~= nil and node.node ~= nil)
+        local px, _, pz = env.getWorldTranslation(node.node)
+        assert(finite(px) and finite(pz))
+        return { out = spec.unloadingStates[state] ~= nil, x = px, z = pz }
+    end)
     local beltedTo = try(function()
         if v.tensionMountObject == nil then return nil end
         local mountId = env.NetworkUtil.getObjectId(v.tensionMountObject)
@@ -618,6 +631,7 @@ function Observe.vehicle(env, v)
         name = nullable(text(storeName)),
         brand = nullable(text(brand)),
         seeds = nullable(seeds),
+        pipe = nullable(pipe),
         x = x,
         z = z,
         speed_kmh = nullable(speed),

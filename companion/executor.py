@@ -1256,6 +1256,135 @@ class Executor:
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, ids, tuple(states))
 
+    # Not grain: what a vehicle burns or breathes (GIANTS' propellant and air fill units).
+    NOT_CARGO = frozenset({"DIESEL", "DEF", "AIR", "ELECTRICCHARGE", "METHANE", "UNKNOWN"})
+    # Where the trailer's middle goes, along the combine from right under its pipe.
+    OVERLOAD_SHIFTS_M = (0.0, 1.5, -1.5)
+
+    def _grain(self, vehicle):
+        return sum(u.level or 0.0 for u in vehicle.fill_units
+                   if (u.level or 0.0) > 0 and (u.fill_type or "UNKNOWN") not in self.NOT_CARGO)
+
+    def _overload(self, command, enter, states) -> Result:
+        """A standing combine emptied into a trailer under its pipe, as a player does it (the
+        user 2026-10-21: the combine full, its helper would not work on, and AutoDrive's
+        unloader serves only a combine whose helper runs). FIND the combine with the most
+        grain and the nearest tractor with a trailer that takes it -> RESERVE both ->
+        PIPE_OUT -> APPROACH (GIANTS GOTO: the trailer's middle under the pipe, alongside the
+        combine) -> OVERLOAD (GIANTS' own discharge) -> PIPE_IN -> VERIFY (the grain moved
+        into the trailer) -> STOP -> RELEASE."""
+        owner, farm_id = command["request_id"], command["farm_id"]
+        combine_owner = f"{owner}-c"
+        rig_ids, combine_ids, reserved, moved, piped = (), (), [], False, False
+        status, reason = "BLOCKED", "NO_FULL_COMBINE"
+        try:
+            enter("FIND")
+            items = sorted(self.world.snapshot(), key=lambda i: i.id)
+            observed = {i.id: i for i in items}
+            combines = [c for c in items if c.category == "harvester" and c.pipe is not None and self._grain(c) > 0
+                        and usable(c, farm_id) and c.stopped and named(c, command.get("tractor_name"))]
+            if not combines:
+                return Result("BLOCKED", reason, states=tuple(states))
+            combine = max(combines, key=lambda c: (self._grain(c), c.id))
+            grain = next(u.fill_type for u in combine.fill_units
+                         if (u.level or 0.0) > 0 and (u.fill_type or "UNKNOWN") not in self.NOT_CARGO)
+            rigs = []
+            for tractor in items:
+                trailer = observed.get(tractor.attached_to)
+                if not (tractor.category == "tractor" and trailer is not None and trailer.attached_to == tractor.id
+                        and "trailer" in trailer.kinds and trailer.fill_units and trailer.size is not None
+                        and trailer.heading is not None and tractor.ai_root is not None and tractor.heading is not None
+                        and all(usable(x, farm_id) and x.stopped for x in (tractor, trailer))):
+                    continue
+                room = sum((u.capacity or 0.0) - (u.level or 0.0) for u in trailer.fill_units
+                           if grain in u.supported and (not u.level or u.fill_type == grain))
+                if room > 0:
+                    rigs.append((math.dist(tractor.position, combine.position), tractor.id, tractor, trailer))
+            if not rigs:
+                return Result("BLOCKED", "NO_TRAILER_FOR_THE_GRAIN", (combine.id,), tuple(states))
+            _, _, tractor, trailer = min(rigs, key=lambda r: (r[0], r[1]))
+            rig_ids = (tractor.id, trailer.id)
+            combine_ids = (combine.id, combine.attached_to) if combine.attached_to else ()
+            enter("RESERVE")
+            if not combine_ids or not self.world.reserve(combine_ids, combine_owner):
+                return Result("BLOCKED", "RESERVATION_CONFLICT", (combine.id,), tuple(states))
+            reserved.append(combine_owner)
+            if not self.world.reserve(rig_ids, owner):
+                return Result("BLOCKED", "RESERVATION_CONFLICT", rig_ids, tuple(states))
+            reserved.append(owner)
+            self.active = rig_ids
+            before = (self._grain(combine), sum(u.level or 0.0 for u in trailer.fill_units))
+            enter("PIPE_OUT")
+            self.world.pipe(combine.id, True, combine_owner)
+            piped = True
+            combine = next(i for i in self.world.snapshot() if i.id == combine.id)
+            if not (combine.pipe and combine.pipe[0]):
+                raise ObservationMismatch("PIPE_NOT_OBSERVED")
+            # The trailer's middle (its size box centre) relative to the tractor's AI root, along the tractor.
+            tx, tz = math.sin(tractor.heading), math.cos(tractor.heading)
+            fx, fz = math.sin(trailer.heading), math.cos(trailer.heading)
+            middle = (trailer.position[0] + fx * trailer.size[3], trailer.position[1] + fz * trailer.size[3])
+            behind = (middle[0] - tractor.ai_root.x) * tx + (middle[1] - tractor.ai_root.z) * tz
+            cx, cz = math.sin(combine.heading or 0.0), math.cos(combine.heading or 0.0)
+            done = None
+            for shift in self.OVERLOAD_SHIFTS_M:
+                ahead = shift - behind
+                aim = Pose(combine.pipe[1] + cx * ahead, combine.pipe[2] + cz * ahead, combine.heading or 0.0)
+                enter("APPROACH")
+                moved = True
+                try:
+                    self._navigate(tractor.id, aim, owner, free=False)
+                    self._settled_transport(rig_ids)
+                    enter("OVERLOAD")
+                    done = self.world.overload(combine.id, trailer.id, combine_owner)
+                    break
+                except StepFailed as failure:
+                    log.info("OVERLOAD aim %s (shift %.1f m): %s", aim, shift, failure.code)
+                    if failure.code not in ("NOT_OVERLOADING", "NAVIGATE_STALLED", "NAVIGATE_GOTO_INVALID",
+                                            "NAVIGATE_NOT_REACHABLE"):
+                        raise
+            if done is None:
+                raise StepFailed("NOT_UNDER_THE_PIPE")
+            enter("PIPE_IN")
+            self.world.pipe(combine.id, False, combine_owner)
+            piped = False
+            enter("VERIFY")
+            after = self._at_rest(rig_ids + (combine.id,))
+            now = (self._grain(after[combine.id]), sum(u.level or 0.0 for u in after[trailer.id].fill_units))
+            log.info("OVERLOAD %s: combine %.0f -> %.0f l, trailer %.0f -> %.0f l", done, before[0], now[0],
+                     before[1], now[1])
+            if not (now[0] < before[0] and now[1] > before[1]):
+                raise ObservationMismatch("GRAIN_NOT_MOVED")
+            status, reason = "COMPLETE", "COMBINE_UNLOADED"
+        except Cancelled:
+            status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
+        except ObservationMismatch as error:
+            status, reason = "UNVERIFIED", str(error)
+        except StepUnverified as error:
+            status, reason = "UNVERIFIED", error.code
+        except StepFailed as error:
+            status, reason = "FAILED", error.code
+        except (RuntimeError, ValueError, KeyError) as error:
+            status, reason = "FAILED", getattr(error, "code", None) or type(error).__name__
+        finally:
+            try:
+                if piped:
+                    self.world.pipe(combine_ids[0], False, combine_owner)
+                if moved:
+                    enter("STOP")
+                    if not self.world.stop(rig_ids[0], owner):
+                        raise ObservationMismatch("STOP_NOT_CONFIRMED")
+                if reserved:
+                    enter("RELEASE")
+                    for who in reserved:
+                        self.world.release(who)
+            except Exception as error:
+                log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
+                status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        self.active = ()
+        log.info("result %s %s states %s", status, reason, ",".join(states))
+        return Result(status, reason, rig_ids + combine_ids[:1], tuple(states))
+
     def _transport_pair(self, ids):
         observed = {i.id: i for i in self.world.snapshot()}
         if any(i not in observed for i in ids):
@@ -1547,6 +1676,8 @@ class Executor:
             return self._follow(command, enter, states)
         if command["task"] in ("unload_harvester", "sell"):
             return self._autodrive_rig(command, enter, states)
+        if command["task"] == "overload":
+            return self._overload(command, enter, states)
         if command["task"] == "save_game":
             try:
                 enter("SAVE")

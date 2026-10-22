@@ -1778,6 +1778,78 @@ class AutoDriveSellTests(unittest.TestCase):
         self.assertEqual(len(self.env.started), 0)
 
 
+class PipeOverloadTests(unittest.TestCase):
+    """pipe / overload: a standing combine emptied into the trailer under its pipe the way
+    GIANTS does it (Pipe:setPipeState to an unloading state; automaticDischarge while
+    powered: Motorized:startMotor). Stubs in GDN's shapes only."""
+
+    ENV = r"""
+        local env = { MotorState = { OFF = 0, STARTING = 1, ON = 2 }, NetworkUtil = { getObjectId = function() return 7 end } }
+        local c = { ownerFarmId = 1, speed = 0, motor = 0, level = 9000, cap = 9000, activeRaised = 0 }
+        c.spec_pipe = { currentState = 1, targetState = 1, unloadingStates = { [2] = true } }
+        function c:getLastSpeed() return self.speed end
+        function c:getIsAIActive() return false end
+        function c:getIsPipeStateChangeAllowed(s) return true end
+        function c:setPipeState(s) self.spec_pipe.targetState = s end
+        function c:getCurrentPipeState() return self.spec_pipe.currentState end
+        function c:getMotorState() return self.motor end
+        function c:getCanMotorRun() return true end
+        function c:startMotor() self.motor = 2 end
+        function c:raiseActive() self.activeRaised = self.activeRaised + 1 end
+        function c:getCurrentDischargeNode() return { fillUnitIndex = 2, node = 1 } end
+        function c:getFillUnitFillLevel(i) return self.level end
+        function c:getFillUnitCapacity(i) return self.cap end
+        local t = { levels = { 0 }, caps = { 20000 } }
+        function t:getFillUnits() return { {} } end
+        function t:getFillUnitFillLevel(i) return self.levels[i] end
+        function t:getFillUnitCapacity(i) return self.caps[i] end
+        env.c, env.t = c, t
+        return env
+    """
+
+    def setUp(self):
+        self.lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        self.lua.globals().print = lambda *a: None
+        for name in ("FarmhandObserve.lua", "FarmhandHitch.lua"):
+            self.lua.execute((ROOT / "mod" / name).read_text())
+        self.bridge = self.lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        self.env = self.lua.execute(self.ENV)
+        self.start = self.lua.eval("""function(B, env, op, direction)
+            local task, code = B.start(env, { op = op, tractor = env.c, wagon = env.t, direction = direction, farmId = 1,
+                                             owned = function() return true end })
+            if task ~= nil then task.elapsed = 0 end
+            return task, code end""")
+        self.step = self.lua.eval("function(B, env, task, ms) task.elapsed = task.elapsed + ms; return B.step(env, task, ms) end")
+
+    def test_the_pipe_goes_out_powered_and_comes_back_in(self):
+        c = self.env.c
+        task, _ = self.start(self.bridge, self.env, "pipe", 1)
+        self.assertEqual((c.spec_pipe.targetState, c.motor), (2, 2))         # unloading state, motor started
+        self.assertEqual(tuple(self.step(self.bridge, self.env, task, 16))[:1], (None,))
+        c.spec_pipe.currentState = 2
+        self.assertEqual(tuple(self.step(self.bridge, self.env, task, 16)), ("DONE", "PIPE_OUT"))
+        task, _ = self.start(self.bridge, self.env, "pipe", -1)
+        c.spec_pipe.currentState = 1
+        self.assertEqual(tuple(self.step(self.bridge, self.env, task, 16)), ("DONE", "PIPE_IN"))
+        c.speed = 4
+        self.assertEqual(tuple(self.start(self.bridge, self.env, "pipe", 1))[1], "NOT_STOPPED")
+
+    def test_overload_waits_for_giants_discharge_and_reports_how_it_ended(self):
+        c, t = self.env.c, self.env.t
+        self.assertEqual(tuple(self.start(self.bridge, self.env, "overload", 0))[1], "PIPE_NOT_OUT")
+        c.spec_pipe.currentState = 2
+        task, _ = self.start(self.bridge, self.env, "overload", 0)
+        self.assertTrue(c.forceIsActive)
+        c.level, t.levels[1] = 5000, 4000
+        self.assertEqual(tuple(self.step(self.bridge, self.env, task, 1000))[:1], (None,))
+        c.level, t.levels[1] = 0, 9000
+        self.assertEqual(tuple(self.step(self.bridge, self.env, task, 1000)), ("DONE", "EMPTIED"))
+        self.assertFalse(c.forceIsActive)
+        c.level = 9000                                         # nothing flows: not under the pipe
+        task, _ = self.start(self.bridge, self.env, "overload", 0)
+        self.assertEqual(tuple(self.step(self.bridge, self.env, task, 16000)), ("FAILED", "NOT_OVERLOADING"))
+
+
 class FollowTests(unittest.TestCase):
     """follow: FollowMe's registered vehicle functions (initiateFollowVehicle, getIsFollowVehicleActive,
     getCanStartFollowVehicle; FollowVehicle.lua 38-75, 556-571), the leader the vehicle the player

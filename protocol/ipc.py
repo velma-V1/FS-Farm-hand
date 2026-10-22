@@ -130,6 +130,8 @@ COMMAND_ARGS = {
     "contract": ("field", "direction"),          # the field's contract taken (1) or its reward collected (-1)
     "ad_unload": ("tractor", "marker", "field"),  # AutoDrive's combine unloader: waits at the marker, sells the field's crop
     "ad_sell": ("tractor",),                      # AutoDrive delivers the rig's cargo to the best paid sell point
+    "pipe": ("tractor", "direction"),            # a combine's pipe out (1) or in (-1), GIANTS Pipe
+    "overload": ("tractor", "wagon"),            # a standing combine discharges into the trailer under its pipe
     "stop": ("tractor",),
 }
 _ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "x", "z": "z",

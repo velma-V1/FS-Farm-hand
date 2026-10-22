@@ -894,7 +894,7 @@ class UnloadAndSellTests(unittest.TestCase):
         c, notices = coordinated(world)
         c.submit({"version": 1, "command": "unload_combine"})
         c.wait(10)
-        self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", "NO_COMBINE_HARVESTING"))
+        self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", "NO_FULL_COMBINE"))   # none standing full either
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
         c.wait(10)
         self.assertIn("NO_UNLOADER", notices)
@@ -909,6 +909,57 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "UNLOADER_ALREADY_WORKING"))
         world.finish_worker("c-1")
         self.assertTrue(until(lambda: c.workers == []))
+
+    def full_combine_world(self):
+        # Live 49b5344a47ec418a-2: the MF 8570 full, its helper ending 7 s in; the 3650 with
+        # the Fliegl EDK 650 hitched by the player, 60 m away.
+        combine, header = HarvestTests().combine()
+        combine = replace(combine, pipe=(False, 100.0, 100.0),
+                          fill_units=(FillUnit(1, "DIESEL", 300.0, 400.0), FillUnit(2, "WHEAT", 9000.0, 9000.0)))
+        tractor = Equipment("t-5", "tractor", "farm-a", (160.0, 60.0), heading=1.0, ai_root=Pose(160.0, 60.0, 1.0),
+                            capabilities=frozenset({"move", "attach", "stop", "autodrive"}), attached_to="w-5",
+                            kinds=frozenset({"ai_field_worker"}))
+        trailer = Equipment("w-5", "implement", "farm-a", Pose(160.0, 60.0, 1.0).to_world(0.0, -7.0),
+                            kinds=frozenset({"trailer", "fill_unit"}), heading=1.0, attached_to="t-5",
+                            size=(6.0, 2.5, 2.0, 0.4), required_pto_torque=0.0,
+                            fill_units=(FillUnit(1, None, 0.0, 20000.0, frozenset({"WHEAT", "BARLEY"})),))
+        world = CoordinatedWorld([combine, header, tractor, trailer], PLAYERS, fields=(field(7, 0.4, HarvestTests.READY),),
+                                 farm=FARM)
+        world.mock_sell_at = (900.0, 900.0)
+        return world
+
+    def test_a_standing_full_combine_is_emptied_under_its_pipe_and_the_grain_sold(self):
+        world = self.full_combine_world()
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "COMBINE_UNLOADED"), c.last)
+        self.assertEqual(world.items["c-1"].fill_units[1].level, 0.0)
+        self.assertFalse(world.items["c-1"].pipe[0])                          # pipe back in
+        self.assertEqual(world.farm().money, FARM.money + 9000.0 * world.mock_price)   # sold after
+        self.assertEqual(notices[-3:-1], ["COMBINE_UNLOADED", "COMPLETE_SELL"])
+        self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
+
+    def test_harvest_with_a_full_combine_empties_it_first(self):
+        world = self.full_combine_world()
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"), c.last)
+        self.assertIn("COMBINE_UNLOADED", notices)
+        self.assertEqual(world.items["c-1"].fill_units[1].level, 0.0)
+
+    def test_the_trailer_must_stand_under_the_pipe(self):
+        class Wide(CoordinatedWorld):
+            def overload(self, combine_id, trailer_id, owner):
+                raise StepFailed("NOT_OVERLOADING")             # never under it, at every aim
+        world = self.full_combine_world()
+        world.__class__ = Wide
+        result = Executor(world).execute({"version": 1, "request_id": "o-1", "farm_id": "farm-a",
+                                          "target": "player_at_acceptance", "task": "overload"})
+        self.assertEqual((result.status, result.reason), ("FAILED", "NOT_UNDER_THE_PIPE"), result)
+        self.assertFalse(world.items["c-1"].pipe[0])
+        self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
 
     def test_sell_the_grain_is_complete_only_on_the_money(self):
         world = self.world(cargo=8000.0)

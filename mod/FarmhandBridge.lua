@@ -902,6 +902,110 @@ end
 
 function aborts.fold() end          -- GIANTS finishes the fold it started; nothing drives
 
+-- ------------------------------------------------------------------ pipe / overload
+-- A standing combine emptied into a trailer the way GIANTS' own overloading does it (the
+-- user 2026-10-21: the combine was full and its helper would not work on; AutoDrive's
+-- unloader serves only a combine whose helper runs, HarvestManager.lua update).
+-- pipe (vehicle, direction): Pipe:setPipeState (732-759) to its first unloading state
+-- (spec.unloadingStates, as Pipe:onUpdateTick's own unfolding 527-553) or back to 1;
+-- DONE once spec.currentState is there (getCurrentPipeState 763-765).
+-- overload (combine, trailer): GIANTS discharges into the object under the pipe by itself
+-- (automaticDischarge, default true, 200; handleDischargeRaycast 1254-1277) while the
+-- combine is powered (Motorized:getIsPowered 3341-): its motor is started
+-- (Motorized:startMotor 2153-2158) and it is kept active, nothing drives. DONE once the
+-- combine is empty or the trailer full (EMPTIED / TRAILER_FULL), or nothing more flows for
+-- OVERLOAD_IDLE_MS after it did (OVERLOAD_STOPPED); FAILED NOT_OVERLOADING when nothing
+-- flowed at all. The companion verifies both fill levels from the snapshot.
+Bridge.PIPE_TIMEOUT_MS = 20000
+Bridge.OVERLOAD_IDLE_MS = 15000
+Bridge.OVERLOAD_TIMEOUT_MS = 300000
+
+local function dischargeFill(v)
+    local node = v:getCurrentDischargeNode()
+    if node == nil then return nil end
+    return v:getFillUnitFillLevel(node.fillUnitIndex), v:getFillUnitCapacity(node.fillUnitIndex)
+end
+
+local function keepPowered(v)
+    v.forceIsActive = true
+    v:raiseActive()
+    local state = v:getMotorState()
+    if state ~= Bridge.MotorState.ON and state ~= Bridge.MotorState.STARTING and v:getCanMotorRun() then v:startMotor(true) end
+end
+
+function starters.pipe(env, spec)
+    if spec.owned() ~= true or spec.tractor.ownerFarmId ~= spec.farmId then return nil, "RESERVATION_LOST" end
+    local v = spec.tractor
+    local direction = (spec.direction == 1 and 1) or (spec.direction == -1 and -1) or nil
+    if direction == nil then return nil, "INVALID_DIRECTION" end
+    local pipe = v.spec_pipe
+    if pipe == nil or type(pipe.unloadingStates) ~= "table" then return nil, "NO_PIPE" end
+    if not stopped(v) then return nil, "NOT_STOPPED" end
+    if v:getIsAIActive() == true then return nil, "AI_ACTIVE" end
+    local target = direction > 0 and next(pipe.unloadingStates) or 1
+    if target == nil then return nil, "NO_UNLOADING_STATE" end
+    if pipe.currentState ~= target and v:getIsPipeStateChangeAllowed(target) ~= true then return nil, "PIPE_NOT_ALLOWED" end
+    Bridge.MotorState = env.MotorState
+    if direction > 0 then keepPowered(v) end
+    v:setPipeState(target)
+    log("pipe %s to state %s from %s", tostring(env.NetworkUtil.getObjectId(v)), tostring(target), tostring(pipe.currentState))
+    return { target = target }
+end
+
+function steppers.pipe(_env, task)
+    if task.spec.owned() ~= true then return "FAILED", "RESERVATION_LOST" end
+    local v = task.spec.tractor
+    if v:getCurrentPipeState() == task.target then
+        if task.target == 1 then v.forceIsActive = false end
+        return "DONE", task.target == 1 and "PIPE_IN" or "PIPE_OUT"
+    end
+    if task.target ~= 1 then keepPowered(v) end
+    if task.elapsed > Bridge.PIPE_TIMEOUT_MS then return "FAILED", "PIPE_TIMEOUT" end
+    return nil
+end
+
+function aborts.pipe() end           -- GIANTS finishes the pipe move it started; nothing drives
+
+function starters.overload(env, spec)
+    if spec.owned() ~= true or spec.tractor.ownerFarmId ~= spec.farmId then return nil, "RESERVATION_LOST" end
+    local v = spec.tractor
+    local pipe = v.spec_pipe
+    if pipe == nil or type(pipe.unloadingStates) ~= "table" then return nil, "NO_PIPE" end
+    if pipe.unloadingStates[v:getCurrentPipeState()] == nil then return nil, "PIPE_NOT_OUT" end
+    local level = dischargeFill(v)
+    if level == nil then return nil, "NO_DISCHARGE_NODE" end
+    Bridge.MotorState = env.MotorState
+    keepPowered(v)
+    log("overload %s into %s from %.0f l", tostring(env.NetworkUtil.getObjectId(v)),
+        tostring(env.NetworkUtil.getObjectId(spec.wagon)), level)
+    return { start = level, last = level, lastAt = 0, flowed = false }
+end
+
+function steppers.overload(_env, task)
+    if task.spec.owned() ~= true then return "FAILED", "RESERVATION_LOST" end
+    local v, trailer = task.spec.tractor, task.spec.wagon
+    keepPowered(v)
+    local level = dischargeFill(v)
+    if level == nil then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
+    if level < task.last - 1 then task.last, task.lastAt, task.flowed = level, task.elapsed, true end
+    local free = 0
+    for i in ipairs(trailer:getFillUnits()) do
+        free = free + math.max(0, trailer:getFillUnitCapacity(i) - trailer:getFillUnitFillLevel(i))
+    end
+    if level < 1 then v.forceIsActive = false; return "DONE", "EMPTIED" end
+    if task.flowed and free < 1 then v.forceIsActive = false; return "DONE", "TRAILER_FULL" end
+    if task.elapsed - task.lastAt > Bridge.OVERLOAD_IDLE_MS then
+        v.forceIsActive = false
+        log("overload ended at %.0f l (from %.0f l)", level, task.start)
+        if task.flowed then return "DONE", "OVERLOAD_STOPPED" end
+        return "FAILED", "NOT_OVERLOADING"
+    end
+    if task.elapsed > Bridge.OVERLOAD_TIMEOUT_MS then v.forceIsActive = false; return "FAILED", "OVERLOAD_TIMEOUT" end
+    return nil
+end
+
+function aborts.overload(_env, task) task.spec.tractor.forceIsActive = false end
+
 -- ------------------------------------------------------------------ belts
 -- A reserved transport's tension belts through GIANTS' TensionBelts: setAllTensionBeltsActive
 -- (912-920; each belt's setTensionBeltsActive 851-907 mounts or frees what lies under it and
@@ -970,16 +1074,22 @@ Bridge.handed = setmetatable({}, { __mode = "k" })    -- vehicle -> the op whose
 -- AI_JOB_STOPPED listener: the stopped job's vehicle and why (ClassUtil as
 -- AIMessageManager:getMessageIndex 137-145). Diagnostics and the op's end code only.
 function Bridge.onAIJobStopped(env, job, aiMessage)
-    pcall(function()
-        local vehicle = job.vehicleParameter:getVehicle()
-        local class = env.ClassUtil.getClassObjectByObject(aiMessage)
-        local code = "AI_STOPPED"
-        for _, entry in ipairs(Bridge.AI_STOP_CODES) do
-            if env[entry[1]] ~= nil and class == env[entry[1]] then code = entry[2] end
-        end
-        Bridge.aiStops[vehicle] = code
-        log("AI job ended for vehicle %s: %s", tostring(env.NetworkUtil.getObjectId(vehicle)), code)
-    end)
+    -- Each read on its own (live 2026-10-21: a combine's helper ended and nothing was
+    -- logged, so one failing read must not hide the rest).
+    local okV, vehicle = pcall(function() return job.vehicleParameter:getVehicle() end)
+    local code = "AI_STOPPED"
+    for _, entry in ipairs(Bridge.AI_STOP_CODES) do
+        local class = env[entry[1]]
+        local ok, is = pcall(function()
+            return (type(aiMessage.isa) == "function" and aiMessage:isa(class))
+                or env.ClassUtil.getClassObjectByObject(aiMessage) == class
+        end)
+        if class ~= nil and ok and is then code = entry[2] end
+    end
+    local okN, name = pcall(function() return env.ClassUtil.getClassNameByObject(aiMessage) end)
+    if okV and vehicle ~= nil then Bridge.aiStops[vehicle] = code end
+    local okId, id = pcall(function() return env.NetworkUtil.getObjectId(vehicle) end)
+    log("AI job ended for vehicle %s: %s (%s)", okId and tostring(id) or "?", code, okN and tostring(name) or "?")
 end
 
 -- Diagnostics only, every read protected: where GIANTS' field-work job stands. The job's
@@ -1619,7 +1729,8 @@ function aborts.stop() end
 
 -- --------------------------------------------------------------- runner
 
-Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true, load = true }
+Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true, load = true,
+                       overload = true }
 Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true, ad_marker = true, contract = true }   -- ops that act on no vehicle
 
 function Bridge.start(env, spec)
@@ -1909,7 +2020,8 @@ Bridge.NOTICES = {
     UNLOADER_STOPPED = "Farmhand: AutoDrive stopped unloading the combine; check the unloader",
     NO_UNLOADER = "Farmhand: no AutoDrive tractor with an empty trailer to unload the combine; it waits when full",
     ACCEPTED_UNLOAD_COMBINE = "Farmhand: sending an AutoDrive tractor and trailer to unload the combine",
-    COMPLETE_UNLOAD_COMBINE = "Farmhand: an AutoDrive tractor and trailer is unloading the combine",
+    COMPLETE_UNLOAD_COMBINE = "Farmhand: the combine is being unloaded",
+    COMBINE_UNLOADED = "Farmhand: combine emptied into the trailer",
     NOTHING_TO_HITCH_TOGETHER = "Farmhand: say which tractor and implement to hitch (or buy them in the same sentence)",
     ACCEPTED_SELL = "Farmhand: taking the load to the best paid sell point (AutoDrive)",
     COMPLETE_SELL = "Farmhand: sold; the load is gone and the money is in",
@@ -2121,6 +2233,16 @@ Bridge.REASONS = {
     NO_UNLOADER = "no free AutoDrive tractor with a trailer that has room",
     NO_COMBINE_HARVESTING = "no helper is harvesting that field",
     SAY_WHICH_FIELD = "helpers are harvesting several fields; say which",
+    NO_FULL_COMBINE = "no standing combine with grain in it",
+    NO_TRAILER_FOR_THE_GRAIN = "no free tractor with a trailer that takes that grain",
+    NOT_UNDER_THE_PIPE = "the trailer could not be put under the combine's pipe",
+    GRAIN_NOT_MOVED = "the grain did not go into the trailer; check it",
+    PIPE_NOT_OBSERVED = "the combine's pipe did not come out",
+    NO_PIPE = "that combine has no pipe",
+    PIPE_NOT_OUT = "the combine's pipe is not out",
+    PIPE_NOT_ALLOWED = "the combine's pipe cannot move now",
+    PIPE_TIMEOUT = "the combine's pipe did not finish moving",
+    NOT_OVERLOADING = "nothing came out of the pipe into the trailer",
     NOTHING_TO_HITCH_TOGETHER = "say which tractor and implement to hitch (or buy them in the same sentence)",
     NOTHING_TO_SELL = "the trailer is empty",
     NO_SELL_POINT = "no sell point buys that",

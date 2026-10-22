@@ -26,7 +26,7 @@ from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified
 from companion import hitch as transport   # its tractor-transport section
-from companion.executor import (COVERAGE_REQUIRED, OPERATIONS, already_done, crop_problem, named, of_kind,
+from companion.executor import (COVERAGE_REQUIRED, Executor, OPERATIONS, already_done, crop_problem, named, of_kind,
                                 resolve_field, seed_position, usable)
 from protocol.model import Equipment, Result
 
@@ -1054,6 +1054,8 @@ class Coordinator:
                 time.sleep(self.WATCH_S)
             return not cancel.is_set()
 
+        if "harvest" in work["operations"]:
+            self._empty_full_combines(job, cancel, entered)
         for operation in work["operations"]:
             ahead = started[-1] if started else None
             if ahead is not None and not wait_for(lambda: ahead not in self.workers or (
@@ -1122,14 +1124,51 @@ class Coordinator:
             return Result("COMPLETE", "WORKERS_STARTED", tuple(equipment), tuple(states))
         return Result("COMPLETE", "FIELD_WORK_OBSERVED", tuple(equipment), tuple(states))
 
+    COMBINE_FULL_SHARE = 0.9          # a combine this full is emptied before its helper starts
+
+    def _empty_full_combines(self, job: Job, cancel: threading.Event, entered) -> None:
+        """Before a harvest: a full combine's helper would not work (live 49b5344a47ec418a-2,
+        AI_STOPPED 7 s in), so it is emptied into a trailer first and the grain sold."""
+        for combine in self.world.snapshot():
+            if combine.category != "harvester" or combine.pipe is None or combine.farm_id != self.farm():
+                continue
+            grain = [u for u in combine.fill_units if (u.fill_type or "UNKNOWN") not in Executor.NOT_CARGO
+                     and u.capacity]
+            if grain and sum(u.level or 0.0 for u in grain) >= self.COMBINE_FULL_SHARE * sum(u.capacity for u in grain):
+                log.info("job %d combine %s full: emptied first", job.number, combine.id)
+                self._overload_and_sell(job, cancel, entered, combine.name)
+
+    def _overload_and_sell(self, job: Job, cancel: threading.Event, entered, combine_name=None) -> Result:
+        """A standing combine emptied into a trailer under its pipe, then the trailer's
+        grain sold at the best paid sell point (AutoDrive) when the tractor has AutoDrive."""
+        intent = {"version": 1, "request_id": f"{job.owner}-o", "farm_id": self.farm(),
+                  "target": "player_at_acceptance", "task": "overload"}
+        if combine_name:
+            intent["tractor_name"] = combine_name.casefold()
+        self.running = intent["request_id"]
+        result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
+        log.info("job %d overload: %s %s", job.number, result.status, result.reason)
+        self.notify(result_notice(result.status, result.reason, "COMBINE_UNLOADED"), job.spoken)
+        if result.status == "COMPLETE":
+            self.running = f"{job.owner}-s"
+            sold = self.executor.execute({"version": 1, "request_id": self.running, "farm_id": self.farm(),
+                                          "target": "player_at_acceptance", "task": "sell"},
+                                         cancel=cancel, on_state=entered, job=job.owner)
+            log.info("job %d sell after overload: %s %s", job.number, sold.status, sold.reason)
+            self.notify(result_notice(sold.status, sold.reason, "COMPLETE_SELL"), job.spoken)
+        return result
+
     def _unload_combine(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """"Unload the combine": an unloader for the field a helper harvests (the one said,
-        else the only one), as each harvest start does."""
+        else the only one), as each harvest start does; with no helper harvesting, the
+        standing combine is emptied into a trailer under its pipe and the grain sold."""
         with self._lock:
             fields = sorted({w.field for w in self.workers if w.operation == "harvest"})
         field_id = work.get("field")
+        if not fields:
+            return self._overload_and_sell(job, cancel, entered)
         if field_id is None and len(fields) != 1:
-            return Result("BLOCKED", "NO_COMBINE_HARVESTING" if not fields else "SAY_WHICH_FIELD")
+            return Result("BLOCKED", "SAY_WHICH_FIELD")
         field_id = fields[0] if field_id is None else field_id
         if field_id not in fields:
             return Result("BLOCKED", "NO_COMBINE_HARVESTING")

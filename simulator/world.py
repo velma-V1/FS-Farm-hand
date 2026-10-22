@@ -12,6 +12,8 @@ from protocol.model import Destination, Equipment, FarmInfo, Field, FieldCoverag
 MOCK_ATTACH_RANGE_M = 0.3
 MOCK_POSE_TOLERANCE_M = 0.5
 MOCK_TRAILER_OFFSET_M = 7.0
+MOCK_PIPE_REACH_M = 6.0           # mock-only: a combine's pipe point to its left
+MOCK_PIPE_HIT_M = 1.5             # mock-only: how near the trailer's middle must be
 MOCK_REVERSE_REACH_M = 10.0      # the mod's reverse cap (Hitch.LIMITS.maxDistanceM)
 MOCK_LOCAL_RADIUS_M = 25.0       # the mod's local work radius (Hitch.LOCAL_LIMITS.workRadiusM)
 MOCK_PULL_CLEAR_M = 4.5          # the mod's pull-clear separation (Hitch.PULL.clearM)
@@ -332,6 +334,40 @@ class MockWorld:
             self.mock_workers = {**self.mock_workers, tractor_id: None}
             self.items[tractor_id] = replace(self.items[tractor_id], busy=True, busy_reason="AUTODRIVE_ACTIVE")
             return "UNLOADING"
+
+    def pipe(self, vehicle_id, out, owner):
+        # Mock-only: the pipe reaches MOCK_PIPE_REACH_M to the combine's left.
+        with self._lock:
+            reservation = self._reservations.get(owner)
+            if not reservation or vehicle_id not in reservation[1]:
+                raise RuntimeError("NOT_RESERVED")
+            v = self.items[vehicle_id]
+            if v.pipe is None:
+                raise StepFailed("NO_PIPE")
+            x, z = Pose(*v.position, v.heading or 0.0).to_world(-MOCK_PIPE_REACH_M, 0.0)
+            self.items[vehicle_id] = replace(v, pipe=(bool(out), x, z))
+            return "PIPE_OUT" if out else "PIPE_IN"
+
+    def overload(self, combine_id, trailer_id, owner):
+        # Mock-only: a trailer whose middle is within MOCK_PIPE_HIT_M of the pipe's point
+        # takes what it has room for.
+        with self._lock:
+            reservation = self._reservations.get(owner)
+            if not reservation or combine_id not in reservation[1]:
+                raise RuntimeError("NOT_RESERVED")
+            combine, trailer = self.items[combine_id], self.items[trailer_id]
+            middle = Pose(*trailer.position, trailer.heading or 0.0).to_world(0.0, (trailer.size or (0, 0, 0, 0.0))[3])
+            if not (combine.pipe and combine.pipe[0]) or math.dist(middle, combine.pipe[1:]) > MOCK_PIPE_HIT_M:
+                raise StepFailed("NOT_OVERLOADING")
+            grain = next(u for u in combine.fill_units if u.fill_type not in ("DIESEL", "DEF", "AIR") and u.level)
+            unit = trailer.fill_units[0]
+            moved = min(grain.level, unit.capacity - (unit.level or 0.0))
+            self.items[combine_id] = replace(combine, fill_units=tuple(
+                replace(u, level=u.level - moved) if u is grain else u for u in combine.fill_units))
+            self.items[trailer_id] = replace(trailer, fill_units=(replace(unit, fill_type=grain.fill_type,
+                                                                          level=(unit.level or 0.0) + moved),)
+                                             + trailer.fill_units[1:])
+            return "EMPTIED" if moved == grain.level else "TRAILER_FULL"
 
     def ad_sell(self, tractor_id, owner):
         # Mock-only: the cargo goes to the sell point, the farm is paid for it.

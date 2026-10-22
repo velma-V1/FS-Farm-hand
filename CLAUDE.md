@@ -69,7 +69,8 @@ ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snap
   (GIANTS TensionBelts), `load` (a tractor alone straight onto a transport's deck or back off it), `ad_marker`
   (an AutoDrive destination for a field, AutoDrive's own call, after a backup of its network), `follow`
   (FollowMe, only on the player's "follow me"), `fieldwork` (optionally the crop to sow), `contract` (take or
-  collect a GIANTS field contract),
+  collect a GIANTS field contract), `pipe` / `overload` (a standing combine's pipe out and GIANTS' own discharge into
+  the trailer under it),
   `open_gates`, `block`, `buy`, `save`, `stop`. ACCEPTED/DONE is never success; the game stops a
   session's motion if the heartbeat is lost for 10 s. Player key presses arrive as
   `request` frames (a fixed `action` or typed `text`).

@@ -64,6 +64,17 @@ class World(Protocol):
         (it goes on until ``stop``)."""
         ...
 
+    def pipe(self, vehicle_id: str, out: bool, owner: str) -> str:
+        """PIPE_OUT / PIPE_IN: the reserved combine's pipe to its unloading state or folded
+        (GIANTS Pipe); DONE once there."""
+        ...
+
+    def overload(self, combine_id: str, trailer_id: str, owner: str) -> str:
+        """OVERLOAD: the reserved standing combine (pipe out) discharges into the trailer
+        under its pipe, GIANTS' own discharge; EMPTIED, TRAILER_FULL or OVERLOAD_STOPPED.
+        The caller checks both fill levels."""
+        ...
+
     def ad_sell(self, tractor_id: str, owner: str) -> str:
         """SELL: AutoDrive takes the reserved rig's cargo to the best paid sell point for it
         and unloads it there; the caller checks the cargo and the money."""
