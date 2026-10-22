@@ -1005,6 +1005,85 @@ function starters.ad_marker(env, spec)
     return { name = name, graph = graph }
 end
 
+-- ad_connect (tractor, marker): the user 2026-10-22, "inspect and configure the existing
+-- AutoDrive network using supported mechanisms, preserving its configuration". Only one repair:
+-- AutoDrive's own path from the waypoint nearest the vehicle (getClosestWayPoint, out edges)
+-- runs to a dead end, and a waypoint that has a route to the marker (ADGraphManager:pathFromTo)
+-- lies within AD_LINK_M of that end and continues its direction (within AD_LINK_DEG, its own
+-- next edge too): the two joined one way, as AutoDrive's route editor joins them
+-- (ADGraphManager:setConnectionBetween(start, end, 1), GraphManager.lua 600-, which broadcasts
+-- AutoDriveSetConnectionEvent and AutoDrive saves with the game), after the companion's backup.
+-- Live 2026-10-22 (Riverbend Springs): the store yard's lane 11800-11808 stops 5.5 m short of
+-- the road it joins (5767). DONE AD_LINKED once AutoDrive's own pathFromTo has the route.
+Bridge.AD_LINK_M = 6
+Bridge.AD_LINK_DEG = 60
+
+local atan2 = math.atan2 or math.atan   -- Lua 5.1 (FS25) / 5.4 (tests)
+local function heading(a, b) return atan2(b.x - a.x, b.z - a.z) end
+local function turnDeg(a, b)
+    local d = (b - a + math.pi) % (2 * math.pi) - math.pi
+    return math.abs(math.deg(d))
+end
+
+function starters.ad_connect(env, spec)
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local graph = adGraph(env)
+    local v = spec.tractor
+    if graph == nil or type(graph.setConnectionBetween) ~= "function" or type(graph.pathFromTo) ~= "function"
+            or type(graph.getWayPointById) ~= "function" or type(v.getClosestWayPoint) ~= "function" then
+        return nil, "AD_LINK_UNSUPPORTED"
+    end
+    local ok, result, why = pcall(function()
+        local marker = graph:getMapMarkerById(spec.marker)
+        if marker == nil then return nil, "UNKNOWN_MARKER" end
+        local target = marker.id
+        local from = v:getClosestWayPoint()
+        local function routed(id)
+            local path = graph:pathFromTo(id, target)
+            return path ~= nil and #path >= 1
+        end
+        if routed(from) then return { linked = true } end
+        local wps = graph:getWayPoints()
+        local seen, prev, at = {}, nil, wps[from]
+        while at ~= nil and #(at.out or {}) > 0 and not seen[at.id] do
+            seen[at.id] = true
+            prev, at = at, wps[at.out[1]]
+        end
+        if at == nil or prev == nil or #(at.out or {}) > 0 then return nil, "AD_NO_DEAD_END" end
+        local lane = heading(prev, at)
+        local best, bestD
+        for id, wp in pairs(wps) do
+            if id ~= at.id and finite(wp.x) and finite(wp.z) and #(wp.out or {}) > 0 then
+                local d = math.sqrt((wp.x - at.x) ^ 2 + (wp.z - at.z) ^ 2)
+                local onward = wps[wp.out[1]]
+                if d <= Bridge.AD_LINK_M and (bestD == nil or d < bestD) and onward ~= nil
+                        and turnDeg(lane, heading(at, wp)) <= Bridge.AD_LINK_DEG
+                        and turnDeg(lane, heading(wp, onward)) <= Bridge.AD_LINK_DEG and routed(id) then
+                    best, bestD = wp, d
+                end
+            end
+        end
+        if best == nil then return nil, "AD_NO_LINK_NEAR" end
+        log("ad_connect: AutoDrive's lane from waypoint %s ends at %s; joined to %s (%.1f m on, routed to %s)",
+            tostring(from), tostring(at.id), tostring(best.id), bestD, tostring(marker.name))
+        graph:setConnectionBetween(at, best, 1)
+        return { from = from, target = target, graph = graph }
+    end)
+    if not ok then return nil, "AD_LINK_ERROR" end
+    if result == nil then return nil, why end
+    return result
+end
+
+function steppers.ad_connect(_env, task)
+    if task.linked then return "DONE", "AD_ROUTED" end
+    local okR, path = pcall(function() return task.graph:pathFromTo(task.from, task.target) end)
+    if okR and path ~= nil and #path >= 1 then return "DONE", "AD_LINKED" end
+    if task.elapsed > Bridge.AD_MARKER_TIMEOUT_MS then return "FAILED", "AD_LINK_NOT_OBSERVED" end
+    return nil
+end
+
+function aborts.ad_connect() end
+
 function steppers.ad_marker(_env, task)
     if task.existed then return "DONE", "MARKER_EXISTS" end
     if task.graph:getMapMarkerByName(task.name) ~= nil then return "DONE", "MARKER_CREATED" end

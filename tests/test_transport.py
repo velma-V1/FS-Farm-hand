@@ -602,6 +602,24 @@ class HaulGoalTests(unittest.TestCase):
         self.assertIsNone(ad_routed(graph, (1.0, 0.0), (250.0, 9.0)))          # not a marker on the network
         self.assertIsNone(ad_route_start(graph, (1.0, 0.0), (500.0, 0.0), max_m=30.0))
 
+    def test_autodrives_dead_end_lane_is_joined_to_its_road_before_anything_moves(self):
+        # Live 2026-10-22: the store yard's lane stops 5.5 m short of the road it joins. With the
+        # mod's ad_connect (AutoDrive's own setConnectionBetween, after a backup) there is a route
+        # from where the rig stands: nothing is staged, the rig is loaded there and AutoDrive
+        # drives it.
+        from companion.hitch import ADGraph
+        world, truck, deck, series9 = haul_world()
+        world.mock_ad_graph = ADGraph(points={1: (52.0, 25.0), 2: (56.0, 25.0), 10: (60.0, 25.0), 12: (900.0, 900.0)},
+                                      out={1: (2,), 2: (), 10: (12,), 12: ()})
+        world.mock_ad_link = (2, 10)
+        c, notices = self.run_goal(world)
+        job = c.last
+        self.assertEqual((job.state, job.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), job.states)
+        self.assertIn("stage_transport:AD_LINK", job.states)
+        self.assertNotIn("stage_transport:STAGE", job.states)
+        self.assertEqual(world.ad_links_made, ((2, 10),))
+        self.assertLess(math.dist(world.items[truck.id].position, (900.0, 900.0)), 1.0)
+
     def test_staging_prefers_where_autodrives_own_path_runs_out(self):
         # Live 2026-10-22 (Riverbend Springs): the lane from the store yard (11800-11808) stops
         # 5.5 m short of the road it joins (5767); a parallel road (3515) is nearer the rig but

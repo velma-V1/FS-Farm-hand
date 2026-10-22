@@ -304,6 +304,54 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertEqual(self.calls().count("StartDriving:3:3"), 1)                 # only the first one started
         self.assertTrue(any("AD_NO_ROUTE" in p and "11802" in p for p in self.printed))
 
+    def test_autodrives_dead_end_lane_is_joined_only_to_a_routed_road_continuing_its_way(self):
+        # Live 2026-10-22: the store yard's lane 11800-11808 stops 5.5 m short of the road it
+        # joins (5767). AutoDrive's own setConnectionBetween(end, road, 1) after the companion's
+        # backup; DONE once AutoDrive's own pathFromTo has the route. A road going back the other
+        # way, or none within 6 m, is never joined.
+        setup = self.lua.eval("""function(w, roadX, roadDir)
+            local wps = {
+                [1] = { id = 1, x = 0, z = 0, out = { 2 }, incoming = {} },
+                [2] = { id = 2, x = 0, z = 40, out = {}, incoming = { 1 } },              -- the dead end
+                [10] = { id = 10, x = roadX, z = 44, out = { 12 }, incoming = {} },        -- the road
+                [12] = { id = 12, x = roadX, z = 44 + 40 * roadDir, out = {}, incoming = { 10 } },
+            }
+            local graph = { joined = nil }
+            function graph:getWayPoints() return wps end
+            function graph:getWayPointById(id) return wps[id] end
+            function graph:getMapMarkerById(id) return { id = 12, name = "Farm Barn" } end
+            function graph:getMapMarkerByName() return nil end
+            function graph:createMapMarker() end
+            function graph:pathFromTo(a, b)
+                local seen, queue = { [a] = true }, { a }
+                while #queue > 0 do
+                    local n = table.remove(queue, 1)
+                    if n == b then return { wps[a], wps[b] } end
+                    for _, o in ipairs(wps[n].out) do if not seen[o] then seen[o] = true; queue[#queue + 1] = o end end
+                end
+                return {}
+            end
+            function graph:setConnectionBetween(a, b, direction)
+                self.joined = { a.id, b.id, direction }
+                table.insert(a.out, b.id)
+            end
+            w.graph = graph
+            local env = setmetatable({ ADGraphManager = graph }, { __index = _G })
+            w.env.getfenv = function() return env end
+            function w.tractor:getClosestWayPoint() return 1, 3.0 end
+        end""")
+        for road_x, road_dir, expected in ((0.0, 1, (2, "DONE", "AD_LINKED")), (0.0, -1, (2, "FAILED", "AD_NO_LINK_NEAR")),
+                                           (20.0, 1, (2, "FAILED", "AD_NO_LINK_NEAR"))):
+            with self.subTest(road_x=road_x, road_dir=road_dir):
+                self.w = self.W.new()
+                self.adopt()
+                setup(self.w, road_x, road_dir)
+                self.send(2, "ad_connect", {"tractor": 11, "marker": 3})
+                self.W.run(self.w, 300)
+                self.assertEqual(self.results(2)[-1], expected)
+                joined = self.w.graph.joined
+                self.assertEqual(tuple(joined.values()) if joined else None, (2, 10, 1) if expected[1] == "DONE" else None)
+
     def test_drive_refuses_when_autodrive_would_hand_off_to_another_ai(self):
         self.adopt()
         self.w.startHelper = True

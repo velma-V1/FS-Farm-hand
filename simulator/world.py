@@ -82,6 +82,22 @@ class MockWorld:
 
     mock_ad_places = {}           # mock-only: a building's position -> where AutoDrive's network passes it
     mock_ad_graph = None          # mock-only: AutoDrive's saved road network (companion/hitch.py ADGraph)
+    mock_ad_link = None           # mock-only: (dead end, routed waypoint) the mod's ad_connect would join
+    ad_links_made = ()
+
+    def ad_connect(self, tractor_id, marker_id, owner):
+        # Mock-only: the mod's AutoDrive lane repair; refused unless mock_ad_link says what joins.
+        with self._lock:
+            self._owned(tractor_id, owner)
+            if self.mock_ad_link is None or self.mock_ad_graph is None:
+                raise StepFailed("AD_NO_LINK_NEAR")
+            a, b = self.mock_ad_link
+            g = self.mock_ad_graph
+            out = dict(g.out)
+            out[a] = tuple(out.get(a, ())) + (b,)
+            self.mock_ad_graph = type(g)(g.points, out)
+            self.ad_links_made = self.ad_links_made + (self.mock_ad_link,)
+            return "AD_LINKED"
 
     def ad_graph(self):
         return self.mock_ad_graph

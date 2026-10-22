@@ -126,6 +126,7 @@ COMMAND_ARGS = {
     "belts": ("tractor", "direction"),           # a transport's TensionBelts fastened (1) or released (-1)
     "load": ("tractor", "wagon", "direction"),   # the tractor alone onto the trailer's deck (1) or off it (-1)
     "ad_marker": ("field", "x", "z"),            # an AutoDrive destination: "Field N" by field N's edge, or (field 0) the farm building at (x, z) by its name
+    "ad_connect": ("tractor", "marker"),         # AutoDrive's dead-end lane from the vehicle joined to the routed road it stops short of
     "follow": ("tractor",),                      # FollowMe: the vehicle follows the one the player drives
     "contract": ("field", "direction"),          # the field's contract taken (1) or its reward collected (-1)
     "ad_unload": ("tractor", "marker", "field"),  # AutoDrive's combine unloader: waits at the marker, sells the field's crop

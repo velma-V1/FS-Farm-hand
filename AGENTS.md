@@ -211,7 +211,14 @@ have precedence; report conflicts instead of silently changing the scope.
 - AutoDrive configuration may be completed only through AutoDrive's own supported
   mechanisms, with the minimum destination markers in the test save, the existing
   network preserved and its configuration backed up first. No replacement navigation,
-  and creating markers is never made the player's routine job.
+  and creating markers is never made the player's routine job. One repair besides markers
+  (the user 2026-10-22: "inspect and configure the existing AutoDrive network using supported
+  mechanisms, preserving its configuration"): when AutoDrive's own path from the waypoint
+  nearest the vehicle ends in a dead end and a waypoint with a route to the destination lies
+  within 6 m of that end, continuing its direction (within 60 degrees, its next edge too), the
+  two are joined one way with AutoDrive's own setConnectionBetween, after the backup, and the
+  route confirmed by AutoDrive's own pathFromTo. Nothing else in the network is edited; a gap
+  that does not fit is reported.
 - Pause, a changed destination or equipment, a player takeover and resume keep the
   original goal; nothing completed is repeated. After a reload or a companion restart
   the job is reconciled with the observed world and the equipment re-identified.

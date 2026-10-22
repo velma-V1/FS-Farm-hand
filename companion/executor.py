@@ -1479,9 +1479,10 @@ class Executor:
         (companion/hitch.py, read only) says whether there is a route to the haul's marker
         (made AutoDrive's own way when missing); if not, GIANTS GOTO takes the empty transport
         (truck and trailer, nothing on it: GOTO drives that) onto the nearest waypoint that has
-        one, facing along it. FIND -> (ROUTED, nothing moved) or RESERVE -> STAGE (GOTO) ->
-        VERIFY (the nearest waypoint now has the route) -> STOP -> RELEASE. BLOCKED, nothing
-        moved, when there is no AutoDrive, no network to read or no routed waypoint near."""
+        one, facing along it. FIND -> (ROUTED, nothing moved) or RESERVE -> AD_LINK (AutoDrive's
+        dead-end lane from here joined to the routed road it stops short of: LINKED, nothing
+        moved) or STAGE (GOTO) -> VERIFY (the nearest waypoint now has the route) -> STOP ->
+        RELEASE. BLOCKED, nothing moved, when there is no AutoDrive or no network to read."""
         owner, farm_id = command["request_id"], command["farm_id"]
         ids, reserved, moved = (), False, False
         status, reason = "BLOCKED", "NO_TRANSPORT"
@@ -1517,13 +1518,24 @@ class Executor:
             if routed:
                 return Result("COMPLETE", "ROUTED", ids, tuple(states))
             starts = transport.ad_route_starts(graph, truck.position, marker.position)
-            if not starts:
-                return Result("BLOCKED", "AD_NO_ROUTED_WAYPOINT_NEAR", ids, tuple(states))
             enter("RESERVE")
             if not self.world.reserve(ids, owner):
                 return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
             reserved = True
             self.active = ids
+            # The network's own gap first (the user 2026-10-22: configure the existing AutoDrive
+            # network by its supported mechanisms): AutoDrive's lane from here ending just short of
+            # a routed road is joined to it, AutoDrive's own way, after a backup; nothing moves.
+            enter("AD_LINK")
+            try:
+                linked = self.world.ad_connect(truck.id, marker.id, owner)
+                log.info("STAGE: AutoDrive network %s", linked)
+                status, reason = "COMPLETE", "LINKED"
+                return Result(status, reason, ids, tuple(states))
+            except StepFailed as failure:
+                log.info("STAGE: no AutoDrive link to make (%s); GIANTS GOTO to a routed waypoint", failure.code)
+            if not starts:
+                raise StepFailed("AD_NO_ROUTED_WAYPOINT_NEAR")
             for n, ((x, z), yaw, wp) in enumerate(starts, 1):
                 log.info("STAGE %d: no AutoDrive route from %s to %s; to waypoint %s at (%.1f, %.1f), %.0f m off", n,
                          truck.position, marker.name, wp, x, z, math.dist(truck.position, (x, z)))
