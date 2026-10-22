@@ -133,6 +133,7 @@ COMMAND_ARGS = {
     "pipe": ("tractor", "direction"),            # a combine's pipe out (1) or in (-1), GIANTS Pipe
     "overload": ("tractor", "wagon"),            # a standing combine discharges into the trailer under its pipe
     "alongside": ("tractor", "wagon"),           # the tractor's trailer straight forward under the combine's pipe
+    "deliver": ("tractor",),                     # GIANTS' Deliver helper: the cargo to the best paid selling station
     "stop": ("tractor",),
 }
 _ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "x", "z": "z",

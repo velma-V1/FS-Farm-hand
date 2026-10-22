@@ -936,6 +936,72 @@ end
 
 function aborts.fold() end          -- GIANTS finishes the fold it started; nothing drives
 
+-- ---------------------------------------------------------------- deliver
+-- GIANTS' own Deliver helper takes the rig's cargo to a selling station and tips it there
+-- (AIJobTypeManager "DELIVER" -> AIJobDeliver: applyCurrentState 173-212 lists the stations
+-- GIANTS' AI can unload at; getStartTaskIndex 258-288 skips the loading leg when the trailer
+-- already holds something; the drive and AITaskDischarge are GIANTS'). The station: the best
+-- paid SellingStation for what the rig carries among those (getIsFillTypeAISupported,
+-- getEffectiveFillTypePrice as ADTriggerManager:getHighestPayingSellStation reads it); no
+-- looping. DONE once GIANTS' job ends with the rig at rest; the companion checks the cargo
+-- went and the money came.
+Bridge.DELIVER_TIMEOUT_MS = 1800000
+
+function starters.deliver(env, spec)
+    local v = spec.tractor
+    local denied = idle(env, v, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local okType, fillType = pcall(cargoFillType, v)
+    if not okType or fillType == nil then return nil, "NOTHING_TO_SELL" end
+    local ok, reason = pcall(function()
+        local mission = env.g_currentMission
+        local job = mission.aiJobTypeManager:createJob(env.AIJobType.DELIVER)
+        if job == nil then return "NO_DELIVER_JOB" end
+        if job:getIsAvailableForVehicle(v) ~= true then return "DELIVER_UNAVAILABLE" end
+        job:applyCurrentState(v, mission, spec.farmId, false)
+        local best, bestPrice = nil, -1
+        for _, id in ipairs(job.unloadingStationParameter.unloadingStationIds or {}) do
+            local station = env.NetworkUtil.getObject(id)
+            if station ~= nil and station:isa(env.SellingStation) and station:getIsFillTypeAISupported(fillType) then
+                local price = station:getEffectiveFillTypePrice(fillType)
+                if finite(price) and price > bestPrice then best, bestPrice = station, price end
+            end
+        end
+        if best == nil then return "NO_SELL_POINT" end
+        job.unloadingStationParameter:setUnloadingStation(best)
+        job.loopingParameter:setIsLooping(false)
+        job:setValues()
+        if job:validate(spec.farmId) ~= true then return "DELIVER_INVALID" end
+        Bridge.aiStops[v] = nil
+        log("deliver: to %s at %.3f per litre", tostring(best:getName()), bestPrice)
+        mission.aiSystem:startJob(job, spec.farmId)
+        return nil
+    end)
+    if not ok then return nil, "DELIVER_ERROR" end
+    if reason ~= nil then return nil, reason end
+    return { seen = false }
+end
+
+function steppers.deliver(env, task)
+    local status, code = stillOurs(task.spec)
+    if status ~= nil then return status, code end
+    local v = task.spec.tractor
+    local active = v:getIsAIActive()
+    if active == true then
+        task.seen = true
+        if task.elapsed > Bridge.DELIVER_TIMEOUT_MS then return "FAILED", "TIMEOUT" end
+        return nil
+    end
+    if not task.seen then
+        if task.elapsed > Bridge.START_TIMEOUT_MS then return "FAILED", Bridge.aiStops[v] or "DELIVER_NOT_STARTED" end
+        return nil
+    end
+    return settle(task, Bridge.aiStops[v] or "AI_STOPPED")
+end
+
+aborts.deliver = abortGoto
+
 -- ------------------------------------------------------------------ pipe / overload
 -- A standing combine emptied into a trailer the way GIANTS' own overloading does it (the
 -- user 2026-10-21: the combine was full and its helper would not work on; AutoDrive's
@@ -2056,6 +2122,7 @@ Bridge.NOTICES = {
     ACCEPTED_UNLOAD_COMBINE = "Farmhand: sending an AutoDrive tractor and trailer to unload the combine",
     COMPLETE_UNLOAD_COMBINE = "Farmhand: the combine is being unloaded",
     COMBINE_UNLOADED = "Farmhand: combine emptied into the trailer",
+    COMBINE_FULL = "Farmhand: the combine is full; emptying it, selling the grain, then harvesting on",
     NOTHING_TO_HITCH_TOGETHER = "Farmhand: say which tractor and implement to hitch (or buy them in the same sentence)",
     ACCEPTED_SELL = "Farmhand: taking the load to the best paid sell point (AutoDrive)",
     COMPLETE_SELL = "Farmhand: sold; the load is gone and the money is in",
@@ -2277,6 +2344,11 @@ Bridge.REASONS = {
     PIPE_NOT_ALLOWED = "the combine's pipe cannot move now",
     PIPE_TIMEOUT = "the combine's pipe did not finish moving",
     NOT_OVERLOADING = "nothing came out of the pipe into the trailer",
+    DELIVER_UNAVAILABLE = "GIANTS' deliver helper cannot drive that rig",
+    DELIVER_INVALID = "GIANTS' deliver helper refused the trip",
+    DELIVER_NOT_STARTED = "GIANTS' deliver helper did not start",
+    CARGO_NOT_UNLOADED = "the trailer was not emptied at the sell point; check it",
+    PAYMENT_NOT_OBSERVED = "no payment came in for the load; check it",
     ALONGSIDE_NOT_LINED_UP = "the trailer did not end up on the pipe's line",
     ALONGSIDE_PATH_BLOCKED = "something stands in the way beside the combine",
     ALONGSIDE_BLOCKED = "another vehicle is too close to the way beside the combine",

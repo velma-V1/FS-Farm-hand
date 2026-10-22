@@ -74,6 +74,11 @@ class World(Protocol):
         is under the reserved combine's pipe (AGENTS.md exception 6); UNDER_PIPE at rest."""
         ...
 
+    def giants_deliver(self, tractor_id: str, owner: str) -> str:
+        """SELL: GIANTS' Deliver helper takes the reserved rig's cargo to the best paid selling
+        station and tips it there; the caller checks the cargo and the money."""
+        ...
+
     def overload(self, combine_id: str, trailer_id: str, owner: str) -> str:
         """OVERLOAD: the reserved standing combine (pipe out) discharges into the trailer
         under its pipe, GIANTS' own discharge; EMPTIED, TRAILER_FULL or OVERLOAD_STOPPED.

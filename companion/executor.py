@@ -466,6 +466,12 @@ def describe(coverage: FieldCoverage | None) -> str:
     return f"ground[{ground}] spray[{spray}] fruit[{fruit}]/{coverage.sampled} m2={coverage.total_m2}"
 
 
+# GIANTS' Deliver helper refusing a rig before it moves (mod/FarmhandBridge.lua starters.deliver):
+# AutoDrive may take it instead.
+DELIVER_REFUSALS = frozenset({"NO_DELIVER_JOB", "DELIVER_UNAVAILABLE", "DELIVER_INVALID", "NO_SELL_POINT",
+                              "DELIVER_ERROR"})
+
+
 # ------------------------------------------------------------------ procurement
 # What to buy for a want, from the store's own catalog (mod/FarmhandObserve.lua
 # Observe.storeItem). A want is {"kind": "plow" | "truck" | "trailer" | "tractor" | "spreader" | "sprayer", "size":
@@ -1157,9 +1163,10 @@ class Executor:
         RESERVE -> UNLOADER (AutoDrive's combine unloader, waiting at the field's marker and
         unloading at the best paid sell point for its crop): COMPLETE UNLOADER_STARTED with
         the rig still reserved (it goes on; the coordinator stops it).
-        sell: FIND the AutoDrive rig with the most cargo (by name if said) -> RESERVE -> SELL
-        (AutoDrive to the best paid sell point, unloaded there) -> VERIFY (the cargo gone,
-        the money arrived) -> STOP -> RELEASE."""
+        sell: FIND the rig with the most cargo (by name if said) -> RESERVE -> SELL (GIANTS'
+        own Deliver helper to the best paid selling station, tipped there; AutoDrive's
+        deliver mode when GIANTS refuses the rig) -> VERIFY (the cargo gone, the money
+        arrived) -> STOP -> RELEASE."""
         owner, farm_id = command["request_id"], command["farm_id"]
         selling = command["task"] == "sell"
         ids, reserved, handed, moved = (), False, False, False
@@ -1175,7 +1182,7 @@ class Executor:
             rigs = []
             for tractor in items:
                 trailer = observed.get(tractor.attached_to)
-                if not (tractor.category == "tractor" and "autodrive" in tractor.capabilities and trailer is not None
+                if not (tractor.category == "tractor" and (selling or "autodrive" in tractor.capabilities) and trailer is not None
                         and trailer.attached_to == tractor.id and "trailer" in trailer.kinds and trailer.fill_units
                         and all(usable(x, farm_id) and x.stopped for x in (tractor, trailer))
                         and named(tractor, command.get("tractor_name"))):
@@ -1215,7 +1222,13 @@ class Executor:
                 money = farm.money if farm is not None else None
                 enter("SELL")
                 moved = True
-                self.world.ad_sell(tractor.id, owner)
+                try:
+                    self.world.giants_deliver(tractor.id, owner)  # GIANTS' own Deliver helper
+                except StepFailed as failure:
+                    if failure.code not in DELIVER_REFUSALS or "autodrive" not in tractor.capabilities:
+                        raise
+                    log.info("SELL: GIANTS' deliver refused (%s); AutoDrive instead", failure.code)
+                    self.world.ad_sell(tractor.id, owner)
                 enter("VERIFY")
                 after = self._at_rest(ids)
                 left = cargo(after[trailer.id])

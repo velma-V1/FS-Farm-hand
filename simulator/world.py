@@ -317,6 +317,7 @@ class MockWorld:
 
     mock_workers = {}             # mock-only: tractor id -> a handed-off helper's job
     mock_sell_at = None           # mock-only: where the best paid sell point is; None: none reachable
+    mock_no_deliver = False       # mock-only: GIANTS' Deliver helper refuses the rig
     mock_price = 2.0              # mock-only: money per litre sold
 
     def _cargo(self, tractor_id):
@@ -391,6 +392,12 @@ class MockWorld:
                                                                           level=(unit.level or 0.0) + moved),)
                                              + trailer.fill_units[1:])
             return "EMPTIED" if moved == grain.level else "TRAILER_FULL"
+
+    def giants_deliver(self, tractor_id, owner):
+        # Mock-only: GIANTS' Deliver helper; as ad_sell unless mock_no_deliver.
+        if self.mock_no_deliver:
+            raise StepFailed("DELIVER_UNAVAILABLE")
+        return self.ad_sell(tractor_id, owner)
 
     def ad_sell(self, tractor_id, owner):
         # Mock-only: the cargo goes to the sell point, the farm is paid for it.

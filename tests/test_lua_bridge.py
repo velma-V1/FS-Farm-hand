@@ -1850,6 +1850,79 @@ class PipeOverloadTests(unittest.TestCase):
         self.assertEqual(tuple(self.step(self.bridge, self.env, task, 16000)), ("FAILED", "NOT_OVERLOADING"))
 
 
+class GiantsDeliverTests(unittest.TestCase):
+    """deliver: GIANTS' own Deliver helper (AIJobDeliver) to the best paid SellingStation its
+    AI can unload at for what the rig carries, no looping; DONE once its job ended at rest.
+    Stubs in GDN's shapes only."""
+
+    ENV = r"""
+        local env = { AIJobType = { DELIVER = 4 }, started = {} }
+        local Selling, Other = {}, {}
+        local function station(name, kind, price, ai)
+            return { name = name, kind = kind, price = price, ai = ai,
+                     isa = function(self, c) return self.kind == c end,
+                     getIsFillTypeAISupported = function(self, ft) return self.ai end,
+                     getEffectiveFillTypePrice = function(self, ft) return self.price end,
+                     getName = function(self) return self.name end }
+        end
+        env.SellingStation = Selling
+        local stations = { [11] = station("silo", Other, 9, true), [12] = station("mill", Selling, 1.2, true),
+                           [13] = station("elevator", Selling, 1.5, true), [14] = station("port", Selling, 2.0, false) }
+        env.NetworkUtil = { getObject = function(id) return stations[id] end, getObjectId = function() return 5 end }
+        local job = { unloadingStationParameter = { unloadingStationIds = { 11, 12, 13, 14 } },
+                      loopingParameter = { setIsLooping = function(self, b) self.looping = b end } }
+        function job.unloadingStationParameter:setUnloadingStation(st) self.chosen = st end
+        function job:getIsAvailableForVehicle(v) return true end
+        function job:applyCurrentState(v, mission, farmId, direct) self.applied = true end
+        function job:setValues() end
+        function job:validate(farmId) return true end
+        env.job = job
+        env.g_currentMission = { aiJobTypeManager = { createJob = function(_, t) return t == 4 and job or nil end },
+                                 aiSystem = { startJob = function(_, j, farmId) env.started[#env.started + 1] = j end } }
+        local trailer = { levels = { 8000 } }
+        function trailer:getFillUnits() return { {} } end
+        function trailer:getFillUnitFillLevel(i) return self.levels[i] end
+        function trailer:getFillUnitFillType(i) return 7 end
+        local v = { ownerFarmId = 1, ai = false, speed = 0 }
+        function v:getIsEntered() return false end
+        function v:getIsAIActive() return self.ai end
+        function v:getLastSpeed() return self.speed end
+        function v:getAttachedImplements() return { { object = trailer } } end
+        env.v, env.trailer = v, trailer
+        return env
+    """
+
+    def setUp(self):
+        self.lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        self.lua.globals().print = lambda *a: None
+        for name in ("FarmhandObserve.lua", "FarmhandHitch.lua"):
+            self.lua.execute((ROOT / "mod" / name).read_text())
+        self.bridge = self.lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        self.env = self.lua.execute(self.ENV)
+        self.start = self.lua.eval("""function(B, env)
+            local task, code = B.start(env, { op = "deliver", tractor = env.v, farmId = 1, owned = function() return true end })
+            if task ~= nil then task.elapsed = 0 end
+            return task, code end""")
+        self.step = self.lua.eval("function(B, env, task, ms) task.elapsed = task.elapsed + ms; return B.step(env, task, ms) end")
+
+    def test_the_best_paid_selling_station_giants_ai_can_unload_at_no_looping(self):
+        task, code = self.start(self.bridge, self.env)
+        self.assertIsNotNone(task, code)
+        self.assertEqual(self.env.job.unloadingStationParameter.chosen.name, "elevator")   # not the port (no AI), not the silo
+        self.assertEqual(self.env.job.loopingParameter.looping, False)
+        self.assertEqual(len(self.env.started), 1)
+        self.assertEqual(tuple(self.step(self.bridge, self.env, task, 16))[:1], (None,))   # not yet seen working
+        self.env.v.ai = True
+        self.assertEqual(tuple(self.step(self.bridge, self.env, task, 16))[:1], (None,))
+        self.env.v.ai = False
+        self.assertEqual(tuple(self.step(self.bridge, self.env, task, 16)), ("DONE", "AI_STOPPED"))
+
+    def test_nothing_to_sell_moves_nothing(self):
+        self.env.trailer.levels[1] = 0
+        self.assertEqual(tuple(self.start(self.bridge, self.env))[1], "NOTHING_TO_SELL")
+        self.assertEqual(len(self.env.started), 0)
+
+
 class FollowTests(unittest.TestCase):
     """follow: FollowMe's registered vehicle functions (initiateFollowVehicle, getIsFollowVehicleActive,
     getCanStartFollowVehicle; FollowVehicle.lua 38-75, 556-571), the leader the vehicle the player

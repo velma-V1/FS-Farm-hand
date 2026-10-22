@@ -949,6 +949,40 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertIn("COMBINE_UNLOADED", notices)
         self.assertEqual(world.items["c-1"].fill_units[1].level, 0.0)
 
+    def test_a_combine_full_while_harvesting_is_emptied_sold_and_harvests_on(self):
+        # GIANTS' helper waits at a full tank for a trailer (AIDriveStrategyCombine); with no
+        # AutoDrive unloader none comes: Farmhand stops it, empties it, sells, starts it again.
+        world = self.full_combine_world()
+        unit = world.items["c-1"].fill_units[1]
+        world.items["c-1"] = replace(world.items["c-1"], fill_units=(world.items["c-1"].fill_units[0],
+                                                                     replace(unit, level=0.0)))
+        world.mock_no_deliver = True                                  # sold through AutoDrive instead
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"), c.last)
+        combine = world.items["c-1"]
+        world.items["c-1"] = replace(combine, fill_units=(combine.fill_units[0], replace(unit, level=9000.0)))
+        self.assertTrue(until(lambda: "COMBINE_FULL" in notices))
+        self.assertTrue(until(lambda: c.last.command == "combine_full" and c.last.state == "COMPLETE"))
+        self.assertEqual(world.items["c-1"].fill_units[1].level, 0.0)
+        self.assertEqual(world.farm().money, FARM.money + 9000.0 * world.mock_price)
+        self.assertEqual([w.tractor for w in c.workers if w.operation == "harvest"], ["c-1"])   # harvesting on
+
+    def test_sell_uses_giants_deliver_helper_without_autodrive(self):
+        world = self.world(cargo=8000.0)
+        tractor = world.items["t-5"]
+        world.items["t-5"] = replace(tractor, capabilities=tractor.capabilities - {"autodrive"})
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "sell"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "SOLD"), c.last)
+        world.mock_no_deliver = True
+        world.items["w-5"] = replace(world.items["w-5"], fill_units=(FillUnit(1, "WHEAT", 500.0, 30000.0),))
+        c.submit({"version": 1, "command": "sell"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("FAILED", "DELIVER_UNAVAILABLE"))   # no AutoDrive to fall back on
+
     def test_the_trailer_must_stand_under_the_pipe(self):
         class Wide(CoordinatedWorld):
             def overload(self, combine_id, trailer_id, owner):
