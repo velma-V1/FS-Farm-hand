@@ -230,6 +230,20 @@ function Bridge.adState(env, v)
     pcall(function() d.task = tostring(v.ad.stateModule:getCurrentTaskInfo()) end)
     pcall(function() local _, dist = v:getClosestWayPoint(); d.network = dist end)
     pcall(function() local wps, cur = v.ad.drivePathModule:getWayPoints(); d.route = wps and #wps or 0; d.at = cur end)
+    -- Where it is steering to (live 344392c02cd942ff-2: after a STOP and "continue" it crept at
+    -- 0.1-0.4 km/h for 3 min at route point 2 of 467): that waypoint in the vehicle's own frame
+    -- (ahead, to its side), and the steering state (rotatedTime of its limits).
+    pcall(function()
+        local wps, cur = v.ad.drivePathModule:getWayPoints()
+        local wp = wps[cur]
+        local x, y, z = wp.x, wp.y or 0, wp.z
+        local lx, _, lz = env.worldToLocal(v.rootNode, x, y, z)
+        d.wpAhead, d.wpSide = lz, lx
+    end)
+    pcall(function()
+        local limit = v.rotatedTime >= 0 and v.maxRotTime or -v.minRotTime
+        d.steer = limit ~= 0 and v.rotatedTime / limit or nil
+    end)
     pcall(function() d.paused = v.ad.drivePathModule.isPaused == true end)
     pcall(function()
         d.obstacle = v.ad.collisionDetectionModule.detectedObstable == true
@@ -270,10 +284,11 @@ end
 local function describeAd(d)
     local function f(n) return type(n) == "number" and string.format("%.1f", n) or "?" end
     return string.format("task=%s network=%s route=%s/%s paused=%s obstacle=%s collision=%s folded=%s speed=%s sensors=%s "
-        .. "marker=%s activeTask=%s queued=%s foldWaitMs=%s forceIsActive=%s isActive=%s motor=%s",
+        .. "marker=%s activeTask=%s queued=%s foldWaitMs=%s forceIsActive=%s isActive=%s motor=%s wp=(%s,%s) steer=%s",
         tostring(d.task), f(d.network), tostring(d.at), tostring(d.route), tostring(d.paused), tostring(d.obstacle),
         tostring(d.collision), tostring(d.folded), f(d.speed), d.sensors ~= "" and d.sensors or "-", tostring(d.marker),
-        tostring(d.active), tostring(d.queued), f(d.foldWaitMs), tostring(d.forced), tostring(d.updated), tostring(d.motor))
+        tostring(d.active), tostring(d.queued), f(d.foldWaitMs), tostring(d.forced), tostring(d.updated), tostring(d.motor),
+        f(d.wpAhead), f(d.wpSide), f(d.steer))
 end
 
 -- What a drive that does not move waits on: AutoDrive's own path planning onto its network

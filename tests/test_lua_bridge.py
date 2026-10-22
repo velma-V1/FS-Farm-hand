@@ -243,7 +243,10 @@ class LuaBridgeTests(unittest.TestCase):
             t.ad.stateModule.getCurrentTaskInfo = function() return task end
             function t:getClosestWayPoint() return 560, 41.5 end
             function t:getRootVehicle() return t end
-            t.ad.drivePathModule = { isPaused = false, getWayPoints = function() return { {}, {} }, 1 end }
+            t.ad.drivePathModule = { isPaused = false,
+                                     getWayPoints = function() return { { x = 3, z = 8 }, { x = 4, z = 20 } }, 1 end }
+            w.env.worldToLocal = function(node, x, y, z) return x - 1, y, z - 2 end
+            t.rotatedTime, t.maxRotTime, t.minRotTime = 0.3, 0.6, -0.6
             t.ad.collisionDetectionModule = { detectedObstable = sensorHit, detectedCollision = false }
             local sensor = { triggered = sensorHit, getMask = function() return 7 end,
                              getBoxShape = function() return { x = 1, y = 2, z = 3, rx = 0, ry = 0, size = { 1, 1, 1 } } end }
@@ -276,6 +279,7 @@ class LuaBridgeTests(unittest.TestCase):
                 self.assertIn("stopAutoDrive", self.calls())
                 logged = [line for line in self.printed if "drive stalled" in line]
                 self.assertTrue(logged)
+                self.assertIn("wp=(6.0,2.0) steer=0.5", logged[0])         # where it steers to
                 if hit:
                     self.assertIn("frontSensor[series9_main_component1@Series 9]", logged[0])
 
