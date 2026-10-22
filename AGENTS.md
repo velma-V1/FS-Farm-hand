@@ -92,7 +92,11 @@ have precedence; report conflicts instead of silently changing the scope.
      whole rig fits (the tractor inside the belt area, the rig forward to its front, the
      implement over the trailer's own deck), with the swept volume and every check covering
      the rig, refused unmoved otherwise; it stops if the implement is lowered or unfolded
-     on the way. Nothing towed comes along.
+     on the way. Nothing towed comes along. BACKOFF (the user, 2026-10-21, "figure this out"): a
+     tractor (alone or with that mounted implement) waiting at most 8 m behind the transport's
+     rear, which GIANTS' agent will not start there, goes straight back along its own heading,
+     at most 8 m at 3 km/h, under the same guards (swept volume behind clear, the transport
+     watched, no other vehicle or person near), so GIANTS GOTO can line it up from the run-up.
   6. ALONGSIDE (the user, 2026-10-21: "combine full, figure this out, quit stopping at every
      small issue"; GIANTS' helper cannot start a full combine, AutoDrive's unloader serves
      only a combine whose AI runs, and GIANTS GOTO takes no spot under the pipe). Only after

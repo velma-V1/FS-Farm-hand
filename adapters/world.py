@@ -75,6 +75,11 @@ class World(Protocol):
         combine (PASSED); AGENTS.md exception 6."""
         ...
 
+    def backoff(self, tractor_id: str, trailer_id: str, owner: str) -> str:
+        """BACKOFF: the reserved tractor straight back from the reserved transport trailer's
+        ramps it waits behind (AGENTS.md exception 5); BACKED_OFF at rest."""
+        ...
+
     def giants_deliver(self, tractor_id: str, owner: str) -> str:
         """SELL: GIANTS' Deliver helper takes the reserved rig's cargo to the best paid selling
         station and tips it there; the caller checks the cargo and the money."""

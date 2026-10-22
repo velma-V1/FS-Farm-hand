@@ -336,6 +336,67 @@ class LuaLoadTests(unittest.TestCase):
         self.assert_refused(self.world(ahead=1.0, foldTime=0), "LOAD_RAMPS_NOT_DOWN", direction=-1)
 
 
+class LuaBackOffTests(unittest.TestCase):
+    """BACKOFF (AGENTS.md exception 5, live 49b5344a47ec418a-1): a tractor waiting right behind
+    the transport's ramps, not lined up, straight back 8 m at 3 km/h so GIANTS can line it up."""
+    runtime = lua54
+    setUp, world, drives, moving, along = (LuaLoadTests.setUp, LuaLoadTests.world, LuaLoadTests.drives,
+                                           LuaLoadTests.moving, LuaLoadTests.along)
+    assert_ended_braked_and_restored = LuaLoadTests.assert_ended_braked_and_restored
+
+    def back(self, w):
+        out = self.hitch.newBackOff(w.env, self.W.args(w, self.lua.table(trailer=w.transportTrailer)))
+        out = out if isinstance(out, tuple) else (out,)
+        return out + (None,) * (3 - len(out))
+
+    def run_back(self, w, session, hook=None):
+        step = self.lua.eval("function(H, env, s) return H.backOffStep(env, s, 50) end")
+        for i in range(3000):
+            if hook:
+                hook(i)
+            code = step(self.hitch, w.env, session)
+            if code != "CONTINUE":
+                return code
+        return "CONTINUE"
+
+    def test_backs_straight_off_eight_metres_and_stops_braked(self):
+        w = self.world(turn=0.15, side=0.6)
+        x0, z0 = w.steer.x, w.steer.z
+        session, why, refused = self.back(w)
+        self.assertIsNotNone(session, (why, self.hitch.describeBackOff(refused)))
+        self.assertEqual(self.run_back(w, session), "BACKED_OFF", self.hitch.describeBackOff(session))
+        along, lateral = self.along(w, x0, z0)
+        self.assertLess(along, -7.99)
+        self.assertGreater(along, -8.3)
+        self.assertAlmostEqual(lateral, 0.0, places=6)
+        moving = self.moving(w)
+        self.assertTrue(moving and all(not d["forwards"] and d["maxSpeed"] == 3 for d in moving))
+        self.assert_ended_braked_and_restored(w)
+
+    def test_refused_unmoved_unless_at_the_transport_and_clear_behind(self):
+        far = self.world(ahead=20)                                  # the transport 13 m ahead of its front
+        self.assertEqual(tuple(self.back(far))[1], "BACKOFF_NOT_AT_THE_TRANSPORT")
+        w = self.world()
+        w.box(-9.0, -7.0, -1.0, 1.0, 0, 2.0, None, "wall")          # behind it
+        self.assertEqual(tuple(self.back(w))[1], "BACKOFF_PATH_BLOCKED")
+        w = self.world()
+        w.vehicle(-8.0, 4.0)                                         # another vehicle beside the way back
+        self.assertEqual(tuple(self.back(w))[1], "BACKOFF_BLOCKED")
+        self.assertEqual(self.drives(w), [])
+
+    def test_stops_braked_if_the_transport_moves(self):
+        w = self.world()
+        session, why, _ = self.back(w)
+        self.assertIsNotNone(session, why)
+        code = self.run_back(w, session, lambda i: i == 10 and setattr(w.truck.rootNode, "x", w.truck.rootNode.x + 1.0))
+        self.assertEqual(code, "TRANSPORT_MOVED")
+        self.assert_ended_braked_and_restored(w)
+
+
+class Lua51BackOffTests(LuaBackOffTests):
+    runtime = lua51
+
+
 class Lua51LoadTests(LuaLoadTests):
     runtime = lua51
 

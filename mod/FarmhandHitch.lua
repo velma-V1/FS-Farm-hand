@@ -2177,6 +2177,200 @@ function Hitch.describeLoad(s)
         tostring(s.aheadHits or "-"))
 end
 
+-- ---------------------------------------------------------------- BACKOFF
+-- AGENTS.md exception 5 (the user, 2026-10-21: "figure this out, quit stopping at every small
+-- issue"). A tractor waiting right behind a transport trailer's ramps but not lined up
+-- (GIANTS ended it there turned or aside) cannot be started again by GIANTS' agent so close
+-- to the trailer (live f41b44f422974e15-5, 49b5344a47ec418a-1: BLOCKED_AT_START): straight
+-- back along its own heading, at most travelM at 3 km/h, so GIANTS GOTO can line it up from
+-- the run-up. Only the tractor alone or with one mounted implement lifted and folded (as
+-- LOAD), only with the transport ahead within nearM, the swept volume behind clear in GIANTS'
+-- collision query and no other vehicle (the transport aside) or person near the path; LOAD's
+-- guards while moving and the transport watched; restore-on-every-exit. Nothing is teleported.
+Hitch.BACKOFF = {
+    maxSpeedKmh = 3, timeoutMs = 30000, travelM = 8, nearM = 8,
+    divergeM = 0.3, lookaheadM = 3,
+    lateralMarginM = 0.3, floorClearanceM = 0.3, topMarginM = 0.3, stepM = 0.5, aheadEndM = 0.5,
+    minLookaheadM = 2, reactionS = 1, decelMs2 = 1, movedM = 0.25,
+}
+
+local function backoffVolume(env, s, a0, a1)
+    local D = Hitch.BACKOFF
+    return clearVolume(env, s, a0, a1, D.lateralMarginM, D.stepM, D.floorClearanceM, s.rigBox.height + D.topMarginM,
+                       s.masks.obstacles)
+end
+
+-- `args`: tractor, trailer (the transport it waits behind), farmId, isReserved. A session, or
+-- nil, a reason and the half-built session (for the log).
+function Hitch.newBackOff(env, args)
+    local D = Hitch.BACKOFF
+    local s = { tractor = args.tractor, wagon = args.trailer, trailer = args.trailer, farmId = args.farmId,
+                isReserved = args.isReserved, maxSpeedKmh = D.maxSpeedKmh, timeoutMs = D.timeoutMs, sign = -1,
+                travelM = D.travelM, elapsed = 0, sinceProgress = 0, best = 0, result = nil, others = {} }
+    if type(args.isReserved) ~= "function" then return nil, "INVALID_LIMITS" end
+    local ok, reason = pcall(function()
+        local tractor, trailer = s.tractor, s.trailer
+        if tractor:getIsEntered() == true then return "SEATED_DURING_BACKOFF" end
+        local v = tractor:getLastSpeed()
+        if not finite(v) or math.abs(v) >= 1 then return "NOT_STOPPED" end
+        Hitch.watchDriver(env, tractor)
+        local denied = unparkAuthority(s)
+        if denied ~= nil then return denied end
+        local axis = tractor.spec_articulatedAxis
+        if axis ~= nil and axis.componentJoint ~= nil then return "BACKOFF_ARTICULATED_UNSUPPORTED" end
+        local okUnits, units = pcall(rigUnits, tractor)
+        if not okUnits then return "BACKOFF_GEOMETRY_UNKNOWN" end
+        if #units > 2 then return "BACKOFF_NOT_ALONE" end
+        if #units == 2 then
+            local problem = mountedProblem(env, tractor, units[2])
+            if problem ~= nil then return problem end
+        end
+        s.units = units
+        local node = tractor:getAISteeringNode()
+        local ox, _, oz = world(env, node)
+        local fx, _, fz = env.localDirectionToWorld(tractor.rootNode, 0, 0, 1)
+        assert(finite(fx) and finite(fz))
+        local n = math.sqrt(fx * fx + fz * fz)
+        s.ox, s.oz, s.dirX, s.dirZ = ox, oz, fx / n, fz / n
+        s.yaw = atan2(s.dirX, s.dirZ)
+        s.last = { wx = s.ox, wz = s.oz }
+        s.transport = transportSet(trailer)
+        s.rig = {}
+        for _, unit in ipairs(units) do s.rig[unit] = true end
+        local rigBox = nil
+        for _, unit in ipairs(units) do
+            local okBox, box = pcall(unitBox, env, s, unit)
+            if not okBox then return "BACKOFF_GEOMETRY_UNKNOWN" end
+            rigBox = rigBox == nil and box or { aMin = math.min(rigBox.aMin, box.aMin), aMax = math.max(rigBox.aMax, box.aMax),
+                                                lMin = math.min(rigBox.lMin, box.lMin), lMax = math.max(rigBox.lMax, box.lMax),
+                                                height = math.max(rigBox.height, box.height) }
+        end
+        s.rigBox, s.lMin, s.lMax = rigBox, rigBox.lMin, rigBox.lMax
+        -- The transport ahead, near (its size box's nearest corner within nearM of the front).
+        local okT, tBox = pcall(unitBox, env, s, trailer)
+        if not okT then return "BACKOFF_GEOMETRY_UNKNOWN" end
+        s.gapM = tBox.aMin - rigBox.aMax
+        if tBox.aMax < rigBox.aMax or s.gapM > D.nearM then return "BACKOFF_NOT_AT_THE_TRANSPORT" end
+        local okMasks, masks = pcall(collisionMasks, env)
+        if not okMasks then return "BACKOFF_QUERY_UNKNOWN" end
+        s.masks = masks
+        local b = rigBox
+        local da, dl = (b.aMax - b.aMin) * 0.1, (b.lMax - b.lMin) * 0.1
+        local body = overlap(env, s, b.aMin + da, b.aMax - da, b.lMin + dl, b.lMax - dl, 0.1 * b.height,
+                             0.9 * b.height, masks.vehicles)
+        local ground = overlap(env, s, b.aMin + da, b.aMax - da, b.lMin + dl, b.lMax - dl, -0.5, 0.5, masks.terrain)
+        if body == nil or body.own < 1 or ground == nil or ground.terrain < 1 then return "BACKOFF_QUERY_UNVERIFIED" end
+        s.sweepFrom, s.sweepTo = rigBox.aMin, rigBox.aMin - s.travelM - D.aheadEndM
+        local bad, names = backoffVolume(env, s, s.sweepFrom, s.sweepTo)
+        if bad == "UNKNOWN" then return "BACKOFF_QUERY_UNKNOWN" end
+        if bad ~= nil then s.pathHits = names; return "BACKOFF_PATH_BLOCKED" end
+        local okAround, others, player = pcall(loadSurroundings, env, s)
+        if not okAround then return "LOCAL_AREA_UNKNOWN" end
+        s.others, s.player = others, player
+        local conflict = pullConflict(s, { { 0, 0 }, { -s.travelM, 0 } }, Hitch.LOCAL.vehicleClearanceM,
+                                      Hitch.LOCAL.playerClearanceM)
+        if conflict == "OTHER_VEHICLE_NEAR" then return "BACKOFF_BLOCKED" end
+        if conflict == "PERSON_TOO_CLOSE" then return "BACKOFF_PERSON" end
+        s.watched = {}
+        for unit in pairs(s.transport) do
+            local ux, _, uz = world(env, unit.rootNode)
+            s.watched[#s.watched + 1] = { vehicle = unit, wx = ux, wz = uz }
+        end
+        return nil
+    end)
+    if not ok then return nil, "UNKNOWN_OBSERVATION", s end
+    if reason ~= nil then return nil, reason, s end
+    return s
+end
+
+local function backoffDrive(env, s, dt)
+    local D = Hitch.BACKOFF
+    local denied = unparkAuthority(s)
+    if denied ~= nil then return denied end
+    if s.tractor:getIsEntered() ~= false then return "SEATED_DURING_BACKOFF" end
+    local node = s.tractor:getAISteeringNode()
+    local x, _, z = world(env, node)
+    local along, lateral = inFrame(s, x, z)
+    local progress = -along
+    s.lastAlong, s.lastLateral = along, lateral
+    pcall(function() s.lastSpeed = s.tractor:getLastSpeed() end)
+    local units = rigUnits(s.tractor)
+    if #units ~= #s.units then return "RIG_CHANGED" end
+    for i, unit in ipairs(units) do
+        if unit ~= s.units[i] then return "RIG_CHANGED" end
+    end
+    if #units == 2 and mountedProblem(env, s.tractor, units[2]) ~= nil then return "IMPLEMENT_CHANGED" end
+    for _, w in ipairs(s.watched) do
+        local ux, _, uz = world(env, w.vehicle.rootNode)
+        if distance(ux, uz, w.wx, w.wz) > D.movedM then return "TRANSPORT_MOVED" end
+    end
+    if math.abs(lateral) > D.divergeM then return "DIVERGED" end
+    if progress > s.travelM + 0.5 then return "DISTANCE_LIMIT" end
+    if s.elapsed > s.timeoutMs then return "TIMEOUT" end
+    for _, other in ipairs(s.others) do
+        local vx, _, vz = world(env, other.vehicle.rootNode)
+        if distance(vx, vz, other.wx, other.wz) > Hitch.LOCAL.movedM then return "OTHER_VEHICLE_MOVED" end
+    end
+    local others, player = loadSurroundings(env, s)
+    s.others, s.player = others, player
+    local bad = pullConflict(s, { { along, 0 } }, Hitch.LOCAL.vehicleStopM, Hitch.LOCAL.playerStopM)
+    if bad ~= nil then return bad end
+    if progress >= s.travelM then return "BACKED_OFF" end
+    local v = math.abs(s.lastSpeed or 0) / 3.6
+    local reach = math.max(D.minLookaheadM, v * D.reactionS + v * v / (2 * D.decelMs2) + 0.5)
+    local lead = s.rigBox.aMin - progress
+    local far = math.max(lead - reach, s.sweepTo)
+    if lead - far > 0.05 then
+        local hit, names = backoffVolume(env, s, lead, far)
+        if hit == "UNKNOWN" then return "UNKNOWN_OBSERVATION" end
+        if hit ~= nil then s.aheadHits = names; return "OBSTACLE_AHEAD" end
+    end
+    if progress > s.best + Hitch.LOCAL.stallProgressM then
+        s.best, s.sinceProgress = progress, 0
+    else
+        s.sinceProgress = s.sinceProgress + dt
+        if s.sinceProgress > Hitch.LOCAL.stallMs then return "STALLED" end
+    end
+    local tractor = s.tractor
+    if not tractor:getIsMotorStarted() then
+        if not tractor:getCanMotorRun() then return "MOTOR_UNAVAILABLE" end
+        tractor:startMotor()
+    end
+    Hitch.holdActive(s)
+    tractor:raiseActive()
+    local steer = tractor:getAIReverserNode() or node
+    local _, wy = env.getWorldTranslation(steer)
+    local gx, gz = fromFrame(s, along - D.lookaheadM, 0)
+    local lx, _, lz = env.worldToLocal(steer, gx, wy, gz)
+    env.AIVehicleUtil.driveToPoint(tractor, dt, 1, true, false, lx, lz, s.maxSpeedKmh)
+    return "CONTINUE"
+end
+
+-- One update: "CONTINUE", "BACKED_OFF" (braked travelM back) or a failure as LOAD's.
+-- Latched: later calls only brake.
+function Hitch.backOffStep(env, s, dt)
+    if s.result ~= nil then
+        Hitch.halt(env, s, dt)
+        return s.result
+    end
+    s.elapsed = s.elapsed + dt
+    local ok, code = pcall(backoffDrive, env, s, dt)
+    if not ok then code = "UNKNOWN_OBSERVATION" end
+    if code ~= "CONTINUE" then
+        s.result = code
+        Hitch.halt(env, s, dt)
+    end
+    return code
+end
+
+function Hitch.describeBackOff(s)
+    if s == nil then return "-" end
+    local function f(n) return n and string.format("%.2f", n) or "?" end
+    return string.format("gap=%s travel=%s along=%s lateral=%s speed=%s t=%dms pathHits=%s aheadHits=%s",
+        f(s.gapM), f(s.travelM), f(s.lastAlong), f(s.lastLateral), f(s.lastSpeed), s.elapsed or 0,
+        tostring(s.pathHits or "-"), tostring(s.aheadHits or "-"))
+end
+
 -- ---------------------------------------------------------------- ALONGSIDE
 -- AGENTS.md exception 6 (the user, 2026-10-21, "combine full, figure this out"): a standing
 -- combine's grain into a trailer. GIANTS' helper cannot start with the tank full

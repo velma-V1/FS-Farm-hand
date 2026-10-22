@@ -1529,6 +1529,19 @@ class Executor:
                 tractor, trailer = self._settled_transport((tractor.id, trailer.id))
             except StepFailed as failure:
                 log.info("APPROACH run-up %s: %s", run_up, failure.code)
+                if failure.code not in START_BLOCKED_CODES and failure.code != "UNPARK_ALREADY_USED":
+                    continue
+                # Waiting right behind the ramps, not lined up, and GIANTS will not start it there
+                # (live 49b5344a47ec418a-1): straight back (BACKOFF), then the run-up again.
+                try:
+                    self._enter("BACKOFF")
+                    self.world.backoff(tractor.id, trailer.id, owner)
+                    tractor, trailer = self._settled_transport((tractor.id, trailer.id))
+                    run_up = transport.load_aims(tractor, trailer, (transport.RUN_UP_GAP_M,))[0]
+                    self._navigate(tractor.id, run_up, owner, free=False)
+                    tractor, trailer = self._settled_transport((tractor.id, trailer.id))
+                except StepFailed as again:
+                    log.info("APPROACH after BACKOFF: %s", again.code)
         for aim in transport.load_aims(tractor, trailer):
             try:
                 self._navigate(tractor.id, aim, owner, free=True)

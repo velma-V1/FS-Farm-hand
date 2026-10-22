@@ -245,6 +245,18 @@ class TractorTransportTests(unittest.TestCase):
             self.assertAlmostEqual(fronts[1], -5.0 - transport.FRONT_GAPS_M[0])
             self.assertEqual(len(world.aims), 2)
 
+    def test_a_tractor_stuck_right_behind_the_ramps_backs_off_and_runs_up_again(self):
+        # Live 49b5344a47ec418a-1: the Series 9 + plow left at the ramps, turned; GIANTS
+        # BLOCKED_AT_START there, UNPARK refused (in the open): BACKOFF 8 m, then the run-up.
+        world, tractor, deck, _ = transport_world(tractor_ahead=-9.0, tractor_side=0.6)
+        world.boxed = {tractor.id: {"refuse": "UNPARK_NOT_BOXED"}}
+        world.items[tractor.id] = replace(world.items[tractor.id], heading=deck.heading + 0.2,
+                                          ai_root=Pose(*tractor.position, deck.heading + 0.2))
+        result = Executor(world).execute(load())
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+        self.assertIn("BACKOFF", result.states)
+        self.assertEqual(world.backed_off, (tractor.id,))
+
     def test_unload_releases_the_belts_lowers_the_ramps_backs_off_and_raises_them(self):
         from companion import hitch as transport
         world, tractor, deck, _ = transport_world()

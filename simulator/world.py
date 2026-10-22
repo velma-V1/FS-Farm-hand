@@ -17,6 +17,7 @@ MOCK_PIPE_HIT_M = 1.5             # mock-only: how near the trailer's middle mus
 MOCK_ALONGSIDE_LATERAL_M = 2.5    # = mod/FarmhandHitch.lua Hitch.ALONGSIDE.startLateralM
 MOCK_ALONGSIDE_MAX_M = 25.0       # = Hitch.ALONGSIDE.maxTravelM
 MOCK_PASS_M = 12.0                # mock-only: how far on past the combine
+MOCK_BACKOFF_M = 8.0              # = mod/FarmhandHitch.lua Hitch.BACKOFF.travelM
 MOCK_REVERSE_REACH_M = 10.0      # the mod's reverse cap (Hitch.LIMITS.maxDistanceM)
 MOCK_LOCAL_RADIUS_M = 25.0       # the mod's local work radius (Hitch.LOCAL_LIMITS.workRadiusM)
 MOCK_PULL_CLEAR_M = 4.5          # the mod's pull-clear separation (Hitch.PULL.clearM)
@@ -320,6 +321,7 @@ class MockWorld:
     mock_sell_at = None           # mock-only: where the best paid sell point is; None: none reachable
     mock_no_deliver = False       # mock-only: GIANTS' Deliver helper refuses the rig
     mock_passed = ()              # mock-only: the rigs ALONGSIDE took on past a combine
+    backed_off = ()               # mock-only: the tractors BACKOFF took back from a transport
     mock_price = 2.0              # mock-only: money per litre sold
 
     def _cargo(self, tractor_id):
@@ -399,6 +401,18 @@ class MockWorld:
                                                                           level=(unit.level or 0.0) + moved),)
                                              + trailer.fill_units[1:])
             return "EMPTIED" if moved == grain.level else "TRAILER_FULL"
+
+    def backoff(self, tractor_id, trailer_id, owner):
+        # Mock-only teleport MOCK_BACKOFF_M straight back; the GOTO start block (boxed) lifted.
+        with self._lock:
+            tractor = self._owned(tractor_id, owner)
+            heading = tractor.heading or 0.0
+            back = Pose(tractor.position[0] - math.sin(heading) * MOCK_BACKOFF_M,
+                        tractor.position[1] - math.cos(heading) * MOCK_BACKOFF_M, heading)
+            self._carry(tractor, back)
+            self.boxed = {k: v for k, v in (self.boxed or {}).items() if k != tractor_id}
+            self.backed_off = self.backed_off + (tractor_id,)
+            return "BACKED_OFF"
 
     def giants_deliver(self, tractor_id, owner):
         # Mock-only: GIANTS' Deliver helper; as ad_sell unless mock_no_deliver.

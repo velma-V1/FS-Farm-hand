@@ -593,6 +593,39 @@ function aborts.load(env, task)
     Bridge.Hitch.abort(env, task.session, "STOPPED")
 end
 
+-- ---------------------------------------------------------------- backoff
+-- BACKOFF (AGENTS.md exception 5): the reserved tractor straight back from the reserved
+-- transport trailer's ramps it waits behind, so GIANTS can line it up again (Hitch.newBackOff).
+function starters.backoff(env, spec)
+    local denied = idle(env, spec.tractor, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local session, reason, refused = Bridge.Hitch.newBackOff(env, {
+        tractor = spec.tractor, trailer = spec.wagon, farmId = spec.farmId, isReserved = spec.owned,
+    })
+    if session == nil then
+        log("backoff refused %s: %s", tostring(reason), Bridge.Hitch.describeBackOff(refused))
+        return nil, reason
+    end
+    log("backoff start: %s", Bridge.Hitch.describeBackOff(session))
+    return { session = session }
+end
+
+function steppers.backoff(env, task, dt)
+    local code = Bridge.Hitch.backOffStep(env, task.session, dt)
+    if code == "CONTINUE" then return nil end
+    if not task.endLogged then
+        task.endLogged = true
+        log("backoff end %s %s", code, Bridge.Hitch.describeBackOff(task.session))
+    end
+    if code ~= "BACKED_OFF" then return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code end
+    return settle(task, code)
+end
+
+function aborts.backoff(env, task)
+    Bridge.Hitch.abort(env, task.session, "STOPPED")
+end
+
 -- -------------------------------------------------------------- alongside
 -- ALONGSIDE (AGENTS.md exception 6): the reserved tractor with its towed trailer straight
 -- forward until the trailer's middle is under the reserved standing combine's pipe
@@ -1836,7 +1869,7 @@ function aborts.stop() end
 -- --------------------------------------------------------------- runner
 
 Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true, load = true,
-                       overload = true, alongside = true }
+                       overload = true, alongside = true, backoff = true }
 Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true, ad_marker = true, contract = true }   -- ops that act on no vehicle
 
 function Bridge.start(env, spec)
