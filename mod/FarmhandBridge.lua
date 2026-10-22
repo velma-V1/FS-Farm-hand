@@ -254,12 +254,28 @@ local function adStallCode(d)
     return "AD_NOT_MOVING"
 end
 
+-- GIANTS updates a vehicle nobody sits in only while something raises it active
+-- (Vehicle:raiseActive, as Farmhand's own motions and AutoDrive inside its update do): AutoDrive
+-- started by its external interface sets forceIsActive (onStartAutoDrive 1294-1295) but its own
+-- update, which plans and drives, never ran on an asleep vehicle (live 2026-10-22 "take the deutz
+-- to the farm": forceIsActive true, isActive false, no task, motor off, 180 s unmoved). Raised
+-- every frame while AutoDrive runs a job Farmhand started, and for one handed off.
+local function keepAwake(v)
+    if v.ad ~= nil and v.ad.stateModule:isActive() == true then v:raiseActive() end
+end
+
+function Bridge.keepHandedAwake()
+    for v, op in pairs(Bridge.handed) do
+        if op == "drive" then pcall(keepAwake, v) end
+    end
+end
+
 function steppers.drive(env, task)
     local spec, v = task.spec, task.spec.tractor
     local status, code = stillOurs(spec)
     if status ~= nil then return status, code end
     local active = v.ad.stateModule:isActive()
-    if active == true then task.seen = true end
+    if active == true then task.seen = true; v:raiseActive() end
     if not task.seen then
         if task.elapsed > Bridge.START_TIMEOUT_MS then return "FAILED", "AD_NOT_STARTED" end
         return nil
@@ -2290,6 +2306,7 @@ function Bridge:update(dt)
     if self.env == nil then return end
     self.clock = self.clock + dt
     Bridge.watchGoto(self.env, dt)
+    Bridge.keepHandedAwake()
     if Bridge.lastDetach ~= nil then Bridge.lastDetach.age = Bridge.lastDetach.age + dt end
     if self.pipe == nil and self.session ~= nil then
         self.pipeTimer = self.pipeTimer + dt

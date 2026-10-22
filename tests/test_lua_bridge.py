@@ -39,6 +39,7 @@ function W.new()
     }
     function tractor:getLastSpeed() return w.speed end
     function tractor:getIsEntered() return w.entered end
+    function tractor:raiseActive() w.raised = (w.raised or 0) + 1 end
     tractor.rootVehicle = tractor
     function tractor:registerPlayerVehicleControlAllowedFunction(vehicle, func) w.controlFunc = func end
     w.takeOver = function() return w.controlFunc(tractor) end
@@ -196,6 +197,9 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])
         self.W.run(self.w, 2000)
         self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])   # still driving
+        # Kept awake every frame while AutoDrive drives it (asleep, AutoDrive's own update
+        # never ran: live 2026-10-22, forceIsActive true, isActive false, no task).
+        self.assertGreaterEqual(self.w.raised, 19)
         self.w.adActive = False
         self.w.speed = 3.0
         self.W.run(self.w, 300)
@@ -1811,6 +1815,7 @@ class AutoDriveSellTests(unittest.TestCase):
         function trailer:getFillUnitFillLevel(i) return self.levels[i] end
         function trailer:getFillUnitFillType(i) return 7 end
         local v = { ownerFarmId = 1, active = false, ad = {} }
+        function v:raiseActive() self.raised = (self.raised or 0) + 1 end
         v.ad.stateModule = { getStartHelper = function() return false end, setMode = function(_, m) v.mode = m end,
                              isActive = function() return v.active end }
         function v:getIsEntered() return false end
