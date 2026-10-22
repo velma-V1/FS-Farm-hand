@@ -736,7 +736,10 @@ class Executor:
 
     def _pair(self, ids, farm_id, owner, attached, check=None):
         check = check or self._compatible
-        observed = {item.id: item for item in self.world.snapshot()}
+        # Observed once both are at rest, waiting at most ARRIVAL_SETTLE_S (live 32be7171003041c4-1:
+        # the spreader GIANTS just detached still settled onto the ground, EQUIPMENT_MOVING; and
+        # c2316ec3fbb54123-1 after UNPARK braked): still moving after that is a real motion.
+        observed = self._at_rest(tuple(ids))
         if any(identifier not in observed for identifier in ids):
             raise ObservationMismatch("EQUIPMENT_MISSING")
         tractor, wagon = (observed[identifier] for identifier in ids)

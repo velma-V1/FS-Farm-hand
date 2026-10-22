@@ -1786,6 +1786,32 @@ class DetachTests(unittest.TestCase):
                 self.assertGreaterEqual(joint_separation(tractor, after[near[1].id]), PULL_CLEAR_M)
                 self.assertTrue(all(a.reserved_by is None for a in after.values()))
 
+    def test_a_detached_implement_still_settling_is_judged_once_at_rest(self):
+        # Live 32be7171003041c4-1: GIANTS detached the RZK 300H; it still settled onto the ground
+        # in the snapshot straight after (UNVERIFIED EQUIPMENT_MOVING). Judged at rest.
+        class Settling(MockWorld):
+            rolls = 0
+
+            def detach(self, *args, **kwargs):
+                out = super().detach(*args, **kwargs)
+                implement = args[1]
+                self.items[implement] = replace(self.items[implement], stopped=False)
+                self.rolls = 1
+                return out
+
+            def snapshot(self):
+                items = super().snapshot()
+                if self.rolls:
+                    self.rolls -= 1
+                    for i, item in self.items.items():
+                        self.items[i] = replace(item, stopped=True)
+                return items
+
+        tractor, wagon = hitched_pair("t-41", "w-77", (130.0, 260.0))
+        world = Settling([tractor, wagon], PLAYERS, ())
+        result = Executor(world).execute(detach())
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "DETACH_OBSERVED"), result)
+
     def test_a_named_kind_picks_that_implement_or_blocks(self):
         tractor, wagon = hitched_pair("t-1", "w-1", (130.0, 260.0))
         cultivator = replace(wagon, category="implement", kinds=frozenset({"cultivator"}))
