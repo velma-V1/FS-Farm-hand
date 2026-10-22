@@ -1104,29 +1104,28 @@ function Observe.itemOptions(item)
     return out
 end
 
--- A store item's fill capacity in litres: the largest selectable fill-unit configuration of
--- GIANTS' "capacity" store spec (FillUnit.loadSpecValueCapacity 2810-2870: configurations of
--- {isSelectable, fillUnits {capacity}}). nil when it has none.
+-- A store item's fill capacity in litres as bought (Farmhand buys the default, first, fill-unit
+-- configuration): GIANTS' "capacity" store spec (FillUnit.loadSpecValueCapacity 2810-2870:
+-- configurations of {isSelectable, fillUnits {capacity}}), its first configuration. nil when
+-- it has none (live e3e3b0c194914776-2: the largest configuration of an "EDK 650 Unrealistic" took grain,
+-- the default one bales).
 function Observe.storeCapacity(specs)
-    local best = nil
-    for _, configuration in ipairs(type(specs.capacity) == "table" and specs.capacity or {}) do
-        if type(configuration) == "table" and configuration.isSelectable ~= false then
-            local sum = 0
-            for _, unit in ipairs(type(configuration.fillUnits) == "table" and configuration.fillUnits or {}) do
-                if finite(unit.capacity) and unit.capacity > 0 then sum = sum + unit.capacity end
-            end
-            if sum > 0 and (best == nil or sum > best) then best = sum end
-        end
+    local configuration = type(specs.capacity) == "table" and specs.capacity[1] or nil
+    if type(configuration) ~= "table" then return nil end
+    local sum = 0
+    for _, unit in ipairs(type(configuration.fillUnits) == "table" and configuration.fillUnits or {}) do
+        if finite(unit.capacity) and unit.capacity > 0 then sum = sum + unit.capacity end
     end
-    return best
+    return sum > 0 and sum or nil
 end
 
 Observe.MAX_STORE_FILL_TYPES = 40
--- The fill types a store item takes, by GIANTS' own resolution of its "fillTypes" spec
--- (FillUnit.getSpecValueFillTypes 3114-3151 -> fill type indices) and FillTypeManager names.
+-- The fill types a store item takes as bought (its default, first, fill-unit configuration),
+-- by GIANTS' own resolution of its "fillTypes" spec (FillUnit.getSpecValueFillTypes 3114-3151,
+-- configurations {fillUnit = 1} -> fillTypesByConfiguration[1]) and FillTypeManager names.
 function Observe.storeFillTypes(env, item)
     local out = Observe.array()
-    local indices = try(function() return env.FillUnit.getSpecValueFillTypes(item) end)
+    local indices = try(function() return env.FillUnit.getSpecValueFillTypes(item, nil, { fillUnit = 1 }) end)
     for _, index in ipairs(type(indices) == "table" and indices or {}) do
         if #out >= Observe.MAX_STORE_FILL_TYPES then break end
         local name = try(function() return env.g_fillTypeManager:getFillTypeNameByIndex(index) end)

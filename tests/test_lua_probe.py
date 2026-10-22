@@ -503,9 +503,10 @@ class ObserveStoreSpecTests(unittest.TestCase):
             { isSelectable = true, fillUnits = { { capacity = 8000 }, { capacity = 2000 } } },
             { isSelectable = false, fillUnits = { { capacity = 50000 } } },
             { isSelectable = true, fillUnits = { { capacity = 9500 } } } } }""")
-        self.assertEqual(self.observe.storeCapacity(specs), 10000)
+        self.assertEqual(self.observe.storeCapacity(specs), 10000)              # the default (first) configuration
         self.assertIsNone(self.observe.storeCapacity(self.lua.eval("{}")))
-        env = self.lua.eval("""{ FillUnit = { getSpecValueFillTypes = function(item) return { 3, 7 } end },
+        env = self.lua.eval("""{ FillUnit = { getSpecValueFillTypes = function(item, real, configs)
+                assert(configs.fillUnit == 1); return { 3, 7 } end },
             g_fillTypeManager = { getFillTypeNameByIndex = function(_, i) return ({ [3] = "WHEAT", [7] = "BARLEY" })[i] end } }""")
         names = self.observe.storeFillTypes(env, self.lua.eval("{}"))
         self.assertEqual(list(names.values()), ["WHEAT", "BARLEY"])

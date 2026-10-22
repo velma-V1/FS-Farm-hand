@@ -1955,6 +1955,15 @@ class LandTests(unittest.TestCase):
             task.elapsed = 0
             return task, B.step(env, task, 16) end""")
 
+    def test_every_op_without_a_vehicle_argument_is_accepted_without_one(self):
+        # Live e3e3b0c194914776-1: "buy field 10" reached the mod and was REJECTED_UNKNOWN_VEHICLE:
+        # the land op, like contract and buy, acts on no vehicle. The mod's list must follow the
+        # protocol's own (protocol/ipc.py COMMAND_ARGS).
+        from protocol.ipc import COMMAND_ARGS
+        vehicle_free = {op for op, args in COMMAND_ARGS.items() if "tractor" not in args}
+        listed = {k for k, v in self.bridge.NO_VEHICLE.items() if v}
+        self.assertEqual(vehicle_free - listed, set())
+
     def test_buying_sends_giants_request_at_the_parcels_price_and_waits_for_the_owner(self):
         task, status, code = self.run(self.bridge, self.env, 12, 1)
         self.assertEqual((status, code), ("DONE", "LAND_BOUGHT"))

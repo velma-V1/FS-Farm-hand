@@ -2343,7 +2343,8 @@ function aborts.stop() end
 
 Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true, load = true,
                        overload = true, alongside = true, backoff = true }
-Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true, ad_marker = true, contract = true }   -- ops that act on no vehicle
+Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true, ad_marker = true, contract = true,
+                      land = true }   -- ops that act on no vehicle
 
 function Bridge.start(env, spec)
     local starter = starters[spec.op]

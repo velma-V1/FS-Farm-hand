@@ -1453,6 +1453,12 @@ class Coordinator:
         new = next((i for i in self.world.snapshot() if i.id not in before and i.id in bought.equipment_ids), None)
         if new is None or not _words(new.name):
             return Result("UNVERIFIED", "PURCHASE_NOT_OBSERVED")
+        crop = want.get("fill_type")
+        if crop and not any(crop in u.supported for u in new.fill_units):
+            # What arrived does not take the crop (live: a bale loader): said, never hitched.
+            log.info("job %d grain rig: the bought %s takes %s, not %s", job.number, new.name,
+                     sorted({f for u in new.fill_units for f in u.supported})[:8], crop)
+            return Result("UNVERIFIED", "BOUGHT_ITEM_UNSUITABLE", (new.id,))
         log.info("job %d grain rig: bought the %s; the %s to it", job.number, new.name, name)
         return self._execute(job, cancel, entered, "gh2", task="hitch_pair", implement="trailer",
                              implement_name=_words(new.name), tractor_name=name)
