@@ -191,7 +191,8 @@ end
 -- speed it drives (DrivePathModule 286-333 only lowers it for corners, steering, fields), and
 -- its own calls step them (decreaseSpeedLimit / decreaseFieldSpeedLimit 1191-1214, floor 2).
 -- Lowered to the cap before Farmhand starts it; a drive Farmhand ends gives the player's back.
-Bridge.TRAVEL_MAX_KMH = 64
+Bridge.TRAVEL_MAX_KMH = 64           -- AutoDrive's limits step in whole km/h
+Bridge.TRAVEL_LIMIT_KMH = 40 * 1.609344   -- the user's 40 mph, what a peak is judged against
 
 local function stepLimit(get, step, want, up)
     for _ = 1, 400 do
@@ -216,8 +217,11 @@ end
 
 function Bridge.restoreAdSpeed(v, saved)
     local st = v.ad.stateModule
-    stepLimit(function() return st:getSpeedLimit() end, function() st:increaseSpeedLimit() end, saved.road, true)
-    stepLimit(function() return st:getFieldSpeedLimit() end, function() st:increaseFieldSpeedLimit() end, saved.field, true)
+    local road = stepLimit(function() return st:getSpeedLimit() end, function() st:increaseSpeedLimit() end, saved.road, true)
+    local field = stepLimit(function() return st:getFieldSpeedLimit() end, function() st:increaseFieldSpeedLimit() end,
+                            saved.field, true)
+    log("AutoDrive speed limits given back: %s/%s km/h (were %s/%s)", tostring(road), tostring(field),
+        tostring(saved.road), tostring(saved.field))
 end
 
 -- A task's end hook (once): a drive gives AutoDrive's limits back.
@@ -226,8 +230,9 @@ local function finish(task)
     task.ended = true
     if task.onEnd ~= nil then pcall(task.onEnd) end
     if task.peakKmh ~= nil and task.peakKmh >= 5 then
-        log("%s peak travel %.0f km/h%s", tostring(task.op), task.peakKmh,
-            task.peakKmh > Bridge.TRAVEL_MAX_KMH and string.format(" OVER Farmhand's %d", Bridge.TRAVEL_MAX_KMH) or "")
+        log("%s peak travel %.1f km/h%s", tostring(task.op), task.peakKmh,
+            task.peakKmh > Bridge.TRAVEL_LIMIT_KMH and string.format(" OVER Farmhand's %.1f (40 mph)", Bridge.TRAVEL_LIMIT_KMH)
+            or "")
     end
 end
 

@@ -307,6 +307,7 @@ class LuaBridgeTests(unittest.TestCase):
         self.W.run(self.w, 3000)
         self.assertEqual(st.speedLimit, 103)                   # the player's own limit back
         self.assertTrue(any("AutoDrive speed limits 103/30 -> 64/30" in p for p in self.printed))
+        self.assertTrue(any("given back: 103/30 km/h (were 103/30)" in p for p in self.printed))
 
     def test_a_drive_ended_where_it_started_or_with_no_route_is_said_so(self):
         # Live 2026-10-22: the waypoint nearest the rig was on a dead end; AutoDrive's path
