@@ -414,8 +414,8 @@ class LuaLoadTests(unittest.TestCase):
         self.assertLess(max(throttles[10:]), 1)                     # never full once moving near the command
 
     def test_the_throttle_ceiling_eases_in_from_the_start(self):
-        # Live b1d3f6cdc2ca44e3-1: 3.00 km/h (GIANTS 4.25) 0.47 s after starting at a third of the
-        # throttle (and GIANTS 3.24 after 0.15 s, live 3389dfbd1b564660-3). However slow it reads,
+        # Live b1d3f6cdc2ca44e3-1: 3.00 km/h 0.47 s after starting at a third of the throttle and
+        # the full target. However slow it reads,
         # the throttle stays under a ceiling rising to full over the first 1.5 s, and the motor's
         # target rises from 1.5 km/h to the command over the same time.
         w = self.world()
@@ -435,20 +435,21 @@ class LuaLoadTests(unittest.TestCase):
         self.assertEqual(targets, sorted(targets))
         self.assertAlmostEqual(targets[-1], COMMAND_KMH)
 
-    def test_giants_reading_decides_when_it_is_the_higher(self):
-        # The window's average lags an acceleration GIANTS' own reading already shows (live
-        # b1d3f6cdc2ca44e3-1: 3.00 against 4.25): with the root moving at the command but GIANTS
-        # reading 3.2 km/h, it ends OVERSPEED at that reading.
+    def test_giants_jittery_reading_is_logged_and_the_root_travel_decides(self):
+        # Live 3389dfbd1b564660-4: GIANTS read 2.56, 0.88, 1.50, 3.22 km/h 0.12 s apart while the
+        # root travelled 1.2-2.2 km/h; it ended OVERSPEED on that reading. Here GIANTS reads 3.4
+        # every other frame while the root moves at the command: it loads, GIANTS' peak logged.
         w = self.world()
         session, why, _ = self.start(w)
         self.assertIsNotNone(session, why)
         self.lua.execute("""local w = ...
-            local base = w.tractor.getLastSpeed
-            function w.tractor:getLastSpeed() if w.giantsKmh then return w.giantsKmh end return base(self) end""", w)
-        code, _ = self.drive(w, session, hook=lambda i: i == 30 and setattr(w, "giantsKmh", 3.2))
-        self.assertEqual(code, "OVERSPEED", self.hitch.describeSpeed(session))
-        self.assertAlmostEqual(session.overKmh, 3.2)
+            local base, n = w.tractor.getLastSpeed, 0
+            function w.tractor:getLastSpeed() n = n + 1; if n % 2 == 0 then return 3.4 end return base(self) end""", w)
+        code, _ = self.drive(w, session)
+        self.assertEqual(code, "LOADED", self.hitch.describeSpeed(session))
+        self.assertAlmostEqual(session.peakReportedKmh, 3.4)
         self.assertLessEqual(session.peakKmh, 3.0)
+        self.assertEqual(dict(session.speedModes)["over"], 0)
 
     def test_it_coasts_and_brakes_to_stay_under_the_limit(self):
         # The motor overshoots (10 % over what it is told) and the rig keeps 2.95 km/h while not

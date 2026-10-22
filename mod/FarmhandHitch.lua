@@ -339,12 +339,10 @@ Hitch.SPEED = { windowMs = 250, commandShare = 0.85, coastShare = 0.9, brakeShar
                 -- 3.05 km/h within 0.5 s): throttleGainKmh of margin is full throttle, never under
                 -- throttleMin; before the first reading, startThrottle.
                 throttleGainKmh = 1.0, throttleMin = 0.15, startThrottle = 0.15,
-                -- The throttle's ceiling eased in from startThrottle to full over throttleRampMs,
-                -- and every decision on the higher of the two readings (live b1d3f6cdc2ca44e3-1:
-                -- at 0.47 s GIANTS read 4.25 km/h while the 0.25 s average still read 3.00).
-                -- and the motor's target (driveToPoint's maxSpeed) eased in from softStartKmh to the
-                -- command over the same time (live 3389dfbd1b564660-3: from rest at 0.3 throttle
-                -- GIANTS read 2.53 km/h after 0.13 s and 3.24 after 0.15 s, OVERSPEED).
+                -- The throttle's ceiling eased in from startThrottle to full over throttleRampMs and
+                -- the motor's target (driveToPoint's maxSpeed) from softStartKmh to the command over
+                -- the same time (live b1d3f6cdc2ca44e3-1: from rest at 0.3 throttle and the full
+                -- target 0.24 m in 0.47 s, 3.00 km/h over the last 0.25 s).
                 throttleRampMs = 1500, softStartKmh = 1.5,
                 -- The steering target eased in over steerRampMs from straight ahead (live
                 -- b1d3f6cdc2ca44e3-1: LOAD's run-in from 2 m off and 17 deg turned moved 0.21 m in
@@ -400,16 +398,15 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
     if reported ~= nil and reported > (s.peakReportedKmh or -1) then
         s.peakReportedKmh, s.peakReportedAlong = reported, s.lastAlong
     end
-    -- The higher reading decides: the window's average lags behind an acceleration that
-    -- GIANTS' per-frame reading already shows.
-    local vc = v
-    if reported ~= nil and (vc == nil or reported > vc) then vc = reported end
+    -- The root's travel decides; GIANTS' per-frame reading is only logged: live
+    -- 3389dfbd1b564660-4 it read 2.56, 0.88, 1.50, 3.22 km/h 0.12 s apart while the root
+    -- travelled 0.04-0.07 m in each (1.2-2.2 km/h).
     local mode = "drive"
-    if vc ~= nil and vc > cap then
+    if v ~= nil and v > cap then
         mode = "over"
-    elseif vc ~= nil and (vc > cap * S.brakeShare or (downhill and vc > command)) then
+    elseif v ~= nil and (v > cap * S.brakeShare or (downhill and v > command)) then
         mode = "brake"
-    elseif vc ~= nil and vc > cap * S.coastShare then
+    elseif v ~= nil and v > cap * S.coastShare then
         mode = "coast"
     end
     if downhill then s.downhillFrames = (s.downhillFrames or 0) + 1 end
@@ -425,7 +422,7 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
         end
     end
     if mode == "over" then
-        s.overKmh = vc
+        s.overKmh = v
         return "OVERSPEED"
     end
     local ease = math.min(1, driven / S.throttleRampMs)
@@ -436,8 +433,8 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
         local throttle = 0
         if mode == "drive" then
             local ceiling = S.startThrottle + (1 - S.startThrottle) * ease
-            throttle = vc == nil and S.startThrottle
-                or math.max(S.throttleMin, math.min(ceiling, (target - vc) / S.throttleGainKmh))
+            throttle = v == nil and S.startThrottle
+                or math.max(S.throttleMin, math.min(ceiling, (target - v) / S.throttleGainKmh))
         end
         env.AIVehicleUtil.driveToPoint(s.tractor, dt, throttle, true, forwards, lx, lz, target)
     end
