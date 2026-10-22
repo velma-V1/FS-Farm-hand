@@ -817,6 +817,18 @@ class HarvestTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("COMPLETE", "FIELD_WORK_OBSERVED"), result)
         self.assertEqual(world.field_map[7].coverage.cut, 9)
 
+    def test_a_combine_standing_in_the_field_works_on_from_where_it_stands(self):
+        # Live bc801c056bac4966-1: half harvested, the combine in the field; GIANTS' helper sent to
+        # the field's point (beside a parked rig) ended not_reachable. Off the field: the point.
+        class Recording(MockWorld):
+            def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0, seed=None, hand=False):
+                self.poses = getattr(self, "poses", []) + [pose]
+                return super().fieldwork(tractor_id, field_id, pose, owner, area_m2, seed, hand)
+        for at, expected in (((210.0, 290.0), (210.0, 290.0)), ((100.0, 100.0), (200.0, 300.0))):
+            world = Recording(self.combine(at=at), PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
+            Executor(world).execute(work("harvest"))
+            self.assertEqual((world.poses[0].x, world.poses[0].z), expected)
+
     def test_a_crop_not_ready_or_no_combine_moves_nothing(self):
         from companion.coordinator import field_steps
         growing = FieldCoverage((("SOWN", 1.0),), (), 4000.0, (("WHEAT", 9),), 9)

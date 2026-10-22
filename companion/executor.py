@@ -1959,11 +1959,17 @@ class Executor:
                 physical_attempted = True
                 enter("FIELD_WORK")
                 yaw = math.atan2(field.center[0] - tractor.position[0], field.center[1] - tractor.position[1])
+                start = Pose(field.center[0], field.center[1], yaw)
+                if (field.area_ha and tractor.heading is not None
+                        and math.dist(tractor.position, field.center) <= math.sqrt(field.area_ha * 10000.0) / 2):
+                    # Already on the field (a harvest partly done): on from where it stands, GIANTS'
+                    # own default (live bc801c056bac4966-1: the field's point was not_reachable).
+                    start = Pose(tractor.position[0], tractor.position[1], tractor.heading)
                 area = command.get("area_m2")
                 seed = seed_position(implement, command.get("crop")) or 0      # the player's crop, else as set
                 for detour in range(MAX_DETOURS + 1):
                     try:
-                        ended = self.world.fieldwork(tractor.id, field.id, Pose(field.center[0], field.center[1], yaw),
+                        ended = self.world.fieldwork(tractor.id, field.id, start,
                                                      owner, area or 0.0, **({"seed": seed} if seed else {}),
                                                      **({"hand": True} if command.get("hand_off") and not area else {}))
                         break
