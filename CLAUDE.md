@@ -118,6 +118,6 @@ The only self-driven motion allowed is HITCH's capped LOCAL_MANEUVER (forward, i
 door is near it; AGENTS.md exception 4) and LOAD / UNLOAD (a tractor alone, straight along a
 transport trailer's axis up its verified-down ramps or back off, at most 3 km/h and the ramps
 plus the deck; AGENTS.md exception 5) and ALONGSIDE (a tractor's towed trailer straight forward
-under a standing combine's pipe, at most 3 km/h and 20 m; exception 6); all other travel is
+under a standing combine's pipe, at most 3 km/h and 25 m; exception 6); all other travel is
 delegated to AutoDrive (optional; marker destinations only) or GIANTS GOTO
 (`navigate`, `stage`), whose navigation agent plans for the attached wagon.

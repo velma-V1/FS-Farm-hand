@@ -98,9 +98,10 @@ have precedence; report conflicts instead of silently changing the scope.
      only a combine whose AI runs, and GIANTS GOTO takes no spot under the pipe). Only after
      the standing combine's pipe is out (GIANTS Pipe) and GIANTS GOTO has brought the tractor
      and its one towed trailer onto the pipe's line behind it: the tractor straight forward
-     along its own heading, at most 3 km/h and 20 m, until the trailer's middle is under the
-     pipe's discharge point; refused unmoved unless the rig is straight, that point is within
-     0.8 m of the trailer's middle line and ahead of it, the whole rig's swept volume is clear
+     along its own heading, at most 3 km/h and 25 m, until the trailer's middle is under the
+     pipe's discharge point; refused unmoved unless the trailer is swung at most 30 degrees
+     (driving straight pulls it in behind), that point is within 0.8 m of the tractor's line
+     and ahead of the trailer's middle, and the trailer must end within 0.8 m of it, the whole rig's swept volume is clear
      in GIANTS' collision query (the combine is not excluded) and no other vehicle (the
      combine and its header aside) or person is near; LOAD's guards while moving, and it stops
      if the combine moves or its pipe comes in; restore-on-every-exit as UNPARK. The grain

@@ -1,7 +1,7 @@
 """ALONGSIDE in mod/FarmhandHitch.lua (Lua 5.1 and 5.4; AGENTS.md exception 6) on the
 kinematic stub of tests/test_lua_unpark.py (NOT GIANTS physics: boxes stand in for collision
 shapes). It proves the bounded state machine: a tractor with one towed trailer, straight
-forward along its own heading, at most 3 km/h and 20 m, until the trailer's middle is under
+forward along its own heading, at most 3 km/h and 25 m, until the trailer's middle is under
 the standing combine's pipe point; refused unmoved unless the pipe is out, its point on the
 trailer's middle line and ahead, the rig straight, the swept volume clear and no other
 vehicle or person near; every guard while moving; braked and restored on every exit.
@@ -100,7 +100,7 @@ class LuaAlongsideTests(unittest.TestCase):
         code, _ = self.runner(w, session, 3000, None)
         self.assertEqual(code, "UNDER_PIPE", self.hitch.describeAlongside(session))
         along, lateral = self.W.travel(w, x0, z0)
-        self.assertGreaterEqual(along, 12.0)
+        self.assertGreater(along, 11.99)
         self.assertLess(along, 12.2)
         self.assertAlmostEqual(lateral, 0.0, places=6)
         moving = [d for d in self.drives(w) if d["allowed"]]
@@ -109,12 +109,25 @@ class LuaAlongsideTests(unittest.TestCase):
         self.assertNotEqual(w.tractor.forceIsActive, True)
         self.assertEqual(self.hitch.alongsideStep(w.env, session, 50), "UNDER_PIPE")    # latched: brakes only
 
+    def test_a_trailer_left_swung_by_giants_starts_and_must_end_under_the_pipe(self):
+        # Live 6c66894767044432-1: GIANTS ended with the trailer 19-21 deg off; it may start.
+        # The stub's trailer stays swung (a real one is pulled in behind): its middle on the
+        # line ends UNDER_PIPE, a middle off the line ends ALONGSIDE_NOT_UNDER, braked.
+        for offset, expected in ((0.0, "UNDER_PIPE"), (2.5, "ALONGSIDE_NOT_UNDER")):
+            w = self.world(trailer=dict(TRAILER, turn=0.45))
+            w.trailer.size.lengthOffset = offset
+            session, why, _ = self.start(w)
+            self.assertIsNotNone(session, why)
+            code, _ = self.runner(w, session, 3000, None)
+            self.assertEqual(code, expected, self.hitch.describeAlongside(session))
+            self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
+
     def test_refused_unmoved_unless_everything_holds(self):
         self.assert_refused(self.world(pipeState=1), "PIPE_NOT_OUT")
         self.assert_refused(self.world(pipeL=1.2), "ALONGSIDE_NOT_LINED_UP")
         self.assert_refused(self.world(pipeA=-9), "ALONGSIDE_PAST_THE_PIPE")
-        self.assert_refused(self.world(pipeA=20), "ALONGSIDE_TOO_FAR")
-        self.assert_refused(self.world(trailer=dict(TRAILER, turn=0.2)), "ALONGSIDE_RIG_NOT_STRAIGHT")
+        self.assert_refused(self.world(pipeA=20), "ALONGSIDE_TOO_FAR")   # 20 ahead + 7 behind > 25
+        self.assert_refused(self.world(trailer=dict(TRAILER, turn=0.6)), "ALONGSIDE_RIG_NOT_STRAIGHT")   # 34 deg
         w = self.world()
         w.box(4.0, 5.0, -1.0, 1.0, 0, 2.0, None, "bale")                 # in the way
         self.assert_refused(w, "ALONGSIDE_PATH_BLOCKED")

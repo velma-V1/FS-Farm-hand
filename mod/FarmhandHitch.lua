@@ -2186,16 +2186,17 @@ end
 -- trailer onto the pipe's line behind the combine, the tractor drives straight forward
 -- along its own heading, at most 3 km/h and maxTravelM, until the trailer's middle (its size
 -- box centre) is under the pipe's discharge point (Pipe: getCurrentDischargeNode, the pipe
--- out: spec.unloadingStates[getCurrentPipeState()]). Refused unmoved unless the rig is
--- straight (the trailer within headingStartDeg), the pipe point within lateralTolM of the
--- trailer's middle line and ahead of it, the swept volume of the whole rig clear in GIANTS'
+-- out: spec.unloadingStates[getCurrentPipeState()]). Refused unmoved unless the trailer is
+-- swung at most headingStartDeg (driving straight pulls it in behind), the pipe point within
+-- lateralTolM of the tractor's line and ahead of the trailer's middle, the swept volume of the whole rig clear in GIANTS'
 -- collision query (the combine is not excluded: a pipe low enough to touch refuses), no other
 -- vehicle (the combine and its header aside) or person near the path; it stops on any of
 -- LOAD's guards, and if the combine moves. Nothing is teleported, no collision is disabled.
 Hitch.ALONGSIDE = {
-    maxSpeedKmh = 3, timeoutMs = 60000, maxTravelM = 20,
-    lateralTolM = 0.8,        -- the pipe point this close to the trailer's middle line
-    headingStartDeg = 5,      -- the trailer this straight behind the tractor
+    maxSpeedKmh = 3, timeoutMs = 90000, maxTravelM = 25,
+    lateralTolM = 0.8,        -- the pipe point this close to the tractor's line, and to the trailer's middle at the end
+    headingStartDeg = 30,     -- the trailer at most this far swung at the start (live 6c66894767044432-1: GIANTS
+                              -- ended with it 19-21 deg off; driving straight pulls it in behind)
     divergeM = 0.3, lookaheadM = 3,
     lateralMarginM = 0.3, floorClearanceM = 0.3, topMarginM = 0.3, stepM = 0.5, aheadEndM = 0.5,
     minLookaheadM = 2, reactionS = 1, decelMs2 = 1, movedM = 0.25,
@@ -2264,9 +2265,12 @@ function Hitch.newAlongside(env, args)
         local mx, mz = middleOf(env, s.trailer)
         s.middleAlong, s.middleLateral = inFrame(s, mx, mz)
         s.pipeAlong, s.pipeLateral = inFrame(s, px, pz)
-        if math.abs(s.pipeLateral - s.middleLateral) > D.lateralTolM then return "ALONGSIDE_NOT_LINED_UP" end
-        s.travelM = s.pipeAlong - s.middleAlong
-        if s.travelM <= 0 then return "ALONGSIDE_PAST_THE_PIPE" end
+        -- Straight behind at the end: the trailer's middle on the tractor's line, as far
+        -- behind the steering node as it is now.
+        if math.abs(s.pipeLateral) > D.lateralTolM then return "ALONGSIDE_NOT_LINED_UP" end
+        s.trailerBack = math.sqrt(s.middleAlong ^ 2 + s.middleLateral ^ 2)
+        s.travelM = s.pipeAlong + s.trailerBack
+        if s.pipeAlong - s.middleAlong <= 0 then return "ALONGSIDE_PAST_THE_PIPE" end
         if s.travelM > D.maxTravelM then return "ALONGSIDE_TOO_FAR" end
         local rigBox = nil
         for _, unit in ipairs(units) do
@@ -2322,7 +2326,7 @@ local function alongsideDrive(env, s, dt)
     if distance(cx, cz, s.combineAt.wx, s.combineAt.wz) > D.movedM then return "COMBINE_MOVED" end
     if pipePoint(env, s.combine) == nil then return "PIPE_MOVED" end
     if math.abs(lateral) > D.divergeM then return "DIVERGED" end
-    if along > s.travelM + 0.5 then return "DISTANCE_LIMIT" end
+    if along > s.travelM + 1.0 then return "DISTANCE_LIMIT" end
     if s.elapsed > s.timeoutMs then return "TIMEOUT" end
     for _, other in ipairs(s.others) do
         local vx, _, vz = world(env, other.vehicle.rootNode)
@@ -2332,7 +2336,13 @@ local function alongsideDrive(env, s, dt)
     s.others, s.player = others, player
     local bad = pullConflict(s, { { along, 0 } }, Hitch.LOCAL.vehicleStopM, Hitch.LOCAL.playerStopM)
     if bad ~= nil then return bad end
-    if along >= s.travelM then return "UNDER_PIPE" end
+    -- The trailer's own middle reaching the pipe ends it; under it only if on its line too.
+    local mx, mz = middleOf(env, s.trailer)
+    s.middleAlong, s.middleLateral = inFrame(s, mx, mz)
+    if s.middleAlong >= s.pipeAlong then
+        if math.abs(s.middleLateral - s.pipeLateral) > D.lateralTolM then return "ALONGSIDE_NOT_UNDER" end
+        return "UNDER_PIPE"
+    end
     local v = math.abs(s.lastSpeed or 0) / 3.6
     local reach = math.max(D.minLookaheadM, v * D.reactionS + v * v / (2 * D.decelMs2) + 0.5)
     local lead = s.rigBox.aMax + along

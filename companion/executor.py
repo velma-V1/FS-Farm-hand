@@ -1260,7 +1260,7 @@ class Executor:
     NOT_CARGO = frozenset({"DIESEL", "DEF", "AIR", "ELECTRICCHARGE", "METHANE", "UNKNOWN"})
     # GIANTS GOTO puts the trailer's middle this far behind the pipe point, on its line, then
     # ALONGSIDE drives it under (live 3dc00834639340f7-1: GIANTS took no spot right under it).
-    OVERLOAD_RUN_UPS_M = (12.0, 18.0)
+    OVERLOAD_RUN_UPS_M = (18.0, 22.0)          # live 6c66894767044432-1: 12 m was not_reachable, 18 m reached
 
     def _grain(self, vehicle):
         return sum(u.level or 0.0 for u in vehicle.fill_units
