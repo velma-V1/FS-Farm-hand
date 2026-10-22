@@ -50,6 +50,9 @@ WAGON_ARRIVAL_TOLERANCE_M = 15.0
 ARRIVAL_SETTLE_S = 10.0
 MAX_TRACTOR_TRIES = 3            # tractors tried for one hitch whose attempt moved nothing
 UNMOVED_M = 0.5
+# A field farther than this from a tractor GIANTS' helper could not start for is reached by
+# AutoDrive first (its helper plans the drive itself; live 5c8eeb68ccea4304-2: 1 km off, refused).
+FIELD_REACH_BY_AD_M = 150.0
 NOT_RETRIED = frozenset({"RESERVATION_CONFLICT", "CANCELLED_BY_REQUESTER", "INVALID_INTENT"})          # an arrival is judged at rest, waited for this long
 
 # HITCH observation checks (provisional; tune at the first FS25 test). These are
@@ -876,6 +879,33 @@ class Executor:
                          wagon.id, math.dist(tractor.position, route_position(route)), route, stalled)
                 return None, None, "LOADED_NO_DRIVER"
         return (tractor, wagon), route, None
+
+    def _to_field_by_autodrive(self, tractor, field, ids, owner, enter) -> bool:
+        """After GIANTS' helper ended NOT_REACHABLE with the pair unmoved far from the field:
+        AutoDrive (installed, the tractor its own) to the field's marker, made AutoDrive's own
+        way when there is none, under Farmhand's speed cap. True when it got there."""
+        now = next((i for i in self.world.snapshot() if i.id == tractor.id), None)
+        if (now is None or "autodrive" not in tractor.capabilities
+                or math.dist(now.position, tractor.position) > UNMOVED_M
+                or math.dist(now.position, field.center) <= FIELD_REACH_BY_AD_M):
+            return False
+        name = f"field {field.id}"
+        marker = next((d for d in self.world.destinations() if d.name.casefold() == name), None)
+        try:
+            if marker is None:
+                self.world.ad_marker(field=field.id)       # AutoDrive's own, after a backup
+                marker = next((d for d in self.world.destinations() if d.name.casefold() == name), None)
+            if marker is None:
+                return False
+            enter("TO_FIELD")
+            log.info("field %s not reachable for GIANTS' helper from %s: AutoDrive to %s", field.id, now.position,
+                     marker)
+            self.world.deliver(tractor.id, marker.id, owner)      # the pair, by AutoDrive
+        except (StepFailed, StepUnverified) as failure:
+            log.info("TO_FIELD by AutoDrive: %s", failure.code)
+            return False
+        self._settled_transport(ids)
+        return True
 
     def _place_marker(self, target, tractor):
         """A loaded rig to a place with no AutoDrive marker for it: AutoDrive's own marker made
@@ -2194,17 +2224,25 @@ class Executor:
                     start = Pose(tractor.position[0], tractor.position[1], tractor.heading)
                 area = command.get("area_m2")
                 seed = seed_position(implement, command.get("crop")) or 0      # the player's crop, else as set
+                extra = {**({"seed": seed} if seed else {}),
+                         **({"hand": True} if command.get("hand_off") and not area else {})}
                 for detour in range(MAX_DETOURS + 1):
                     try:
-                        ended = self.world.fieldwork(tractor.id, field.id, start,
-                                                     owner, area or 0.0, **({"seed": seed} if seed else {}),
-                                                     **({"hand": True} if command.get("hand_off") and not area else {}))
+                        ended = self.world.fieldwork(tractor.id, field.id, start, owner, area or 0.0, **extra)
                         break
                     except StepFailed as failure:
                         # Stuck on the way while GIANTS still drives: as _navigate.
                         if failure.code != "FIELDWORK_STUCK" or detour == MAX_DETOURS:
                             raise
                         self._block_ahead(tractor.id, detour)
+                if ended == "NOT_REACHABLE" and self._to_field_by_autodrive(tractor, field, ids, owner, enter):
+                    # GIANTS' helper could not plan the drive from far away (live
+                    # 5c8eeb68ccea4304-2: the 3650 1 km off at field 69, NOT_REACHABLE at once):
+                    # AutoDrive took the pair to the field's edge; the helper starts from there.
+                    tractor = self._pair(ids, farm_id, owner, attached=True)[0]
+                    start = Pose(tractor.position[0], tractor.position[1], tractor.heading or 0.0)
+                    enter("FIELD_WORK")
+                    ended = self.world.fieldwork(tractor.id, field.id, start, owner, area or 0.0, **extra)
                 if ended == "WORKING":
                     # Handed off (the user 2026-10-21: workers go on while Farmhand does something
                     # else): GIANTS' helper works on as the game's worker; the pair stays reserved

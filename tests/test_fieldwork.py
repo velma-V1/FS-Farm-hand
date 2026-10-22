@@ -71,6 +71,28 @@ class FieldWorkTests(unittest.TestCase):
                 self.assertEqual(result.states, ("FIND", "RESERVE", "FIELD_WORK", "VERIFY", "STOP", "RELEASE"))
                 self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
 
+    def test_a_field_the_helper_cannot_reach_from_afar_is_reached_by_autodrive_first(self):
+        # Live 5c8eeb68ccea4304-2: the 3650 + spreader 1 km from field 10, GIANTS' helper ended
+        # NOT_REACHABLE at once. AutoDrive takes the pair to the field's marker (made its own
+        # way), the helper starts from there; without AutoDrive the failure stands.
+        from protocol.model import Destination
+        for autodrive in (True, False):
+            with self.subTest(autodrive=autodrive):
+                items = rig("sprayer", 500.0, at=(1100.0, 900.0))
+                caps = frozenset({"move", "attach", "stop"} | ({"autodrive"} if autodrive else set()))
+                items[0] = replace(items[0], capabilities=caps)
+                items[1] = replace(items[1], required_pto_torque=0.0)
+                world = MockWorld(items, PLAYERS, (Destination("m-7", (205.0, 290.0), "Field 7"),),
+                                  fields=(field(7, 0.4), field(9, 1.2)), farm=FARM)
+                world.mock_helper_reach_m = 150.0
+                result = Executor(world).execute(work("fertilize"))
+                if autodrive:
+                    self.assertEqual((result.status, result.reason), ("COMPLETE", "FIELD_WORK_OBSERVED"), result)
+                    self.assertIn("TO_FIELD", result.states)
+                else:
+                    self.assertEqual((result.status, result.reason), ("FAILED", "NOT_REACHABLE"), result)
+                    self.assertNotIn("TO_FIELD", result.states)
+
     def test_a_job_that_ended_without_covering_the_field_is_not_complete(self):
         class Partial(MockWorld):
             def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0):

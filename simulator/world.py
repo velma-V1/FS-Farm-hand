@@ -297,6 +297,8 @@ class MockWorld:
     MOCK_WORK = {"cultivator": ("CULTIVATED", None), "plow": ("PLOWED", None), "sowing_machine": ("SOWN", "WHEAT"),
                  "sprayer": (None, None), "cutter": (None, None)}
 
+    mock_helper_reach_m = None    # mock-only: GIANTS' helper ends NOT_REACHABLE at once from farther than this
+
     def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0, seed=0, hand=False):
         # Mock-only: the hitched implement's kind turns the whole field into its result
         # and uses 100 l of its material; the tractor ends inside the field. Handed off,
@@ -321,6 +323,9 @@ class MockWorld:
             kind = next((k for k in self.MOCK_WORK if k in implement.kinds), None)
             if kind is None:
                 raise RuntimeError("FIELDWORK_UNAVAILABLE")
+            if (self.mock_helper_reach_m is not None
+                    and math.dist(tractor.position, field.center) > self.mock_helper_reach_m):
+                return "NOT_REACHABLE"            # GIANTS' helper plans no drive from that far
             ground, fruit = self.MOCK_WORK[kind]
             if seed:                          # the crop chosen from the seeder's own list
                 if kind != "sowing_machine":
