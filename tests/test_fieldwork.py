@@ -875,11 +875,25 @@ class HarvestTests(unittest.TestCase):
         self.assertEqual(_category(combine, {}), "harvester")
 
 
+class Policy:
+    """companion/ai.py Settings' harvest policy, in memory."""
+
+    def __init__(self, destination=None):
+        self.destination = destination
+
+    def harvest_destination(self):
+        return self.destination
+
+    def set_harvest_destination(self, destination):
+        self.destination = destination
+
+
 class UnloadAndSellTests(unittest.TestCase):
-    """The user (2026-10-21): unload the combines while they harvest, sell the product.
-    AutoDrive's own combine unloader on an AutoDrive rig with a trailer, unloading at the
-    best paid sell point; what is left when the combine is done is sold; complete only on
-    the cargo gone and the money in."""
+    """The user (2026-10-21): unload the combines while they harvest, sell the product; and
+    (2026-10-22) keep unloading, storage and selling separate. "Unload the combine" transfers
+    the crop into a trailer and nothing more. A harvest's crop is sold or stored only when the
+    request says so or the player's saved harvest policy does; else it stays in the trailer.
+    Selling is complete only on the cargo gone and the money in, storing on the cargo gone."""
 
     def world(self, unloader=True, cargo=0.0):
         from protocol.model import Destination
@@ -899,10 +913,10 @@ class UnloadAndSellTests(unittest.TestCase):
         world.mock_sell_at = (900.0, 900.0)
         return world
 
-    def test_the_combine_is_unloaded_while_it_harvests_and_the_rest_is_sold_after(self):
+    def test_a_harvest_to_be_sold_is_unloaded_while_it_harvests_and_the_rest_is_sold_after(self):
         world = self.world()
         c, notices = coordinated(world)
-        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"], "destination": "sell"})
         c.wait(10)
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"))
         self.assertEqual(sorted((w.tractor, w.operation) for w in c.workers), [("c-1", "harvest"), ("t-5", "unload")])
@@ -917,13 +931,42 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
         self.assertIn("WORKER_DONE", notices)
 
+    def test_a_harvest_is_done_only_when_giants_finished_it_and_the_field_shows_it(self):
+        # GIANTS' helper ending is its own verdict (AIMessageSuccessFinishedJob: FINISHED); the
+        # measured grid over the field must agree. Ended any other way: not done.
+        for ai_stop, notice in (("FINISHED", "WORKER_DONE"), ("AI_STOPPED", "WORKER_STOPPED"), (None, "WORKER_STOPPED")):
+            with self.subTest(ai_stop=ai_stop):
+                world = self.world(unloader=False)
+                c, notices = coordinated(world)
+                c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+                c.wait(10)
+                with world._lock:                                             # one observation: cut, ended so
+                    world.finish_worker("c-1")
+                    world.items["c-1"] = replace(world.items["c-1"], ai_stop=ai_stop)
+                self.assertTrue(until(lambda: notice in notices))
+                self.assertNotIn({"WORKER_DONE": "WORKER_STOPPED", "WORKER_STOPPED": "WORKER_DONE"}[notice], notices)
+
     def test_without_an_unloader_the_player_is_told(self):
         world = self.world(unloader=False)
         c, notices = coordinated(world)
-        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"], "destination": "sell"})
         c.wait(10)
         self.assertIn("NO_UNLOADER", notices)
         self.assertEqual([w.tractor for w in c.workers], ["c-1"])
+
+    def test_a_harvest_not_said_to_be_sold_never_sends_autodrives_selling_unloader(self):
+        # AutoDrive's combine unloader drives its load to a sell point: never unless selling.
+        world = self.world()
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"))
+        self.assertEqual([(w.tractor, w.operation) for w in c.workers], [("c-1", "harvest")])
+        self.assertNotIn("UNLOADER_STARTED", notices)
+        self.assertNotIn("NO_UNLOADER", notices)
+        world.finish_worker("c-1")
+        self.assertTrue(until(lambda: c.workers == [] and not c._after and c.current is None))
+        self.assertEqual(world.farm().money, FARM.money)                       # nothing sold
 
     def test_unload_the_combine_sends_an_unloader_hitched_after_the_harvest_began(self):
         # Live f41b44f422974e15-4: the harvest began with no unloader; the player hitches a
@@ -933,11 +976,12 @@ class UnloadAndSellTests(unittest.TestCase):
         c.submit({"version": 1, "command": "unload_combine"})
         c.wait(10)
         self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", "NO_FULL_COMBINE"))   # none standing full either
-        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"], "destination": "sell"})
         c.wait(10)
         self.assertIn("NO_UNLOADER", notices)
         rig = self.world().items
         world.items.update({k: rig[k] for k in ("t-5", "w-5")})
+        c.workers[0].destination = "sell"                     # this harvest's crop is to be sold
         c.submit({"version": 1, "command": "unload_combine"})
         c.wait(10)
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "UNLOADER_STARTED"), c.last)
@@ -966,7 +1010,7 @@ class UnloadAndSellTests(unittest.TestCase):
         world.mock_sell_at = (900.0, 900.0)
         return world
 
-    def test_a_standing_full_combine_is_emptied_under_its_pipe_and_the_grain_sold(self):
+    def test_unload_the_combine_transfers_the_grain_and_nothing_more(self):
         world = self.full_combine_world()
         c, notices = coordinated(world)
         c.submit({"version": 1, "command": "unload_combine"})
@@ -975,9 +1019,19 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertEqual(world.items["c-1"].fill_units[1].level, 0.0)
         self.assertFalse(world.items["c-1"].pipe[0])                          # pipe back in
         self.assertEqual(world.mock_passed, ("t-5",))                         # on past the combine first
-        self.assertEqual(world.farm().money, FARM.money + 9000.0 * world.mock_price)   # sold after
-        self.assertEqual(notices[-3:-1], ["COMBINE_UNLOADED", "COMPLETE_SELL"])
+        self.assertEqual(world.items["w-5"].fill_units[0].level, 9000.0)      # in the trailer
+        self.assertEqual(world.farm().money, FARM.money)                       # not sold
+        self.assertEqual(notices[-2:], ["COMBINE_UNLOADED", "COMPLETE_UNLOAD_COMBINE"])
+        self.assertNotIn("COMPLETE_SELL", notices)
         self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
+        # Even with a saved policy to sell: "unload the combine" says nothing about selling.
+        world = self.full_combine_world()
+        c, notices = coordinated(world)
+        c.policy = Policy("sell")
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual(world.items["w-5"].fill_units[0].level, 9000.0)
+        self.assertEqual(world.farm().money, FARM.money)
 
     def test_harvest_with_a_full_combine_empties_it_first(self):
         world = self.full_combine_world()
@@ -988,25 +1042,121 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertIn("COMBINE_UNLOADED", notices)
         self.assertEqual(world.items["c-1"].fill_units[1].level, 0.0)
 
-    def test_a_combine_full_while_harvesting_is_emptied_sold_and_harvests_on(self):
-        # GIANTS' helper waits at a full tank for a trailer (AIDriveStrategyCombine); with no
-        # AutoDrive unloader none comes: Farmhand stops it, empties it, sells, starts it again.
-        world = self.full_combine_world()
+    def harvest_until_full(self, world, c, notices, **said):
         unit = world.items["c-1"].fill_units[1]
         world.items["c-1"] = replace(world.items["c-1"], fill_units=(world.items["c-1"].fill_units[0],
                                                                      replace(unit, level=0.0)))
-        world.mock_no_deliver = True                                  # sold through AutoDrive instead
-        c, notices = coordinated(world)
-        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"], **said})
         c.wait(10)
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"), c.last)
         combine = world.items["c-1"]
         world.items["c-1"] = replace(combine, fill_units=(combine.fill_units[0], replace(unit, level=9000.0)))
         self.assertTrue(until(lambda: "COMBINE_FULL" in notices))
-        self.assertTrue(until(lambda: c.last.command == "combine_full" and c.last.state == "COMPLETE"))
+        self.assertTrue(until(lambda: c.last is not None and c.last.command == "combine_full"
+                              and c.last.state == "COMPLETE"))
+
+    def test_a_combine_full_while_harvesting_is_emptied_into_a_trailer_and_harvests_on(self):
+        # GIANTS' helper waits at a full tank for a trailer (AIDriveStrategyCombine); with no
+        # AutoDrive unloader none comes: Farmhand stops it, transfers the grain, starts it again.
+        world = self.full_combine_world()
+        c, notices = coordinated(world)
+        self.harvest_until_full(world, c, notices)
         self.assertEqual(world.items["c-1"].fill_units[1].level, 0.0)
-        self.assertEqual(world.farm().money, FARM.money + 9000.0 * world.mock_price)
+        self.assertEqual(world.items["w-5"].fill_units[0].level, 9000.0)
+        self.assertEqual(world.farm().money, FARM.money)                       # never sold unasked
         self.assertEqual([w.tractor for w in c.workers if w.operation == "harvest"], ["c-1"])   # harvesting on
+        self.assertIsNone(c.kept)
+
+    def test_the_destination_is_used_once_the_trailer_cannot_take_another_tankful(self):
+        # 12,000 l of trailer, a 9,000 l tank: after the transfer 3,000 l of room, so the grain
+        # goes where this harvest said (sold) or the saved policy says (stored).
+        for said, policy, sold, stored in (({"destination": "sell"}, None, 9000.0, 0.0),
+                                           ({}, "store", 0.0, 9000.0), ({}, "keep", 0.0, 0.0)):
+            with self.subTest(said=said, policy=policy):
+                world = self.full_combine_world()
+                trailer = world.items["w-5"]
+                world.items["w-5"] = replace(trailer, fill_units=(replace(trailer.fill_units[0], capacity=12000.0),))
+                world.mock_store_at = (400.0, 400.0)
+                c, notices = coordinated(world)
+                c.policy = Policy(policy)
+                self.harvest_until_full(world, c, notices, **said)
+                self.assertTrue(until(lambda: c.current is None))
+                self.assertEqual(world.farm().money, FARM.money + sold * world.mock_price)
+                self.assertEqual(world.stored_litres, stored)
+                left = world.items["w-5"].fill_units[0].level
+                self.assertEqual(left, 0.0 if sold or stored else 9000.0)
+
+    def test_with_no_trailer_room_and_nowhere_to_take_it_the_combine_waits_and_continue_goes_on(self):
+        world = self.full_combine_world()
+        trailer = world.items["w-5"]
+        world.items["w-5"] = replace(trailer, fill_units=(replace(trailer.fill_units[0], level=20000.0,
+                                                                  fill_type="WHEAT"),))
+        c, notices = coordinated(world)
+        unit = world.items["c-1"].fill_units[1]
+        world.items["c-1"] = replace(world.items["c-1"], fill_units=(world.items["c-1"].fill_units[0],
+                                                                     replace(unit, level=0.0)))
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        c.wait(10)
+        combine = world.items["c-1"]
+        world.items["c-1"] = replace(combine, fill_units=(combine.fill_units[0], replace(unit, level=9000.0)))
+        self.assertTrue(until(lambda: "COMBINE_FULL_NO_TRAILER" in notices))
+        self.assertTrue(until(lambda: c.current is None and c.last.command == "combine_full"))
+        self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", "NO_TRAILER_FOR_THE_GRAIN"))
+        self.assertEqual(world.farm().money, FARM.money)
+        self.assertIsNotNone(c.kept)                                         # waits for the player
+        c.submit({"version": 1, "command": "sell"})                          # the player says where
+        self.assertTrue(until(lambda: c.current is None and c.last.command == "sell"))
+        c.submit({"version": 1, "command": "resume"})
+        self.assertTrue(until(lambda: c.current is None and c.last.command == "combine_full"
+                              and c.last.state == "COMPLETE"))
+        self.assertEqual(world.items["c-1"].fill_units[1].level, 0.0)
+        self.assertEqual([w.tractor for w in c.workers if w.operation == "harvest"], ["c-1"])
+
+    def test_unload_the_combine_while_it_harvests_pauses_it_transfers_and_harvests_on(self):
+        world = self.full_combine_world()
+        unit = world.items["c-1"].fill_units[1]
+        world.items["c-1"] = replace(world.items["c-1"], fill_units=(world.items["c-1"].fill_units[0],
+                                                                     replace(unit, level=0.0)))
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        c.wait(10)
+        combine = world.items["c-1"]
+        world.items["c-1"] = replace(combine, fill_units=(combine.fill_units[0], replace(unit, level=5000.0)),
+                                     busy=False)
+        c.submit({"version": 1, "command": "unload_combine"})
+        self.assertTrue(until(lambda: c.current is None and c.last.command == "unload_combine"))
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"), c.last.states)
+        self.assertEqual(world.items["w-5"].fill_units[0].level, 5000.0)
+        self.assertEqual(world.farm().money, FARM.money)
+        self.assertEqual([w.tractor for w in c.workers if w.operation == "harvest"], ["c-1"])
+
+    def test_the_harvest_policy_is_saved_from_the_players_words(self):
+        from companion.language import RuleInterpreter
+        world = self.world()
+        c, notices = coordinated(world)
+        c.policy = Policy()
+        c.submit(RuleInterpreter().interpret("from now on sell the harvest"))
+        self.assertEqual((c.policy.destination, notices[-1]), ("sell", "HARVEST_POLICY_SELL"))
+        c.submit(RuleInterpreter().interpret("keep the grain in the trailer"))
+        self.assertEqual((c.policy.destination, notices[-1]), ("keep", "HARVEST_POLICY_KEEP"))
+        c.policy = None
+        c.submit(RuleInterpreter().interpret("always store the grain"))
+        self.assertEqual(notices[-1], "POLICY_UNAVAILABLE")
+
+    def test_store_the_grain_takes_it_to_the_farms_own_storage_unpaid(self):
+        world = self.world(cargo=8000.0)
+        world.mock_store_at = (400.0, 400.0)
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "store"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "STORED"), c.last)
+        self.assertEqual((world.stored_litres, world.farm().money), (8000.0, FARM.money))
+        self.assertEqual(notices[-1], "COMPLETE_STORE")
+        world = self.world(cargo=8000.0)                                      # no storage: nothing moves
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "store"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("FAILED", "NO_STORAGE"), c.last)
 
     def test_a_rig_left_beside_the_combine_is_taken_past_it_before_the_harvest(self):
         # Live 931324a7d25a48d7-1: the EDK rig stood beside the MF 8570 (from an overload before
@@ -1071,7 +1221,19 @@ class UnloadAndSellTests(unittest.TestCase):
         for words in ("sell the tractor", "sell the plow"):
             self.assertNotEqual((r.interpret(words) or {}).get("command"), "sell")
         self.assertEqual(r.interpret("harvest field 3 and sell the grain"),
-                         {"version": 1, "command": "field_work", "field": 3, "operations": ["harvest"]})
+                         {"version": 1, "command": "field_work", "field": 3, "operations": ["harvest"],
+                          "destination": "sell"})
+        for words in ("harvest field 3 and store it", "harvest field 3 and put the grain in the silo"):
+            self.assertEqual(r.interpret(words)["destination"], "store")
+        self.assertNotIn("destination", r.interpret("harvest field 3"))
+        for words in ("store the grain", "put the wheat in the grain bin", "take the load to the silo"):
+            self.assertEqual(r.interpret(words), {"version": 1, "command": "store"})
+        self.assertNotEqual((r.interpret("take this to the farm silo") or {}).get("command"), "store")
+        self.assertEqual(r.interpret("from now on sell the harvest"),
+                         {"version": 1, "command": "harvest_policy", "destination": "sell"})
+        self.assertEqual(r.interpret("sell the grain from now on")["destination"], "sell")
+        self.assertEqual(r.interpret("keep the grain in the trailer")["destination"], "keep")
+        self.assertIsNone(r.interpret("don't sell the harvest"))
         self.assertEqual(r.interpret("unload the combine"), {"version": 1, "command": "unload_combine"})
         self.assertEqual(r.interpret("unload the harvester on field 3"),
                          {"version": 1, "command": "unload_combine", "field": 3})

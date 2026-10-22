@@ -126,7 +126,9 @@ function W.new(o)
     function env.AIVehicleUtil.driveToPoint(v, dt, acc, allowed, forwards, lx, lz, maxSpeed)
         table.insert(w.drives, { allowed = allowed, forwards = forwards, lx = lx, lz = lz, maxSpeed = maxSpeed })
         table.insert(w.events, allowed and "drive" or "brake")
-        if not allowed or acc <= 0 or w.stuck then w.speed = 0; return end
+        -- w.runawayKmh: what it does whatever it is told (the speed limit's test).
+        local kmh = w.runawayKmh or maxSpeed
+        if not w.runawayKmh and (not allowed or acc <= 0 or w.stuck) then w.speed = 0; return end
         local want = 2 * lx / math.max(lx * lx + lz * lz, 1e-6)
         if v.rotatedTime ~= nil then
             local target = v:getSteeringRotTimeByCurvature(want)
@@ -140,14 +142,14 @@ function W.new(o)
         want = math.max(-cap, math.min(cap, want))
         local step = w.steerRate * dt / 1000
         w.kappa = w.kappa + math.max(-step, math.min(step, want - w.kappa))
-        local ds = maxSpeed / 3.6 * dt / 1000
+        local ds = kmh / 3.6 * dt / 1000
         local sign = forwards and 1 or -1
         w.steer.x = w.steer.x + sign * ds * math.sin(w.steer.yaw)
         w.steer.z = w.steer.z + sign * ds * math.cos(w.steer.yaw)
         w.steer.yaw = w.steer.yaw + sign * ds * w.kappa
         if v.spec_wheels then v.spec_wheels.wheels[1].physics.steeringAngle = math.atan(w.kappa * 2.8) end
         w.sync()
-        w.speed = sign * maxSpeed
+        w.speed = sign * kmh
     end
     -- GIANTS' vehicle list (the pair, anything attached to them, and w.others) and
     -- the local player, standing 60 m off unless moved.
@@ -641,11 +643,19 @@ class LuaManeuverTests(unittest.TestCase):
         self.assertEqual(self.hitch.maneuverStep(w.env, session, 50), "STOPPED")
         self.assertFalse(dict(w.drives[len(w.drives)])["allowed"])
 
+    def test_over_the_limit_it_stops_braked(self):
+        w = self.world(**CASE_A)
+        session, why = self.start(w)
+        self.assertIsNotNone(session, why)
+        code, _ = self.run_to_end(w, session, hook=lambda i: i == 20 and setattr(w, "runawayKmh", 3.6))
+        self.assertEqual(code, "OVERSPEED", self.hitch.describeSpeed(session))
+        self.assertFalse(dict(w.drives[len(w.drives)])["allowed"])
+
     def test_speed_is_the_session_speed_and_capped(self):
         w = self.world(**CASE_A)
         session, _ = self.start(w, maxSpeedKmh=4)
         self.run_to_end(w, session, steps=50)
-        self.assertTrue(all(d["maxSpeed"] == 4 for d in self.drives(w)))
+        self.assertTrue(all(d["maxSpeed"] == 4 * 0.85 for d in self.drives(w) if d["allowed"]))   # under the 4 km/h limit
 
     # ------------------------------------------------- review regressions
     def test_a_start_just_beside_the_wagon_may_still_drive_away(self):

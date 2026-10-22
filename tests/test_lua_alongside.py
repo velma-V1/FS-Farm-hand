@@ -17,6 +17,7 @@ from lupa import lua51, lua54
 from tests.test_lua_unpark import STUBS
 
 ROOT = Path(__file__).resolve().parents[1]
+COMMAND_KMH = 3 * 0.85         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
 
 TRAILER = dict(back=7.0, width=2.5, length=6.0, height=2.6)
 
@@ -104,7 +105,7 @@ class LuaAlongsideTests(unittest.TestCase):
         self.assertLess(along, 12.2)
         self.assertAlmostEqual(lateral, 0.0, places=6)
         moving = [d for d in self.drives(w) if d["allowed"]]
-        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == 3 for d in moving))
+        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == COMMAND_KMH for d in moving))
         self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
         self.assertNotEqual(w.tractor.forceIsActive, True)
         self.assertEqual(self.hitch.alongsideStep(w.env, session, 50), "UNDER_PIPE")    # latched: brakes only
@@ -171,6 +172,46 @@ class LuaAlongsideTests(unittest.TestCase):
         w = self.world()
         w.entered = True
         self.assert_refused(w, "SEATED_DURING_ALONGSIDE")
+
+    def test_a_takeover_or_a_stop_while_it_moves_ends_it_braked(self):
+        for hook, code in ((lambda w, i: i == 15 and w.takeOver(), "DRIVER_TOOK_OVER"),
+                           (lambda w, i: i == 15 and setattr(w, "entered", True), "SEATED_DURING_ALONGSIDE"),
+                           (lambda w, i: i == 15 and self.hitch.abort(w.env, self.session, "STOPPED"), "STOPPED")):
+            with self.subTest(code=code):
+                w = self.world()
+                self.session, why, _ = self.start(w)
+                self.assertIsNotNone(self.session, why)
+                result, _ = self.runner(w, self.session, 3000, lambda i, w=w, hook=hook: hook(w, i))
+                self.assertEqual(result, code)
+                self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
+                self.assertNotEqual(w.tractor.forceIsActive, True)
+
+    def test_over_the_limit_or_beside_the_trailer_it_stops_braked(self):
+        w = self.world()
+        session, why, _ = self.start(w)
+        self.assertIsNotNone(session, why)
+        code, _ = self.runner(w, session, 3000, lambda i: i == 20 and setattr(w, "runawayKmh", 3.6))
+        self.assertEqual(code, "OVERSPEED", self.hitch.describeSpeed(session))
+        self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
+        # Something beside the towed trailer (the combine is not excluded either): contact.
+        w = self.world()
+        x0, z0 = w.steer.x, w.steer.z
+        session, why, _ = self.start(w)
+        self.assertIsNotNone(session, why)
+
+        def post(i):
+            if i == 20:
+                a, _ = self.W.travel(w, x0, z0)
+                w.box(a - 8.0, a - 6.0, -1.5, -1.3, 0, 2.0, None, "post")
+        code, _ = self.runner(w, session, 3000, post)
+        self.assertEqual(code, "ENVELOPE_CONTACT", self.hitch.describeEnvelope(session))
+        self.assertIn("units=2", self.hitch.describeEnvelope(session))
+        # Clear: it ends under the pipe with no contact, under the limit.
+        w = self.world()
+        session, why, _ = self.start(w)
+        self.assertEqual(self.runner(w, session, 3000, None)[0], "UNDER_PIPE")
+        self.assertIsNone(session.envelopeHits)
+        self.assertLessEqual(session.peakKmh, 3.0)
 
     def test_stops_braked_if_the_combine_moves_or_its_pipe_comes_in(self):
         for hook in (lambda w, i: i == 10 and setattr(w.combine.rootNode, "x", w.combine.rootNode.x + 1.0),

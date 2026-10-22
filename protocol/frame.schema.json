@@ -62,6 +62,7 @@
         "belted_to": {"oneOf": [{"$ref": "#/$defs/objectId"}, {"type": "null"}]},
         "brand": {"oneOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
         "seeds": {"oneOf": [{"type": "null"}, {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/token"}}]},
+        "ai_stop": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},
         "pipe": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false,
                  "required": ["out", "x", "z"],
                  "properties": {"out": {"type": "boolean"}, "x": {"type": "number"}, "z": {"type": "number"}}}]},
@@ -179,7 +180,8 @@
           "properties": {"field": {"type": "integer", "minimum": 1, "maximum": 100000},
                          "kind": {"$ref": "#/$defs/token"}, "status": {"$ref": "#/$defs/token"},
                          "mine": {"type": "boolean"},
-                         "reward": {"oneOf": [{"type": "number", "minimum": -1e9, "maximum": 1e9}, {"type": "null"}]}}}},
+                         "reward": {"oneOf": [{"type": "number", "minimum": -1e9, "maximum": 1e9}, {"type": "null"}]},
+                         "completion": {"oneOf": [{"type": "number", "minimum": 0, "maximum": 100}, {"type": "null"}]}}}},
         "farm": {"$ref": "#/$defs/farm"}
       }
     },

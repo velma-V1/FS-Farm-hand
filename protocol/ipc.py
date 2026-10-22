@@ -125,7 +125,7 @@ COMMAND_ARGS = {
     "fold": ("tractor", "direction"),            # the vehicle's own Foldable parts to one end
     "belts": ("tractor", "direction"),           # a transport's TensionBelts fastened (1) or released (-1)
     "load": ("tractor", "wagon", "direction"),   # the tractor alone onto the trailer's deck (1) or off it (-1)
-    "ad_marker": ("field",),                     # an AutoDrive destination "Field N" by field N's edge
+    "ad_marker": ("field", "x", "z"),            # an AutoDrive destination: "Field N" by field N's edge, or (field 0) the farm building at (x, z) by its name
     "follow": ("tractor",),                      # FollowMe: the vehicle follows the one the player drives
     "contract": ("field", "direction"),          # the field's contract taken (1) or its reward collected (-1)
     "ad_unload": ("tractor", "marker", "field"),  # AutoDrive's combine unloader: waits at the marker, sells the field's crop
@@ -133,7 +133,7 @@ COMMAND_ARGS = {
     "pipe": ("tractor", "direction"),            # a combine's pipe out (1) or in (-1), GIANTS Pipe
     "overload": ("tractor", "wagon"),            # a standing combine discharges into the trailer under its pipe
     "alongside": ("tractor", "wagon", "direction"),  # the trailer under the combine's pipe (1) or on past the combine (-1)
-    "deliver": ("tractor",),                     # GIANTS' Deliver helper: the cargo to the best paid selling station
+    "deliver": ("tractor", "direction"),        # GIANTS' Deliver helper: the cargo to the best paid selling station (1) or the farm's storage (-1)
     "backoff": ("tractor", "wagon"),             # the tractor straight back from the transport's ramps it waits behind
     "stop": ("tractor",),
 }

@@ -464,13 +464,16 @@ class SequenceTests(unittest.TestCase):
         self.assertEqual(c.last.state, "CANCELLED")
 
 
-def haul_world(hitched=False, loaded=False, ramps_down=False, marker=True):
+def haul_world(hitched=False, loaded=False, ramps_down=False, marker=True, stall=False, autodrive=True):
     """The user's transport rig on the mock (mock-only belts, ramps and LOAD): a GMC with a
-    gooseneck joint, a deckover with Foldable ramps and four belts 40 m off (heading 0), a
-    Series 9 (DEUTZFAHR) standing apart; an AutoDrive marker "Field 3" far away."""
+    gooseneck joint (AutoDrive unless ``autodrive`` is False), a deckover with Foldable ramps
+    and four belts 40 m off (heading 0), a Series 9 (DEUTZFAHR) standing apart; an AutoDrive
+    marker "Field 3" far away. ``stall``: AutoDrive never moves the rig once it carries the
+    Series 9 (its drive ends AD_WAITING_ON_OBSTACLE, as live 831d6868b9df40b0-1 never moved)."""
     from protocol.model import Destination
     truck, deck = rig()
-    truck = replace(truck, capabilities=AUTODRIVE_TRACTOR, size=(6.5, 2.4, 2.0, 0.0), fold=1.0)
+    truck = replace(truck, capabilities=AUTODRIVE_TRACTOR if autodrive else GOTO_TRACTOR, size=(6.5, 2.4, 2.0, 0.0),
+                    fold=1.0)
     belts = tuple((40.0 - 1.3, 1.0, 20.0 + a, 40.0 + 1.3, 1.0, 20.0 + a) for a in (-4.0, -2.0, 0.0, 2.0))
     deck = replace(deck, size=(10.0, 2.6, 1.2, 0.0), belts_fastened=False, belt_markers=belts, kinds=frozenset({"trailer"}))
     series9 = Equipment("s-9", "tractor", "farm-a", (10.0, -10.0), name="Series 9 2019", brand="DEUTZFAHR",
@@ -479,6 +482,7 @@ def haul_world(hitched=False, loaded=False, ramps_down=False, marker=True):
     markers = (Destination("m-3", (900.0, 900.0), "Field 3"),) if marker else ()
     world = MockWorld([deck, series9, truck], PLAYERS, markers)
     world.mock_field_places = (Destination("field-3", (700.0, 650.0), "field 3"),)
+    world.mock_ad_loaded_stall = "AD_WAITING_ON_OBSTACLE" if stall else None
     if hitched or loaded:
         executor = Executor(world)
         assert executor.execute(dict(intent("prep-1"), task="hitch_pair", implement="trailer",
@@ -502,10 +506,12 @@ def drive_by_hand(world, truck_id, deck_id, position):
 
 class HaulGoalTests(unittest.TestCase):
     """"Take the Deutz to field 3 and unload it" (BUILD_SPEC completion plan, C1/C2/C4), the
-    coordinator planning each step from observed state, the real executor on the mock. A
-    trailer carrying a belted vehicle is moved by no installed driver (GIANTS GOTO blocked live
-    d14230aa9fb24d30-3, AutoDrive waiting on it as traffic live 831d6868b9df40b0-1): the goal
-    pauses LOADED_NO_DRIVER, the player drives it there, "continue" unloads on arrival."""
+    coordinator planning each step from observed state, the real executor on the mock. GIANTS
+    GOTO does not start a trailer carrying a belted vehicle (live d14230aa9fb24d30-3); AutoDrive
+    counts the belted cargo as the rig's own (AttacherJoints/TensionBelts getHasObjectMounted),
+    so it drives the loaded rig to its marker and one request hauls and unloads. When AutoDrive
+    does not move it (its drive ends with what it waited on) or there is no AutoDrive, the
+    player drives it there (assisted) and "continue" unloads on the observed arrival."""
 
     def coordinator(self, world):
         from companion import coordinator as coordination
@@ -539,26 +545,50 @@ class HaulGoalTests(unittest.TestCase):
                 break
         return c.last
 
-    def test_from_an_unprepared_state_every_step_runs_once_in_order(self):
+    def test_one_request_hitches_loads_secures_drives_and_unloads(self):
         from companion import hitch as transport
         world, truck, deck, series9 = haul_world()
         c, notices = self.run_goal(world)
-        first = c.last
-        self.assertEqual((first.state, first.reason), ("BLOCKED", "LOADED_NO_DRIVER"), first.states)
-        tasks = [s.split(":")[0] for s in first.states]
-        self.assertEqual([t for i, t in enumerate(tasks) if i == 0 or tasks[i - 1] != t],
-                         ["hitch_pair", "load_tractor", "move_pair"])
-        self.assertNotIn("move_pair:RESERVE", first.states)                       # refused before anything
-        self.assertEqual(world.items[series9.id].belted_to, deck.id)              # waiting, loaded
-        self.assertEqual(notices[-1], "BLOCKED_LOADED_NO_DRIVER")
-        job = self.finish(c, world, truck, deck, (893.0, 890.0))                  # 10 m from "Field 3"
+        job = c.last
         self.assertEqual((job.state, job.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), job.states)
-        self.assertEqual([s.split(":")[0] for s in job.states if s.endswith(":FIND")], ["move_pair", "unload_tractor"])
-        self.assertNotIn("move_pair:DELIVER", job.states)                         # nothing drove it
+        tasks = [s.split(":")[0] for s in job.states]
+        self.assertEqual([t for i, t in enumerate(tasks) if i == 0 or tasks[i - 1] != t],
+                         ["hitch_pair", "load_tractor", "move_pair", "unload_tractor"])
+        self.assertIn("load_tractor:BELTS", job.states)                           # secured before it went
+        self.assertIn("move_pair:DELIVER", job.states)                            # AutoDrive drove it
         after = world.items
+        self.assertLess(math.dist(after[truck.id].position, (900.0, 900.0)), 1.0)
         self.assertTrue(transport.off_ramps(after[series9.id], after[deck.id]))
         self.assertEqual((after[deck.id].fold, after[deck.id].belts_fastened), (0.0, False))
         self.assertIsNone(c.kept)
+        self.assertEqual(notices[-1], "COMPLETE_HAUL")
+
+    def test_when_autodrive_does_not_move_the_loaded_rig_the_player_drives_it(self):
+        # Assisted, never counted as autonomous: AutoDrive's drive ended with what it waited on;
+        # the goal is kept, "continue" before the rig is there does not hand it back to AutoDrive,
+        # and on the observed arrival it unloads without driving.
+        world, truck, deck, series9 = haul_world(stall=True)
+        c, notices = self.run_goal(world)
+        first = c.last
+        self.assertEqual((first.state, first.reason), ("FAILED", "AD_WAITING_ON_OBSTACLE"), first.states)
+        self.assertIn("move_pair:DELIVER", first.states)
+        self.assertEqual(world.items[series9.id].belted_to, deck.id)              # waiting, loaded
+        self.assertIsNotNone(c.kept)
+        job = self.finish(c, world, truck, deck, (700.0, 700.0))                  # driven part of the way
+        self.assertEqual((job.state, job.reason), ("BLOCKED", "LOADED_NO_DRIVER"), job.states)
+        self.assertNotIn("move_pair:RESERVE", job.states)
+        job = self.finish(c, world, truck, deck, (893.0, 890.0))                  # 10 m from "Field 3"
+        self.assertEqual((job.state, job.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), job.states)
+        self.assertNotIn("move_pair:DELIVER", job.states)                         # nothing drove it
+
+    def test_without_autodrive_the_loaded_rig_is_the_players_to_drive(self):
+        world, truck, deck, series9 = haul_world(autodrive=False)
+        c, notices = self.run_goal(world)
+        self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", "LOADED_NO_DRIVER"), c.last.states)
+        self.assertNotIn("move_pair:RESERVE", c.last.states)                      # refused before anything
+        self.assertEqual(notices[-1], "BLOCKED_LOADED_NO_DRIVER")
+        job = self.finish(c, world, truck, deck, (705.0, 650.0))                  # at GIANTS' field 3 point
+        self.assertEqual((job.state, job.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), job.states)
 
     def test_from_partly_done_states_nothing_completed_is_repeated(self):
         for label, prep, first in (("hitched", dict(hitched=True), "load_tractor"),
@@ -567,20 +597,20 @@ class HaulGoalTests(unittest.TestCase):
             with self.subTest(label):
                 world, truck, deck, series9 = haul_world(**prep)
                 c, _ = self.run_goal(world)
-                self.assertEqual(c.last.reason, "LOADED_NO_DRIVER", c.last.states)
-                self.assertEqual(c.last.states[0].split(":")[0], first)
-                self.assertNotIn("hitch_pair:ATTACH", c.last.states)
-                if prep.get("loaded"):
-                    self.assertNotIn("load_tractor:LOAD", c.last.states)      # never driven up twice
-                    self.assertNotIn("load_tractor:BELTS", c.last.states)
-                job = self.finish(c, world, truck, deck, (900.0, 900.0))
+                job = c.last
                 self.assertEqual((job.state, job.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), job.states)
-                self.assertNotIn("load_tractor:LOAD", job.states)
+                self.assertEqual(job.states[0].split(":")[0], first)
+                self.assertNotIn("hitch_pair:ATTACH", job.states)
+                if prep.get("loaded"):
+                    self.assertNotIn("load_tractor:LOAD", job.states)          # never driven up twice
+                    if not prep.get("ramps_down"):
+                        self.assertNotIn("load_tractor:BELTS", job.states)
 
     def test_no_unload_without_the_observed_arrival(self):
         # Driven only part of the way: "continue" does not unload short of the destination.
-        world, truck, deck, series9 = haul_world(loaded=True)
+        world, truck, deck, series9 = haul_world(loaded=True, stall=True)
         c, _ = self.run_goal(world)
+        self.assertEqual(c.last.reason, "AD_WAITING_ON_OBSTACLE")
         job = self.finish(c, world, truck, deck, (700.0, 700.0))                  # 280 m short
         self.assertEqual((job.state, job.reason), ("BLOCKED", "LOADED_NO_DRIVER"), job.states)
         self.assertNotIn("unload_tractor", " ".join(job.states))
@@ -591,11 +621,22 @@ class HaulGoalTests(unittest.TestCase):
         world, truck, deck, series9 = haul_world(loaded=True, marker=False)
         world.mock_ad_fields = {3: (-850.0, 420.0)}
         c, _ = self.run_goal(world)
-        self.assertEqual(c.last.reason, "LOADED_NO_DRIVER")
-        self.assertEqual(world.ad_markers_made, (3,))                             # where to drive it
-        job = self.finish(c, world, truck, deck, (-845.0, 430.0))
+        job = c.last
         self.assertEqual((job.state, job.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), job.states)
-        self.assertEqual(world.ad_markers_made, (3,))                             # not made twice
+        self.assertEqual(world.ad_markers_made, (3,))                             # where AutoDrive drove it
+        self.assertLess(math.dist(world.items[truck.id].position, (-850.0, 420.0)), 1.0)
+
+    def test_a_farm_building_gets_an_autodrive_marker_by_its_own_name(self):
+        from protocol.model import Destination
+        world, truck, deck, series9 = haul_world(loaded=True, marker=False)
+        barn = Destination("pl-1", (-759.0, 129.0), "Farm Barn")
+        world.place_list = (barn,)
+        world.mock_ad_places = {(-759.0, 129.0): (-745.0, 140.0)}
+        c, _ = self.run_goal(world, "take the deutz to the farm barn and unload it")
+        job = c.last
+        self.assertEqual((job.state, job.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), job.states)
+        self.assertEqual(world.ad_markers_made, ("Farm Barn",))
+        self.assertLess(math.dist(world.items[truck.id].position, (-745.0, 140.0)), 1.0)
 
     def test_no_marker_is_made_for_what_goto_can_deliver(self):
         world, truck, deck, series9 = haul_world(hitched=True, marker=False)
@@ -710,13 +751,8 @@ class ResumeTests(unittest.TestCase):
         ran.clear()
         c.submit({"version": 1, "command": "resume"})
         self.wait_idle(c)
-        self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", "LOADED_NO_DRIVER"), c.last.states)
-        self.assertEqual([i["task"] for i in ran], ["load_tractor", "move_pair"])
-        drive_by_hand(world, truck.id, deck.id, (900.0, 900.0))
-        c.submit({"version": 1, "command": "resume"})
-        self.wait_idle(c)
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), c.last.states)
-        self.assertEqual([i["task"] for i in ran], ["load_tractor", "move_pair", "move_pair", "unload_tractor"])
+        self.assertEqual([i["task"] for i in ran], ["load_tractor", "move_pair", "unload_tractor"])
 
     def test_a_new_destination_while_driving_stops_and_carries_on_there(self):
         from protocol.model import Destination, Result
@@ -739,16 +775,9 @@ class ResumeTests(unittest.TestCase):
             c.wait(0.05)
         c.submit({"version": 1, "command": "retarget", "target": {"type": "field_entrance", "field": 2}})
         self.wait_idle(c)
-        self.assertEqual(c.last.reason, "LOADED_NO_DRIVER", c.last.states)            # now bound for field 2
-        self.assertEqual(ran[1]["target"], {"type": "field_entrance", "field": 2})
-        drive_by_hand(world, truck.id, deck.id, (900.0, 900.0))                       # to field 3: not it
-        c.resume()
-        self.wait_idle(c)
-        self.assertEqual(c.last.reason, "LOADED_NO_DRIVER")
-        drive_by_hand(world, truck.id, deck.id, (-600.0, 300.0))
-        c.resume()
-        self.wait_idle(c)
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), c.last.states)
+        self.assertEqual(ran[1]["target"], {"type": "field_entrance", "field": 2})     # now bound for field 2
+        self.assertLess(math.dist(world.items[truck.id].position, (-600.0, 300.0)), 1.0)
         self.assertIn("RETARGETED", notices)
         self.assertIn("RETARGETED", notices)
 
@@ -771,11 +800,8 @@ class ResumeTests(unittest.TestCase):
         self.wait_idle(c)
         c.submit({"version": 1, "command": "retarget", "target": {"type": "field_entrance", "field": 2}})
         self.wait_idle(c)
-        self.assertEqual(c.last.reason, "LOADED_NO_DRIVER", c.last.states)
-        drive_by_hand(world, truck.id, deck.id, (-600.0, 300.0))
-        c.resume()
-        self.wait_idle(c)
         self.assertEqual(c.last.reason, "HAULED_AND_UNLOADED", c.last.states)
+        self.assertLess(math.dist(world.items[truck.id].position, (-600.0, 300.0)), 1.0)
 
 
 class RestartTests(unittest.TestCase):
@@ -897,7 +923,7 @@ class FollowMeTests(unittest.TestCase):
     def test_follow_then_continue_unloads_only_where_it_was_led(self):
         from companion import coordinator as coordination
         from companion.language import RuleInterpreter
-        world, truck, deck, series9 = haul_world(loaded=True)
+        world, truck, deck, series9 = haul_world(loaded=True, stall=True)
         world.cancel, world.retained = None, (lambda: ())
         world.mock_follow_to = (895.0, 895.0)                                # led to "Field 3"
         c = coordination.Coordinator(world, Executor(world), lambda n, s=False: None, lambda: "farm-a", lambda: "s1")
@@ -912,7 +938,7 @@ class FollowMeTests(unittest.TestCase):
             return c.last
 
         with unittest.mock.patch.object(coordination.Coordinator, "SETTLE_S", 0.0):
-            self.assertEqual(run("take the deutz to field 3 and unload it").reason, "LOADED_NO_DRIVER")
+            self.assertEqual(run("take the deutz to field 3 and unload it").reason, "AD_WAITING_ON_OBSTACLE")
             followed = run("have the gmc follow me")
             self.assertEqual((followed.state, followed.reason), ("COMPLETE", "FOLLOW_ENDED"), followed.states)
             self.assertEqual(world.items[series9.id].belted_to, deck.id)    # following never unloads

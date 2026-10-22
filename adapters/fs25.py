@@ -203,6 +203,7 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
         brand=vehicle.get("brand"),
         seeds=tuple(vehicle.get("seeds") or ()),
         pipe=None if vehicle.get("pipe") is None else (vehicle["pipe"]["out"], vehicle["pipe"]["x"], vehicle["pipe"]["z"]),
+        ai_stop=vehicle.get("ai_stop"),
         size=None if vehicle.get("size") is None else tuple(
             vehicle["size"][k] for k in ("length", "width", "height", "length_offset")),
     )
@@ -248,7 +249,7 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = N
         fields=fields,
         field_places=tuple(Destination(f"field-{f['id']}", (f["x"], f["z"]), f"field {f['id']}")
                            for f in sorted(frame.get("field_places", ()), key=lambda f: f["id"])),
-        contracts=tuple(Contract(c["field"], c["kind"], c["status"], c["mine"], c["reward"])
+        contracts=tuple(Contract(c["field"], c["kind"], c["status"], c["mine"], c["reward"], c.get("completion"))
                         for c in frame.get("contracts", ())),
         farm=None if farm is None else FarmInfo(farm["money"], farm["helper_buy_seeds"],
                                                 farm["helper_buy_fertilizer"], farm["helper_buy_fuel"], farm.get("savegame_dir")),

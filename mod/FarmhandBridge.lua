@@ -114,6 +114,15 @@ local function settle(task, code)
 end
 
 local starters, steppers, aborts = {}, {}, {}
+
+-- A self-driven motion's end: its own description, the speed it kept (Hitch.describeSpeed:
+-- the limit, Farmhand's measured peak, GIANTS' reading, the governor's frames), the rig's
+-- observed envelope (Hitch.describeEnvelope) and the speed trace, for the record.
+local function logMotionEnd(op, code, session, describe)
+    log("%s end %s %s %s %s", op, code, describe(session), Bridge.Hitch.describeSpeed(session),
+        Bridge.Hitch.describeEnvelope(session))
+    for i, line in ipairs(Bridge.Hitch.speedTrace(session, 8)) do log("%s trace %d %s", op, i, line) end
+end
 local gateCandidates          -- (open_gates) also read by unpark
 Bridge.pendingGoto = {}       -- tractor -> ms left to watch an aborted, unseen GOTO
 
@@ -142,7 +151,97 @@ function starters.drive(env, spec)
     return { seen = false }
 end
 
-function steppers.drive(_env, task)
+-- What AutoDrive is doing, read only, for the log and for a drive that does not move: its
+-- task text (ADStateModule:getCurrentTaskInfo 586-588; "$l10n_AD_task_pathfinding;" while it
+-- plans onto its network from more than 30 m away, DriveToDestinationTask.lua 18-21, 65-70),
+-- the rig's distance from the network (getClosestWayPoint, ADGraphManager:
+-- getDistanceFromNetwork 230-233), its route (ADDrivePathModule:getWayPoints), paused
+-- (DrivePathModule.isPaused 141-147), the collision module's verdict
+-- (ADCollisionDetectionModule detectedObstable / detectedCollision 16-36, 69-82), which of its
+-- sensors are triggered (ADSensor.triggered 522-528), whether it counts its implements folded
+-- (AutoDrive.getAllImplementsFolded, AutoDriveUtilFuncs 529-), and for each triggered
+-- collision sensor what its own box holds now: its getBoxShape (VirtualSensors 287-375) and
+-- getMask (CollSensor.lua 45-48) asked of GIANTS' overlapBox, each shape's object and
+-- whether AutoDrive counts it as part of the rig (AutoDrive:checkIsConnected,
+-- AutoDriveUtilFuncs 53-80, as its sensor callback CollSensor.lua 64-86 asks).
+Bridge.AD_DIAG_MS = 5000
+Bridge.AD_STALL_MS = 180000     -- active this long without moving AD_STALL_M: FAILED with what it waits on
+Bridge.AD_STALL_M = 2
+
+local function adSensorHits(env, AD, v, sensor)
+    local box = sensor:getBoxShape()
+    local mission = env.g_currentMission
+    local q, seen = { names = {} }, 0
+    function q.onAdDiagOverlap(_, nodeId)
+        seen = seen + 1
+        if nodeId ~= mission.terrainRootNode and #q.names < 4 then
+            local object = mission:getNodeObject(nodeId) or mission:getNodeObject(env.getParent(nodeId))
+            local name = tostring(select(2, pcall(env.getName, nodeId)))
+            if object == nil then
+                q.names[#q.names + 1] = name .. "@-"
+            else
+                local own = object == v or AD:checkIsConnected(v:getRootVehicle(), object)
+                local label = type(object.getName) == "function" and object:getName() or tostring(object.typeName)
+                q.names[#q.names + 1] = string.format("%s@%s%s", name, tostring(label), own and "(own)" or "")
+            end
+        end
+        return true
+    end
+    env.overlapBox(box.x, box.y, box.z, box.rx, box.ry, 0, box.size[1], box.size[2], box.size[3], "onAdDiagOverlap", q,
+                   sensor:getMask(), true, true, true, true)
+    return table.concat(q.names, ",")
+end
+
+function Bridge.adState(env, v)
+    local d = {}
+    local AD = (Bridge.Observe and Bridge.Observe.autoDrive and Bridge.Observe.autoDrive(env)) or env.AutoDrive
+    pcall(function() d.task = tostring(v.ad.stateModule:getCurrentTaskInfo()) end)
+    pcall(function() local _, dist = v:getClosestWayPoint(); d.network = dist end)
+    pcall(function() local wps, cur = v.ad.drivePathModule:getWayPoints(); d.route = wps and #wps or 0; d.at = cur end)
+    pcall(function() d.paused = v.ad.drivePathModule.isPaused == true end)
+    pcall(function()
+        d.obstacle = v.ad.collisionDetectionModule.detectedObstable == true
+        d.collision = v.ad.collisionDetectionModule.detectedCollision == true
+    end)
+    pcall(function() d.folded = AD.getAllImplementsFolded(v) == true end)
+    pcall(function() d.speed = v:getLastSpeed() end)
+    local triggered, seen = {}, {}
+    pcall(function()
+        for name, sensor in pairs(v.ad.sensors or {}) do
+            if type(sensor) == "table" and sensor.triggered == true then
+                local hit = ""
+                if type(sensor.getMask) == "function" and type(sensor.getBoxShape) == "function" then
+                    local ok, names = pcall(adSensorHits, env, AD, v, sensor)
+                    hit = ok and names or "?"
+                end
+                triggered[#triggered + 1] = name .. "[" .. hit .. "]"
+                seen[#seen + 1] = name
+            end
+        end
+    end)
+    table.sort(triggered)
+    d.sensors = table.concat(triggered, " ")
+    return d
+end
+
+local function describeAd(d)
+    local function f(n) return type(n) == "number" and string.format("%.1f", n) or "?" end
+    return string.format("task=%s network=%s route=%s/%s paused=%s obstacle=%s collision=%s folded=%s speed=%s sensors=%s",
+        tostring(d.task), f(d.network), tostring(d.at), tostring(d.route), tostring(d.paused), tostring(d.obstacle),
+        tostring(d.collision), tostring(d.folded), f(d.speed), d.sensors ~= "" and d.sensors or "-")
+end
+
+-- What a drive that does not move waits on: AutoDrive's own path planning onto its network
+-- (a route problem), its collision module or a sensor (something in the way, the rig's own
+-- cargo included: the sensors' hits say whose), paused, or none of these.
+local function adStallCode(d)
+    if type(d.task) == "string" and d.task:find("pathfinding", 1, true) then return "AD_PATHFINDING_STALLED" end
+    if d.obstacle or d.collision or (d.sensors or "") ~= "" then return "AD_WAITING_ON_OBSTACLE" end
+    if d.paused then return "AD_PAUSED" end
+    return "AD_NOT_MOVING"
+end
+
+function steppers.drive(env, task)
     local spec, v = task.spec, task.spec.tractor
     local status, code = stillOurs(spec)
     if status ~= nil then return status, code end
@@ -151,6 +250,22 @@ function steppers.drive(_env, task)
     if not task.seen then
         if task.elapsed > Bridge.START_TIMEOUT_MS then return "FAILED", "AD_NOT_STARTED" end
         return nil
+    end
+    if active == true and task.elapsed >= (task.diagAt or 0) then
+        task.diagAt = task.elapsed + Bridge.AD_DIAG_MS
+        local okAt, x, _, z = pcall(env.getWorldTranslation, v.rootNode)
+        local ok, d = pcall(Bridge.adState, env, v)
+        if okAt and finite(x) and finite(z) and ok then
+            if task.movedFrom == nil or math.sqrt((x - task.movedFrom[1]) ^ 2 + (z - task.movedFrom[2]) ^ 2) > Bridge.AD_STALL_M then
+                task.movedFrom, task.movedAt = { x, z }, task.elapsed
+            end
+            log("drive AutoDrive (%.0f, %.0f) %s", x, z, describeAd(d))
+            if task.elapsed - task.movedAt > Bridge.AD_STALL_MS then
+                local stall = adStallCode(d)
+                log("drive stalled %s: unmoved %.0f s; %s", stall, (task.elapsed - task.movedAt) / 1000, describeAd(d))
+                return "FAILED", stall
+            end
+        end
     end
     if active ~= false then
         if active ~= true then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
@@ -336,6 +451,10 @@ end
 function steppers.maneuver(env, task, dt)
     local code = Bridge.Hitch.maneuverStep(env, task.session, dt)
     if code == "CONTINUE" then return nil end
+    if not task.endLogged then
+        task.endLogged = true
+        logMotionEnd("maneuver", code, task.session, function() return "" end)
+    end
     if code ~= "LINED_UP" then return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code end
     return settle(task, code)       -- braked by the latch; DONE once observed at rest
 end
@@ -360,7 +479,7 @@ end
 function steppers.align(env, task, dt)
     local code = Bridge.Hitch.alignStep(env, task.session, dt)
     if code == "CONTINUE" then return nil end
-    log("align end %s %s", code, Bridge.Hitch.describe(task.session))
+    logMotionEnd("align", code, task.session, Bridge.Hitch.describe)
     if code == "CANDIDATE" then return "DONE", code end
     return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code
 end
@@ -465,7 +584,7 @@ function steppers.pull_clear(env, task, dt)
     if code == "CONTINUE" then return nil end
     if not task.endLogged then          -- once, not every frame while it brakes to rest
         task.endLogged = true
-        log("pull_clear end %s %s", code, Bridge.Hitch.describePull(task.session))
+        logMotionEnd("pull_clear", code, task.session, Bridge.Hitch.describePull)
     end
     if code ~= "CLEAR" then return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code end
     return settle(task, code)       -- braked by the latch; DONE once observed at rest
@@ -542,7 +661,7 @@ function steppers.unpark(env, task, dt)
     if code == "CONTINUE" then return nil end
     if not task.endLogged then          -- once, not every frame while it brakes to rest
         task.endLogged = true
-        log("unpark end %s %s", code, Bridge.Hitch.describeUnpark(task.session))
+        logMotionEnd("unpark", code, task.session, Bridge.Hitch.describeUnpark)
     end
     if code ~= "CLEAR" then return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code end
     return settle(task, "UNPARKED")     -- braked by the latch; DONE once observed at rest
@@ -581,7 +700,7 @@ function steppers.load(env, task, dt)
     if code == "CONTINUE" then return nil end
     if not task.endLogged then
         task.endLogged = true
-        log("load end %s %s", code, Bridge.Hitch.describeLoad(task.session))
+        logMotionEnd("load", code, task.session, Bridge.Hitch.describeLoad)
     end
     if code ~= "LOADED" and code ~= "UNLOADED" then
         return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code
@@ -616,7 +735,7 @@ function steppers.backoff(env, task, dt)
     if code == "CONTINUE" then return nil end
     if not task.endLogged then
         task.endLogged = true
-        log("backoff end %s %s", code, Bridge.Hitch.describeBackOff(task.session))
+        logMotionEnd("backoff", code, task.session, Bridge.Hitch.describeBackOff)
     end
     if code ~= "BACKED_OFF" then return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code end
     return settle(task, code)
@@ -654,7 +773,7 @@ function steppers.alongside(env, task, dt)
     if code == "CONTINUE" then return nil end
     if not task.endLogged then
         task.endLogged = true
-        log("alongside end %s %s", code, Bridge.Hitch.describeAlongside(task.session))
+        logMotionEnd("alongside", code, task.session, Bridge.Hitch.describeAlongside)
     end
     if code ~= "UNDER_PIPE" and code ~= "PASSED" then
         return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code
@@ -758,11 +877,44 @@ local function segmentDistance(px, pz, ax, az, bx, bz)
     return math.sqrt((px - cx) ^ 2 + (pz - cz) ^ 2)
 end
 
+-- Field 0: the farm's own building whose root is within AD_PLACE_AT_M of (x, z) (as Observe
+-- lists places: placeableSystem placeables, getName, rootNode), the marker named as it, on the
+-- connected waypoint nearest it within AD_PLACE_M (buildings stand back from the roads).
+Bridge.AD_PLACE_AT_M = 1
+Bridge.AD_PLACE_M = 60
+
+local function placeMarker(env, spec, graph)
+    if not (finite(spec.x) and finite(spec.z)) then return nil, "INVALID_PLACE" end
+    local name
+    for _, pl in pairs(env.g_currentMission.placeableSystem.placeables or {}) do
+        if pl.ownerFarmId == spec.farmId then
+            local px, _, pz = env.getWorldTranslation(pl.rootNode)
+            if finite(px) and finite(pz) and math.sqrt((px - spec.x) ^ 2 + (pz - spec.z) ^ 2) <= Bridge.AD_PLACE_AT_M then
+                name = pl:getName()
+            end
+        end
+    end
+    if type(name) ~= "string" or name == "" then return nil, "AD_PLACE_NOT_FOUND" end
+    if graph:getMapMarkerByName(name) ~= nil then return { name = name, existed = true } end
+    local best, bestD
+    for id, wp in pairs(graph:getWayPoints() or {}) do
+        if type(wp) == "table" and finite(wp.x) and finite(wp.z) and #(wp.out or {}) > 0 and #(wp.incoming or {}) > 0 then
+            local d = math.sqrt((wp.x - spec.x) ^ 2 + (wp.z - spec.z) ^ 2)
+            if d <= Bridge.AD_PLACE_M and (bestD == nil or d < bestD) then best, bestD = id, d end
+        end
+    end
+    if best == nil then return nil, "AD_NO_WAYPOINT_AT_PLACE" end
+    log("ad_marker %s on waypoint %s, %.1f m from the building", name, tostring(best), bestD)
+    graph:createMapMarker(best, name)
+    return { name = name, graph = graph }
+end
+
 function starters.ad_marker(env, spec)
     if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
     local graph = adGraph(env)
     if graph == nil then return nil, "AD_MARKER_UNSUPPORTED" end
     local n = spec.field
+    if n == 0 then return placeMarker(env, spec, graph) end
     if not finite(n) or n < 1 or n ~= math.floor(n) then return nil, "INVALID_FIELD" end
     local name = string.format("Field %d", n)
     if graph:getMapMarkerByName(name) ~= nil then return { name = name, existed = true } end
@@ -983,8 +1135,36 @@ function aborts.fold() end          -- GIANTS finishes the fold it started; noth
 -- paid SellingStation for what the rig carries among those (getIsFillTypeAISupported,
 -- getEffectiveFillTypePrice as ADTriggerManager:getHighestPayingSellStation reads it); no
 -- looping. DONE once GIANTS' job ends with the rig at rest; the companion checks the cargo
--- went and the money came.
+-- went and the money came. direction -1 (store): the farm's own storage instead: the nearest
+-- of those stations that is a silo's own unloading station (PlaceableSilo:onLoad 100-102 sets
+-- spec_silo.unloadingStation.owningPlaceable to the silo) on a placeable the farm owns, taking
+-- the cargo (getIsFillTypeAISupported); never an animal feeder or a production's input; nothing
+-- is sold.
 Bridge.DELIVER_TIMEOUT_MS = 1800000
+
+local function deliverStation(env, spec, job, fillType, v)
+    local store = spec.direction == -1
+    local best, bestScore, vx, vz = nil, nil, nil, nil
+    if store then vx, _, vz = env.getWorldTranslation(v.rootNode) end
+    for _, id in ipairs(job.unloadingStationParameter.unloadingStationIds or {}) do
+        local station = env.NetworkUtil.getObject(id)
+        if station ~= nil and station:getIsFillTypeAISupported(fillType) then
+            local selling = station:isa(env.SellingStation) == true
+            if not store and selling then
+                local price = station:getEffectiveFillTypePrice(fillType)
+                if finite(price) and (bestScore == nil or price > bestScore) then best, bestScore = station, price end
+            elseif store and not selling and station.owningPlaceable ~= nil
+                    and station.owningPlaceable.spec_silo ~= nil
+                    and station.owningPlaceable.spec_silo.unloadingStation == station
+                    and station.owningPlaceable.ownerFarmId == spec.farmId then
+                local sx, _, sz = env.getWorldTranslation(station.owningPlaceable.rootNode)
+                local d = math.sqrt((sx - vx) ^ 2 + (sz - vz) ^ 2)
+                if finite(d) and (bestScore == nil or -d > bestScore) then best, bestScore = station, -d end
+            end
+        end
+    end
+    return best, bestScore
+end
 
 function starters.deliver(env, spec)
     local v = spec.tractor
@@ -999,21 +1179,18 @@ function starters.deliver(env, spec)
         if job == nil then return "NO_DELIVER_JOB" end
         if job:getIsAvailableForVehicle(v) ~= true then return "DELIVER_UNAVAILABLE" end
         job:applyCurrentState(v, mission, spec.farmId, false)
-        local best, bestPrice = nil, -1
-        for _, id in ipairs(job.unloadingStationParameter.unloadingStationIds or {}) do
-            local station = env.NetworkUtil.getObject(id)
-            if station ~= nil and station:isa(env.SellingStation) and station:getIsFillTypeAISupported(fillType) then
-                local price = station:getEffectiveFillTypePrice(fillType)
-                if finite(price) and price > bestPrice then best, bestPrice = station, price end
-            end
-        end
-        if best == nil then return "NO_SELL_POINT" end
+        local best, score = deliverStation(env, spec, job, fillType, v)
+        if best == nil then return spec.direction == -1 and "NO_STORAGE" or "NO_SELL_POINT" end
         job.unloadingStationParameter:setUnloadingStation(best)
         job.loopingParameter:setIsLooping(false)
         job:setValues()
         if job:validate(spec.farmId) ~= true then return "DELIVER_INVALID" end
         Bridge.aiStops[v] = nil
-        log("deliver: to %s at %.3f per litre", tostring(best:getName()), bestPrice)
+        if spec.direction == -1 then
+            log("deliver: into storage %s, %.0f m off", tostring(best:getName()), -score)
+        else
+            log("deliver: to %s at %.3f per litre", tostring(best:getName()), score)
+        end
         mission.aiSystem:startJob(job, spec.farmId)
         return nil
     end)
@@ -1123,6 +1300,11 @@ end
 function steppers.overload(_env, task)
     if task.spec.owned() ~= true then return "FAILED", "RESERVATION_LOST" end
     local v, trailer = task.spec.tractor, task.spec.wagon
+    -- The player in the combine or in the tractor under its pipe: theirs now (aborts fold the pipe).
+    local rig = trailer.rootVehicle or trailer
+    if (v.getIsEntered ~= nil and v:getIsEntered() == true) or (rig.getIsEntered ~= nil and rig:getIsEntered() == true) then
+        return "FAILED", "DRIVER_TOOK_OVER"
+    end
     keepPowered(v)
     local level = dischargeFill(v)
     if level == nil then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
@@ -1143,7 +1325,13 @@ function steppers.overload(_env, task)
     return nil
 end
 
-function aborts.overload(_env, task) task.spec.tractor.forceIsActive = false end
+-- Stopped: the discharge ends as GIANTS' own does, the pipe back to its folded state
+-- (Pipe:setPipeState 732-759, as the companion's pipe step); nothing drives.
+function aborts.overload(_env, task)
+    local v = task.spec.tractor
+    v.forceIsActive = false
+    pcall(function() v:setPipeState(1) end)
+end
 
 -- ------------------------------------------------------------------ belts
 -- A reserved transport's tension belts through GIANTS' TensionBelts: setAllTensionBeltsActive
@@ -1854,7 +2042,8 @@ function steppers.stop(env, task)
         or (task.handed == "fieldwork" and v:getIsAIActive() ~= false)
         or (task.handed == "drive" and v.ad.stateModule:isActive() ~= false) or (target ~= nil
         and ((target.op == "drive" and v.ad.stateModule:isActive() ~= false)
-        or ((target.op == "stage" or target.op == "navigate" or target.op == "fieldwork" or target.op == "follow")
+        or ((target.op == "stage" or target.op == "navigate" or target.op == "fieldwork" or target.op == "follow"
+             or target.op == "deliver")
             and target.seen and v:getIsAIActive() ~= false)))
     if not ownMotion and stopped(v) then
         Bridge.Hitch.disarm(v)                    -- the job's motion is over: stop watching
@@ -2057,8 +2246,13 @@ function Bridge:handle(cmd)
     local owner = "companion:" .. self.session
     spec.owned = function() return Bridge.owner == owner end
     if self.active ~= nil then
-        -- Only a stop for the same tractor may pre-empt the running command.
-        if cmd.op ~= "stop" or self.active.task.spec.tractor ~= spec.tractor then
+        -- Only a stop may pre-empt the running command: one for its vehicle, or for the rig its
+        -- wagon hangs on (overload runs on the combine, into the rig's trailer: the stop the
+        -- companion sends for that rig's tractor must end it).
+        local running = self.active.task.spec
+        local wagon = running.wagon
+        local ofRig = wagon ~= nil and spec.tractor ~= nil and (wagon.rootVehicle or wagon) == (spec.tractor.rootVehicle or spec.tractor)
+        if cmd.op ~= "stop" or (running.tractor ~= spec.tractor and not ofRig) then
             return self:result(cmd.session, cmd.id, cmd.op, "REJECTED", "BUSY")
         end
         -- A stop while a stop runs joins it: both get its one observed outcome, so
@@ -2155,13 +2349,21 @@ Bridge.NOTICES = {
     ACCEPTED_RETURN = "Farmhand: bringing a helper's equipment back",
     COMPLETE_RETURN = "Farmhand: equipment back and unhitched",
     STATUS_HELPERS_WORKING = "Farmhand: free; helpers are working the fields",
-    UNLOADER_STARTED = "Farmhand: an AutoDrive tractor and trailer unloads the combine and sells at the best paid point",
+    UNLOADER_STARTED = "Farmhand: an AutoDrive tractor and trailer unloads the combine and sells at the best paid point (this harvest is to be sold)",
     UNLOADER_STOPPED = "Farmhand: AutoDrive stopped unloading the combine; check the unloader",
     NO_UNLOADER = "Farmhand: no AutoDrive tractor with an empty trailer to unload the combine; it waits when full",
-    ACCEPTED_UNLOAD_COMBINE = "Farmhand: sending an AutoDrive tractor and trailer to unload the combine",
-    COMPLETE_UNLOAD_COMBINE = "Farmhand: the combine is being unloaded",
+    ACCEPTED_UNLOAD_COMBINE = "Farmhand: emptying the combine into a trailer",
+    COMPLETE_UNLOAD_COMBINE = "Farmhand: the combine is emptied into the trailer",
     COMBINE_UNLOADED = "Farmhand: combine emptied into the trailer",
-    COMBINE_FULL = "Farmhand: the combine is full; emptying it, selling the grain, then harvesting on",
+    COMBINE_FULL = "Farmhand: the combine is full; emptying it into a trailer, then harvesting on",
+    COMBINE_FULL_NO_TRAILER = "Farmhand: the combine is full and no trailer has room; say sell the grain or store the grain, then continue",
+    ACCEPTED_STORE = "Farmhand: taking the load to the farm's storage",
+    COMPLETE_STORE = "Farmhand: stored; the load is in the farm's storage",
+    HARVEST_POLICY_SELL = "Farmhand: from now on harvested crop is sold at the best paid point",
+    HARVEST_POLICY_STORE = "Farmhand: from now on harvested crop goes into the farm's storage",
+    HARVEST_POLICY_KEEP = "Farmhand: from now on harvested crop stays in the trailer until you say where",
+    POLICY_UNAVAILABLE = "Farmhand: settings are unavailable",
+    POLICY_NOT_SAVED = "Farmhand: that setting could not be saved",
     NOTHING_TO_HITCH_TOGETHER = "Farmhand: say which tractor and implement to hitch (or buy them in the same sentence)",
     ACCEPTED_SELL = "Farmhand: taking the load to the best paid sell point",
     COMPLETE_SELL = "Farmhand: sold; the load is gone and the money is in",
@@ -2227,7 +2429,13 @@ Bridge.STEPS = {
     CONTRACT = "taking the contract",
     WAIT_AHEAD = "waiting for the helper ahead to get going",
     UNLOADER = "sending the unloader (AutoDrive)",
-    SELL = "driving the load to the sell point (AutoDrive)",
+    SELL = "driving the load to the sell point",
+    STORE = "driving the load to the farm's storage",
+    OVERLOAD = "emptying the combine into the trailer",
+    ALONGSIDE = "pulling the trailer under the combine's pipe",
+    PIPE_OUT = "swinging the combine's pipe out",
+    PIPE_IN = "folding the combine's pipe",
+    PASS = "pulling on past the combine",
     COLLECT = "collecting the contract reward",
     VERIFY = "checking the hitch",
     DELIVER = "driving to the destination",
@@ -2261,7 +2469,17 @@ Bridge.REASONS = {
     TRANSPORT_MOVED = "the truck or trailer moved; stopped",
     BELTS_NOT_HOLDING = "the belts did not hold the tractor; check it",
     LOADED_NEEDS_AUTODRIVE = "a loaded trailer needs an AutoDrive destination (the game's own driver will not start with cargo)",
-    LOADED_NO_DRIVER = "neither the game's helper nor AutoDrive drives a trailer with a belted vehicle on it; drive the truck to the destination yourself, then say continue",
+    LOADED_NO_DRIVER = "the game's helper does not drive a trailer with a belted vehicle on it and AutoDrive has no destination there; drive the truck there yourself, then say continue",
+    OVERSPEED = "the tractor went faster than Farmhand's 3 km/h limit, so it stopped; check it before going on",
+    ENVELOPE_CONTACT = "something came too close to the tractor or what it carries, so it stopped",
+    AD_PATHFINDING_STALLED = "AutoDrive could not find its way onto its road network from there",
+    AD_WAITING_ON_OBSTACLE = "AutoDrive waited on something in its way and never moved",
+    AD_NOT_MOVING = "AutoDrive was driving but never moved",
+    AD_PAUSED = "AutoDrive paused and never moved on",
+    AD_NO_WAYPOINT_AT_PLACE = "AutoDrive has no road near that building",
+    AD_PLACE_NOT_FOUND = "no farm building there for AutoDrive",
+    NO_STORAGE = "the farm has no storage that takes this crop",
+    NO_TRAILER_FOR_THE_GRAIN = "no trailer with room for the grain",
     NOT_ON_DECK = "the tractor is not on the deck; check it",
     DETACH_NOT_ALLOWED = "the game does not allow unhitching it right now",
     NOT_ATTACHED = "that implement is not hitched",
@@ -2662,6 +2880,10 @@ end
 
 -- FS25 discards a sourceFile's return value (see FarmhandObserve.lua).
 Bridge.Observe = FarmhandObserve
+-- Each vehicle's last AI end, for the snapshot (a helper handed off ends while no op watches it).
+if type(FarmhandObserve) == "table" then
+    FarmhandObserve.aiStop = function(v) return Bridge.aiStops[v] end
+end
 Bridge.Hitch = FarmhandHitch
 FarmhandBridge = Bridge
 if type(addModEventListener) == "function" then addModEventListener(Bridge) end

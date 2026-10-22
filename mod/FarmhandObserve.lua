@@ -632,6 +632,9 @@ function Observe.vehicle(env, v)
         brand = nullable(text(brand)),
         seeds = nullable(seeds),
         pipe = nullable(pipe),
+        -- How GIANTS ended its last AI job, as the bridge's onAIJobStopped listener recorded it
+        -- (Observe.aiStop is set by FarmhandBridge; the message class, e.g. FINISHED).
+        ai_stop = nullable(token(Observe.aiStop and try(function() return Observe.aiStop(v) end))),
         x = x,
         z = z,
         speed_kmh = nullable(speed),
@@ -797,31 +800,72 @@ local function measure(env, f, kind, values)
     return out, total
 end
 
--- Up to 9 FieldState samples: the field's centre and points 30% of the way from it
--- to its polygon corners. Counts of {fruit name, ground type value} pairs.
+-- FieldState samples over the whole field: a grid inside its polygon (GIANTS Field
+-- polygonPoints) of at most FRUIT_GRID points, never closer than FRUIT_GRID_MIN_M (live
+-- 2026-10-22: 8 points were all the harvest's evidence; a missed pass is a header wide, so a
+-- grid of 120 on a hectare, 9 m apart, sees one), plus the field-work job's track when there
+-- is one (live: 9 points across the field all missed a 400 m2 strip). The centre alone when
+-- the polygon is unreadable. Counts of {fruit name, ground type value} pairs.
+Observe.FRUIT_GRID = 120
+Observe.FRUIT_GRID_MIN_M = 4
+
+local function insidePolygon(poly, x, z)
+    local inside, j = false, #poly
+    for i = 1, #poly do
+        local xi, zi, xj, zj = poly[i][1], poly[i][2], poly[j][1], poly[j][2]
+        if (zi > z) ~= (zj > z) and x < (xj - xi) * (z - zi) / (zj - zi) + xi then inside = not inside end
+        j = i
+    end
+    return inside
+end
+
+function Observe.fieldGrid(poly, maxPoints, minStep)
+    local minX, maxX, minZ, maxZ = math.huge, -math.huge, math.huge, -math.huge
+    local area = 0
+    for i = 1, #poly do
+        local a, b = poly[i], poly[i % #poly + 1]
+        minX, maxX = math.min(minX, a[1]), math.max(maxX, a[1])
+        minZ, maxZ = math.min(minZ, a[2]), math.max(maxZ, a[2])
+        area = area + a[1] * b[2] - b[1] * a[2]
+    end
+    area = math.abs(area) / 2
+    if area <= 0 then return {} end
+    local step = math.max(minStep, math.sqrt(area / maxPoints))
+    local points = {}
+    while true do
+        points = {}
+        for x = minX + step / 2, maxX, step do
+            for z = minZ + step / 2, maxZ, step do
+                if insidePolygon(poly, x, z) then points[#points + 1] = { x, z } end
+            end
+        end
+        if #points <= maxPoints then return points end
+        step = step * 1.1
+    end
+end
+
 local function sampleFruit(env, f, track)
     local cx, cz = try(function() return f.posX end), try(function() return f.posZ end)
     if not (finite(cx) and finite(cz)) then return nil end
-    local points = { { cx, cz } }
-    -- Where the work happened (the field-work job's track, live: 9 points across the
-    -- field all missed a 400 m2 strip), else across the field.
-    if type(track) == "table" and #track > 0 then
-        points = {}
-        local step = math.max(1, math.floor(#track / 12))
-        for i = 1, #track, step do
-            if #points < 12 then points[#points + 1] = track[i] end
-        end
-    end
+    local points = {}
     local corners = try(function() return f.polygonPoints end)
-    if type(corners) == "table" and #points == 1 then
-        local step = math.max(1, math.floor(#corners / 8))
-        for i = 1, #corners, step do
+    if type(corners) == "table" and #corners >= 3 then
+        local poly = {}
+        for i = 1, #corners do
             local px, _, pz = try(function() return env.getWorldTranslation(corners[i]) end)
-            if finite(px) and finite(pz) and #points < 9 then
-                points[#points + 1] = { cx + 0.7 * (px - cx), cz + 0.7 * (pz - cz) }
-            end
+            if not (finite(px) and finite(pz)) then poly = nil; break end
+            poly[#poly + 1] = { px, pz }
+        end
+        if poly ~= nil then points = Observe.fieldGrid(poly, Observe.FRUIT_GRID, Observe.FRUIT_GRID_MIN_M) end
+    end
+    if type(track) == "table" and #track > 0 then
+        local step = math.max(1, math.floor(#track / 12))
+        local added = 0
+        for i = 1, #track, step do
+            if added < 12 then points[#points + 1] = track[i]; added = added + 1 end
         end
     end
+    if #points == 0 then points = { { cx, cz } } end
     -- Cut: harvested, as GIANTS judges it (fruitTypeDesc:getIsCut(growthState), PlowMission
     -- isAvailableForField 151-156 on FieldState.growthState).
     local counts, cut = {}, 0
@@ -898,8 +942,15 @@ function Observe.contracts(env, farmId)
         local mine = m.farmId == farmId
         if (m.status == "CREATED" or mine) and m.status ~= "DISMISSED" then
             local reward = try(function() return m.mission:getReward() end)
+            -- GIANTS' own completion as getCompletion computes it (AbstractFieldMission 453-456:
+            -- fieldPercentageDone / AbstractMission.SUCCESS_FACTOR), read without stepping its
+            -- partitions (getFieldCompletion 461-487 advances them).
+            local completion = mine and try(function()
+                return m.mission.fieldPercentageDone / env.AbstractMission.SUCCESS_FACTOR
+            end) or nil
             list[#list + 1] = { field = m.id, kind = m.kind, status = m.status, mine = mine,
-                                reward = finite(reward) and reward or Observe.NULL }
+                                reward = finite(reward) and reward or Observe.NULL,
+                                completion = finite(completion) and math.max(0, math.min(100, completion)) or Observe.NULL }
         end
     end
     table.sort(list, function(a, b)

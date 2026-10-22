@@ -80,15 +80,25 @@ class MockWorld:
                 self._move_wagon(wagon, self.mock_follow_to)
             return "FOLLOW_ENDED"
 
-    def ad_marker(self, field):
-        # Mock-only: AutoDrive's own marker "Field N" where its network meets field N.
+    mock_ad_places = {}           # mock-only: a building's position -> where AutoDrive's network passes it
+
+    def ad_marker(self, field=None, place=None):
+        # Mock-only: AutoDrive's own marker "Field N" where its network meets field N, or one
+        # named as the farm building at `place` where its network passes the building.
         with self._lock:
-            position = self.mock_ad_fields.get(field)
-            if position is None:
-                raise StepFailed("AD_NO_WAYPOINT_AT_FIELD")
-            self.destination_map = {**self.destination_map,
-                                    f"ad-{field}": Destination(f"ad-{field}", position, f"Field {field}")}
-            self.ad_markers_made = self.ad_markers_made + (field,)
+            if place is not None:
+                position = self.mock_ad_places.get(tuple(place))
+                building = next((p for p in self.place_list if tuple(p.position) == tuple(place)), None)
+                if position is None or building is None:
+                    raise StepFailed("AD_NO_WAYPOINT_AT_PLACE")
+                key, name = f"ad-{building.id}", building.name
+            else:
+                position = self.mock_ad_fields.get(field)
+                if position is None:
+                    raise StepFailed("AD_NO_WAYPOINT_AT_FIELD")
+                key, name = f"ad-{field}", f"Field {field}"
+            self.destination_map = {**self.destination_map, key: Destination(key, position, name)}
+            self.ad_markers_made = self.ad_markers_made + ((field if place is None else name),)
             return "MARKER_CREATED"
 
     def field_places(self):
@@ -414,11 +424,37 @@ class MockWorld:
             self.backed_off = self.backed_off + (tractor_id,)
             return "BACKED_OFF"
 
-    def giants_deliver(self, tractor_id, owner):
-        # Mock-only: GIANTS' Deliver helper; as ad_sell unless mock_no_deliver.
+    mock_store_at = None          # mock-only: where the farm's own storage is (None: no storage)
+    stored_litres = 0.0           # mock-only: what went into storage
+
+    def giants_deliver(self, tractor_id, owner, store=False):
+        # Mock-only: GIANTS' Deliver helper; as ad_sell unless mock_no_deliver; store: the
+        # cargo into the farm's own storage, nothing paid.
         if self.mock_no_deliver:
             raise StepFailed("DELIVER_UNAVAILABLE")
-        return self.ad_sell(tractor_id, owner)
+        if not store:
+            return self.ad_sell(tractor_id, owner)
+        with self._lock:
+            reservation = self._reservations.get(owner)
+            if not reservation or tractor_id != reservation[1][0]:
+                raise RuntimeError("NOT_RESERVED")
+            cargo = self._cargo(tractor_id)
+            litres = sum(u.level or 0.0 for u in cargo.fill_units) if cargo else 0.0
+            if not litres:
+                raise StepFailed("NOTHING_TO_SELL")
+            if self.mock_store_at is None:
+                raise StepFailed("NO_STORAGE")
+            self.items[cargo.id] = replace(cargo, fill_units=tuple(replace(u, level=0.0) for u in cargo.fill_units))
+            self.stored_litres += litres
+            self._drive_rig(tractor_id, cargo.id, self.mock_store_at)
+            return "AI_ENDED"
+
+    def _drive_rig(self, tractor_id, wagon_id, position):
+        # Mock-only: the rig driven to `position`, facing +z, the trailer behind it.
+        pose = Pose(*position, 0.0)
+        self._place(self.items[tractor_id], pose)
+        self.items[wagon_id] = replace(self.items[wagon_id], heading=0.0)
+        self._move_wagon(self.items[wagon_id], pose.to_world(0.0, -MOCK_TRAILER_OFFSET_M))
 
     def ad_sell(self, tractor_id, owner):
         # Mock-only: the cargo goes to the sell point, the farm is paid for it.
@@ -434,15 +470,17 @@ class MockWorld:
                 raise StepFailed("NO_SELL_POINT")
             self.items[cargo.id] = replace(cargo, fill_units=tuple(replace(u, level=0.0) for u in cargo.fill_units))
             self.farm_info = replace(self.farm_info, money=self.farm_info.money + litres * self.mock_price)
-            self._place(self.items[tractor_id], Pose(*self.mock_sell_at, 0.0))
+            self._drive_rig(tractor_id, cargo.id, self.mock_sell_at)
             return "AD_ENDED"
 
     def finish_worker(self, tractor_id, work=True):
-        """Mock-only: the handed-off helper ends (its field worked unless ``work`` is False)."""
+        """Mock-only: the handed-off helper ends (its field worked unless ``work`` is False), as
+        GIANTS reports it (FINISHED: its course done)."""
         with self._lock:
             field_id, pose, owner, area_m2, seed = self.mock_workers[tractor_id]
             self.mock_workers = {k: v for k, v in self.mock_workers.items() if k != tractor_id}
-            self.items[tractor_id] = replace(self.items[tractor_id], busy=False, busy_reason=None)
+            self.items[tractor_id] = replace(self.items[tractor_id], busy=False, busy_reason=None,
+                                             ai_stop="FINISHED" if work else "AI_STOPPED")
             if work:
                 self.fieldwork(tractor_id, field_id, pose, owner, area_m2, seed)
 
@@ -618,12 +656,16 @@ class MockWorld:
                 raise RuntimeError("Not within reach of this wagon")
             self._place(tractor, plan.final)
 
+    mock_ad_loaded_stall = None   # mock-only: AutoDrive never moves a rig carrying a belted vehicle (its stall code)
+
     def deliver(self, tractor_id, destination_id, owner):
         with self._lock:
             ids = self._reservations.get(owner, (None, (None, None)))[1]
             tractor, wagon = self._reserved_pair(tractor_id, ids[1], owner)
             if tractor.attached_to != wagon.id or wagon.attached_to != tractor.id:
                 raise ValueError("Invalid attachment")
+            if self.mock_ad_loaded_stall and any(i.belted_to == wagon.id for i in self.items.values()):
+                raise StepFailed(self.mock_ad_loaded_stall)
             destination = self.destination_map.get(destination_id)
             if destination is None or not all(math.isfinite(v) for v in destination.position):
                 raise ValueError("Unknown destination")

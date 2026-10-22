@@ -136,7 +136,8 @@ class LuaBridgeTests(unittest.TestCase):
 
     def setUp(self):
         self.lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
-        self.lua.globals().print = lambda *a: None
+        self.printed = []
+        self.lua.globals().print = lambda *a: self.printed.append(" ".join(str(x) for x in a))
         load = lambda n: self.lua.execute((ROOT / "mod" / n).read_text())
         self.observe, self.hitch, self.bridge = (load(n) for n in
                                                  ("FarmhandObserve.lua", "FarmhandHitch.lua", "FarmhandBridge.lua"))
@@ -226,6 +227,52 @@ class LuaBridgeTests(unittest.TestCase):
                 self.W.run(self.w, ms)
                 self.assertEqual(self.results(1)[-1], (1, "FAILED", code))
                 self.assertEqual("stopAutoDrive" in self.calls(), attr == "takeover")
+
+    def test_a_drive_that_does_not_move_fails_with_what_autodrive_waits_on(self):
+        # Live 831d6868b9df40b0-1: AutoDrive active 6 minutes, the loaded rig never moved, and
+        # nothing said why. Its own state names it: planning onto its network, a sensor
+        # triggered (what is in its box, and whether AutoDrive counts it as the rig's own), or
+        # paused. It is stopped and the drive FAILED with that.
+        lua_state = self.lua.eval("""function(w, task, sensorHit)
+            local t = w.tractor
+            t.ad.stateModule.getCurrentTaskInfo = function() return task end
+            function t:getClosestWayPoint() return 560, 41.5 end
+            function t:getRootVehicle() return t end
+            t.ad.drivePathModule = { isPaused = false, getWayPoints = function() return { {}, {} }, 1 end }
+            t.ad.collisionDetectionModule = { detectedObstable = sensorHit, detectedCollision = false }
+            local sensor = { triggered = sensorHit, getMask = function() return 7 end,
+                             getBoxShape = function() return { x = 1, y = 2, z = 3, rx = 0, ry = 0, size = { 1, 1, 1 } } end }
+            t.ad.sensors = { frontSensor = sensor }
+            local cargo = { getName = function() return "Series 9" end }
+            w.env.getName = function(id) return "series9_main_component1" end
+            w.env.getParent = function(id) return 0 end
+            w.env.g_currentMission.terrainRootNode = 1
+            w.env.g_currentMission.getNodeObject = function(_, id) if id == 615 then return cargo end end
+            w.env.overlapBox = function(x, y, z, rx, ry, rz, ex, ey, ez, cb, target)
+                target[cb](target, 615); return 1
+            end
+            function w.env.AutoDrive:checkIsConnected(a, b) return false end
+            w.env.AutoDrive.getAllImplementsFolded = function() return true end
+        end""")
+        self.bridge.AD_STALL_MS = 20000
+        cases = (("$l10n_AD_task_pathfinding; 3 / 9 - 400 / 2000", False, "AD_PATHFINDING_STALLED"),
+                 ("$l10n_AD_task_drive_to_destination;", True, "AD_WAITING_ON_OBSTACLE"))
+        for task, hit, code in cases:
+            with self.subTest(code=code):
+                self.w = self.W.new()
+                self.printed.clear()
+                self.adopt()
+                lua_state(self.w, task, hit)
+                self.send(1, "drive", {"tractor": 11, "marker": 3})
+                self.beating(15000)
+                self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])     # waiting, not yet given up
+                self.beating(15000)
+                self.assertEqual(self.results(1)[-1], (1, "FAILED", code))
+                self.assertIn("stopAutoDrive", self.calls())
+                logged = [line for line in self.printed if "drive stalled" in line]
+                self.assertTrue(logged)
+                if hit:
+                    self.assertIn("frontSensor[series9_main_component1@Series 9]", logged[0])
 
     def test_drive_refuses_when_autodrive_would_hand_off_to_another_ai(self):
         self.adopt()
@@ -1410,6 +1457,44 @@ class LuaBridgeTests(unittest.TestCase):
         self.W.run(self.w, 200)
         self.assertEqual(self.results(2)[-1], (2, "DONE", "STOPPED"))
 
+    def test_the_rigs_stop_pre_empts_the_combines_overload_into_its_trailer(self):
+        # overload runs on the combine (12) into the trailer (13) that the rig's tractor (11)
+        # tows; the coordinator's STOP is for the rig's tractor. It must end the discharge.
+        self.lua.execute("""local w = ...
+            local c = { ownerFarmId = 1, speed = 0, motor = 2, level = 9000, rootNode = "combineRoot" }
+            c.rootVehicle = c
+            c.spec_pipe = { currentState = 2, unloadingStates = { [2] = true } }
+            function c:getLastSpeed() return 0 end
+            function c:getIsEntered() return false end
+            function c:getIsAIActive() return false end
+            function c:setPipeState(s) self.spec_pipe.targetState = s end
+            function c:getCurrentPipeState() return self.spec_pipe.currentState end
+            function c:getMotorState() return self.motor end
+            function c:getCanMotorRun() return true end
+            function c:startMotor() end
+            function c:raiseActive() end
+            function c:getCurrentDischargeNode() return { fillUnitIndex = 2, node = 1 } end
+            function c:getFillUnitFillLevel() return self.level end
+            function c:getFillUnitCapacity() return 9000 end
+            local t = { ownerFarmId = 1, rootVehicle = w.tractor }
+            function t:getFillUnits() return { {} } end
+            function t:getFillUnitFillLevel() return 0 end
+            function t:getFillUnitCapacity() return 20000 end
+            w.combine = c
+            w.env.MotorState = { OFF = 0, STARTING = 1, ON = 2 }
+            local get = w.env.NetworkUtil.getObject
+            w.env.NetworkUtil.getObject = function(id) if id == 12 then return c elseif id == 13 then return t end return get(id) end
+            w.env.NetworkUtil.getObjectId = function() return 12 end
+        """, self.w)
+        self.adopt()
+        self.send(1, "overload", {"tractor": 12, "wagon": 13})
+        self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])
+        self.send(2, "stop", {"tractor": 11})
+        self.assertIn((1, "FAILED", "STOPPED"), self.results())
+        self.assertEqual(self.w.combine.spec_pipe.targetState, 1)                 # the discharge ended
+        self.W.run(self.w, 200)
+        self.assertEqual(self.results(2)[-1], (2, "DONE", "STOPPED"))
+
     def test_a_lost_companion_aborts_the_maneuver(self):
         self.adopt()
         self.scripted_maneuver(["CONTINUE"])
@@ -1799,11 +1884,14 @@ class PipeOverloadTests(unittest.TestCase):
         function c:getCurrentDischargeNode() return { fillUnitIndex = 2, node = 1 } end
         function c:getFillUnitFillLevel(i) return self.level end
         function c:getFillUnitCapacity(i) return self.cap end
-        local t = { levels = { 0 }, caps = { 20000 } }
+        function c:getIsEntered() return self.entered == true end
+        local rig = { entered = false }
+        function rig:getIsEntered() return self.entered end
+        local t = { levels = { 0 }, caps = { 20000 }, rootVehicle = rig }
         function t:getFillUnits() return { {} } end
         function t:getFillUnitFillLevel(i) return self.levels[i] end
         function t:getFillUnitCapacity(i) return self.caps[i] end
-        env.c, env.t = c, t
+        env.c, env.t, env.rig = c, t, rig
         return env
     """
 
@@ -1820,6 +1908,24 @@ class PipeOverloadTests(unittest.TestCase):
             if task ~= nil then task.elapsed = 0 end
             return task, code end""")
         self.step = self.lua.eval("function(B, env, task, ms) task.elapsed = task.elapsed + ms; return B.step(env, task, ms) end")
+
+    def test_a_takeover_or_a_stop_ends_the_overload_and_folds_the_pipe(self):
+        # The player climbing into the combine or into the tractor under its pipe takes over;
+        # either way, and on a stop, GIANTS' discharge ends with the pipe folded (state 1).
+        for who in ("c", "rig", None):
+            with self.subTest(who=who):
+                self.env = self.lua.execute(self.ENV)
+                self.env.c.spec_pipe.currentState = 2
+                task, code = self.start(self.bridge, self.env, "overload", None)
+                self.assertIsNotNone(task, code)
+                self.assertEqual(tuple(self.step(self.bridge, self.env, task, 16))[:1], (None,))
+                if who is None:
+                    self.lua.eval("function(B, env, task) B.abort(env, task, 'STOPPED') end")(self.bridge, self.env, task)
+                else:
+                    getattr(self.env, who).entered = True
+                    self.assertEqual(tuple(self.step(self.bridge, self.env, task, 16)), ("FAILED", "DRIVER_TOOK_OVER"))
+                self.assertEqual(self.env.c.spec_pipe.targetState, 1)
+                self.assertNotEqual(self.env.c.forceIsActive, True)
 
     def test_the_pipe_goes_out_powered_and_comes_back_in(self):
         c = self.env.c
@@ -1921,6 +2027,46 @@ class GiantsDeliverTests(unittest.TestCase):
         self.env.trailer.levels[1] = 0
         self.assertEqual(tuple(self.start(self.bridge, self.env))[1], "NOTHING_TO_SELL")
         self.assertEqual(len(self.env.started), 0)
+
+    def test_storing_takes_the_farms_own_storage_nearest_the_rig_never_a_sell_point(self):
+        # direction -1: a silo's own unloading station (its owningPlaceable's spec_silo, as
+        # PlaceableSilo:onLoad sets it) on a placeable the farm owns, taking the cargo; the
+        # nearest to the rig. A neighbour's silo, a pig feeder (no silo) and every sell point
+        # are skipped.
+        self.lua.execute("""local env = ...
+            env.getWorldTranslation = function(n) return n.x, 0, n.z end
+            env.v.rootNode = { x = 0, z = 0 }
+            local Other = env.NetworkUtil.getObject(11).kind
+            local function own(st, farm, x, notSilo)
+                st.owningPlaceable = { ownerFarmId = farm, rootNode = { x = x, z = 0 },
+                                       spec_silo = (not notSilo) and { unloadingStation = st } or nil }
+                return st
+            end
+            own(env.NetworkUtil.getObject(11), 1, 300)
+            for id, x in pairs({ [12] = 5, [13] = 6, [14] = 7 }) do own(env.NetworkUtil.getObject(id), 1, x) end
+            local near = { name = "bin", kind = Other, price = 0, ai = true, isa = function(self, c) return self.kind == c end,
+                           getIsFillTypeAISupported = function() return true end, getName = function(self) return self.name end }
+            own(near, 1, 80)
+            local neighbour = { name = "their silo", kind = Other, price = 0, ai = true, isa = near.isa,
+                                getIsFillTypeAISupported = near.getIsFillTypeAISupported, getName = near.getName }
+            own(neighbour, 2, 10)
+            local feeder = { name = "pig feeder", kind = Other, ai = true, isa = near.isa,
+                             getIsFillTypeAISupported = near.getIsFillTypeAISupported, getName = near.getName }
+            own(feeder, 1, 3, true)
+            local get = env.NetworkUtil.getObject
+            env.NetworkUtil.getObject = function(id)
+                if id == 15 then return near elseif id == 16 then return neighbour elseif id == 17 then return feeder end
+                return get(id) end
+            for _, id in ipairs({ 15, 16, 17 }) do table.insert(env.job.unloadingStationParameter.unloadingStationIds, id) end""", self.env)
+        store = self.lua.eval("""function(B, env)
+            local task, code = B.start(env, { op = "deliver", tractor = env.v, farmId = 1, direction = -1,
+                                              owned = function() return true end })
+            return task, code end""")
+        task, code = store(self.bridge, self.env)
+        self.assertIsNotNone(task, code)
+        self.assertEqual(self.env.job.unloadingStationParameter.chosen.name, "bin")
+        self.lua.execute("local env = ...; env.job.unloadingStationParameter.unloadingStationIds = { 12, 13, 16, 17 }", self.env)
+        self.assertEqual(tuple(store(self.bridge, self.env))[1], "NO_STORAGE")
 
 
 class FollowTests(unittest.TestCase):

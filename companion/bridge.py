@@ -442,12 +442,12 @@ class FS25World:
         self._reserved(tractor_id, owner, trailer_id)
         return self._run("backoff", tractor=int(tractor_id), wagon=int(trailer_id))
 
-    def giants_deliver(self, tractor_id: str, owner: str) -> str:
+    def giants_deliver(self, tractor_id: str, owner: str, store: bool = False) -> str:
         """SELL: GIANTS' own Deliver helper takes the reserved rig's cargo to the best paid
-        selling station its AI can unload at (mod/FarmhandBridge.lua starters.deliver);
-        never evidence of the sale."""
+        selling station its AI can unload at, or (``store``) to the farm's own storage
+        nearest it (mod/FarmhandBridge.lua starters.deliver); never evidence of either."""
         self._reserved(tractor_id, owner)
-        return self._run("deliver", tractor=int(tractor_id))
+        return self._run("deliver", tractor=int(tractor_id), direction=-1 if store else 1)
 
     def overload(self, combine_id: str, trailer_id: str, owner: str) -> str:
         """The reserved standing combine discharges into the trailer under its pipe
@@ -545,16 +545,21 @@ class FS25World:
         self._reserved(tractor_id, owner)
         return self._run("follow", tractor=int(tractor_id))
 
-    def ad_marker(self, field: int) -> str:
-        """An AutoDrive destination "Field N" made AutoDrive's own way (mod/FarmhandBridge.lua
-        starters.ad_marker), only after AutoDrive's saved network was backed up."""
+    def ad_marker(self, field: int | None = None, place: tuple[float, float] | None = None) -> str:
+        """An AutoDrive destination made AutoDrive's own way (mod/FarmhandBridge.lua
+        starters.ad_marker): "Field N" by field N's edge, or the farm building at ``place`` by
+        its own name; only after AutoDrive's saved network was backed up."""
+        if (field is None) == (place is None):
+            raise StepFailed("INVALID_MARKER_PLACE")
         farm = self._observe().farm
         folder = getattr(self.link.files, "path", None)
         if folder is None:
             raise StepFailed("AD_CONFIG_BACKUP_FAILED")
         backup_autodrive_config(farm.savegame_dir if farm else None, Path(folder).parent.parent,
                                 Path(folder) / "backup")
-        return self._run("ad_marker", field=int(field))
+        if field is not None:
+            return self._run("ad_marker", field=int(field), x=0.0, z=0.0)
+        return self._run("ad_marker", field=0, x=float(place[0]), z=float(place[1]))
 
     def _unit(self, vehicle_id: str, owner: str) -> None:
         with self._lock:

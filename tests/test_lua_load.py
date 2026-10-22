@@ -19,6 +19,7 @@ from lupa import lua51, lua54
 from tests.test_lua_unpark import STUBS
 
 ROOT = Path(__file__).resolve().parents[1]
+COMMAND_KMH = 3 * 0.85         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
 
 # The transport in the tractor's start frame (a ahead, l to its local +x side): a 10 m
 # trailer whose root is 9.1 m ahead of the tractor's steering node, four belts 2 m apart
@@ -171,7 +172,7 @@ class LuaLoadTests(unittest.TestCase):
         self.assertLess(along, 8.3)
         self.assertAlmostEqual(lateral, 0.0, places=6)
         moving = self.moving(w)
-        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == 3 for d in moving))
+        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == COMMAND_KMH for d in moving))
         self.assert_ended_braked_and_restored(w)
         self.assertEqual(self.hitch.loadStep(w.env, session, 50), "LOADED")         # latched: brakes only
         self.assertFalse(self.drives(w)[-1]["allowed"])
@@ -188,7 +189,7 @@ class LuaLoadTests(unittest.TestCase):
         code, _ = self.drive(w, session)
         self.assertEqual(code, "NOT_LINED_UP_AT_RAMPS", self.hitch.describeLoad(session))
         moving = self.moving(w)
-        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == 3 and d["lx"] > 0 for d in moving))   # the axis to its +x
+        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == COMMAND_KMH and d["lx"] > 0 for d in moving))   # the axis to its +x
         self.assert_ended_braked_and_restored(w)
         # On the axis, from as far back: it runs in and loads.
         w = self.world(ahead=18.0)
@@ -369,6 +370,78 @@ class LuaLoadTests(unittest.TestCase):
         self.assert_refused(self.world(ahead=1.0, foldTime=0), "LOAD_RAMPS_NOT_DOWN", direction=-1)
 
 
+    # ------------------------------------------------------- speed, envelope
+    def test_over_the_limit_it_stops_braked_and_never_drives_on(self):
+        # Live 5f19b1c28f614266-1: 4.14 km/h on the ramps with GIANTS' speed limit at 3. From
+        # step 40 the stub rolls at 3.5 km/h whatever it is told: OVERSPEED, braked, latched.
+        w = self.world(plow=PLOW)
+        session, why, _ = self.start(w)
+        self.assertIsNotNone(session, why)
+        code, _ = self.drive(w, session, hook=lambda i: i == 40 and setattr(w, "runawayKmh", 3.5))
+        self.assertEqual(code, "OVERSPEED", self.hitch.describeSpeed(session))
+        self.assertGreater(session.overKmh, 3.0)
+        self.assertLessEqual(session.overKmh, 3.5 + 1e-9)
+        self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
+        self.assertNotEqual(w.tractor.forceIsActive, True)
+        self.assertEqual(self.hitch.loadStep(w.env, session, 50), "OVERSPEED")      # latched: brakes only
+        self.assertFalse(self.drives(w)[-1]["allowed"])
+        self.assertIn("OVERSPEED=", self.hitch.describeSpeed(session))
+        self.assertTrue(any("over" in line for line in self.hitch.speedTrace(session, 8).values()))
+
+    def test_it_coasts_and_brakes_to_stay_under_the_limit(self):
+        # The motor overshoots (10 % over what it is told) and the rig keeps 2.95 km/h while not
+        # accelerating: Farmhand coasts above 90 % of the limit and brakes above 97 %; it loads
+        # and its measured speed never exceeds the limit.
+        w = self.world(plow=PLOW)
+        w.speedFactor, w.coastKmh = 1.1, 2.95
+        session, why, _ = self.start(w)
+        self.assertIsNotNone(session, why)
+        code, _ = self.drive(w, session)
+        self.assertEqual(code, "LOADED", self.hitch.describeSpeed(session))
+        self.assertLessEqual(session.peakKmh, 3.0)
+        modes = dict(session.speedModes)
+        self.assertGreater(modes["coast"], 0, modes)
+        self.assertGreater(modes["brake"], 0, modes)
+        self.assertEqual(modes["over"], 0, modes)
+        self.assertIn("coast", list(w.events.values()))
+
+    def test_the_whole_rig_is_watched_while_it_moves_the_mounted_plow_included(self):
+        # Something comes up beside the plow (outside the volume ahead of the tractor): 0.1 m
+        # from its side it is contact, braked; 0.3 m from it, recorded as near, and it loads.
+        for gap, expected in ((0.1, "ENVELOPE_CONTACT"), (0.3, "LOADED")):
+            with self.subTest(gap=gap):
+                w = self.world(plow=PLOW)
+                x0, z0 = w.steer.x, w.steer.z
+                session, why, _ = self.start(w)
+                self.assertIsNotNone(session, why)
+
+                def hook(i, w=w, x0=x0, z0=z0, gap=gap):
+                    if i == 20:
+                        a, _ = self.W.travel(w, x0, z0)
+                        w.box(a - 4.5, a - 3.0, 0.85 + gap, 1.15 + gap, 0, 1.0, None, "post")
+                code, _ = self.drive(w, session, hook=hook)
+                self.assertEqual(code, expected, self.hitch.describeEnvelope(session))
+                described = self.hitch.describeEnvelope(session)
+                self.assertIn("units=2", described)
+                if expected == "ENVELOPE_CONTACT":
+                    self.assertIn("contact=post", described)
+                    self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
+                else:
+                    self.assertGreater(session.envelopeNear, 0)
+                    self.assertIn("first=post", described)
+                self.assertGreater(session.envelopeChecks, 10)
+
+    def test_the_truck_ahead_is_watched_but_the_trailer_under_it_is_not(self):
+        # On the deck the tractor's box overlaps the trailer it is on (excluded) every check;
+        # the truck is not excluded: one moved up to the deck's front is contact.
+        w = self.world(plow=PLOW)
+        session, why, _ = self.start(w)
+        self.assertIsNotNone(session, why)
+        code, _ = self.drive(w, session)
+        self.assertEqual(code, "LOADED", self.hitch.describeEnvelope(session))
+        self.assertIsNone(session.envelopeHits)
+
+
 class LuaBackOffTests(unittest.TestCase):
     """BACKOFF (AGENTS.md exception 5, live 49b5344a47ec418a-1): a tractor waiting right behind
     the transport's ramps, not lined up, straight back 8 m at 3 km/h so GIANTS can line it up."""
@@ -403,7 +476,7 @@ class LuaBackOffTests(unittest.TestCase):
         self.assertGreater(along, -8.3)
         self.assertAlmostEqual(lateral, 0.0, places=6)
         moving = self.moving(w)
-        self.assertTrue(moving and all(not d["forwards"] and d["maxSpeed"] == 3 for d in moving))
+        self.assertTrue(moving and all(not d["forwards"] and d["maxSpeed"] == COMMAND_KMH for d in moving))
         self.assert_ended_braked_and_restored(w)
 
     def test_refused_unmoved_unless_at_the_transport_and_clear_behind(self):
@@ -424,6 +497,43 @@ class LuaBackOffTests(unittest.TestCase):
         code = self.run_back(w, session, lambda i: i == 10 and setattr(w.truck.rootNode, "x", w.truck.rootNode.x + 1.0))
         self.assertEqual(code, "TRANSPORT_MOVED")
         self.assert_ended_braked_and_restored(w)
+
+
+    def test_a_takeover_or_a_stop_while_it_backs_off_ends_it_braked(self):
+        for hook, code in ((lambda w, s, i: i == 15 and w.takeOver(), "DRIVER_TOOK_OVER"),
+                           (lambda w, s, i: i == 15 and setattr(w, "entered", True), "SEATED_DURING_BACKOFF"),
+                           (lambda w, s, i: i == 15 and self.hitch.abort(w.env, s, "STOPPED"), "STOPPED")):
+            with self.subTest(code=code):
+                w = self.world(plow=PLOW)
+                session, why, _ = self.back(w)
+                self.assertIsNotNone(session, why)
+                self.assertEqual(self.run_back(w, session, lambda i, w=w, s=session, h=hook: h(w, s, i)), code)
+                self.assert_ended_braked_and_restored(w)
+
+    def test_over_the_limit_or_beside_the_plow_it_stops_braked(self):
+        w = self.world(plow=PLOW)
+        session, why, _ = self.back(w)
+        self.assertIsNotNone(session, why)
+        self.assertEqual(self.run_back(w, session, lambda i: i == 30 and setattr(w, "runawayKmh", 3.4)), "OVERSPEED")
+        self.assert_ended_braked_and_restored(w)
+        # The plow leads going back: something beside it is contact (the transport it backs
+        # away from is not).
+        w = self.world(plow=PLOW)
+        x0, z0 = w.steer.x, w.steer.z
+        session, why, _ = self.back(w)
+        self.assertIsNotNone(session, why)
+
+        def post(i):
+            if i == 20:
+                a, _ = self.W.travel(w, x0, z0)
+                w.box(a - 4.5, a - 3.0, 0.9, 1.2, 0, 1.0, None, "post")
+        self.assertEqual(self.run_back(w, session, post), "ENVELOPE_CONTACT", self.hitch.describeEnvelope(session))
+        self.assert_ended_braked_and_restored(w)
+        w = self.world(plow=PLOW)
+        session, why, _ = self.back(w)
+        self.assertEqual(self.run_back(w, session), "BACKED_OFF", self.hitch.describeEnvelope(session))
+        self.assertIsNone(session.envelopeHits)
+        self.assertLessEqual(session.peakKmh, 3.0)
 
 
 class Lua51BackOffTests(LuaBackOffTests):

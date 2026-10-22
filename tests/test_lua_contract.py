@@ -604,6 +604,23 @@ class LuaContractTests(unittest.TestCase):
                                              savegameDirectory = "C:/profile/savegame2" }
     """
 
+    def test_the_harvest_is_sampled_over_a_grid_of_the_whole_field(self):
+        # A 1 ha square: at most 120 points, all inside it, spread over it. A header-wide pass
+        # left standing (a 7 m strip, 7 % of it) is seen by more than 5 % of them, so it can
+        # never pass for 95 % cut; a triangle's grid stays inside the triangle.
+        grid = self.observe.fieldGrid
+        square = self.lua.eval("{ {0, 0}, {100, 0}, {100, 100}, {0, 100} }")
+        points = [tuple(p.values()) for p in grid(square, 120, 4).values()]
+        self.assertGreater(len(points), 80)
+        self.assertLessEqual(len(points), 120)
+        self.assertTrue(all(0 < x < 100 and 0 < z < 100 for x, z in points))
+        strip = [p for p in points if 40 <= p[0] < 47]
+        self.assertGreater(len(strip) / len(points), 0.05)
+        triangle = self.lua.eval("{ {0, 0}, {100, 0}, {0, 100} }")
+        points = [tuple(p.values()) for p in grid(triangle, 120, 4).values()]
+        self.assertTrue(points and all(x + z < 100 for x, z in points))
+        self.assertEqual(len(grid(self.lua.eval("{ {0, 0}, {10, 0}, {10, 10}, {0, 10} }"), 120, 4)), 4)   # 4 m apart
+
     def test_owned_fields_and_their_coverage_are_observed(self):
         world = self.stubs.world()
         self.lua.execute(self.FIELD_STUBS, world.env, self.observe)

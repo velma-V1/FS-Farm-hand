@@ -10,6 +10,7 @@ import unittest
 from lupa import lua51, lua54
 
 ROOT = Path(__file__).resolve().parents[1]
+COMMAND_KMH = 3 * 0.85         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
 
 STUBS = r"""
 local Hitch = ...
@@ -34,6 +35,7 @@ function W.new(opts)
                            jointTransform = node(0, gap) }
     local frontJoint = { jointType = 1, jointIndex = 0, jointTransform = node(0, gap + 5.5) }
     local joints = { frontJoint, tractorJoint }
+    tractor.rootNode = tractorJoint.jointTransform      -- moves with the stub's kinematics (the speed measure)
     w.tractor, w.wagon, w.otherWagon = tractor, wagon, otherWagon
     w.tractorJoint, w.wagonJoint = tractorJoint, wagonJoint
     w.reserved, w.entered, w.motor, w.canRun = true, false, opts.motor ~= false, true
@@ -124,10 +126,11 @@ function W.new(opts)
         table.insert(w.drives, { dt = dt, acc = acc, allowed = allowed, forwards = forwards,
                                  lx = lx, lz = lz, maxSpeed = maxSpeed, active = v.forceIsActive == true })
         table.insert(w.events, allowed and "drive" or "brake")
-        if allowed and acc > 0 and not w.stuck then
-            local step = maxSpeed / 3.6 * dt / 1000
+        if w.runawayKmh or (allowed and acc > 0 and not w.stuck) then     -- runaway: whatever it is told
+            local kmh = w.runawayKmh or maxSpeed
+            local step = kmh / 3.6 * dt / 1000
             tractorJoint.jointTransform.z = tractorJoint.jointTransform.z - step
-            w.speed = maxSpeed
+            w.speed = kmh
         else
             w.speed = 0
         end
@@ -287,7 +290,7 @@ class LuaHitchTests(unittest.TestCase):
         driving = [d for d in drives if d["allowed"]]
         self.assertTrue(driving)
         # Always reverse, never above the session speed, steering left to GIANTS.
-        self.assertTrue(all(not d["forwards"] and d["maxSpeed"] == 3 and d["acc"] == 1 for d in driving))
+        self.assertTrue(all(not d["forwards"] and d["maxSpeed"] == COMMAND_KMH and d["acc"] == 1 for d in driving))
         self.assertEqual(drives[-1], {"dt": 100, "acc": 0, "allowed": False, "forwards": False,
                                       "lx": 0, "lz": 1, "maxSpeed": 3, "active": True})
         # Active while it drove (GIANTS steers only active vehicles), released by the brake.
@@ -522,7 +525,14 @@ class LuaHitchTests(unittest.TestCase):
             w = self.world()
             session, _ = self.align(w, maxSpeedKmh=speed)
             self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CONTINUE")
-            self.assertEqual(self.drives(w)[-1]["maxSpeed"], speed)
+            self.assertEqual(self.drives(w)[-1]["maxSpeed"], max(speed * 0.85, min(speed, 1)))   # under the limit
+
+    def test_over_the_limit_the_reverse_stops_braked(self):
+        w = self.world(gap=6)
+        session, _ = self.align(w)
+        code, _ = self.W.run(w, session, 100, 200, lambda i: i == 5 and setattr(w, "runawayKmh", 3.6))
+        self.assertEqual(code, "OVERSPEED", self.hitch.describeSpeed(session))
+        self.assertFalse(self.drives(w)[-1]["allowed"])
 
     def test_the_last_metres_need_an_empty_cab(self):
         # GIANTS applies a seated player's controls every frame outside an AI job

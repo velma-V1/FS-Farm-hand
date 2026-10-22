@@ -38,10 +38,13 @@ DELIVERY_STANDOFF_M = 10.0
 PLACE_STANDOFF_M = 15.0
 YARD_M = 150.0                    # buildings matching the words this close together are one place
 TRACTOR_ARRIVAL_TOLERANCE_M = 3.0
-# A loaded transport no installed driver moves (cargo belted on its trailer: GIANTS GOTO blocked,
-# live d14230aa9fb24d30-3; AutoDrive waits on it as traffic, live 831d6868b9df40b0-1) is driven
-# there by the player; it has arrived within this of the destination's point.
+# A loaded transport (cargo belted on its trailer) GIANTS GOTO does not start (live
+# d14230aa9fb24d30-3) goes by AutoDrive to a marker; with none to be had the player drives it
+# there (assisted); it has arrived within this of the destination's point.
 ARRIVED_BY_HAND_M = 25.0
+# How AutoDrive's drive ends when it never moved (mod/FarmhandBridge.lua adStallCode): for a
+# loaded rig the player then drives it (assisted), and "continue" does not hand it back to AutoDrive.
+AD_STALLS = frozenset({"AD_PATHFINDING_STALLED", "AD_WAITING_ON_OBSTACLE", "AD_PAUSED", "AD_NOT_MOVING"})
 WAGON_ARRIVAL_TOLERANCE_M = 15.0
 ARRIVAL_SETTLE_S = 10.0
 MAX_TRACTOR_TRIES = 3            # tractors tried for one hitch whose attempt moved nothing
@@ -662,6 +665,8 @@ class Executor:
         # {"type": "origin"} takes it back there (the user: "you can't just leave it
         # in the field"). Never coordinates from words.
         self._origins: dict[str, Pose] = {}
+        # Loaded trailers AutoDrive did not move (its stall code): the player drives those.
+        self._ad_stalled: dict[str, str] = {}
         # The vehicles UNPARK was asked for, this job only, and those whose next GOTO is
         # its hand-off (it must move them).
         self._job: str | None = None
@@ -851,35 +856,49 @@ class Executor:
         # recorded before a loaded rig is left for the player to drive.
         self._origins.setdefault(wagon.id, _pose_of(tractor))
         if any(item.belted_to == wagon.id for item in items):
-            # Cargo belted on the towed trailer: neither GIANTS GOTO nor AutoDrive moves it
-            # (AutoDrive ignores only what is mounted on the vehicle itself, AutoDriveUtilFuncs
-            # checkIsConnected 61-64; its sensors stop for the rest). The destination's point is
-            # an AutoDrive marker where it can be made; the player drives there, then "continue".
-            if isinstance(route, Pose):
-                marker, _ = self._field_marker(target, tractor)
+            # Cargo belted on the towed trailer. GIANTS GOTO does not start such a rig (live
+            # d14230aa9fb24d30-3: its agent BLOCKED from the first frame). AutoDrive counts belted
+            # cargo as the rig's own: its sensors skip what checkIsConnected calls connected
+            # (AutoDriveUtilFuncs 53-80), getHasObjectMounted, which GIANTS' AttacherJoints
+            # passes on to the towed trailer (GDN AttacherJoints 4074-4089) and whose
+            # TensionBelts holds the cargo (TensionBelts 1486-1503). So AutoDrive drives it, to a
+            # marker made AutoDrive's own way where there is none yet; its drive ends FAILED with
+            # what it waited on if it does not move. With no marker the player drives it there
+            # and says continue: an assisted delivery (LOADED_NO_DRIVER).
+            stalled = self._ad_stalled.get(wagon.id)
+            if isinstance(route, Pose) and stalled is None:
+                marker, stalled = self._place_marker(target, tractor)
                 route = marker or route
-            if math.dist(tractor.position, route_position(route)) > ARRIVED_BY_HAND_M:
-                log.info("loaded rig %s/%s %.0f m from %s: no driver moves it", tractor.id, wagon.id,
-                         math.dist(tractor.position, route_position(route)), route)
+            if (stalled is not None or isinstance(route, Pose)) \
+                    and math.dist(tractor.position, route_position(route)) > ARRIVED_BY_HAND_M:
+                log.info("loaded rig %s/%s %.0f m from %s: no driver (%s); the player drives it", tractor.id,
+                         wagon.id, math.dist(tractor.position, route_position(route)), route, stalled)
                 return None, None, "LOADED_NO_DRIVER"
         return (tractor, wagon), route, None
 
-    def _field_marker(self, target, tractor):
-        """A loaded rig to field N with no AutoDrive marker for it: AutoDrive's own marker
-        "Field N" made where its network meets the field (world.ad_marker, after a backup of
-        its network); the minimum change, only when the delivery needs it."""
-        match = isinstance(target, PlaceTarget) and re.fullmatch(r"field (\d+)", _normalized_name(target.name))
-        if not match or "autodrive" not in tractor.capabilities:
+    def _place_marker(self, target, tractor):
+        """A loaded rig to a place with no AutoDrive marker for it: AutoDrive's own marker made
+        where its network meets the place (world.ad_marker, after a backup of its network):
+        "Field N" by field N's edge, or the farm building's own name by the building; the
+        minimum change, only when the delivery needs it."""
+        if "autodrive" not in tractor.capabilities or not isinstance(target, PlaceTarget):
             return None, "LOADED_NEEDS_AUTODRIVE"
-        number = int(match.group(1))
+        match = re.fullmatch(r"field (\d+)", _normalized_name(target.name))
+        if match:
+            number = int(match.group(1))
+            wanted, place = f"field {number}", {"field": number}
+        elif target.building is not None and target.building.name:
+            wanted, place = _normalized_name(target.building.name), {"place": target.building.position}
+        else:
+            return None, "LOADED_NEEDS_AUTODRIVE"
         try:
-            self.world.ad_marker(number)
+            self.world.ad_marker(**place)
         except (StepFailed, StepUnverified) as failure:
-            log.info("AutoDrive marker for field %d: %s", number, failure.code)
+            log.info("AutoDrive marker for %s: %s", wanted, failure.code)
             return None, failure.code
         marker = next((d for d in self.world.destinations() if isinstance(d, Destination)
-                       and _normalized_name(d.name or "") == f"field {number}" and valid_position(d.position)), None)
-        log.info("AutoDrive marker for field %d: %s", number, marker)
+                       and _normalized_name(d.name or "") == wanted and valid_position(d.position)), None)
+        log.info("AutoDrive marker for %s: %s", wanted, marker)
         return (marker, None) if marker is not None else (None, "MARKER_NOT_OBSERVED")
 
     def _choose_attached(self, items, farm_id, requester, tractor_name=None):
@@ -1183,9 +1202,12 @@ class Executor:
         sell: FIND the rig with the most cargo (by name if said) -> RESERVE -> SELL (GIANTS'
         own Deliver helper to the best paid selling station, tipped there; AutoDrive's
         deliver mode when GIANTS refuses the rig) -> VERIFY (the cargo gone, the money
-        arrived) -> STOP -> RELEASE."""
+        arrived) -> STOP -> RELEASE.
+        store: as sell, to the farm's own storage (GIANTS' Deliver helper; never AutoDrive's
+        sell mode) -> STORE -> VERIFY (the cargo gone; nothing is paid)."""
         owner, farm_id = command["request_id"], command["farm_id"]
-        selling = command["task"] == "sell"
+        storing = command["task"] == "store"
+        selling = command["task"] in ("sell", "store")
         ids, reserved, handed, moved = (), False, False, False
         status, reason = "BLOCKED", "NO_RIG_TO_SELL" if selling else "NO_UNLOADER"
 
@@ -1218,7 +1240,7 @@ class Executor:
                 name = f"field {command['field']}"
                 marker = next((d for d in self.world.destinations() if d.name.casefold() == name), None)
                 if marker is None:
-                    self.world.ad_marker(command["field"])        # AutoDrive's own, after a backup
+                    self.world.ad_marker(field=command["field"])  # AutoDrive's own, after a backup
                     marker = next((d for d in self.world.destinations() if d.name.casefold() == name), None)
                 if marker is None:
                     return Result("BLOCKED", "AD_NO_FIELD_MARKER", ids, tuple(states))
@@ -1237,12 +1259,12 @@ class Executor:
                 before = cargo(trailer)
                 farm = self.world.farm()
                 money = farm.money if farm is not None else None
-                enter("SELL")
+                enter("STORE" if storing else "SELL")
                 moved = True
                 try:
-                    self.world.giants_deliver(tractor.id, owner)  # GIANTS' own Deliver helper
+                    self.world.giants_deliver(tractor.id, owner, store=storing)  # GIANTS' own Deliver helper
                 except StepFailed as failure:
-                    if failure.code not in DELIVER_REFUSALS or "autodrive" not in tractor.capabilities:
+                    if storing or failure.code not in DELIVER_REFUSALS or "autodrive" not in tractor.capabilities:
                         raise
                     log.info("SELL: GIANTS' deliver refused (%s); AutoDrive instead", failure.code)
                     self.world.ad_sell(tractor.id, owner)
@@ -1250,12 +1272,16 @@ class Executor:
                 after = self._at_rest(ids)
                 left = cargo(after[trailer.id])
                 farm = self.world.farm()
-                log.info("SELL: cargo %.0f -> %.0f l; money %s -> %s", before, left, money, farm and farm.money)
+                log.info("%s: cargo %.0f -> %.0f l; money %s -> %s", "STORE" if storing else "SELL", before, left,
+                         money, farm and farm.money)
                 if left > before * 0.05:
                     raise ObservationMismatch("CARGO_NOT_UNLOADED")
-                if money is None or farm is None or farm.money is None or farm.money <= money:
+                if storing:
+                    status, reason = "COMPLETE", "STORED"
+                elif money is None or farm is None or farm.money is None or farm.money <= money:
                     raise ObservationMismatch("PAYMENT_NOT_OBSERVED")
-                status, reason = "COMPLETE", "SOLD"
+                else:
+                    status, reason = "COMPLETE", "SOLD"
         except Cancelled:
             status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
         except ObservationMismatch as error:
@@ -1814,7 +1840,7 @@ class Executor:
             return self._transport(command, enter, states)
         if command["task"] == "follow_me":
             return self._follow(command, enter, states)
-        if command["task"] in ("unload_harvester", "sell"):
+        if command["task"] in ("unload_harvester", "sell", "store"):
             return self._autodrive_rig(command, enter, states)
         if command["task"] == "overload":
             return self._overload(command, enter, states)
@@ -1977,7 +2003,13 @@ class Executor:
                 else:
                     physical_attempted = True
                     enter("DELIVER")
-                    self._move(tractor.id, delivery, owner, deliver=True, partner_id=ids[1])
+                    try:
+                        self._move(tractor.id, delivery, owner, deliver=True, partner_id=ids[1])
+                    except StepFailed as failure:
+                        if failure.code in AD_STALLS and any(i.belted_to == wagon.id for i in self.world.snapshot()):
+                            # AutoDrive did not move the loaded rig: the player drives it there.
+                            self._ad_stalled[wagon.id] = failure.code
+                        raise
                     self._arrival(ids, farm_id, owner, delivery, check=movable)
             elif working:
                 # FIELD_WORK -> VERIFY: GIANTS' field-work helper drives to the field and

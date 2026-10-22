@@ -151,7 +151,7 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
     replies = Replies(link.notice, speaker)
     coordinator = Coordinator(world, Executor(world, field_entrances=field_entrances), replies,
                               farm=lambda: linked_farm(link), session=lambda: link.session,
-                              goal_file=data_dir() / "goal.json")
+                              goal_file=data_dir() / "goal.json", policy=Settings())
     if live is not None:
         live.attach(coordinator, rules.interpret,
                     model=None if ai is None else (lambda text: ai.interpret(text) if getattr(ai, "enabled", True)

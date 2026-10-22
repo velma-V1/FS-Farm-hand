@@ -58,7 +58,8 @@ def data_dir() -> Path:
 
 class Settings:
     """settings.json beside the managed models: {"ai": {"provider", "model"}} or
-    {"ai": {"provider": "none"}}; no entry means the user has not chosen yet."""
+    {"ai": {"provider": "none"}}; no entry means the user has not chosen yet. Also the
+    player's saved "harvest_destination" (sell, store, keep)."""
 
     def __init__(self, path: Path | None = None):
         self.path = path or data_dir() / "settings.json"
@@ -85,6 +86,21 @@ class Settings:
     def set_ai(self, choice: dict) -> None:
         data = self.load()
         data["ai"] = choice
+        self.save(data)
+
+    HARVEST_DESTINATIONS = ("sell", "store", "keep")
+
+    def harvest_destination(self) -> str | None:
+        """Where harvested crop goes when a harvest request does not say ("from now on sell the
+        harvest"): sell, store, keep (in the trailer), or None (never chosen: kept)."""
+        value = self.load().get("harvest_destination")
+        return value if value in self.HARVEST_DESTINATIONS else None
+
+    def set_harvest_destination(self, destination: str) -> None:
+        if destination not in self.HARVEST_DESTINATIONS:
+            raise ValueError("harvest destination must be sell, store or keep")
+        data = self.load()
+        data["harvest_destination"] = destination
         self.save(data)
 
 

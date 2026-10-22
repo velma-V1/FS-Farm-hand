@@ -317,6 +317,117 @@ function Hitch.halt(env, s, dt)
     pcall(Hitch.releaseActive, s)
 end
 
+-- ------------------------------------------------------------------ speed
+-- Every self-driven motion's operating limit is its session's maxSpeedKmh (AGENTS.md:
+-- "Motion speed"). GIANTS' driveToPoint only sets the motor's speed limit and drives at
+-- full acceleration below it (AIVehicleUtil 82, 94): it is a target, not a limit, and live
+-- the LOAD runs ended at 3.69-4.74 km/h on the ramps (5f19b1c28f614266-1: 4.14) with it at 3.
+-- So Farmhand measures the speed itself: the tractor's root travel (3D, as the vehicle
+-- moves) over the last windowMs. It commands commandShare of the limit; above coastShare of
+-- it, no acceleration; above brakeShare, a braking frame (driveToPoint not allowed to
+-- drive: the brakes, AIVehicleUtil 87-94); above the limit the motion ends braked:
+-- OVERSPEED. GIANTS' own reading (getLastSpeed, smoothed) and the horizontal speed are
+-- recorded beside it, and a trace every traceMs, for the log.
+Hitch.SPEED = { windowMs = 250, commandShare = 0.85, coastShare = 0.9, brakeShare = 0.97,
+                traceMs = 500, traceMax = 240 }
+
+-- The tractor's measured speed in km/h (3D and horizontal) over the window, or nil before
+-- the window has filled.
+function Hitch.measureSpeed(env, s)
+    local x, y, z = world(env, s.tractor.rootNode)
+    local t = s.elapsed or 0
+    local h = s.speedHistory or {}
+    s.speedHistory = h
+    h[#h + 1] = { t = t, x = x, y = y, z = z }
+    while #h > 2 and t - h[2].t >= Hitch.SPEED.windowMs do table.remove(h, 1) end
+    local o = h[1]
+    local span = t - o.t
+    if span < Hitch.SPEED.windowMs then return nil end
+    local flat = math.sqrt((x - o.x) ^ 2 + (z - o.z) ^ 2)
+    local full = math.sqrt(flat * flat + (y - o.y) ^ 2)
+    return full / span * 3600, flat / span * 3600
+end
+
+local function pitchDeg(env, v)
+    local fx, fy, fz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
+    if not (finite(fx) and finite(fy) and finite(fz)) then return nil end
+    return math.deg(atan2(fy, math.sqrt(fx * fx + fz * fz)))
+end
+
+-- Drive one frame toward (lx, lz) in the steering (or reverser) node's frame under the speed
+-- limit. nil, or "OVERSPEED" (the caller ends the motion; its latch brakes).
+function Hitch.commandKmh(cap)
+    -- Never under 1 km/h (or the limit, if lower): GIANTS does not accelerate below it
+    -- (AIVehicleUtil 72-76).
+    return math.max(cap * Hitch.SPEED.commandShare, math.min(cap, 1))
+end
+
+function Hitch.drive(env, s, dt, forwards, lx, lz)
+    local S, cap = Hitch.SPEED, s.maxSpeedKmh
+    local command = Hitch.commandKmh(cap)
+    local v, flat = Hitch.measureSpeed(env, s)
+    local okR, reported = pcall(function() return s.tractor:getLastSpeed() end)
+    reported = okR and finite(reported) and math.abs(reported) or nil
+    if v ~= nil and v > (s.peakKmh or -1) then s.peakKmh, s.peakAlong, s.peakT = v, s.lastAlong, s.elapsed end
+    if flat ~= nil and flat > (s.peakFlatKmh or -1) then s.peakFlatKmh = flat end
+    if reported ~= nil and reported > (s.peakReportedKmh or -1) then
+        s.peakReportedKmh, s.peakReportedAlong = reported, s.lastAlong
+    end
+    local mode = "drive"
+    if v ~= nil and v > cap then
+        mode = "over"
+    elseif v ~= nil and v > cap * S.brakeShare then
+        mode = "brake"
+    elseif v ~= nil and v > cap * S.coastShare then
+        mode = "coast"
+    end
+    s.speedModes = s.speedModes or { drive = 0, coast = 0, brake = 0, over = 0 }
+    s.speedModes[mode] = s.speedModes[mode] + 1
+    if (s.elapsed or 0) >= (s.traceAt or 0) or mode == "over" then
+        s.traceAt = (s.elapsed or 0) + S.traceMs
+        s.speedRows = s.speedRows or {}
+        if #s.speedRows < S.traceMax then
+            local okP, pitch = pcall(pitchDeg, env, s.tractor)
+            s.speedRows[#s.speedRows + 1] = { t = s.elapsed or 0, along = s.lastAlong, lateral = s.lastLateral, v = v,
+                                      flat = flat, reported = reported, pitch = okP and pitch or nil, mode = mode }
+        end
+    end
+    if mode == "over" then
+        s.overKmh = v
+        return "OVERSPEED"
+    end
+    if mode == "brake" then
+        env.AIVehicleUtil.driveToPoint(s.tractor, dt, 0, false, forwards, lx, lz, command)
+    else
+        env.AIVehicleUtil.driveToPoint(s.tractor, dt, mode == "coast" and 0 or 1, true, forwards, lx, lz, command)
+    end
+    return nil
+end
+
+-- "limit=3.0 cmd=2.55 peak=2.61@-3.20 flat=2.60 giants=2.71@-3.10 modes=drive:500,coast:3,brake:0,over:0".
+function Hitch.describeSpeed(s)
+    if s == nil or s.maxSpeedKmh == nil then return "speed[-]" end
+    local function f(n) return n and string.format("%.2f", n) or "?" end
+    local m = s.speedModes or {}
+    return string.format("speed[limit=%.1f cmd=%.2f peak=%s@%s flat=%s giants=%s@%s modes=drive:%d,coast:%d,brake:%d,over:%d%s]",
+        s.maxSpeedKmh, Hitch.commandKmh(s.maxSpeedKmh), f(s.peakKmh), f(s.peakAlong), f(s.peakFlatKmh),
+        f(s.peakReportedKmh), f(s.peakReportedAlong), m.drive or 0, m.coast or 0, m.brake or 0, m.over or 0,
+        s.overKmh and string.format(" OVERSPEED=%.2f", s.overKmh) or "")
+end
+
+-- The trace as log lines of up to `per` samples each: "t along lateral v flat giants pitch mode".
+function Hitch.speedTrace(s, per)
+    local lines, row = {}, {}
+    local function f(n) return n and string.format("%.2f", n) or "?" end
+    for _, p in ipairs((s and s.speedRows) or {}) do
+        row[#row + 1] = string.format("%d:%s/%s/%s/%s/%s/%s/%s", p.t, f(p.along), f(p.lateral), f(p.v), f(p.flat),
+                                      f(p.reported), p.pitch and string.format("%.1f", p.pitch) or "?", p.mode)
+        if #row >= (per or 8) then lines[#lines + 1] = table.concat(row, " "); row = {} end
+    end
+    if #row > 0 then lines[#lines + 1] = table.concat(row, " ") end
+    return lines
+end
+
 -- The tractor's heading off the wagon's, in degrees (diagnostics only: GIANTS'
 -- AI root, AIDrivable:getAIRootNode 515-516), or nil if unreadable.
 local function headingError(env, s)
@@ -404,7 +515,8 @@ local function checkAndDrive(env, s, dt)
     local gz = wz + s.dirZ * along
     local node = tractor:getAIReverserNode() or tractor:getAISteeringNode()
     local lx, _, lz = env.worldToLocal(node, gx, wy, gz)
-    env.AIVehicleUtil.driveToPoint(tractor, dt, 1, true, false, lx, lz, s.maxSpeedKmh)
+    local over = Hitch.drive(env, s, dt, false, lx, lz)
+    if over ~= nil then return over end
     return "CONTINUE"
 end
 
@@ -535,6 +647,81 @@ local function hitNames(env, hits)
         end)
     end
     return table.concat(names, ",")
+end
+
+-- ---------------------------------------------------------------- envelope
+-- While LOAD / UNLOAD, BACKOFF and ALONGSIDE move (AGENTS.md exceptions 5 and 6), the
+-- whole rig as it stands each moment (every unit's size box at its own pose, pitched as
+-- the unit is, as AutoDrive pitches its boxes: Specialization.lua 1903-1909) is asked of
+-- GIANTS' collision world every checkMs, from clearanceM above each box's floor to its top:
+-- `contactM` wider and longer all round it must be clear of everything but the rig, the
+-- transport and the terrain (else ENVELOPE_CONTACT, braked), `nearM` wider is recorded
+-- (how often and what came that close). The swept-volume checks before and ahead plan the
+-- motion; this observes the clearance the rig actually kept, mounted implement included.
+Hitch.ENVELOPE = { checkMs = 100, contactM = 0.15, nearM = 0.5, clearanceM = 0.3 }
+
+local function unitEnvelope(env, excluded, v, margin, mask)
+    local E, size = Hitch.ENVELOPE, v.size
+    local w, l, h = size.width, size.length, size.height
+    local wo, lo, ho = size.widthOffset, size.lengthOffset, size.heightOffset
+    assert(finite(w) and finite(l) and finite(h) and finite(wo) and finite(lo) and finite(ho))
+    local half = math.max(0.05, (h - E.clearanceM) / 2)
+    local x, y, z = env.localToWorld(v.rootNode, wo, ho + E.clearanceM + half, lo)
+    local fx, fy, fz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
+    assert(finite(x) and finite(y) and finite(z) and finite(fx) and finite(fy) and finite(fz))
+    local mission = env.g_currentMission
+    local q = { seen = 0, hits = {} }
+    function q.onEnvelopeOverlap(_, nodeId)
+        q.seen = q.seen + 1
+        if nodeId ~= mission.terrainRootNode then
+            local object = mission:getNodeObject(nodeId)
+            if not (object ~= nil and (excluded[object] or (object.rootVehicle ~= nil and excluded[object.rootVehicle]))) then
+                q.hits[#q.hits + 1] = nodeId
+            end
+        end
+        return true
+    end
+    local n = env.overlapBox(x, y, z, -atan2(fy, math.sqrt(fx * fx + fz * fz)), atan2(fx, fz), 0,
+                             w / 2 + margin, half, l / 2 + margin, "onEnvelopeOverlap", q, mask, true, true, true, true)
+    if n ~= q.seen then return nil end
+    return q.hits
+end
+
+-- nil (clear), or "ENVELOPE_CONTACT" / "UNKNOWN_OBSERVATION". s.units (the rig), s.rig (excluded:
+-- LOAD's includes the trailer it drives onto, never the truck), s.transport (excluded too when
+-- s.envelopeTransport: BACKOFF starts right at the ramps), s.masks.obstacles.
+function Hitch.envelope(env, s)
+    local E = Hitch.ENVELOPE
+    if (s.elapsed or 0) < (s.envelopeAt or 0) then return nil end
+    s.envelopeAt = (s.elapsed or 0) + E.checkMs
+    local excluded = {}
+    for unit in pairs(s.rig or {}) do excluded[unit] = true end
+    for unit in pairs(s.envelopeTransport and s.transport or {}) do excluded[unit] = true end
+    s.envelopeChecks = (s.envelopeChecks or 0) + 1
+    for _, unit in ipairs(s.units or {}) do
+        local hits = unitEnvelope(env, excluded, unit, E.contactM, s.masks.obstacles)
+        if hits == nil then return "UNKNOWN_OBSERVATION" end
+        if #hits > 0 then
+            s.envelopeHits = hitNames(env, hits)
+            return "ENVELOPE_CONTACT"
+        end
+        local near = unitEnvelope(env, excluded, unit, E.nearM, s.masks.obstacles)
+        if near == nil then return "UNKNOWN_OBSERVATION" end
+        if #near > 0 then
+            s.envelopeNear = (s.envelopeNear or 0) + 1
+            s.envelopeNearNames = s.envelopeNearNames or hitNames(env, near)
+            s.envelopeNearAlong = s.envelopeNearAlong or s.lastAlong
+        end
+    end
+    return nil
+end
+
+function Hitch.describeEnvelope(s)
+    if s == nil then return "envelope[-]" end
+    return string.format("envelope[units=%d checks=%d contact=%s near=%d%s]", #(s.units or {}), s.envelopeChecks or 0,
+        tostring(s.envelopeHits or "-"), s.envelopeNear or 0,
+        s.envelopeNearNames and string.format(" first=%s@%s", s.envelopeNearNames,
+            s.envelopeNearAlong and string.format("%.2f", s.envelopeNearAlong) or "?") or "")
 end
 
 
@@ -1179,7 +1366,8 @@ local function maneuverDrive(env, s, dt)
     end
     s.lastCurvature = curvature
     local before = readOr(function() return tractor.rotatedTime end)
-    env.AIVehicleUtil.driveToPoint(tractor, dt, 1, true, true, lx, lz, s.maxSpeedKmh)
+    local over = Hitch.drive(env, s, dt, true, lx, lz)
+    if over ~= nil then return over end
     -- Diagnostics only: sampled, never steering anything.
     s.steerFrames = (s.steerFrames or 0) + 1
     if s.steerFrames <= Hitch.STEER_FIRST_FRAMES or s.elapsed >= (s.steerAt or 0) then
@@ -1394,7 +1582,8 @@ local function pullDrive(env, s, dt)
     local _, wy = env.getWorldTranslation(node)
     local ahead = o.x + P.lookaheadM
     local lx, _, lz = env.worldToLocal(node, s.last.wx + s.dirX * ahead, wy, s.last.wz + s.dirZ * ahead)
-    env.AIVehicleUtil.driveToPoint(tractor, dt, 1, true, true, lx, lz, s.maxSpeedKmh)
+    local over = Hitch.drive(env, s, dt, true, lx, lz)
+    if over ~= nil then return over end
     return "CONTINUE"
 end
 
@@ -1794,7 +1983,8 @@ local function unparkDrive(env, s, dt)
     local _, wy = env.getWorldTranslation(node)
     local gx, gz = fromFrame(s, along + s.sign * U.lookaheadM, 0)
     local lx, _, lz = env.worldToLocal(node, gx, wy, gz)
-    env.AIVehicleUtil.driveToPoint(tractor, dt, 1, true, s.sign > 0, lx, lz, s.maxSpeedKmh)
+    local over = Hitch.drive(env, s, dt, s.sign > 0, lx, lz)
+    if over ~= nil then return over end
     return "CONTINUE"
 end
 
@@ -2199,7 +2389,10 @@ local function loadDrive(env, s, dt)
     local _, wy = env.getWorldTranslation(steer)
     local gx, gz = fromFrame(s, along + s.sign * (onRun and D.lookaheadRunInM or D.lookaheadM), 0)
     local lx, _, lz = env.worldToLocal(steer, gx, wy, gz)
-    env.AIVehicleUtil.driveToPoint(tractor, dt, 1, true, s.sign > 0, lx, lz, s.maxSpeedKmh)
+    local touched = Hitch.envelope(env, s)
+    if touched ~= nil then return touched end
+    local over = Hitch.drive(env, s, dt, s.sign > 0, lx, lz)
+    if over ~= nil then return over end
     return "CONTINUE"
 end
 
@@ -2295,6 +2488,7 @@ function Hitch.newBackOff(env, args)
         s.transport = transportSet(trailer)
         s.rig = {}
         for _, unit in ipairs(units) do s.rig[unit] = true end
+        s.envelopeTransport = true                         -- it backs away from the ramps it touches
         local rigBox = nil
         for _, unit in ipairs(units) do
             local okBox, box = pcall(unitBox, env, s, unit)
@@ -2400,7 +2594,10 @@ local function backoffDrive(env, s, dt)
     local _, wy = env.getWorldTranslation(steer)
     local gx, gz = fromFrame(s, along - D.lookaheadM, 0)
     local lx, _, lz = env.worldToLocal(steer, gx, wy, gz)
-    env.AIVehicleUtil.driveToPoint(tractor, dt, 1, true, false, lx, lz, s.maxSpeedKmh)
+    local touched = Hitch.envelope(env, s)
+    if touched ~= nil then return touched end
+    local over = Hitch.drive(env, s, dt, false, lx, lz)
+    if over ~= nil then return over end
     return "CONTINUE"
 end
 
@@ -2650,7 +2847,10 @@ local function alongsideDrive(env, s, dt)
     local _, wy = env.getWorldTranslation(node)
     local gx, gz = fromFrame(s, along + D.lookaheadM, 0)
     local lx, _, lz = env.worldToLocal(node, gx, wy, gz)
-    env.AIVehicleUtil.driveToPoint(tractor, dt, 1, true, true, lx, lz, s.maxSpeedKmh)
+    local touched = Hitch.envelope(env, s)
+    if touched ~= nil then return touched end
+    local over = Hitch.drive(env, s, dt, true, lx, lz)
+    if over ~= nil then return over end
     return "CONTINUE"
 end
 

@@ -19,6 +19,7 @@ from lupa import lua51, lua54
 from companion import executor as companion_executor
 
 ROOT = Path(__file__).resolve().parents[1]
+COMMAND_KMH = 3 * 0.85         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
 
 STUBS = r"""
 local Hitch = ...
@@ -207,15 +208,26 @@ function W.new(o)
     env.AIVehicleUtil = {}
     function env.AIVehicleUtil.driveToPoint(v, dt, acc, allowed, forwards, lx, lz, maxSpeed)
         table.insert(w.drives, { allowed = allowed, forwards = forwards, lx = lx, lz = lz, maxSpeed = maxSpeed })
-        table.insert(w.events, allowed and "drive" or "brake")
-        if not allowed or acc <= 0 or w.stuck then w.speed = 0; return end
-        local ds = (forwards and 1 or -1) * maxSpeed / 3.6 * dt / 1000
+        table.insert(w.events, allowed and (acc > 0 and "drive" or "coast") or "brake")
+        -- w.speedFactor: the vehicle runs faster than commanded (as GIANTS' motor did on the
+        -- ramps, live 5f19b1c28f614266-1); w.coastKmh: what it keeps while not accelerating
+        -- (momentum); w.runawayKmh: what it does whatever it is told (rolling down a ramp).
+        local kmh = maxSpeed * (w.speedFactor or 1)
+        if w.runawayKmh then
+            kmh = w.runawayKmh
+        elseif not allowed or w.stuck then
+            w.speed = 0; return
+        elseif acc <= 0 then
+            if not w.coastKmh then w.speed = 0; return end
+            kmh = w.coastKmh
+        end
+        local ds = (forwards and 1 or -1) * kmh / 3.6 * dt / 1000
         local dx, dz = ds * math.sin(w.steer.yaw), ds * math.cos(w.steer.yaw)
         local px, pz = (w.drift or 0) * math.cos(w.steer.yaw), -(w.drift or 0) * math.sin(w.steer.yaw)
         for _, n in ipairs({ w.steer, w.trailer and w.trailer.rootNode }) do
             n.x, n.z = n.x + dx + px, n.z + dz + pz
         end
-        w.speed = (forwards and 1 or -1) * maxSpeed
+        w.speed = (forwards and 1 or -1) * kmh
     end
     return w
 end
@@ -316,7 +328,7 @@ class LuaUnparkTests(unittest.TestCase):
         session, code, along, lateral = self.extract(w)
         self.assertEqual(code, "CLEAR", self.hitch.describeUnpark(session))
         moving = self.moving(w)
-        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == 3 for d in moving))
+        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == COMMAND_KMH for d in moving))
         # The tractor's rear (2.6 m behind its node) out from under the roof (6 m): 8.6 m,
         # planned in 0.5 m slabs; never farther than that exit.
         self.assertAlmostEqual(session.exitM, 9.0)
@@ -536,7 +548,7 @@ class LuaUnparkTests(unittest.TestCase):
             (lambda w, i: i == 10 and setattr(w, "reserved", False), "RESERVATION_LOST"),
             (lambda w, i: i == 10 and setattr(w, "ai", True), "AI_ACTIVE"),
             (lambda w, i: i == 10 and setattr(w, "stuck", True), "STALLED"),
-            (lambda w, i: i == 10 and setattr(w, "drift", 0.05), "DIVERGED"),
+            (lambda w, i: i == 10 and setattr(w, "drift", 0.01), "DIVERGED"),     # 0.2 m/s aside: under the limit
             (lambda w, i: i == 10 and (setattr(w.player, "x", w.steer.x + 5 * math.sin(w.yaw))
                                        or setattr(w.player, "z", w.steer.z + 5 * math.cos(w.yaw))),
              "PERSON_TOO_CLOSE"),
@@ -549,6 +561,13 @@ class LuaUnparkTests(unittest.TestCase):
                 session, code, _, _ = self.extract(w, hook=lambda i, w=w, hook=hook: hook(w, i))
                 self.assertEqual(code, reason, self.hitch.describeUnpark(session))
                 self.assert_ended_braked_and_restored(w)
+
+    def test_over_the_limit_it_stops_braked(self):
+        w = self.world()
+        w.shed(-9, 6, 4, 4.5)
+        session, code, _, _ = self.extract(w, hook=lambda i: i == 10 and setattr(w, "runawayKmh", 3.6))
+        self.assertEqual(code, "OVERSPEED", self.hitch.describeSpeed(session))
+        self.assert_ended_braked_and_restored(w)
 
     def test_a_change_to_the_rig_stops_it(self):
         def turn(w, i):

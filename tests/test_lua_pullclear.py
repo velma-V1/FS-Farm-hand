@@ -17,6 +17,7 @@ from companion import hitch as companion_hitch
 from tests.test_lua_maneuver import STUBS
 
 ROOT = Path(__file__).resolve().parents[1]
+COMMAND_KMH = 3 * 0.85         # what a motion commands under its 3 km/h limit (Hitch.SPEED.commandShare)
 
 # Just unhitched: the tractor's joint 0.12 m ahead of the implement's, on its axis.
 DETACHED = dict(ahead=0.12, lateral=-0.05, heading=0.0)
@@ -81,7 +82,7 @@ class LuaPullClearTests(unittest.TestCase):
         code, _ = self.pull(w, session)
         self.assertEqual(code, "CLEAR")
         moving = [d for d in self.drives(w) if d["allowed"]]
-        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == 3 for d in moving))
+        self.assertTrue(moving and all(d["forwards"] and d["maxSpeed"] == COMMAND_KMH for d in moving))
         travelled = math.dist((w.steer.x, w.steer.z), (x0, z0))
         self.assertLess(travelled, 4.7)                       # stops as soon as it is clear
         self.assertGreaterEqual(self.separation(w), 4.5)
@@ -89,6 +90,14 @@ class LuaPullClearTests(unittest.TestCase):
         self.assert_ended_braked_and_restored(w)
         self.assertEqual(self.hitch.pullClearStep(w.env, session, 50), "CLEAR")   # latched: brakes only
         self.assertFalse(self.drives(w)[-1]["allowed"])
+
+    def test_over_the_limit_it_stops_braked(self):
+        w = self.world()
+        session, why = self.start(w)
+        self.assertIsNotNone(session, why)
+        code, _ = self.pull(w, session, hook=lambda i: i == 10 and setattr(w, "runawayKmh", 3.6))
+        self.assertEqual(code, "OVERSPEED", self.hitch.describeSpeed(session))
+        self.assert_ended_braked_and_restored(w)
 
     def test_three_point_arms_settling_after_the_detach_do_not_stop_it(self):
         # Live 4e9c443e19bd4de1-10 (seeder): after GIANTS' detach the lower links moved

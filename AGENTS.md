@@ -77,48 +77,95 @@ have precedence; report conflicts instead of silently changing the scope.
      are never disabled, nothing is teleported, and no safety distance is loosened.
   5. LOAD / UNLOAD (authorized 2026-10-20 for tractor transport; no GIANTS job or
      installed mod drives a vehicle onto a deck: Universal Autoload moves pallets,
-     bales and bags only). LOAD: only with the transport trailer's ramps verified
-     down through GIANTS' own Foldable state; the tractor alone (nothing attached),
-     straight along the trailer's axis up its rear ramps, at most 3 km/h, at most the
-     ramp plus deck length; checked with the same GIANTS collision query, guards and
-     restore-on-every-exit as UNPARK; it stops when the tractor's body is inside the
-     deck box and at rest; the belts are then fastened through GIANTS' TensionBelts
-     and the tractor must be observed belted (fastened by the trailer) and at rest.
-     UNLOAD: belts released and observed released, ramps down, straight reverse off
-     the ramps under the same guards and caps. Nothing is teleported, no collision is
-     disabled, and travel with the load stays GIANTS' or AutoDrive's. Extended (the user,
-     2026-10-21, "load the tractor and plow on the gooseneck"): the tractor may carry one
-     implement mounted on its three-point joint, lifted and, if it folds, folded; only if the
-     whole rig fits (the tractor inside the belt area, the rig forward to its front, the
-     implement over the trailer's own deck), with the swept volume and every check covering
-     the rig, refused unmoved otherwise; it stops if the implement is lowered or unfolded
-     on the way. Nothing towed comes along. Run-in (the user, 2026-10-21, "figure this out"): LOAD
-     may start up to 12 m behind the ramps' foot, within 2.5 m and 20 degrees of the trailer's
-     axis, steering onto the axis with GIANTS' driveToPoint under the same caps and guards over
-     the corridor from where it stands; at the ramps' foot it must be inside the start window
-     (0.5 m, 5 degrees) or it stops there braked. BACKOFF (the user, 2026-10-21, "figure this out"): a
-     tractor (alone or with that mounted implement) waiting at most 8 m behind the transport's
-     rear, which GIANTS' agent will not start there, goes straight back along its own heading,
-     at most 8 m at 3 km/h, under the same guards (swept volume behind clear, the transport
-     watched, no other vehicle or person near), so GIANTS GOTO can line it up from the run-up.
+     bales and bags only). Nothing is teleported, no collision is disabled, and travel
+     with the load stays GIANTS' or AutoDrive's. Each motion below is its own permission;
+     "live" lists what a live run has shown, nothing more:
+     - LOAD straight. Scope: the tractor alone, straight along the transport trailer's
+       axis up its rear ramps verified down through GIANTS' Foldable state, at most the
+       ramp plus deck length, stopping with its body inside the deck box (the tension
+       belts' span) at rest; the belts then fastened through GIANTS' TensionBelts and the
+       tractor observed belted and at rest. Start window: steering node within 0.5 m and
+       heading within 5 degrees of the axis, its front 0-3 m behind the trailer's rear.
+       Geometry assumed: GIANTS' size boxes bound each unit; the ramps and deck are the
+       trailer's own collision (excluded), the truck is not; the stub never climbs, so
+       physics on the ramps is known only from live runs. Live: d14230aa9fb24d30-2 (Series 9
+       alone, 1124 Deckover, 13.12 m) PASS; its speed was not then measured by Farmhand and
+       the LOAD runs' end readings were 1.98-4.74 km/h: requalification under the speed rule
+       below is pending.
+     - LOAD with a mounted implement (the user, 2026-10-21, "load the tractor and plow on the
+       gooseneck"): one implement on the three-point joint, lifted and, if it folds, folded;
+       only if the whole rig fits (the tractor inside the belt area, the rig forward to its
+       front less 0.3 m, the implement no farther back than the trailer's rear plus 0.25 m),
+       the swept volume and every check over the rig; it stops if the implement is lowered or
+       unfolded on the way. Nothing towed comes along. Geometry assumed: the implement's size
+       box contains it lifted (its low point over the ramps' foot is only observed live).
+       Live: 5f19b1c28f614266-1 (Series 9 + Titan plow) loaded and belted, but its end speed
+       read 4.14 km/h over the 3 km/h cap: not qualified; requalification pending.
+     - Run-in (the user, 2026-10-21, "figure this out"; that instruction authorizes trying it,
+       it is not evidence that it is safe): LOAD may start up to 12 m behind the ramps' foot,
+       within 2.5 m and 20 degrees of the axis, steering onto the axis with driveToPoint;
+       its corridor is swept wide from where it stands to the ramps' foot and the rig's own
+       straight width on the ramps and deck; at the foot it must be inside the start window
+       (0.5 m, 5 degrees) or it stops there braked (NOT_LINED_UP_AT_RAMPS). Geometry assumed:
+       a mounted implement swings out behind the tractor while it steers; the wide corridor
+       is assumed to cover it (not computed), so the live envelope check below is what shows
+       the clearance. Live: 5f19b1c28f614266-1 at the foot 0.01 m off, 4.43 degrees (speed
+       not qualified, as above).
+     - UNLOAD: belts released and observed released, ramps down, straight back off the ramps
+       under the same guards and caps until its front is 3 m behind the trailer's rear, then
+       the ramps up. Live: once (Series 9 alone, 2026-10-21, end reading 3.26 km/h): not
+       qualified on speed; requalification pending.
+     - BACKOFF (the user, 2026-10-21, "figure this out"; as for the run-in): a tractor (alone
+       or with that mounted implement) waiting at most 8 m behind the transport's rear, which
+       GIANTS' agent will not start there, straight back along its own heading, at most 8 m
+       at 3 km/h; refused unmoved unless the swept volume behind is clear in GIANTS' collision
+       query, no other vehicle (the transport aside) or person is near and the rig is as LOAD
+       allows; the transport watched while it moves; so GIANTS GOTO can line it up from the
+       run-up. Geometry assumed: straight back, the implement leading; its swept volume is the
+       rig box. Live: 2f6986868b5245f1-2 (Series 9 + plow) 8.01 m, lateral 0.00, end reading
+       3.02 km/h: requalification pending.
+     Every one of them: GIANTS' collision query proven on the rig before it moves, the swept
+     volume clear, takeover, seat, reservation, AI, divergence (0.3 m), distance, stall, timeout,
+     other vehicles and the player watched each frame, the trailer and truck unmoved (25 cm),
+     the ramps still down, latched braked and restored on every exit, and the speed and
+     envelope rules below.
   6. ALONGSIDE (the user, 2026-10-21: "combine full, figure this out, quit stopping at every
-     small issue"; GIANTS' helper cannot start a full combine, AutoDrive's unloader serves
-     only a combine whose AI runs, and GIANTS GOTO takes no spot under the pipe). Only after
-     the standing combine's pipe is out (GIANTS Pipe) and GIANTS GOTO has brought the tractor
-     and its one towed trailer near the pipe's line behind it (the line through the pipe's
+     small issue"; that instruction authorizes trying it, it is not evidence that it is safe;
+     GIANTS' helper cannot start a full combine, AutoDrive's unloader serves only a combine
+     whose AI runs, and GIANTS GOTO takes no spot under the pipe). Scope: only after the
+     standing combine's pipe is out (GIANTS Pipe) and GIANTS GOTO has brought the tractor and
+     its one towed trailer near the pipe's line behind it (the line through the pipe's
      discharge point along the combine's heading): the tractor forward onto and along that
-     line with GIANTS' driveToPoint, at most 3 km/h and 25 m, until the trailer's middle
-     reaches the pipe point, and it must end within 0.8 m of it; refused unmoved unless the
-     tractor starts within 2.5 m and 15 degrees of the line, the trailer is swung at most 30
-     degrees, its middle is behind the point, the rig's swept corridor is clear in GIANTS'
-     collision query (the combine is not excluded) and no other vehicle (the combine and its
-     header aside) or person is near; LOAD's guards while moving (it may never get farther off
-     the line than at the start), and it stops
-     if the combine moves or its pipe comes in; restore-on-every-exit as UNPARK. The grain
-     moves by GIANTS' own discharge. After the overload, the pipe still out, the rig goes on
-     along the same line under the same guards and caps until its rear is 2 m past the
-     combine's front (GIANTS would not start it from beside the combine, live 2026-10-22).
-     Nothing is teleported and no collision is disabled.
+     line with driveToPoint, at most 3 km/h and 25 m, until the trailer's middle reaches the
+     pipe point, ending within 0.8 m of it. Refused unmoved unless the tractor starts within
+     2.5 m and 15 degrees of the line, the trailer is swung at most 30 degrees, its middle is
+     behind the point, the rig's swept corridor is clear in GIANTS' collision query (the
+     combine is not excluded) and no other vehicle (the combine and its header aside) or
+     person is near; LOAD's guards while moving (never farther off the line than at the start
+     plus 0.3 m), and it stops if the combine moves or its pipe comes in. PASS: after the
+     overload, the pipe still out, on along the same line under the same guards and caps
+     until the rig's rear is 2 m past the combine's front (GIANTS would not start it from
+     beside the combine). Geometry assumed: the trailer's size-box middle is where the grain
+     lands; the pipe is above the trailer's top; a swung trailer straightens behind the
+     tractor (not modelled: it must end under the pipe or it fails ALONGSIDE_NOT_UNDER). The
+     grain moves by GIANTS' own discharge; a stop or takeover ends it and folds the pipe.
+     Live: 2bfa1536c9e2497b-1 under the pipe 17.97 m, end 0.06 m beside the point, end
+     reading 3.01 km/h; bc801c056bac4966-1 PASS 10.24 m, 2.93 km/h: requalification under the
+     speed and envelope rules pending.
+- Motion speed (the user, 2026-10-22: the 4.14 km/h LOAD reading broke the 3 km/h cap).
+  Every self-driven motion above has its session's limit (3 km/h, ALIGN/LOCAL at most 5 by
+  argument, default 3); driveToPoint's maxSpeed is only GIANTS' motor target, so Farmhand
+  measures the speed itself (the root's travel over the last 0.25 s) and governs it: it
+  commands 85 % of the limit (never under 1 km/h), takes the throttle off above 90 %, brakes a
+  frame above 97 %, and above the limit ends the motion braked (OVERSPEED, latched, never
+  retried by itself); GIANTS' own reading is logged beside it with a speed trace. The limit is
+  never raised to make a run pass, and a run that went over it is not qualified.
+- Motion envelope: while LOAD / UNLOAD, BACKOFF and ALONGSIDE move, every unit of the rig
+  (the tractor, a mounted implement, a towed trailer) at its own pose, pitched as it is, is
+  asked of GIANTS' collision world every 0.1 s: anything within 0.15 m of a unit (but the rig,
+  the trailer it drives onto, and for BACKOFF the transport it backs away from) ends it braked
+  (ENVELOPE_CONTACT); what comes within 0.5 m is recorded. Kinematic stub tests prove the
+  state machines only; collision clearance is what these live observations show.
 - Keep Python orchestration in companion/, pure contracts in protocol/ and
   adapters/, game-side Lua in mod/, synthetic state in simulator/, tests in tests/.
   Never import simulator into companion or mod. No simulated success in real adapters.
@@ -128,15 +175,33 @@ have precedence; report conflicts instead of silently changing the scope.
   done (hitched, loaded, belted, bought, delivered) is verified and the work continues;
   it is never refused for that, nor repeated. A purchase is never made twice for one goal.
 - Autonomous delivery of a loaded transport (a trailer carrying a belted vehicle) is
-  AutoDrive's wherever it can do it. Observed (FourFields save 2, GMC 3500HD + 1124 Deckover +
-  Deutz Series 9; scoped to that combination until others are tested): GIANTS GOTO is blocked by
-  its own belted cargo (build e91fc6c, live d14230aa9fb24d30-3) and AutoDrive 3.0.1.4 waits on it
-  as traffic (build 24c7dfb, live 831d6868b9df40b0-1; its source ignores only what is mounted on
-  the vehicle itself). Neither is started for it, and AutoDrive's global traffic detection is
-  never turned off: the job is kept and the player asked for the smallest help (drive it to the
-  destination, then "continue"). FollowMe runs only when the player explicitly asks to be
-  followed; it never stands in for a point-to-point delivery. Without a usable AutoDrive route
-  the job is kept and the exact route or configuration gap is reported.
+  AutoDrive's wherever it can do it. GIANTS GOTO does not start such a rig (build e91fc6c,
+  live d14230aa9fb24d30-3: its agent BLOCKED from the first frame by its own cargo). AutoDrive
+  counts belted cargo as the rig's own by its source: its sensors skip what checkIsConnected
+  calls connected, getHasObjectMounted, which GIANTS' AttacherJoints passes on to the towed
+  trailer and whose TensionBelts holds the cargo (an earlier record here said AutoDrive ignores
+  only what is mounted on the vehicle itself: that missed AttacherJoints' recursion and was
+  wrong). Why live 831d6868b9df40b0-1 (AutoDrive 3.0.1.4, FourFields) never moved is not known:
+  its drive now reports what AutoDrive waits on (planning onto its network, a sensor and what is
+  in its box, paused) and ends FAILED with it after 3 minutes unmoved. So the loaded rig goes by
+  AutoDrive to a marker (made AutoDrive's own way where there is none: "Field N", or a farm
+  building by its own name); only when AutoDrive did not move it, or there is no AutoDrive or
+  marker, is the player asked for the smallest help (drive it to the destination, then
+  "continue"), recorded as assisted, never as autonomous delivery. AutoDrive's global traffic
+  detection is never turned off. FollowMe runs only when the player explicitly asks to be
+  followed; it never stands in for a point-to-point delivery.
+- Unloading, storing and selling are separate (the user, 2026-10-22). "Unload the combine"
+  transfers its crop into a trailer and nothing more. A harvest's crop is sold or stored only
+  when the request says so ("harvest field 5 and sell the grain") or the player's saved harvest
+  policy does ("from now on sell the harvest"); otherwise it stays in the trailer, and with no
+  trailer room left the harvest waits and the player is asked where it goes. AutoDrive's
+  combine unloader (it delivers to a sell point) runs only for a harvest that is to be sold.
+- Completion is GIANTS' verdict and the field's measured state together: a harvest is done
+  only when GIANTS ended its helper FINISHED and a grid of samples over the whole field (up to
+  120, at least 4 m apart, plus the helper's track) shows 95 % cut; soil work, sowing and
+  spraying by GIANTS' density maps over the field's whole area; a contract only on GIANTS'
+  FINISHED status with finishState SUCCESS (its completion share logged) and the reward in the
+  farm's balance.
 - Unloading happens only on observed arrival at the intended destination's unloading
   area. Stopping for traffic, a cancellation, a takeover or a failure never unloads.
 - AutoDrive configuration may be completed only through AutoDrive's own supported

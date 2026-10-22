@@ -96,6 +96,7 @@ class Equipment:
     brand: str | None = None              # the store's brand (brandNameRaw), e.g. DEUTZFAHR
     seeds: tuple[str, ...] = ()           # a seeder's crops (GIANTS fruit names), in its order
     pipe: tuple[bool, float, float] | None = None   # a combine's pipe: out, where it discharges (x, z)
+    ai_stop: str | None = None            # how GIANTS ended the vehicle's last AI job (FINISHED, COULD_NOT_PREPARE, ...)
     stopped: bool = True
     # Hitch geometry; unknown values are None/empty and make a vehicle unhitchable.
     # Joint types are compared per joint pair (companion/hitch.py), as GIANTS does.
@@ -144,6 +145,7 @@ class Contract:
     status: str                  # CREATED (available), PREPARING, RUNNING, FINISHED
     mine: bool
     reward: float | None
+    completion: float | None = None    # GIANTS' own: the field share done over its success factor (1: done)
 
 
 @dataclass(frozen=True)

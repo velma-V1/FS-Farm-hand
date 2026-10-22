@@ -168,7 +168,7 @@ TEST_AREA_M2 = 400        # "a small area of field 7": about a minute of work fo
 # What one command already does: a sequence of only these is that command ("hitch the
 # tractor to the forage wagon then take it to the barn" is one fetch).
 _COVERS = {"fetch_pair": {"hitch_pair", "fetch_pair", "move_pair"}, "buy": {"buy"},
-           "load_tractor": {"load_tractor"}, "field_work": {"field_work", "sell"}}
+           "load_tractor": {"load_tractor"}, "field_work": {"field_work", "sell", "store"}}
 # "Take it back", "put the deckover back (where it was)": back to where Farmhand took it from.
 _BACK = re.compile(r"(?:please\s+)?(?:take|put|bring|drive|move|return)\s+(?:it|them|that|this|everything"
                    r"|(?:the|that|my)\s+(?P<thing>[a-z0-9 ]{1,40}?))\s+back(?:\s+(?:up|over))?"
@@ -189,7 +189,7 @@ _TRACTOR_TO = re.compile(r"^(?:please\s+)?(?:take|bring|haul|deliver|transport|m
 # "... and unload it (there)": the end of a haul goal.
 _UNLOAD_TAIL = re.compile(r"\s+(?:and\s+)?(?:then\s+)?unload\s+(?:it|him|that|the tractor)(?:\s+there)?$")
 # Clause breaks of a sequence: commas, "then", "and then", ", and", semicolons.
-_VERB = (r"(?:load|unload|buy|purchase|deliver|bring|take|haul|hitch|unhitch|detach|move|drive|park|follow|save|use|sell"
+_VERB = (r"(?:load|unload|buy|purchase|deliver|bring|take|haul|hitch|unhitch|detach|move|drive|park|follow|save|use|sell|store"
          r"|do(?=\s+(?:a|an|the)\s+(?:[a-z]+\s+)?contract))\b")
 _CLAUSE_BREAK = re.compile(r"\s*,\s*(?:and\s+)?(?:then\s+)?|\s+(?:and\s+)?then\s+|\s*;\s*"
                            # "... and load the tractor": "and" before a command verb
@@ -386,10 +386,24 @@ def _option_words(phrase: str) -> str | None:
     return words[:40] if re.fullmatch(r"[a-z0-9][a-z0-9 -]*", words or "") else None
 
 
+# Where crop goes: the farm's own storage, and what the crop is called.
+_SILO = r"(?:the\s+|my\s+|our\s+)?(?:farm\s+)?(?:silos?|grain\s+bins?|bins?|storage)"
+_CROP_NAME = r"(?:the|my|our)\s+(?:grain|crops?|harvest|load|wheat|barley|canola|corn|oats|soybeans|sorghum)"
+_CROP_WORDS = rf"(?:it|them|that|{_CROP_NAME})"
+# "harvest field 3 and sell the grain", "... and store it", "... and put it in the silo": where
+# this harvest's crop goes (else the saved harvest policy; else it stays in the trailer).
+_HARVEST_TO = re.compile(rf"\s+(?:and\s+|then\s+)+(?:(?P<sell>sell\b.*)"
+                         rf"|store(?:\s+{_CROP_WORDS})?(?:\s+(?:in|into)\s+{_SILO})?"
+                         rf"|(?:put|take|bring|haul)\s+{_CROP_WORDS}\s+(?:in|into|to)\s+{_SILO})(?:\s+please)?$")
+
+
 def field_work(words: str) -> dict | None:
-    # "harvest field 3 and sell the grain": the unloader sells at the best paid point already.
+    destination = None
     if words.startswith("harvest"):
-        words = re.sub(r"\s+(?:and\s+|then\s+)+sell\b.*$", "", words)
+        to = _HARVEST_TO.search(words)
+        if to is not None:
+            destination = "sell" if to["sell"] else "store"
+            words = words[:to.start()]
     # "... anyway": the player knows a crop stands there and wants the work done.
     over_crop = re.search(r"\s+(?:anyway|anyways|regardless)$", words)
     if over_crop is not None:
@@ -407,6 +421,8 @@ def field_work(words: str) -> dict | None:
     if field != "smallest" and field < 1:
         return None
     work = {"version": 1, "command": "field_work", "field": field, "operations": operations}
+    if destination is not None:
+        work["destination"] = destination
     if over_crop is not None:
         work["over_crop"] = True
     if match["test"]:
@@ -477,6 +493,33 @@ def sell(words: str) -> dict | None:
     return {"version": 1, "command": "sell"}
 
 
+# "store the grain", "put the grain in the silo", "take the load to the grain bin": the cargo a
+# rig carries into the farm's own storage (GIANTS' Deliver helper), nothing sold. Never a vehicle.
+# The crop by name only ("take this to the silo" is the hitched pair).
+_STORE = re.compile(rf"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?:store\s+{_CROP_NAME}(?:\s+(?:in|into)\s+{_SILO})?"
+                    rf"|(?:put|take|bring|haul|unload)\s+{_CROP_NAME}(?:\s+in\s+the\s+trailer)?\s+(?:in|into|to)\s+{_SILO})"
+                    r"(?:\s+please)?$")
+
+
+def store(words: str) -> dict | None:
+    return {"version": 1, "command": "store"} if _STORE.match(words) else None
+
+
+# "from now on sell the harvest", "always store the grain", "keep the grain in the trailer": where
+# harvested crop goes when a harvest request does not say (saved). Selling or storing needs the
+# "from now on" (else it is an order for the cargo there now).
+_POLICY = re.compile(r"^(?:please\s+)?(?P<pre>(?:from\s+now\s+on|always|by\s+default)\s+)?(?P<verb>sell|store|keep)\s+"
+                     r"(?:the\s+|my\s+|our\s+|all\s+(?:the\s+)?)?(?:harvests?|grain|crops?)"
+                     r"(?:\s+in\s+the\s+trailers?)?(?P<post>\s+(?:from\s+now\s+on|by\s+default|always))?$")
+
+
+def harvest_policy(words: str) -> dict | None:
+    match = _POLICY.match(words)
+    if match is None or (match["verb"] != "keep" and not (match["pre"] or match["post"])):
+        return None
+    return {"version": 1, "command": "harvest_policy", "destination": match["verb"]}
+
+
 # "hitch them together", "hook them up": the tractor and implement just bought (the
 # sequence's context names them); "hitch the plow to the deutz": that implement to that tractor.
 _TOGETHER = re.compile(r"^(?:please\s+)?(?:hitch|hook|couple|attach|connect)\s+(?:them|those|these|both)"
@@ -529,8 +572,8 @@ def hitch_named(words: str) -> dict | None:
     return None
 
 
-# "unload the combine", "unload the harvester on field 3": AutoDrive's combine unloader for a
-# field a helper is harvesting (the one being harvested when none is said).
+# "unload the combine", "unload the harvester on field 3": its grain transferred into a trailer,
+# nothing more (a helper harvesting: the field said, else the one being harvested).
 _UNLOAD_COMBINE = re.compile(r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?:unload|empty)\s+(?:the|my|our)\s+(?:combines?|harvesters?)"
                              r"(?:\s+(?:on|in|at)\s+field\s+(?P<field>\d{1,5}))?(?:\s+please)?$")
 
@@ -730,8 +773,8 @@ class RuleInterpreter:
             return {"version": 1, "command": "move_pair"}
         if re.fullmatch(r"(?:please\s+)?save(?:\s+the)?(?:\s+(?:game|farm|progress))?(?:\s+now)?", words):
             return {"version": 1, "command": "save_game"}
-        work = (field_work(words) or plant(words) or sell(words) or unload_combine(words) or hitch_named(words)
-                or buy(words) or transport(words))
+        work = (harvest_policy(words) or field_work(words) or plant(words) or sell(words) or store(words)
+                or unload_combine(words) or hitch_named(words) or buy(words) or transport(words))
         if work is not None:
             return work
         # "... with the gmc": the towing vehicle by its name.

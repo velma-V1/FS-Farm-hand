@@ -80,9 +80,10 @@ class World(Protocol):
         ramps it waits behind (AGENTS.md exception 5); BACKED_OFF at rest."""
         ...
 
-    def giants_deliver(self, tractor_id: str, owner: str) -> str:
+    def giants_deliver(self, tractor_id: str, owner: str, store: bool = False) -> str:
         """SELL: GIANTS' Deliver helper takes the reserved rig's cargo to the best paid selling
-        station and tips it there; the caller checks the cargo and the money."""
+        station and tips it there, or (``store``) to the farm's own storage nearest it; the
+        caller checks the cargo (and, selling, the money)."""
         ...
 
     def overload(self, combine_id: str, trailer_id: str, owner: str) -> str:
