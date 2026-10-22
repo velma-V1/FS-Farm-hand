@@ -70,7 +70,7 @@ ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snap
   (an AutoDrive destination for a field, AutoDrive's own call, after a backup of its network), `follow`
   (FollowMe, only on the player's "follow me"), `fieldwork` (optionally the crop to sow), `contract` (take or
   collect a GIANTS field contract), `pipe` / `overload` / `alongside` (a standing combine's pipe out, the trailer straight under it, GIANTS'
-  own discharge into it), `deliver` (GIANTS' Deliver helper to the best paid selling station),
+  own discharge into it), `deliver` (GIANTS' Deliver helper to the best paid selling station, or to a silo the farm owns),
   `open_gates`, `block`, `buy`, `save`, `stop`. ACCEPTED/DONE is never success; the game stops a
   session's motion if the heartbeat is lost for 10 s. Player key presses arrive as
   `request` frames (a fixed `action` or typed `text`).
@@ -118,6 +118,6 @@ The only self-driven motion allowed is HITCH's capped LOCAL_MANEUVER (forward, i
 door is near it; AGENTS.md exception 4) and LOAD / UNLOAD (a tractor alone, straight along a
 transport trailer's axis up its verified-down ramps or back off, at most 3 km/h and the ramps
 plus the deck, and BACKOFF straight back from the ramps at most 8 m; AGENTS.md exception 5) and ALONGSIDE (a tractor's towed trailer straight forward
-under a standing combine's pipe, at most 3 km/h and 25 m; exception 6); all other travel is
-delegated to AutoDrive (optional; marker destinations only) or GIANTS GOTO
+under a standing combine's pipe, at most 3 km/h and 25 m; exception 6), every one governed under its speed limit (OVERSPEED) and the new ones watched for envelope contact; all other travel is
+delegated to AutoDrive (optional; marker destinations only; it also drives a loaded transport) or GIANTS GOTO
 (`navigate`, `stage`), whose navigation agent plans for the attached wagon.
