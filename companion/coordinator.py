@@ -310,7 +310,11 @@ def _boxed_ahead(tractor: Equipment, items) -> bool:
             continue
         dx, dz = other.position[0] - tractor.position[0], other.position[1] - tractor.position[1]
         along, side = dx * fx + dz * fz, dx * fz - dz * fx
-        if 0.0 < along <= FREE_AHEAD_M and abs(side) <= FREE_SIDE_M:
+        # Its size box, not its root (live dfbef3dc652f4624-1: the Deckover's root 13 m ahead,
+        # its ramps 6 m): any part of it within the way out.
+        half_length, half_width = ((other.size[0] / 2, other.size[1] / 2) if other.size else (0.0, 0.0))
+        reach = max(half_length, half_width)
+        if along + reach > 0.0 and along - reach <= FREE_AHEAD_M and abs(side) - reach <= FREE_SIDE_M:
             return True
     return False
 
