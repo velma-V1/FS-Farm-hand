@@ -642,8 +642,10 @@ local function hitNames(env, hits)
         -- The object the shape belongs to (a vehicle's or placeable's name), for diagnosis.
         pcall(function()
             local object = env.g_currentMission:getNodeObject(hits[i])
-            local owner = object ~= nil and (type(object.getName) == "function" and object:getName() or object.typeName)
-            if owner ~= nil then names[i] = names[i] .. "@" .. tostring(owner) end
+            if object ~= nil then
+                local owner = type(object.getName) == "function" and object:getName() or object.typeName
+                names[i] = names[i] .. "@" .. tostring(owner)
+            end
         end)
     end
     return table.concat(names, ",")
@@ -660,13 +662,14 @@ end
 -- motion; this observes the clearance the rig actually kept, mounted implement included.
 Hitch.ENVELOPE = { checkMs = 100, contactM = 0.15, nearM = 0.5, clearanceM = 0.3 }
 
-local function unitEnvelope(env, excluded, v, margin, mask)
+local function unitEnvelope(env, excluded, v, margin, mask, clearance)
     local E, size = Hitch.ENVELOPE, v.size
+    clearance = clearance or E.clearanceM
     local w, l, h = size.width, size.length, size.height
     local wo, lo, ho = size.widthOffset, size.lengthOffset, size.heightOffset
     assert(finite(w) and finite(l) and finite(h) and finite(wo) and finite(lo) and finite(ho))
-    local half = math.max(0.05, (h - E.clearanceM) / 2)
-    local x, y, z = env.localToWorld(v.rootNode, wo, ho + E.clearanceM + half, lo)
+    local half = math.max(0.05, (h - clearance) / 2)
+    local x, y, z = env.localToWorld(v.rootNode, wo, ho + clearance + half, lo)
     local fx, fy, fz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
     assert(finite(x) and finite(y) and finite(z) and finite(fx) and finite(fy) and finite(fz))
     local mission = env.g_currentMission
@@ -687,6 +690,38 @@ local function unitEnvelope(env, excluded, v, margin, mask)
     return q.hits
 end
 
+-- The lowest corner of a unit's size box floor above the terrain under it, metres (diagnostics).
+local function unitFloorClearance(env, v)
+    local size = v.size
+    local low = math.huge
+    for _, sx in ipairs({ -1, 1 }) do
+        for _, sz in ipairs({ -1, 1 }) do
+            local x, y, z = env.localToWorld(v.rootNode, size.widthOffset + sx * size.width / 2, size.heightOffset,
+                                             size.lengthOffset + sz * size.length / 2)
+            low = math.min(low, y - terrainAt(env, x, z))
+        end
+    end
+    return low
+end
+
+-- What a hit shape is, for the log: its name and its object's name and class (ClassUtil, as the
+-- bridge's AI_JOB_STOPPED listener reads classes).
+local function hitDetail(env, hits)
+    local names = {}
+    for i = 1, math.min(#hits, 3) do
+        local text = hitNames(env, { hits[i] })
+        pcall(function()
+            local object = env.g_currentMission:getNodeObject(hits[i])
+            if object ~= nil then text = text .. "<" .. tostring(env.ClassUtil.getClassNameByObject(object)) .. ">" end
+            local _, hy = env.getWorldTranslation(hits[i])
+            local hx, _, hz = env.getWorldTranslation(hits[i])
+            text = text .. string.format("^%.2f", hy - terrainAt(env, hx, hz))
+        end)
+        names[#names + 1] = text
+    end
+    return table.concat(names, ",")
+end
+
 -- nil (clear), or "ENVELOPE_CONTACT" / "UNKNOWN_OBSERVATION". s.units (the rig), s.rig (excluded:
 -- LOAD's includes the trailer it drives onto, never the truck), s.transport (excluded too when
 -- s.envelopeTransport: BACKOFF starts right at the ramps), s.masks.obstacles.
@@ -698,11 +733,21 @@ function Hitch.envelope(env, s)
     for unit in pairs(s.rig or {}) do excluded[unit] = true end
     for unit in pairs(s.envelopeTransport and s.transport or {}) do excluded[unit] = true end
     s.envelopeChecks = (s.envelopeChecks or 0) + 1
-    for _, unit in ipairs(s.units or {}) do
+    for index, unit in ipairs(s.units or {}) do
+        local okLow, low = pcall(unitFloorClearance, env, unit)
+        if okLow and finite(low) then
+            s.envelopeLow = s.envelopeLow or {}
+            s.envelopeLow[index] = math.min(s.envelopeLow[index] or math.huge, low)
+        end
         local hits = unitEnvelope(env, excluded, unit, E.contactM, s.masks.obstacles)
         if hits == nil then return "UNKNOWN_OBSERVATION" end
         if #hits > 0 then
-            s.envelopeHits = hitNames(env, hits)
+            -- Diagnostics: the same box from 0.5 m higher; clear there, the contact is near the
+            -- ground only (a surface, a kerb), else something standing (a wall, a vehicle).
+            local high = unitEnvelope(env, excluded, unit, E.contactM, s.masks.obstacles, E.clearanceM + 0.5)
+            s.envelopeHits = string.format("unit%d:%s floor^%s %s", index, hitDetail(env, hits),
+                                           okLow and finite(low) and string.format("%.2f", low) or "?",
+                                           high == nil and "above?" or (#high == 0 and "groundOnly" or "standing"))
             return "ENVELOPE_CONTACT"
         end
         local near = unitEnvelope(env, excluded, unit, E.nearM, s.masks.obstacles)
@@ -718,8 +763,11 @@ end
 
 function Hitch.describeEnvelope(s)
     if s == nil then return "envelope[-]" end
-    return string.format("envelope[units=%d checks=%d contact=%s near=%d%s]", #(s.units or {}), s.envelopeChecks or 0,
-        tostring(s.envelopeHits or "-"), s.envelopeNear or 0,
+    local lows = {}
+    for i, low in pairs(s.envelopeLow or {}) do lows[#lows + 1] = string.format("unit%d^%.2f", i, low) end
+    table.sort(lows)
+    return string.format("envelope[units=%d checks=%d lowestFloor=%s contact=%s near=%d%s]", #(s.units or {}),
+        s.envelopeChecks or 0, #lows > 0 and table.concat(lows, "/") or "-", tostring(s.envelopeHits or "-"), s.envelopeNear or 0,
         s.envelopeNearNames and string.format(" first=%s@%s", s.envelopeNearNames,
             s.envelopeNearAlong and string.format("%.2f", s.envelopeNearAlong) or "?") or "")
 end
@@ -2239,7 +2287,9 @@ function Hitch.newLoad(env, args)
         -- until its leading end is behind the ramps.
         if sign > 0 then
             s.rampFoot = trailerBox.aMin - D.rampM
-            if rigBox.aMax > trailerBox.aMin or rigBox.aMax < s.rampFoot - D.runInM then
+            -- Not yet with its body on the deck: a LOAD stopped on the ramps (overspeed, envelope)
+            -- goes on from there under the same start window.
+            if tractorBox.aMin >= deck.aMin or rigBox.aMax > deck.aMax or rigBox.aMax < s.rampFoot - D.runInM then
                 return "LOAD_NOT_BEHIND_RAMPS"
             end
             if s.runIn and rigBox.aMax > s.rampFoot - D.minRunInM then return "LOAD_NOT_LINED_UP" end
@@ -2255,8 +2305,12 @@ function Hitch.newLoad(env, args)
             end
             s.sweepFrom, s.sweepTo = rigBox.aMax, rigBox.aMax + s.travelM + D.aheadEndM
         else
-            if tractorBox.aMin < deck.aMin - 0.25 or tractorBox.aMax > deck.aMax + 0.25
-                    or rigBox.aMin < trailerBox.aMin then
+            -- On the deck, or stopped on its way off (live ac71c4b45aea40dd-1: ENVELOPE_CONTACT with
+            -- the rig half down the ramps, which no motion could then take back off): on the axis
+            -- (the start window above) with part of the rig still over the ramps or the deck.
+            local onDeck = tractorBox.aMin >= deck.aMin - 0.25 and rigBox.aMin >= trailerBox.aMin
+            local onRamps = tractorBox.aMax > trailerBox.aMin + 0.5          -- its front up over the trailer
+            if tractorBox.aMax > deck.aMax + 0.25 or not (onDeck or onRamps) then
                 return "UNLOAD_NOT_ON_DECK"
             end
             s.travelM = rigBox.aMax - (trailerBox.aMin - D.rampM)

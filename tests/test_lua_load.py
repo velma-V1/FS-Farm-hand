@@ -234,7 +234,7 @@ class LuaLoadTests(unittest.TestCase):
             ("LOAD_NOT_LINED_UP", dict(turn=0.15), None),                # turned 8.6 deg off it
             ("LOAD_NOT_BEHIND_RAMPS", dict(ahead=25.0), None),           # 17.4 m behind the trailer: past the run-in
             ("LOAD_NOT_LINED_UP", dict(ahead=9.6, side=1.0), None),      # off the axis at the ramps: no room to steer
-            ("LOAD_NOT_BEHIND_RAMPS", dict(ahead=7.0), None),            # already on the ramps
+            ("LOAD_NOT_BEHIND_RAMPS", dict(ahead=1.0), None),            # already on the deck
             ("LOAD_DOES_NOT_FIT", dict(), dict(width=2.6, length=8.6, height=3.0)),
             ("LOAD_TRACTOR_NOT_ALONE", dict(), "attach"),
             ("SEATED_DURING_LOAD", dict(), "seated"),
@@ -364,6 +364,19 @@ class LuaLoadTests(unittest.TestCase):
         self.assertTrue(moving and not any(d["forwards"] for d in moving))
         self.assert_ended_braked_and_restored(w)
 
+    def test_a_load_or_unload_stopped_on_the_ramps_goes_on_from_there(self):
+        # Live ac71c4b45aea40dd-1: UNLOAD stopped (ENVELOPE_CONTACT) with the rig half down the
+        # ramps and could not be started again. Still on the axis, with the tractor's front over
+        # the trailer, UNLOAD backs it the rest of the way off; LOAD from there goes on up.
+        w = self.world(plow=PLOW, ahead=7.0)                         # the tractor's front 0.6 m over the trailer's rear
+        session, why, refused = self.start(w, direction=-1)
+        self.assertIsNotNone(session, (why, self.hitch.describeLoad(refused)))
+        self.assertEqual(self.drive(w, session)[0], "UNLOADED")
+        w = self.world(ahead=7.0)
+        session, why, refused = self.start(w)
+        self.assertIsNotNone(session, (why, self.hitch.describeLoad(refused)))
+        self.assertEqual(self.drive(w, session)[0], "LOADED")
+
     def test_unload_refusals(self):
         self.assert_refused(self.world(), "UNLOAD_NOT_ON_DECK", direction=-1)       # behind the ramps
         self.assert_refused(self.world(ahead=1.0, fastened=True), "LOAD_BELTS_FASTENED", direction=-1)
@@ -424,7 +437,7 @@ class LuaLoadTests(unittest.TestCase):
                 described = self.hitch.describeEnvelope(session)
                 self.assertIn("units=2", described)
                 if expected == "ENVELOPE_CONTACT":
-                    self.assertIn("contact=post", described)
+                    self.assertIn("contact=unit2:post", described)          # the plow (unit 2) touched
                     self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
                 else:
                     self.assertGreater(session.envelopeNear, 0)
