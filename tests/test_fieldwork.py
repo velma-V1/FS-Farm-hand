@@ -1129,6 +1129,48 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertEqual(world.items["w-5"].attached_to, "t-5")
         self.assertEqual(world.items["w-5"].fill_units[0].level, 9000.0)
 
+    def test_with_the_only_trailer_unreachable_a_grain_trailer_is_bought_once_and_used(self):
+        # Live 51bff50a47804f8e-1: GIANTS refused every aim on the EDK 650's drawbar side; the
+        # 3650 ended behind it (LOCAL_PATH_HITS_WAGON). The job's own requirement is bought, the
+        # cheapest grain tipper (GIANTS' TRAILERS, never a semitrailer), hitched, the grain moved.
+        from protocol.model import StoreItem
+
+        class Walled(CoordinatedWorld):
+            def stage(self, tractor_id, wagon_id, pose, owner):
+                if wagon_id == "w-5":
+                    raise StepFailed("NAVIGATE_GOTO_INVALID")
+                return super().stage(tractor_id, wagon_id, pose, owner)
+
+            def navigate(self, tractor_id, pose, owner):
+                reserved = self._reservations.get(owner, (None, (None, None)))[1]
+                if reserved[1] == "w-5":
+                    raise StepFailed("NAVIGATE_GOTO_INVALID")
+                return super().navigate(tractor_id, pose, owner)
+
+        world = self.full_combine_world()
+        world.__class__ = Walled
+        t, w = world.items["t-5"], world.items["w-5"]
+        world.items["t-5"] = replace(t, attached_to=None, name="MT600 Series",
+                                     output_joints=(OutputJoint(2, "trailer", 0.0, -2.0, True),))
+        walled_at = (100.0, -200.0)
+        world.items["w-5"] = replace(w, attached_to=None, name="EDK 650", position=walled_at, heading=0.0,
+                                     input_joints=(InputJoint(1, "trailer", (walled_at[0], walled_at[1] + 3.0), True),))
+        shop = (210.0, 90.0)
+        world.mock_bought = replace(w, id="tmp", attached_to=None, position=shop, heading=0.0,
+                                    input_joints=(InputJoint(1, "trailer", (shop[0], shop[1] + 3.0), True),))
+        world.store_items = (StoreItem(31, "Semi Tipper", "X", ("SEMITRAILERS",), 3000.0, False, None, None, None),
+                             StoreItem(32, "Tipper 12", "Y", ("TRAILERS",), 8000.0, False, None, None, None),
+                             StoreItem(33, "Tipper 8", "Z", ("TRAILERS",), 6000.0, False, None, None, None))
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "COMBINE_UNLOADED"), (c.last, notices))
+        new = [i for i in world.items.values() if i.id.startswith("new-")]
+        self.assertEqual([i.name for i in new], ["Tipper 8"])                  # the cheapest grain tipper, once
+        self.assertEqual(new[0].attached_to, "t-5")
+        self.assertEqual(new[0].fill_units[0].level, 9000.0)
+        self.assertEqual(world.farm().money, FARM.money - 6000.0)
+
     def test_harvest_with_a_full_combine_empties_it_first(self):
         world = self.full_combine_world()
         c, notices = coordinated(world)

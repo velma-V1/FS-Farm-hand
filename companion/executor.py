@@ -489,6 +489,9 @@ DELIVER_REFUSALS = frozenset({"NO_DELIVER_JOB", "DELIVER_UNAVAILABLE", "DELIVER_
 # verification are the executor's (task "buy").
 STORE_KINDS = {"plow": ("PLOW",), "truck": ("CAR", "TRUCK", "PICKUP"), "trailer": ("TRAILER",),
                "tractor": ("TRACTOR",), "spreader": ("FERTILIZERSPREADER",), "sprayer": ("SPRAYER",)}
+# Kinds matched by GIANTS' store category exactly (a substring would also take SEMITRAILERS,
+# which need a truck): a tractor-drawn grain tipper.
+STORE_KINDS_EXACT = {"grain_trailer": ("TRAILERS",)}
 BUY_MONEY_TOLERANCE = 0.99        # the money must fall by at least this share of the price
 CATALOG_WAIT_S = 90.0             # the game builds the catalog after a load (25 items per snapshot)
 
@@ -498,6 +501,8 @@ def _matches(item: StoreItem, want: dict) -> bool:
     text = f"{item.name or ''} {item.brand or ''}".upper()
     if words and not all(w in text for w in words):
         return False
+    if want["kind"] in STORE_KINDS_EXACT:
+        return any(c in STORE_KINDS_EXACT[want["kind"]] for c in item.categories)
     kinds = STORE_KINDS.get(want["kind"], ())
     if want["kind"] in ("truck", "tractor") and item.power is None:
         return False                          # a truck drives itself (live: a GMC truck bed was bought)

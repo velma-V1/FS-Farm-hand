@@ -187,6 +187,11 @@ def _tractor_for(items, farm_id: str, name: str | None, transports):
     return found
 
 
+# A hitch that could not get to its implement at all (its place has no way in).
+UNREACHABLE_IMPLEMENT = frozenset({"LOCAL_PATH_HITS_WAGON", "NO_SAFE_APPROACH", "TRAVEL_ENDED_TOO_FAR", "TRAPPED",
+                                   "LOCAL_PATH_BLOCKED", "LOCAL_PATH_OBSTRUCTED", "AGAINST_IMPLEMENT"})
+
+
 def work_for(proposal: dict) -> dict | None:
     """What a job command carries into its run, the same whether said alone or as a step of a
     sequence (one dispatch, Coordinator._dispatch)."""
@@ -551,6 +556,7 @@ class Coordinator:
         self._then = None                         # a destination to resume with once this job ends
         self.workers: list[Worker] = []           # GIANTS' helpers working on (handed off)
         self._harvest_rigs: dict[int, str] = {}   # field -> the rig (tractor words) its grain was transferred into
+        self._bought_for: set[str] = set()         # jobs that already bought what they needed (never twice)
         self._after: list[list] = []              # their follow-up steps, run when Farmhand is free
         self._watcher: threading.Thread | None = None
 
@@ -1417,8 +1423,26 @@ class Coordinator:
         if cleared is not None and cleared.status != "COMPLETE":
             return cleared
         log.info("job %d grain rig: the %s to the %s", job.number, name, trailer.name)
-        return self._execute(job, cancel, entered, "gh", task="hitch_pair", implement="trailer",
-                             implement_name=_words(trailer.name), tractor_name=name)
+        hitched = self._execute(job, cancel, entered, "gh", task="hitch_pair", implement="trailer",
+                                implement_name=_words(trailer.name), tractor_name=name)
+        if hitched.status == "COMPLETE" or hitched.reason not in UNREACHABLE_IMPLEMENT:
+            return hitched
+        # The farm's only trailer with room cannot be reached (live 51bff50a47804f8e-1: GIANTS
+        # refused every aim on the EDK 650's drawbar side): the job's own requirement bought once,
+        # the cheapest grain tipper the farm can afford (AGENTS.md: found or bought), then hitched.
+        if job.owner in self._bought_for:
+            return hitched
+        self._bought_for.add(job.owner)
+        before = {i.id for i in self.world.snapshot()}
+        bought = self._execute(job, cancel, entered, "gb", task="buy", want={"kind": "grain_trailer"})
+        if bought.status != "COMPLETE":
+            return bought
+        new = next((i for i in self.world.snapshot() if i.id not in before and i.id in bought.equipment_ids), None)
+        if new is None or not _words(new.name):
+            return Result("UNVERIFIED", "PURCHASE_NOT_OBSERVED")
+        log.info("job %d grain rig: bought the %s; the %s to it", job.number, new.name, name)
+        return self._execute(job, cancel, entered, "gh2", task="hitch_pair", implement="trailer",
+                             implement_name=_words(new.name), tractor_name=name)
 
     def _clear_of_dropped_implement(self, job: Job, cancel: threading.Event, entered, tractor_name: str):
         """A tractor left standing on the joint of an implement it dropped earlier (live

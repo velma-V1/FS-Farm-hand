@@ -130,12 +130,12 @@
     "wants": {
       "description": "buy: what to buy, in order.",
       "type": "array", "minItems": 1, "maxItems": 4, "items": {
-        "description": "buy: what to buy. kind: plow (a store plow our tractors can pull), truck, trailer or tractor (by the name the player gave); size large: the widest that fits; engine: the motor configuration with these words in its name.",
+        "description": "buy: what to buy. kind: plow (a store plow our tractors can pull), truck, trailer or tractor (by the name the player gave), grain_trailer (a tractor-drawn tipper, GIANTS' TRAILERS category); size large: the widest that fits; engine: the motor configuration with these words in its name.",
         "type": "object",
         "additionalProperties": false,
         "required": ["kind"],
         "properties": {
-          "kind": {"enum": ["plow", "truck", "trailer", "tractor", "spreader", "sprayer"]},
+          "kind": {"enum": ["plow", "truck", "trailer", "tractor", "spreader", "sprayer", "grain_trailer"]},
           "size": {"enum": ["large"]},
           "name": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[A-Za-z0-9 -]+$"},
         "hitch": {"enum": ["gooseneck", "drop hitch", "fifth wheel"]},
