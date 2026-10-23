@@ -70,6 +70,9 @@ function W.new(o)
     function tractor:getAttacherJoints() return { [4] = tractorJoint } end
     function tractor:getAttacherJointByJointDescIndex(i) return ({ [4] = tractorJoint })[i] end
     function tractor:getIsEntered() return w.entered end
+    -- GIANTS Drivable: a seated player's controls apply only while this is true (onUpdate 702-747).
+    function tractor:getIsVehicleControlledByPlayer() return w.entered == true end
+    w.playerControl = tractor.getIsVehicleControlledByPlayer
     function tractor:registerPlayerVehicleControlAllowedFunction(_, f) w.controlFunc = f end
     w.takeOver = function() return w.controlFunc(tractor) end
     function tractor:getIsAIActive() return w.ai end
@@ -466,18 +469,29 @@ class LuaManeuverTests(unittest.TestCase):
         self.assertIsNotNone(session, why)
         self.assertAlmostEqual(session.turnRadius, 5.0 * self.hitch.LOCAL.turnMargin)
 
-    def test_seated_tractor_is_refused_and_entering_mid_maneuver_stops_it(self):
+    def test_a_seated_player_rides_as_a_passenger_and_their_input_ends_it(self):
+        # The user, 2026-10-22: being seated is not taking control (see test_lua_hitch).
         w = self.world(**CASE_A)
         w.entered = True
-        self.assertEqual(tuple(self.start(w))[:2], (None, "SEATED_DURING_MANEUVER"))
+        session, why = self.start(w)
+        self.assertIsNotNone(session, why)
+        seen = []
+        result = self.run_to_end(w, session, hook=lambda i: i > 1 and seen.append(
+            w.tractor.getIsVehicleControlledByPlayer(w.tractor)))[0]
+        self.assertEqual(result, "LINED_UP")
+        self.assertTrue(seen and not any(seen))
+        self.assertTrue(w.tractor.getIsVehicleControlledByPlayer(w.tractor))      # restored at the halt
         w = self.world(**CASE_A)
         session, _ = self.start(w)
 
-        def enter(i):
-            if i == 40:
-                w.entered = True
-        self.assertEqual(self.run_to_end(w, session, hook=enter)[0], "SEATED_DURING_MANEUVER")
+        def enter_then_steer(i):
+            if i == 20:
+                w.entered = True             # getting in mid-maneuver: a passenger
+            if i == 60:
+                w.takeOver()
+        self.assertEqual(self.run_to_end(w, session, hook=enter_then_steer)[0], "DRIVER_TOOK_OVER")
         self.assert_braked_last(w)
+        self.assertTrue(w.tractor.getIsVehicleControlledByPlayer(w.tractor))
 
     def test_mid_maneuver_failures_stop_and_latch(self):
         def at(n, fn):

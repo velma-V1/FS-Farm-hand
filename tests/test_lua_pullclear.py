@@ -143,7 +143,6 @@ class LuaPullClearTests(unittest.TestCase):
 
     def test_refusals_never_move(self):
         cases = [
-            (dict(), lambda w: setattr(w, "entered", True), "SEATED_DURING_PULL_CLEAR"),
             (dict(), lambda w: setattr(w, "speed", 2.0), "NOT_STOPPED"),
             (dict(), lambda w: setattr(w, "ai", True), "AI_ACTIVE"),
             (dict(), lambda w: setattr(w, "reserved", False), "RESERVATION_LOST"),
@@ -163,10 +162,21 @@ class LuaPullClearTests(unittest.TestCase):
                 self.assertEqual(why, reason)
                 self.assertEqual(self.drives(w), [])
 
+    def test_a_seated_player_rides_as_a_passenger(self):
+        # The user, 2026-10-22: being seated is not taking control (see test_lua_hitch).
+        w = self.world()
+        w.entered = True
+        session, why = self.start(w)
+        self.assertIsNotNone(session, why)
+        seen = []
+        self.assertEqual(self.pull(w, session, hook=lambda i: i > 1 and seen.append(w.tractor.getIsVehicleControlledByPlayer(w.tractor)))[0], "CLEAR")
+        self.assertTrue(seen and not any(seen))
+        self.assertTrue(w.tractor.getIsVehicleControlledByPlayer(w.tractor))                    # GIANTS' own again
+        self.assert_ended_braked_and_restored(w)
+
     def test_every_conflict_while_moving_stops_it(self):
         cases = [
             (lambda w, i: i == 10 and w.takeOver(), "DRIVER_TOOK_OVER"),
-            (lambda w, i: i == 10 and setattr(w, "entered", True), "SEATED_DURING_PULL_CLEAR"),
             (lambda w, i: i == 10 and setattr(w, "reserved", False), "RESERVATION_LOST"),
             (lambda w, i: i == 10 and setattr(w, "ai", True), "AI_ACTIVE"),
             (lambda w, i: i == 10 and (setattr(w.player, "x", w.steer.x) or setattr(w.player, "z", w.steer.z + 6.0)),

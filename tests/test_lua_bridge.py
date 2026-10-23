@@ -1568,8 +1568,7 @@ class LuaBridgeTests(unittest.TestCase):
         for codes, refuse, expected in ((["CONTINUE", "DIVERGED"], None, ("FAILED", "DIVERGED")),
                                         (["KEEP_OUT"], None, ("FAILED", "KEEP_OUT")),
                                         (["UNKNOWN_OBSERVATION"], None, ("UNVERIFIED", "UNKNOWN_OBSERVATION")),
-                                        ([], "LOCAL_PATH_HITS_WAGON", ("FAILED", "LOCAL_PATH_HITS_WAGON")),
-                                        ([], "SEATED_DURING_MANEUVER", ("FAILED", "SEATED_DURING_MANEUVER"))):
+                                        ([], "LOCAL_PATH_HITS_WAGON", ("FAILED", "LOCAL_PATH_HITS_WAGON"))):
             with self.subTest(codes=codes, refuse=refuse):
                 self.setUp()
                 self.adopt()
@@ -1647,9 +1646,6 @@ class LuaBridgeTests(unittest.TestCase):
     def test_maneuver_notice_texts(self):
         cases = {"WORKING_LOCAL_MANEUVER": ("Farmhand: lining up with the implement", False),
                  "WORKING_STAGE": ("Farmhand: driving to the implement", False),
-                 "FAILED_SEATED_DURING_MANEUVER": (
-                     "Farmhand: stopped short - step out of the tractor for the last metres of the hitch, "
-                     "then ask again", True),
                  "FAILED_LOCAL_PATH_HITS_WAGON": (
                      "Farmhand: stopped short - there is no room to line up with the implement from here", True)}
         for notice, expected in cases.items():

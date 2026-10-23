@@ -169,13 +169,22 @@ class LuaAlongsideTests(unittest.TestCase):
         w = self.world()
         w.vehicle(6.0, -5.0)                                              # another vehicle beside the way
         self.assert_refused(w, "ALONGSIDE_BLOCKED")
+
+    def test_a_seated_player_rides_as_a_passenger(self):
+        # The user, 2026-10-22: being seated is not taking control (see test_lua_hitch).
         w = self.world()
         w.entered = True
-        self.assert_refused(w, "SEATED_DURING_ALONGSIDE")
+        session, why, _ = self.start(w)
+        self.assertIsNotNone(session, why)
+        seen = []
+        code, _ = self.runner(w, session, 3000, lambda i: i > 1 and seen.append(w.tractor.getIsVehicleControlledByPlayer(w.tractor)))
+        self.assertEqual(code, "UNDER_PIPE", self.hitch.describeAlongside(session))
+        self.assertTrue(seen and not any(seen))
+        self.assertTrue(w.tractor.getIsVehicleControlledByPlayer(w.tractor))
+        self.assertNotEqual(w.tractor.forceIsActive, True)
 
     def test_a_takeover_or_a_stop_while_it_moves_ends_it_braked(self):
         for hook, code in ((lambda w, i: i == 15 and w.takeOver(), "DRIVER_TOOK_OVER"),
-                           (lambda w, i: i == 15 and setattr(w, "entered", True), "SEATED_DURING_ALONGSIDE"),
                            (lambda w, i: i == 15 and self.hitch.abort(w.env, self.session, "STOPPED"), "STOPPED")):
             with self.subTest(code=code):
                 w = self.world()

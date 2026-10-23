@@ -133,7 +133,7 @@ GOTO_MOVED_M = 1.0
 # PULL_CLEAR's refusals before any motion (mod/FarmhandHitch.lua Hitch.newPullClear):
 # the detach stands (DETACHED_NOT_CLEAR). Every other failure moved or may have.
 PULL_CLEAR_REFUSALS = frozenset({"PULL_CLEAR_BLOCKED", "PULL_CLEAR_PERSON", "PULL_CLEAR_NOT_BEHIND",
-                                 "SEATED_DURING_PULL_CLEAR", "LOCAL_AREA_UNKNOWN", "NOT_STOPPED"})
+                                 "LOCAL_AREA_UNKNOWN", "NOT_STOPPED"})
 # The observed joint separation after CLEAR may be this much under PULL_CLEAR_M
 # (one snapshot after the brake; the mod stops the instant it reaches it).
 PULL_CLEAR_TOLERANCE_M = 0.25
@@ -160,7 +160,7 @@ UNPARK_MIN_M = 0.5                # an UNPARK DONE that moved less did not happe
 UNPARK_REFUSALS = frozenset({
     "UNPARK_EXIT_BLOCKED", "UNPARK_TOO_TIGHT", "UNPARK_EXIT_TOO_FAR", "UNPARK_BLOCKED", "UNPARK_PERSON",
     "UNPARK_START_NOT_CLEAR", "UNPARK_REVERSE_NOT_ALLOWED", "UNPARK_RIG_NOT_STRAIGHT", "UNPARK_GEOMETRY_UNKNOWN",
-    "UNPARK_ARTICULATED_UNSUPPORTED", "UNPARK_QUERY_UNVERIFIED", "UNPARK_QUERY_UNKNOWN", "SEATED_DURING_UNPARK",
+    "UNPARK_ARTICULATED_UNSUPPORTED", "UNPARK_QUERY_UNVERIFIED", "UNPARK_QUERY_UNKNOWN",
     "LOCAL_AREA_UNKNOWN", "NOT_STOPPED", "NOT_ROOT_VEHICLE", "UNPARK_DOOR_CLOSED"})
 
 CANCELLABLE_STEPS = frozenset({"RESERVE", "FIELD_WORK", "PULL_CLEAR", "UNPARK", "TAILGATE", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",

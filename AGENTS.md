@@ -135,7 +135,7 @@ have precedence; report conflicts instead of silently changing the scope.
        3.02 km/h: not qualified; 7209dc3bcab34075-1 twice 8.00 m, peak 2.20 km/h, envelope no
        contact.
      Every one of them: GIANTS' collision query proven on the rig before it moves, the swept
-     volume clear, takeover, seat, reservation, AI, divergence (0.3 m), distance, stall, timeout,
+     volume clear, takeover, a readable seat, reservation, AI, divergence (0.3 m), distance, stall, timeout,
      other vehicles and the player watched each frame, the trailer and truck unmoved (25 cm),
      the ramps still down, latched braked and restored on every exit, and the speed and
      envelope rules below.
@@ -221,10 +221,13 @@ have precedence; report conflicts instead of silently changing the scope.
 - One identity per job (the user, 2026-10-22): equipment selected for a job (a transport, a
   truck, a tractor, an implement) is kept for all its steps; a changed circumstance is replanned
   explicitly and said, never answered by silently picking other equipment.
-- The player's own play never cancels a job: walking, driving another vehicle, menus. A
-  passenger (FS25's passenger seats, where the vehicle has them) is not a takeover; taking a
-  Farmhand-controlled vehicle's driver seat is the one explicit manual handoff (the job pauses,
-  kept for "continue"), never two controllers.
+- The player's own play never cancels a job: walking, driving another vehicle, menus. Being
+  present, nearby or seated (a passenger seat or the driver's seat) is not a takeover (the
+  user, 2026-10-22: "being seated is not taking control"); during Farmhand's self-driven
+  motions GIANTS' player control of that vehicle is off, as under GIANTS' own AI, and restored
+  at their end. Actual control input (steering, throttle, brake) on a Farmhand-controlled
+  vehicle is the one explicit manual handoff: it yields at once, braked, and fails closed (the
+  job kept for "continue"), never two controllers.
 - Travel is complete only at the destination's usable spot (yard, field, parking): the end of
   a road or recorded route hands over to a final approach; long drives are judged by movement
   and provider state, not short fixed timeouts.

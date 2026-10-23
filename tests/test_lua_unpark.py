@@ -79,6 +79,9 @@ function W.new(o)
     w.attached = {}
     function tractor:getAttachedImplements() return w.attached end
     function tractor:getIsEntered() return w.entered end
+    -- GIANTS Drivable: a seated player's controls apply only while this is true (onUpdate 702-747).
+    function tractor:getIsVehicleControlledByPlayer() return w.entered == true end
+    w.playerControl = tractor.getIsVehicleControlledByPlayer
     function tractor:registerPlayerVehicleControlAllowedFunction(_, f) w.controlFunc = f end
     w.takeOver = function() return w.controlFunc(tractor) end
     function tractor:getIsAIActive() return w.ai end
@@ -507,7 +510,6 @@ class LuaUnparkTests(unittest.TestCase):
     # ------------------------------------------------------------- refusals
     def test_refusals_never_move(self):
         cases = [
-            (lambda w: setattr(w, "entered", True), "SEATED_DURING_UNPARK"),
             (lambda w: setattr(w, "speed", 2.0), "NOT_STOPPED"),
             (lambda w: setattr(w, "ai", True), "AI_ACTIVE"),
             (lambda w: setattr(w, "reserved", False), "RESERVATION_LOST"),
@@ -535,6 +537,18 @@ class LuaUnparkTests(unittest.TestCase):
         self.assert_refused(w, "UNPARK_RIG_NOT_STRAIGHT")
 
     # ------------------------------------------------------- while it moves
+    def test_a_seated_player_rides_as_a_passenger(self):
+        # The user, 2026-10-22: being seated is not taking control (see test_lua_hitch).
+        w = self.world()
+        w.shed(-9, 6, 4, 4.5)
+        w.entered = True
+        seen = []
+        session, code, _, _ = self.extract(w, hook=lambda i: i > 1 and seen.append(w.tractor.getIsVehicleControlledByPlayer(w.tractor)))
+        self.assertEqual(code, "CLEAR", self.hitch.describeUnpark(session))
+        self.assertTrue(seen and not any(seen))
+        self.assertTrue(w.tractor.getIsVehicleControlledByPlayer(w.tractor))
+        self.assert_ended_braked_and_restored(w)
+
     def test_every_conflict_while_moving_stops_it(self):
         def ahead(w, i):
             if i == 40:   # 1.5 m past the tractor's front, inside the lookahead
@@ -544,7 +558,6 @@ class LuaUnparkTests(unittest.TestCase):
 
         cases = [
             (lambda w, i: i == 10 and w.takeOver(), "DRIVER_TOOK_OVER"),
-            (lambda w, i: i == 10 and setattr(w, "entered", True), "SEATED_DURING_UNPARK"),
             (lambda w, i: i == 10 and setattr(w, "reserved", False), "RESERVATION_LOST"),
             (lambda w, i: i == 10 and setattr(w, "ai", True), "AI_ACTIVE"),
             (lambda w, i: i == 10 and setattr(w, "stuck", True), "STALLED"),

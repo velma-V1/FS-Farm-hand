@@ -1833,7 +1833,7 @@ class DetachTests(unittest.TestCase):
         self.assertNotIn("RESERVE", result.states)
 
     def test_a_pull_clear_refused_before_moving_leaves_the_detach_standing(self):
-        for code in ("PULL_CLEAR_BLOCKED", "PULL_CLEAR_PERSON", "SEATED_DURING_PULL_CLEAR"):
+        for code in ("PULL_CLEAR_BLOCKED", "PULL_CLEAR_PERSON", "PULL_CLEAR_NOT_BEHIND"):
             with self.subTest(code=code):
                 class Refusing(MockWorld):
                     def pull_clear(self, *args):

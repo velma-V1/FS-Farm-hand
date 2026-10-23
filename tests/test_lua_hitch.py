@@ -47,6 +47,9 @@ function W.new(opts)
     function tractor:getAttacherJoints() return joints end
     function tractor:getAttacherJointByJointDescIndex(i) return joints[i] end
     function tractor:getIsEntered() return w.entered end
+    -- GIANTS Drivable: a seated player's controls apply only while this is true (onUpdate 702-747).
+    function tractor:getIsVehicleControlledByPlayer() return w.entered == true end
+    w.playerControl = tractor.getIsVehicleControlledByPlayer
     -- GIANTS Drivable:registerPlayerVehicleControlAllowedFunction; w.takeOver() is the
     -- seated player pressing a pedal or steering (actionEventAccelerate etc.).
     tractor.rootVehicle = tractor
@@ -535,20 +538,27 @@ class LuaHitchTests(unittest.TestCase):
         self.assertEqual(code, "OVERSPEED", self.hitch.describeSpeed(session))
         self.assertFalse(self.drives(w)[-1]["allowed"])
 
-    def test_the_last_metres_need_an_empty_cab(self):
-        # GIANTS applies a seated player's controls every frame outside an AI job
-        # (Drivable:onUpdate 702-747): the bounded reverse would fight them.
-        w = self.world()
+    def test_a_seated_player_rides_the_last_metres_as_a_passenger(self):
+        # The user, 2026-10-22: being seated is not taking control. GIANTS applies a seated
+        # player's controls only while getIsVehicleControlledByPlayer() is true (Drivable:onUpdate
+        # 702-747); it is false while the reverse drives, as for GIANTS' own AI, then restored.
+        w = self.world(gap=4)
         w.entered = True
-        self.assertEqual(tuple(self.align(w)), (None, "SEATED_DURING_REVERSE"))
-        self.assertEqual(len(w.drives), 0)
-        # Someone getting in while it reverses stops it too: their controls would apply.
-        w = self.world()
+        session, why = self.align(w)
+        self.assertIsNotNone(session, why)
+        seen = []
+        result, _ = self.W.run(w, session, 100, 1000,
+                               lambda i: i > 1 and seen.append(w.tractor.getIsVehicleControlledByPlayer(w.tractor)))
+        self.assertEqual(result, "CANDIDATE")
+        self.assertTrue(seen and not any(seen))
+        self.assertTrue(w.tractor.getIsVehicleControlledByPlayer(w.tractor))      # GIANTS' own again
+        # Their input is still a takeover: braked at once.
+        w = self.world(gap=6)
+        w.entered = True
         session, _ = self.align(w)
-        self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CONTINUE")
-        w.entered = True
-        self.assertEqual(self.hitch.alignStep(w.env, session, 100), "SEATED_DURING_REVERSE")
+        self.assertEqual(self.W.run(w, session, 100, 200, lambda i: i == 5 and w.takeOver())[0], "DRIVER_TOOK_OVER")
         self.assertEqual(self.drives(w)[-1]["allowed"], False)
+        self.assertTrue(w.tractor.getIsVehicleControlledByPlayer(w.tractor))
 
     def test_a_takeover_during_an_earlier_step_is_still_seen(self):
         w = self.world()

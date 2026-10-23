@@ -238,7 +238,6 @@ class LuaLoadTests(unittest.TestCase):
             ("LOAD_NOT_BEHIND_RAMPS", dict(ahead=1.0), None),            # already on the deck
             ("LOAD_DOES_NOT_FIT", dict(), dict(width=2.6, length=8.6, height=3.0)),
             ("LOAD_TRACTOR_NOT_ALONE", dict(), "attach"),
-            ("SEATED_DURING_LOAD", dict(), "seated"),
             ("NOT_STOPPED", dict(), "rolling"),
             ("TRANSPORT_NOT_STOPPED", dict(), "trailer rolling"),
             ("LOAD_QUERY_UNVERIFIED", dict(), "no terrain"),
@@ -249,8 +248,6 @@ class LuaLoadTests(unittest.TestCase):
                 w = self.world(size=spoil if isinstance(spoil, dict) else None, **opts)
                 if spoil == "attach":
                     w.attached = self.lua.table(self.lua.table(object=w.truck))
-                elif spoil == "seated":
-                    w.entered = True
                 elif spoil == "rolling":
                     w.speed = 2
                 elif spoil == "trailer rolling":
@@ -278,13 +275,25 @@ class LuaLoadTests(unittest.TestCase):
         self.assertEqual(why, "LOAD_PATH_BLOCKED", self.hitch.describeLoad(refused))
         self.assertIn("body302", refused.pathHits)
 
+    def test_a_seated_player_rides_as_a_passenger(self):
+        # The user, 2026-10-22: being seated is not taking control (see test_lua_hitch).
+        w = self.world()
+        w.entered = True
+        session, why, _ = self.start(w)
+        self.assertIsNotNone(session, why)
+        seen = []
+        code, _ = self.drive(w, session, hook=lambda i: i > 1 and seen.append(w.tractor.getIsVehicleControlledByPlayer(w.tractor)))
+        self.assertEqual(code, "LOADED", self.hitch.describeLoad(session))
+        self.assertTrue(seen and not any(seen))
+        self.assertTrue(w.tractor.getIsVehicleControlledByPlayer(w.tractor))
+        self.assert_ended_braked_and_restored(w)
+
     def test_every_guard_while_moving_stops_it_braked_and_restored(self):
         cases = [
             (lambda w, i: i == 40 and setattr(w.truck.rootNode, "x", w.truck.rootNode.x + 0.5), "TRANSPORT_MOVED"),
             (lambda w, i: i == 40 and setattr(w, "foldMoving", -1), "RAMPS_MOVED"),
             (lambda w, i: i == 40 and setattr(w, "foldTime", 0.6), "RAMPS_MOVED"),
             (lambda w, i: i == 40 and w.takeOver(), "DRIVER_TOOK_OVER"),
-            (lambda w, i: i == 40 and setattr(w, "entered", True), "SEATED_DURING_LOAD"),
             (lambda w, i: i == 40 and setattr(w, "reserved", False), "RESERVATION_LOST"),
             (lambda w, i: i == 40 and setattr(w, "ai", True), "AI_ACTIVE"),
             (lambda w, i: i == 40 and setattr(w, "stuck", True), "STALLED"),
@@ -627,9 +636,19 @@ class LuaBackOffTests(unittest.TestCase):
         self.assert_ended_braked_and_restored(w)
 
 
+    def test_a_seated_player_rides_back_off_as_a_passenger(self):
+        w = self.world(turn=0.15, side=0.6)
+        w.entered = True
+        session, why, _ = self.back(w)
+        self.assertIsNotNone(session, why)
+        seen = []
+        self.assertEqual(self.run_back(w, session, lambda i: i > 1 and seen.append(w.tractor.getIsVehicleControlledByPlayer(w.tractor))), "BACKED_OFF")
+        self.assertTrue(seen and not any(seen))
+        self.assertTrue(w.tractor.getIsVehicleControlledByPlayer(w.tractor))
+        self.assert_ended_braked_and_restored(w)
+
     def test_a_takeover_or_a_stop_while_it_backs_off_ends_it_braked(self):
         for hook, code in ((lambda w, s, i: i == 15 and w.takeOver(), "DRIVER_TOOK_OVER"),
-                           (lambda w, s, i: i == 15 and setattr(w, "entered", True), "SEATED_DURING_BACKOFF"),
                            (lambda w, s, i: i == 15 and self.hitch.abort(w.env, s, "STOPPED"), "STOPPED")):
             with self.subTest(code=code):
                 w = self.world(plow=PLOW)

@@ -249,11 +249,8 @@ function Hitch.newAlign(env, args)
         end
         if tractorJoint.jointType ~= wagonJoint.jointType then return nil, "JOINT_TYPE_MISMATCH" end
         if tractorJoint.jointIndex ~= 0 then return nil, "TRACTOR_JOINT_OCCUPIED" end
-        -- The bounded reverse is not a GIANTS AI job, and for a seated player GIANTS
-        -- applies the player's own controls every frame (Drivable:onUpdate 702-747,
-        -- getIsVehicleControlledByPlayer): they would fight. The cab must be empty
-        -- for these last metres; every AI-driven step still allows a rider.
-        if tractor:getIsEntered() == true then return nil, "SEATED_DURING_REVERSE" end
+        -- The bounded reverse is not a GIANTS AI job: a seated player rides as a passenger
+        -- while it drives (Hitch.holdActive); their input is a takeover.
         local speed = tractor:getLastSpeed()
         if not finite(speed) or math.abs(speed) >= 1 then return nil, "NOT_STOPPED" end
         local wx, _, wz = world(env, wagonJoint.node)
@@ -297,10 +294,21 @@ end
 -- same for its own two motions: held from the first frame that drives, only if
 -- nothing else already holds it, and released on the first halt (braking does not
 -- need it: live, the inactive tractor braked to rest).
+-- A seated player is a passenger while Farmhand's motion drives (the user, 2026-10-22: being
+-- seated is not taking control): GIANTS applies a seated player's pedal and steering every frame
+-- only while getIsVehicleControlledByPlayer() is true (Drivable:onUpdate 447, 702-747), as its
+-- own AI turns that off while it drives (AIJobVehicle's override). Shadowed on this vehicle for
+-- the motion and restored on every exit; real input still ends it (onPlayerInput, takeover).
+local function passengerOnly() return false end
+
 function Hitch.holdActive(s)
     if s.heldActive == nil then
         s.heldActive = s.tractor.forceIsActive ~= true
         if s.heldActive then s.tractor.forceIsActive = true end
+    end
+    if s.heldControl == nil and type(s.tractor.getIsVehicleControlledByPlayer) == "function" then
+        s.heldControl = { fn = rawget(s.tractor, "getIsVehicleControlledByPlayer") }
+        s.tractor.getIsVehicleControlledByPlayer = passengerOnly
     end
 end
 
@@ -308,6 +316,12 @@ function Hitch.releaseActive(s)
     if s.heldActive then
         s.heldActive = false
         if s.tractor.forceIsActive == true then s.tractor.forceIsActive = false end
+    end
+    if s.heldControl ~= nil and s.heldControl ~= false then
+        if rawget(s.tractor, "getIsVehicleControlledByPlayer") == passengerOnly then
+            s.tractor.getIsVehicleControlledByPlayer = s.heldControl.fn
+        end
+        s.heldControl = false
     end
 end
 
@@ -507,7 +521,7 @@ local function checkAndDrive(env, s, dt)
     local tractor = s.tractor
     local denied = authority(s)
     if denied ~= nil then return denied end
-    if tractor:getIsEntered() ~= false then return "SEATED_DURING_REVERSE" end   -- someone got in
+    local seat = tractor:getIsEntered(); if seat ~= true and seat ~= false then return "UNKNOWN_OBSERVATION" end   -- a passenger rides; input is a takeover
 
     local wx, wy, wz = world(env, s.wagonJoint.node)
     if distance(wx, wz, s.wagonStartX, s.wagonStartZ) > Hitch.DEFAULTS.wagonToleranceM then
@@ -1192,8 +1206,6 @@ function Hitch.newManeuver(env, args)
         end
         if tractorJoint.jointType ~= wagonJoint.jointType then return nil, "JOINT_TYPE_MISMATCH" end
         if tractorJoint.jointIndex ~= 0 then return nil, "TRACTOR_JOINT_OCCUPIED" end
-        -- Not an AI job: a seated player's controls would apply alongside (see newAlign).
-        if tractor:getIsEntered() == true then return nil, "SEATED_DURING_MANEUVER" end
         local v = tractor:getLastSpeed()
         if not finite(v) or math.abs(v) >= 1 then return nil, "NOT_STOPPED" end
         local radius = turningRadius(tractor)
@@ -1408,7 +1420,7 @@ local function maneuverDrive(env, s, dt)
     local D = Hitch.LOCAL
     local denied = authority(s)
     if denied ~= nil then return denied end
-    if s.tractor:getIsEntered() ~= false then return "SEATED_DURING_MANEUVER" end
+    local seat = s.tractor:getIsEntered(); if seat ~= true and seat ~= false then return "UNKNOWN_OBSERVATION" end   -- a passenger rides; input is a takeover
     local o = observeLocal(env, s)
     s.last = o
     if distance(o.wx, o.wz, s.wagonStartX, s.wagonStartZ) > Hitch.DEFAULTS.wagonToleranceM
@@ -1504,7 +1516,7 @@ end
 
 -- One update of the local maneuver: "CONTINUE", "LINED_UP" (braked: the planned
 -- joint is on the wagon's axis, 3-8 m ahead, facing its heading) or a failure:
--- RESERVATION_LOST, DRIVER_TOOK_OVER, SEATED_DURING_MANEUVER, AI_ACTIVE,
+-- RESERVATION_LOST, DRIVER_TOOK_OVER, AI_ACTIVE,
 -- WAGON_ATTACHED, WAGON_MOVED, OTHER_VEHICLE_MOVED, OTHER_VEHICLE_NEAR,
 -- PERSON_TOO_CLOSE, TIMEOUT, ENVELOPE_EXCEEDED, KEEP_OUT, DIVERGED,
 -- LINEUP_MISSED, STALLED, MOTOR_UNAVAILABLE, UNKNOWN_OBSERVATION. Any result
@@ -1616,7 +1628,6 @@ function Hitch.newPullClear(env, args)
         local tractorJoint = tractor:getAttacherJoints()[args.tractorJoint]
         local inputJoint = wagon:getInputAttacherJoints()[args.wagonJoint]
         if tractorJoint == nil or inputJoint == nil then return nil, "UNKNOWN_JOINT" end
-        if tractor:getIsEntered() == true then return nil, "SEATED_DURING_PULL_CLEAR" end
         local v = tractor:getLastSpeed()
         if not finite(v) or math.abs(v) >= 1 then return nil, "NOT_STOPPED" end
         local node = tractor:getAISteeringNode()
@@ -1666,7 +1677,7 @@ local function pullDrive(env, s, dt)
     local P, D = Hitch.PULL, Hitch.LOCAL
     local denied = authority(s)
     if denied ~= nil then return denied end
-    if s.tractor:getIsEntered() ~= false then return "SEATED_DURING_PULL_CLEAR" end
+    local seat = s.tractor:getIsEntered(); if seat ~= true and seat ~= false then return "UNKNOWN_OBSERVATION" end   -- a passenger rides; input is a takeover
     local o = observePull(env, s)
     s.lastSeparation, s.lastX, s.lastY, s.lastAway = o.separation, o.x, o.y, o.away
     pcall(function() s.lastSpeed = s.tractor:getLastSpeed() end)
@@ -1712,7 +1723,7 @@ local function pullDrive(env, s, dt)
 end
 
 -- One update of the pull-clear: "CONTINUE", "CLEAR" (braked: the joints are clearM
--- apart) or a failure: RESERVATION_LOST, DRIVER_TOOK_OVER, SEATED_DURING_PULL_CLEAR,
+-- apart) or a failure: RESERVATION_LOST, DRIVER_TOOK_OVER,
 -- AI_ACTIVE, WAGON_ATTACHED, IMPLEMENT_MOVED, SEPARATION_LOST, TIMEOUT, DISTANCE_LIMIT,
 -- DIVERGED, OTHER_VEHICLE_MOVED, OTHER_VEHICLE_NEAR, PERSON_TOO_CLOSE, STALLED,
 -- MOTOR_UNAVAILABLE, UNKNOWN_OBSERVATION. Any result other than CONTINUE is final
@@ -1953,7 +1964,6 @@ function Hitch.newUnpark(env, args)
                 others = {}, plans = {} }
     local ok, reason = pcall(function()
         local tractor = s.tractor
-        if tractor:getIsEntered() == true then return "SEATED_DURING_UNPARK" end
         local v = tractor:getLastSpeed()
         if not finite(v) or math.abs(v) >= 1 then return "NOT_STOPPED" end
         Hitch.watchDriver(env, tractor)
@@ -2047,7 +2057,7 @@ local function unparkDrive(env, s, dt)
     local U = Hitch.UNPARK
     local denied = unparkAuthority(s)
     if denied ~= nil then return denied end
-    if s.tractor:getIsEntered() ~= false then return "SEATED_DURING_UNPARK" end
+    local seat = s.tractor:getIsEntered(); if seat ~= true and seat ~= false then return "UNKNOWN_OBSERVATION" end   -- a passenger rides; input is a takeover
     local along, lateral, moved = observeUnpark(env, s)
     local progress = s.sign * along
     s.lastAlong, s.lastLateral = along, lateral
@@ -2114,7 +2124,7 @@ local function unparkDrive(env, s, dt)
 end
 
 -- One update of the extraction: "CONTINUE", "CLEAR" (braked at the exit, in the open) or a
--- failure: RESERVATION_LOST, DRIVER_TOOK_OVER, SEATED_DURING_UNPARK, AI_ACTIVE,
+-- failure: RESERVATION_LOST, DRIVER_TOOK_OVER, AI_ACTIVE,
 -- RIG_CHANGED, DIVERGED, DISTANCE_LIMIT, TIMEOUT, OTHER_VEHICLE_MOVED, OTHER_VEHICLE_NEAR,
 -- PERSON_TOO_CLOSE, OBSTACLE_AHEAD, EXIT_NOT_CONFIRMED, STALLED, MOTOR_UNAVAILABLE,
 -- UNKNOWN_OBSERVATION. Any result other than CONTINUE is final (latched): later calls
@@ -2301,7 +2311,6 @@ function Hitch.newLoad(env, args)
                 sinceProgress = 0, best = 0, result = nil, others = {} }
     local ok, reason = pcall(function()
         local tractor, trailer = s.tractor, s.trailer
-        if tractor:getIsEntered() == true then return "SEATED_DURING_LOAD" end
         local v = tractor:getLastSpeed()
         if not finite(v) or math.abs(v) >= 1 then return "NOT_STOPPED" end
         Hitch.watchDriver(env, tractor)
@@ -2453,7 +2462,7 @@ local function loadDrive(env, s, dt)
     local D = Hitch.LOAD
     local denied = unparkAuthority(s)
     if denied ~= nil then return denied end
-    if s.tractor:getIsEntered() ~= false then return "SEATED_DURING_LOAD" end
+    local seat = s.tractor:getIsEntered(); if seat ~= true and seat ~= false then return "UNKNOWN_OBSERVATION" end   -- a passenger rides; input is a takeover
     if s.trailer.ownerFarmId ~= s.farmId then return "RESERVATION_LOST" end
     local node = s.tractor:getAISteeringNode()
     local x, _, z = world(env, node)
@@ -2533,7 +2542,7 @@ local function loadDrive(env, s, dt)
 end
 
 -- One update: "CONTINUE", "LOADED" / "UNLOADED" (braked where planned) or a failure:
--- RESERVATION_LOST, DRIVER_TOOK_OVER, SEATED_DURING_LOAD, AI_ACTIVE, RIG_CHANGED,
+-- RESERVATION_LOST, DRIVER_TOOK_OVER, AI_ACTIVE, RIG_CHANGED,
 -- TRANSPORT_MOVED, RAMPS_MOVED, DIVERGED, DISTANCE_LIMIT, TIMEOUT, OTHER_VEHICLE_MOVED,
 -- OTHER_VEHICLE_NEAR, PERSON_TOO_CLOSE, OBSTACLE_AHEAD, STALLED, MOTOR_UNAVAILABLE,
 -- UNKNOWN_OBSERVATION. Latched like UNPARK: later calls only brake.
@@ -2599,7 +2608,6 @@ function Hitch.newBackOff(env, args)
     if type(args.isReserved) ~= "function" then return nil, "INVALID_LIMITS" end
     local ok, reason = pcall(function()
         local tractor, trailer = s.tractor, s.trailer
-        if tractor:getIsEntered() == true then return "SEATED_DURING_BACKOFF" end
         local v = tractor:getLastSpeed()
         if not finite(v) or math.abs(v) >= 1 then return "NOT_STOPPED" end
         Hitch.watchDriver(env, tractor)
@@ -2677,7 +2685,7 @@ local function backoffDrive(env, s, dt)
     local D = Hitch.BACKOFF
     local denied = unparkAuthority(s)
     if denied ~= nil then return denied end
-    if s.tractor:getIsEntered() ~= false then return "SEATED_DURING_BACKOFF" end
+    local seat = s.tractor:getIsEntered(); if seat ~= true and seat ~= false then return "UNKNOWN_OBSERVATION" end   -- a passenger rides; input is a takeover
     local node = s.tractor:getAISteeringNode()
     local x, _, z = world(env, node)
     local along, lateral = inFrame(s, x, z)
@@ -2831,7 +2839,6 @@ function Hitch.newAlongside(env, args)
     if type(args.isReserved) ~= "function" then return nil, "INVALID_LIMITS" end
     local ok, reason = pcall(function()
         local tractor, combine = s.tractor, s.combine
-        if tractor:getIsEntered() == true then return "SEATED_DURING_ALONGSIDE" end
         local v = tractor:getLastSpeed()
         if not finite(v) or math.abs(v) >= 1 then return "NOT_STOPPED" end
         Hitch.watchDriver(env, tractor)
@@ -2928,7 +2935,7 @@ local function alongsideDrive(env, s, dt)
     local D = Hitch.ALONGSIDE
     local denied = unparkAuthority(s)
     if denied ~= nil then return denied end
-    if s.tractor:getIsEntered() ~= false then return "SEATED_DURING_ALONGSIDE" end
+    local seat = s.tractor:getIsEntered(); if seat ~= true and seat ~= false then return "UNKNOWN_OBSERVATION" end   -- a passenger rides; input is a takeover
     local node = s.tractor:getAISteeringNode()
     local x, _, z = world(env, node)
     local along, lateral = inFrame(s, x, z)

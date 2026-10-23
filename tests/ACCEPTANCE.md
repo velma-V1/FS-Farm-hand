@@ -95,7 +95,9 @@ Executable mapping (`python scripts/check.py`):
   60 random starts all end LINED_UP inside the reverse's envelope or are refused
   unmoved, never leaving the 25 m radius or entering the wagon's box; refusals
   (unknown or out-of-range turning radius, outside the area, beside the wagon,
-  limits, joints, seated); mid-maneuver takeover, rider getting in, other AI,
+  limits, joints); a seated player rides as a passenger (`test_a_seated_player_rides_*`
+  in every motion's Lua tests: GIANTS' player control off while it drives, restored on every
+  end); mid-maneuver takeover, other AI,
   lost reservation, wagon joint or body moved, unreadable geometry, leaving the
   radius, stall, divergence (a tractor that does not turn, or turns wider than it
   reports), timeout and abort all brake, latch and log; a curve past another
@@ -300,9 +302,10 @@ Executable mapping (`python scripts/check.py`):
   NO_ELIGIBLE_PAIR with "candidate ... rejected: RESERVED, AI_ACTIVE" logged; once idle
   it is recovered and completes), `test_live_session_language_cases`, the ride-along
   Lua tests (seated: every AI-driven op runs; a takeover yields, also between
-  steps; an unreadable seat fails closed; the last-metres reverse needs an empty cab;
+  steps; an unreadable seat fails closed; the self-driven motions carry a seated
+  passenger, `getIsVehicleControlledByPlayer` shadowed false while they drive and restored;
   another mod's control function is never replaced), the bridge's
-  REJECTED_SEATED_DURING_REVERSE case (stop, released),
+  REJECTED_NOT_STOPPED align case (stop, released),
   `test_equipment_is_never_a_destination_and_statements_are_not_orders`, `RideAlongTests` (the ridden tractor first) and `HitchOnlyTests`
   (hitch_pair hitches in place, delivers nothing, a failed hitch is never COMPLETE);
   `test_a_slow_cold_load_is_not_counted_as_wrong_answers` (Ollama loads the model

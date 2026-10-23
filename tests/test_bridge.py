@@ -427,9 +427,8 @@ class ProductionSequenceTests(unittest.TestCase):
              ["stage", "maneuver", "align", "stop"]),
             ({"align": "UNVERIFIED:UNKNOWN_OBSERVATION"}, None, "UNVERIFIED", "UNKNOWN_OBSERVATION",
              ["stage", "maneuver", "align", "stop"]),
-            # A rider still in the cab when the last metres begin: the reverse is never
-            # started under their controls; stop, release, and say why.
-            ({"align": "REJECTED:SEATED_DURING_REVERSE"}, None, "FAILED", "REJECTED_SEATED_DURING_REVERSE",
+            # The last metres refused before they begin: stop, release, and say why.
+            ({"align": "REJECTED:NOT_STOPPED"}, None, "FAILED", "REJECTED_NOT_STOPPED",
              ["stage", "maneuver", "align", "stop"]),
             # Local alignment's own bounded failures: stalled, the wagon moved, the
             # seated player took the controls, another AI job, diverging.
@@ -447,7 +446,7 @@ class ProductionSequenceTests(unittest.TestCase):
              ["stage", "maneuver", "align", "attach", "stop"]),
             # LOCAL_MANEUVER (the tractor starts inside the work radius): its refusals
             # and bounded failures stop, release, and never reverse or attach.
-            ({"maneuver": "FAILED:SEATED_DURING_MANEUVER"}, NEAR, "FAILED", "SEATED_DURING_MANEUVER",
+            ({"maneuver": "FAILED:KEEP_OUT"}, NEAR, "FAILED", "KEEP_OUT",
              ["maneuver", "stop"]),
             # Refused unmoved for where the tractor stands (no room to curve in): GOTO to
             # the staging pose straight ahead of the drawbar next, then the plain reverse
