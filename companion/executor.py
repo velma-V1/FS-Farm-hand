@@ -591,9 +591,12 @@ def choose_store_item(catalog, want: dict, money: float | None, tractor_power: f
     if want.get("size") == "large":
         return max(candidates, key=lambda i: ((i.width or 0), -i.price, -i.id)), None
     if want["kind"] in STORE_KINDS_EXACT:
-        # Bought for a job, not named: the game's own items before mods' (live: a mod's "EDK 650
-        # Unrealistic" variant came as a bale loader), then the cheapest.
-        return min(candidates, key=lambda i: (i.mod, i.price, i.id)), None
+        # Bought for a job, not named: the game's own items only (live e3e3b0c194914776-2: a mod's
+        # "EDK 650 Unrealistic" came as a bale loader), the cheapest.
+        candidates = [i for i in candidates if not i.mod]
+        if not candidates:
+            return None, "NOT_IN_STORE"
+        return min(candidates, key=lambda i: (i.price, i.id)), None
     return min(candidates, key=lambda i: (-_name_fit(i, want), i.price, i.id)), None
 
 

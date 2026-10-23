@@ -1456,7 +1456,8 @@ class Coordinator:
         new = next((i for i in self.world.snapshot() if i.id not in before and i.id in bought.equipment_ids), None)
         if new is None or not _words(new.name):
             return Result("UNVERIFIED", "PURCHASE_NOT_OBSERVED")
-        if crop and not any(crop in u.supported for u in new.fill_units):
+        need = want.get("min_capacity", 0.0)
+        if crop and not sum((u.capacity or 0.0) - (u.level or 0.0) for u in new.fill_units if crop in u.supported) >= max(need, 1.0):
             # What arrived does not take the crop (live e3e3b0c194914776-2: a bale loader): said, never hitched.
             log.info("job %d grain rig: the bought %s takes %s, not %s", job.number, new.name,
                      sorted({f for u in new.fill_units for f in u.supported})[:8], crop)

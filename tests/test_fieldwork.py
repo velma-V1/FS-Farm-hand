@@ -1169,7 +1169,9 @@ class UnloadAndSellTests(unittest.TestCase):
                              StoreItem(32, "Tipper 12", "Y", ("TRAILERS",), 8000.0, False, None, None, None,
                                        capacity=12000.0, fill_types=("WHEAT", "BARLEY")),
                              StoreItem(33, "Tipper 8", "Z", ("TRAILERS",), 6000.0, False, None, None, None,
-                                       capacity=9500.0, fill_types=("WHEAT",)))
+                                       capacity=9500.0, fill_types=("WHEAT",)),
+                             StoreItem(37, "Mod Tipper", "M", ("TRAILERS",), 1000.0, True, None, None, None,
+                                       capacity=20000.0, fill_types=("WHEAT",)))       # a mod: never for a job
         c, notices = coordinated(world)
         c.submit({"version": 1, "command": "unload_combine"})
         c.wait(10)
@@ -1191,7 +1193,9 @@ class UnloadAndSellTests(unittest.TestCase):
         del world.items["w-5"]
         shop = (210.0, 90.0)
         world.mock_bought = replace(w, id="tmp", attached_to=None, position=shop, heading=0.0,
-                                    fill_units=(FillUnit(1, None, 0.0, 12.0, frozenset({"SQUAREBALE"})),),
+                                    fill_units=(FillUnit(1, None, 0.0, 12.0, frozenset({"SQUAREBALE"})),
+                                                # live e3e3b0c194914776-3: a nominal grain unit of 0 l
+                                                FillUnit(2, None, 0.0, 0.0, frozenset({"WHEAT"}))),
                                     input_joints=(InputJoint(1, "trailer", (shop[0], shop[1] + 3.0), True),))
         world.store_items = (StoreItem(33, "Tipper 8", "Z", ("TRAILERS",), 6000.0, False, None, None, None,
                                        capacity=9500.0, fill_types=("WHEAT",)),)

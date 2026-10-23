@@ -1109,12 +1109,17 @@ end
 -- configurations of {isSelectable, fillUnits {capacity}}), its first configuration. nil when
 -- it has none (live e3e3b0c194914776-2: the largest configuration of an "EDK 650 Unrealistic" took grain,
 -- the default one bales).
-function Observe.storeCapacity(specs)
+-- Only units the shop counts in litres (FillUnit.UNIT.LITER.l10n, the default display unit,
+-- 2811-2822): live e3e3b0c194914776-3 a Lizard "40' Flatbed Autoloading Bale Trailer" listed
+-- grain with a capacity counted in bales; unreadable: none counted (fail closed).
+function Observe.storeCapacity(specs, env)
     local configuration = type(specs.capacity) == "table" and specs.capacity[1] or nil
     if type(configuration) ~= "table" then return nil end
+    local litre = try(function() return env.FillUnit.UNIT.LITER.l10n end)
+    if litre == nil then return nil end
     local sum = 0
     for _, unit in ipairs(type(configuration.fillUnits) == "table" and configuration.fillUnits or {}) do
-        if finite(unit.capacity) and unit.capacity > 0 then sum = sum + unit.capacity end
+        if finite(unit.capacity) and unit.capacity > 0 and unit.unit == litre then sum = sum + unit.capacity end
     end
     return sum > 0 and sum or nil
 end
@@ -1175,7 +1180,7 @@ function Observe.storeItem(env, item)
              width = nullable(specNumber(specs.workingWidth, "width")),
              needed_power = nullable(specNumber(specs.neededPower, "base")),
              power = nullable(specNumber(specs.power, "power")),
-             capacity = nullable(Observe.storeCapacity(specs)),
+             capacity = nullable(Observe.storeCapacity(specs, env)),
              fill_types = Observe.storeFillTypes(env, item) }
 end
 

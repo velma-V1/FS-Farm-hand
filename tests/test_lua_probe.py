@@ -500,11 +500,14 @@ class ObserveStoreSpecTests(unittest.TestCase):
 
     def test_capacity_is_the_largest_selectable_configuration_and_fill_types_are_named(self):
         specs = self.lua.eval("""{ capacity = {
-            { isSelectable = true, fillUnits = { { capacity = 8000 }, { capacity = 2000 } } },
-            { isSelectable = false, fillUnits = { { capacity = 50000 } } },
-            { isSelectable = true, fillUnits = { { capacity = 9500 } } } } }""")
-        self.assertEqual(self.observe.storeCapacity(specs), 10000)              # the default (first) configuration
-        self.assertIsNone(self.observe.storeCapacity(self.lua.eval("{}")))
+            { isSelectable = true, fillUnits = { { capacity = 8000, unit = "l" }, { capacity = 2000, unit = "l" },
+                                                 { capacity = 12, unit = "bales" } } },
+            { isSelectable = false, fillUnits = { { capacity = 50000, unit = "l" } } },
+            { isSelectable = true, fillUnits = { { capacity = 9500, unit = "l" } } } } }""")
+        units = self.lua.eval("""{ FillUnit = { UNIT = { LITER = { l10n = "l" } } } }""")
+        self.assertEqual(self.observe.storeCapacity(specs, units), 10000)       # the default (first) configuration, litres only
+        self.assertIsNone(self.observe.storeCapacity(self.lua.eval("{}"), units))
+        self.assertIsNone(self.observe.storeCapacity(specs, self.lua.eval("{}")))   # the unit unreadable: none
         env = self.lua.eval("""{ FillUnit = { getSpecValueFillTypes = function(item, real, configs)
                 assert(configs.fillUnit == 1); return { 3, 7 } end },
             g_fillTypeManager = { getFillTypeNameByIndex = function(_, i) return ({ [3] = "WHEAT", [7] = "BARLEY" })[i] end } }""")
