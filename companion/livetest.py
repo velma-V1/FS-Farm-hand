@@ -450,11 +450,29 @@ class LiveTest:
         if active:
             problems.append("TEST_ACTIVE")
         return {"companion": {"build": BUILD, "session": link.session, "pid": os.getpid(), "live_test": True},
-                "game": game, "farm": farm, "candidates": candidates,
+                "game": game, "farm": farm, "candidates": candidates, "store_preview": self.store_preview(),
                 "job": {"running": None if current is None else {"owner": current.owner, "step": current.step},
                         "last": None if last is None else {"owner": last.owner, "state": last.state,
                                                            "reason": last.reason}},
                 "test_active": active, "ready": not problems, "problems": problems}
+
+    def store_preview(self) -> dict | None:
+        """Read only: what a job's grain-trailer purchase would choose now (the executor's own
+        choose_store_item on the live catalog), and the TRAILERS items it looked at."""
+        from companion.executor import STORE_KINDS_EXACT, choose_store_item
+        try:
+            catalog = self.world.catalog()
+        except Exception:          # the catalog is diagnostics here, never a reason to fail status
+            return None
+        if not catalog:
+            return {"catalog": 0}
+        exact = STORE_KINDS_EXACT["grain_trailer"]
+        trailers = sorted((i for i in catalog if any(c in exact for c in i.categories)), key=lambda i: i.price)
+        item, why = choose_store_item(catalog, {"kind": "grain_trailer", "fill_type": "WHEAT", "min_capacity": 5000.0},
+                                      None, None)
+        return {"catalog": len(catalog), "choice": item and [item.id, item.name, item.brand, item.price, item.capacity],
+                "why": why, "trailers": [[i.id, i.name, i.brand, i.mod, i.price, i.capacity, list(i.fill_types)[:6]]
+                                         for i in trailers][:40]}
 
     def candidates(self, farm_id: str) -> dict:
         """A read-only preview with the executor's own rules (usable, compatible,
