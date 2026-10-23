@@ -608,7 +608,7 @@ class LuaContractTests(unittest.TestCase):
         # A 1 ha square: at most 120 points, all inside it, spread over it. A header-wide pass
         # left standing (a 7 m strip, 7 % of it) is seen by more than 5 % of them, so it can
         # never pass for 95 % cut; a triangle's grid stays inside the triangle.
-        grid = self.observe.fieldGrid
+        grid = lambda poly, n, m: self.observe.fieldGrid(poly, n, m)[0]          # (points, step)
         square = self.lua.eval("{ {0, 0}, {100, 0}, {100, 100}, {0, 100} }")
         points = [tuple(p.values()) for p in grid(square, 120, 4).values()]
         self.assertGreater(len(points), 80)
@@ -644,6 +644,46 @@ class LuaContractTests(unittest.TestCase):
         self.assertEqual((c.share("CULTIVATED"), c.sprayed(), c.total_m2), (0.75, 0.1, 4000))
         self.assertEqual((c.fruit, c.sampled), ((("WHEAT", 1),), 1))
         self.assertEqual((observed.farm.money, observed.farm.helper_buy_seeds), (125000.5, True))
+
+    def test_windrows_on_the_field_are_measured_as_courseplay_reads_heaps(self):
+        # A 100 x 100 m field with a straw swath along x 40-48: Courseplay's DensityMapHeightUtil
+        # pattern over tiles of the field's grid, litres per fill type name; read-only.
+        world = self.stubs.world()
+        self.lua.execute(self.FIELD_STUBS, world.env, self.observe)
+        calls = self.lua.execute("""
+            local env, fields = ...
+            local f = fields[1]
+            local corners = { {0, 0}, {100, 0}, {100, 100}, {0, 100} }
+            f.polygonPoints = {}
+            for i, c in ipairs(corners) do f.polygonPoints[i] = { x = c[1], z = c[2] } end
+            env.getWorldTranslation = function(n) return n.x, 0, n.z end
+            env.g_fillTypeManager = { getFillTypeIndexByName = function(_, name)
+                return ({ STRAW = 31, GRASS_WINDROW = 32 })[name] end }
+            local calls = { writes = 0 }
+            env.DensityMapHeightUtil = {
+                getFillTypeAtArea = function(sx, sz, wx, wz, hx, hz)
+                    assert(wz == sz and hx == sx and wx > sx and hz > sz)      -- world corners: start, width, length
+                    return (sx + wx) / 2 >= 40 and (sx + wx) / 2 < 48 and 31 or 0
+                end,
+                getFillLevelAtArea = function(kind, sx, sz, wx, wz, hx, hz)
+                    assert(kind == 31); return 10 * (wx - sx) * (hz - sz)
+                end,
+                tipToGroundAroundLine = function() calls.writes = calls.writes + 1 end }
+            return calls
+        """, world.env, self.lua.eval("function(e) return e.g_fieldManager.fields end")(world.env))
+        litres = dict(self.observe.fieldWindrow(world.env, world.env.g_fieldManager.fields[1]).items())
+        self.assertEqual(list(litres), ["STRAW"])
+        self.assertGreater(litres["STRAW"], 0.04 * 100000)                # about 8 % of 10 l/m2 x 1 ha
+        self.assertLess(litres["STRAW"], 0.16 * 100000)                   # tiles of 6.25 m: two columns
+        self.assertEqual(calls.writes, 0)
+        self.assertTrue(self.observe.refreshField(world.env, 7))
+        c = observation_from_snapshot(self.snapshot(world)).fields[0].coverage
+        self.assertAlmostEqual(c.windrow_litres(), litres["STRAW"])
+        # Without GIANTS' heap layer, or the field's outline: unknown, never "none left".
+        world.env.DensityMapHeightUtil = None
+        self.assertIsNone(self.observe.fieldWindrow(world.env, world.env.g_fieldManager.fields[1]))
+        self.assertTrue(self.observe.refreshField(world.env, 7))
+        self.assertIsNone(observation_from_snapshot(self.snapshot(world)).fields[0].coverage.windrow)
 
     def test_crop_is_sampled_where_the_work_happened(self):
         # Live: 9 points across field 8 all missed a 400 m2 sown strip.

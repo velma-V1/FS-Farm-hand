@@ -2663,6 +2663,8 @@ Bridge.NOTICES = {
     COMBINE_UNLOADED = "Farmhand: combine emptied into the trailer",
     COMBINE_FULL = "Farmhand: the combine is full; emptying it into a trailer, then harvesting on",
     COMBINE_FULL_NO_TRAILER = "Farmhand: the combine is full and no trailer has room; say sell the grain or store the grain, then continue",
+    WAGON_FULL = "Farmhand: the forage wagon is full; delivering the load, then collecting on",
+    WAGON_FULL_NO_DESTINATION = "Farmhand: the forage wagon is full; say sell it or store it, then continue",
     ACCEPTED_STORE = "Farmhand: taking the load to the farm's storage",
     COMPLETE_STORE = "Farmhand: stored; the load is in the farm's storage",
     HARVEST_POLICY_SELL = "Farmhand: from now on harvested crop is sold at the best paid point",
@@ -2949,6 +2951,9 @@ Bridge.REASONS = {
     NO_IMPLEMENT_FOR_PLOW = "the farm has no plow or cultivator",
     NO_IMPLEMENT_FOR_SOW = "the farm has no seeder",
     NO_IMPLEMENT_FOR_FERTILIZE = "the farm has no sprayer",
+    NO_IMPLEMENT_FOR_COLLECT = "the farm has no forage wagon GIANTS' helper can use",
+    NO_WINDROW_ON_FIELD = "no straw or grass windrow lies on that field",
+    WINDROW_UNKNOWN = "the windrows on that field cannot be measured",
 }
 
 -- Text and whether it is critical, for a companion notice token.

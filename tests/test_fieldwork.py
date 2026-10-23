@@ -1415,3 +1415,107 @@ class UnloadAndSellTests(unittest.TestCase):
         # The unloader hitched by the store names (live save 1: the Fliegl EDK 650, the 3650).
         self.assertEqual(r.interpret("hitch the edk 650 to the 3650"),
                          {"version": 1, "command": "hitch_pair", "implement_name": "edk 650", "tractor_name": "3650"})
+
+
+class StrawTests(unittest.TestCase):
+    """The user (2026-10-22): "the field still needs to have a forage wagon run to collect the
+    straw and be sold". GIANTS' field-work helper drives the forage wagon over the field
+    (GIANTS ForageWagon picks the windrow up); done only when the windrow is measured gone
+    from the field (Observe.fieldWindrow); a full wagon's load goes where the request said and
+    collecting goes on; sold only on the load gone and the money in; then the wagon back."""
+    STRAW = FieldCoverage(ground=(("STUBBLE", 1.0),), spray=(), total_m2=4000.0, fruit=(("NONE", 9),), sampled=9,
+                          windrow=(("STRAW", 20000.0),))
+
+    def world(self, capacity=40000.0, windrow=STRAW.windrow):
+        x, z = 100.0, 100.0
+        tractor = Equipment("t-1", "tractor", "farm-a", (x, z), heading=0.0, ai_root=Pose(x, z, 0.0),
+                            capabilities=frozenset({"move", "attach", "stop"}), attached_to="fw-1", name="Fendt 724",
+                            kinds=frozenset({"ai_field_worker"}),
+                            output_joints=(OutputJoint(1, "trailerLow", 0.0, -2.0, False),))
+        wagon = Equipment("fw-1", "forage_wagon", "farm-a", (x, z - 6), heading=0.0, attached_to="t-1",
+                          kinds=frozenset({"forage_wagon", "trailer", "fill_unit", "ai_implement"}), name="Tebbe",
+                          required_pto_torque=0.0,
+                          fill_units=(FillUnit(1, "UNKNOWN", 0.0, capacity),),
+                          input_joints=(InputJoint(1, "trailerLow", (x, z - 2.0), True),))
+        world = CoordinatedWorld([tractor, wagon], PLAYERS,
+                                 fields=(field(7, 0.4, replace(self.STRAW, windrow=windrow)),), farm=FARM)
+        world.mock_sell_at = (900.0, 900.0)
+        return world
+
+    def collect(self, c, destination="sell"):
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["collect"],
+                  **({"destination": destination} if destination else {})})
+        c.wait(10)
+
+    def test_done_only_when_the_windrow_is_measured_gone(self):
+        collect = OPERATIONS["collect"]
+        self.assertEqual(collect.done(self.STRAW), 0.0)
+        self.assertEqual(collect.done(replace(self.STRAW, windrow=(("STRAW", 30.0),))), 1.0)    # crumbs on 0.4 ha
+        self.assertEqual(collect.done(replace(self.STRAW, windrow=None)), 0.0)                  # unknown: never done
+
+    def test_the_straw_is_collected_sold_and_the_wagon_brought_back(self):
+        world = self.world()
+        c, notices = coordinated(world)
+        self.collect(c)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"))
+        self.assertEqual([(w.tractor, w.operation) for w in c.workers], [("t-1", "collect")])
+        world.finish_worker("t-1")
+        self.assertTrue(until(lambda: c.last.command == "worker_return" and c.last.state == "COMPLETE"))
+        self.assertEqual(world.field_map[7].coverage.windrow, ())
+        self.assertEqual(world.farm().money, FARM.money + 20000.0 * world.mock_price)
+        self.assertEqual(world.items["fw-1"].fill_units[0].level, 0.0)
+        self.assertIsNone(world.items["fw-1"].attached_to)                 # back and unhitched
+        self.assertIn("WORKER_DONE", notices)
+        self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
+
+    def test_a_full_wagon_is_sold_and_collecting_goes_on_to_the_end(self):
+        world = self.world(capacity=12000.0)
+        c, notices = coordinated(world)
+        self.collect(c)
+        world.mock_pickup("t-1", litres=12000.0)                          # full halfway
+        self.assertTrue(until(lambda: "WAGON_FULL" in notices))
+        self.assertTrue(until(lambda: [w.operation for w in c.workers] == ["collect"]
+                              and world.items["fw-1"].fill_units[0].level == 0.0))
+        self.assertEqual(world.farm().money, FARM.money + 12000.0 * world.mock_price)   # the first load sold
+        world.finish_worker("t-1")
+        self.assertTrue(until(lambda: c.last.command == "worker_return" and c.last.state == "COMPLETE"))
+        self.assertEqual(world.field_map[7].coverage.windrow, ())
+        self.assertEqual(world.farm().money, FARM.money + 20000.0 * world.mock_price)
+        self.assertIsNone(world.items["fw-1"].attached_to)
+
+    def test_without_a_destination_a_full_wagon_waits_and_says_so(self):
+        world = self.world(capacity=12000.0)
+        c, notices = coordinated(world)
+        self.collect(c, destination=None)
+        world.mock_pickup("t-1", litres=12000.0)
+        self.assertTrue(until(lambda: "WAGON_FULL_NO_DESTINATION" in notices and c.workers == []))
+        self.assertEqual(world.farm().money, FARM.money)                   # nothing sold unasked
+        self.assertEqual(world.items["fw-1"].attached_to, "t-1")           # it waits, loaded
+
+    def test_no_windrow_or_an_unreadable_one_is_said_before_anything_moves(self):
+        for windrow, reason in (((), "NO_WINDROW_ON_FIELD"), (None, "WINDROW_UNKNOWN")):
+            with self.subTest(reason=reason):
+                world = self.world(windrow=windrow)
+                c, _ = coordinated(world)
+                self.collect(c)
+                self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", reason))
+                self.assertEqual(world.items["t-1"].position, (100.0, 100.0))
+
+    def test_without_a_forage_wagon_the_helper_can_use_it_is_said(self):
+        world = self.world()
+        world.items["fw-1"] = replace(world.items["fw-1"], kinds=frozenset({"forage_wagon", "trailer", "fill_unit"}))
+        c, _ = coordinated(world)
+        self.collect(c)
+        self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", "NO_IMPLEMENT_FOR_COLLECT"))
+
+    def test_the_words(self):
+        from companion.language import RuleInterpreter
+        rules = RuleInterpreter()
+        for words, destination in (("collect the straw on field 7 with the forage wagon and sell it", "sell"),
+                                   ("pick up the straw from field 7", None),
+                                   ("collect the straw with the forage wagon on field 7 and store it", "store"),
+                                   ("gather the grass swaths on field 7", None)):
+            with self.subTest(words=words):
+                got = rules.interpret(words)
+                self.assertEqual((got["command"], got["field"], got["operations"], got.get("destination")),
+                                 ("field_work", 7, ["collect"], destination))

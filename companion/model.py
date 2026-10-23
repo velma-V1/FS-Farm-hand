@@ -107,7 +107,8 @@ PROMPT = """You rewrite one sentence from a Farming Simulator player for Farmhan
 - move_pair: move the tractor and implement that are already hitched ("this", "it") somewhere.
 - hitch_pair: hitch a tractor to an implement where it stands.
 - detach_pair: unhitch an implement where it stands.
-- field_work: plow, cultivate, seed or fertilize a field (or a small test area of one).
+- field_work: plow, cultivate, seed, fertilize or harvest a field (or a small test area of one), or collect its straw
+  with a forage wagon.
 - buy: buy a plow, a named truck or a gooseneck trailer from the store.
 - haul_tractor: carry a tractor on a truck's transport trailer to a place and unload it there.
 - contract: take a field contract, do it and collect the reward.
@@ -131,6 +132,7 @@ buy the <name> truck | buy a gooseneck | save the game | \
 use the <truck> to take the <tractor> to <place> and unload it | use the <truck> to take the <tractor> to field <n> and unload it | \
 do a contract | do the <plow|cultivate|fertilize> contract on field <n> | sell the grain | store the grain | \
 unload the combine | harvest field <n> | harvest field <n> and sell the grain | \
+collect the straw on field <n> | collect the straw on field <n> and sell it | \
 <plow|cultivate> field <n>, seed it with <crop>, then fertilize it | buy field <n> | sell field <n> | continue; \
 a sequence is its parts in these forms joined by ", then ". For stop and status "say" is "".
 Use "unknown" with "say" "" for anything else, and for questions or negations. Keep the player's own place and \
@@ -166,18 +168,31 @@ OPERATION_WORDS = {
     "sow": ("sow", "seed", "plant", "drill"),
     "fertilize": ("fertili", "spray", "spread", "lime", "manure", "slurry", "feed the"),
     "harvest": ("harvest", "cut", "combine", "thresh", "reap", "bring in the"),
+    "collect": ("straw", "windrow", "swath", "forage wagon", "loading wagon", "collect", "pick up", "gather"),
+}
+
+# Commands the player's sentence must name by one of these words (live eval 2026-10-22: the
+# 1.7B model answered "bring the straw in off field 5" with unload_combine).
+COMMAND_WORDS = {
+    "unload_combine": ("combine", "harvester", "thresher", "tank"),
+    "sell": ("sell", "cash", "market", "money"),
+    "store": ("store", "storage", "silo", "bin"),
+    "contract": ("contract", "job", "mission"),
+    "land": ("land", "farmland", "parcel", "field"),
 }
 
 
 def grounded(proposal: dict, text: str) -> bool:
     """Whether what the model's rewording asks for is in the player's own sentence: every
     number (a field, an amount), every named vehicle's words, every field operation by one of
-    its words. Anything else is the model inventing (AGENTS.md: the model never supplies what
+    its words, and the command itself where it has words of its own (COMMAND_WORDS). Anything else is the model inventing (AGENTS.md: the model never supplies what
     the player did not say)."""
     said = " ".join(re.findall(r"[0-9a-z]+", text.casefold()))
     numbers = set(re.findall(r"\d+", said))
     steps = proposal.get("steps") or [proposal]
     for step in steps:
+        if step.get("command") in COMMAND_WORDS and not any(word in said for word in COMMAND_WORDS[step["command"]]):
+            return False
         if isinstance(step.get("field"), int) and str(step["field"]) not in numbers:
             return False
         for key in ("tractor_name", "truck_name", "implement_name"):

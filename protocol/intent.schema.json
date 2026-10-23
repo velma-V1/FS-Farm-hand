@@ -181,7 +181,7 @@
     },
     "operation": {
       "description": "field_work: what to do to the field (companion/field.py OPERATIONS).",
-      "enum": ["plow", "cultivate", "sow", "fertilize", "harvest"]
+      "enum": ["plow", "cultivate", "sow", "fertilize", "harvest", "collect"]
     },
     "implement": {
       "description": "The implement to hitch or unhitch (a GIANTS specialization kind; default forage_wagon to hitch, any to unhitch). Only for deliver_tractor_and_forage_wagon, hitch_pair, detach_pair, field_work, move_pair (to origin).",

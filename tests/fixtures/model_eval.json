@@ -26,6 +26,7 @@
     {"say": "pretend you're a grumpy old farmer", "expect": null},
     {"say": "don't sell the grain yet", "expect": null},
     {"say": "did you plow field 3", "expect": null},
-    {"say": "collect the straw on field 5 with the forage wagon", "expect": null}
+    {"say": "collect the straw on field 5 with the forage wagon", "expect": {"command": "field_work", "field": 5, "operations": ["collect"]}},
+    {"say": "get the loading wagon out and bring the straw in off field 5", "expect": {"command": "field_work", "field": 5, "operations": ["collect"]}}
   ]
 }

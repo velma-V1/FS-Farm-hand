@@ -871,25 +871,30 @@ function Observe.fieldGrid(poly, maxPoints, minStep)
                 if insidePolygon(poly, x, z) then points[#points + 1] = { x, z } end
             end
         end
-        if #points <= maxPoints then return points end
+        if #points <= maxPoints then return points, step end
         step = step * 1.1
     end
+end
+
+-- The field's outline in world x/z (GIANTS Field polygonPoints), or nil when unreadable.
+local function fieldPolygon(env, f)
+    local corners = try(function() return f.polygonPoints end)
+    if type(corners) ~= "table" or #corners < 3 then return nil end
+    local poly = {}
+    for i = 1, #corners do
+        local px, _, pz = try(function() return env.getWorldTranslation(corners[i]) end)
+        if not (finite(px) and finite(pz)) then return nil end
+        poly[#poly + 1] = { px, pz }
+    end
+    return poly
 end
 
 local function sampleFruit(env, f, track)
     local cx, cz = try(function() return f.posX end), try(function() return f.posZ end)
     if not (finite(cx) and finite(cz)) then return nil end
     local points = {}
-    local corners = try(function() return f.polygonPoints end)
-    if type(corners) == "table" and #corners >= 3 then
-        local poly = {}
-        for i = 1, #corners do
-            local px, _, pz = try(function() return env.getWorldTranslation(corners[i]) end)
-            if not (finite(px) and finite(pz)) then poly = nil; break end
-            poly[#poly + 1] = { px, pz }
-        end
-        if poly ~= nil then points = Observe.fieldGrid(poly, Observe.FRUIT_GRID, Observe.FRUIT_GRID_MIN_M) end
-    end
+    local poly = fieldPolygon(env, f)
+    if poly ~= nil then points = Observe.fieldGrid(poly, Observe.FRUIT_GRID, Observe.FRUIT_GRID_MIN_M) end
     if type(track) == "table" and #track > 0 then
         local step = math.max(1, math.floor(#track / 12))
         local added = 0
@@ -917,6 +922,44 @@ local function sampleFruit(env, f, track)
     return counts, #points, cut
 end
 
+-- Windrows lying on the field (straw and grass swaths, what a forage wagon picks up), in
+-- litres per fill type name: GIANTS' heap layer read as Courseplay reads a bunker silo
+-- (Courseplay_FS25 150dcd5 scripts/silo/BunkerSiloVehicleController.lua 393-396:
+-- DensityMapHeightUtil.getFillTypeAtArea(sx, sz, wx, wz, hx, hz), then getFillLevelAtArea(
+-- fillType, ...) over a parallelogram of world corners: start, width end, length end), over
+-- square tiles centred on the field's grid points (at most WINDROW_TILES); the types by
+-- FillTypeManager:getFillTypeIndexByName (504-506), names a map lacks simply absent.
+-- Read-only. nil when the outline or the layer cannot be read.
+Observe.WINDROW_TYPES = { "STRAW", "GRASS_WINDROW", "DRYGRASS_WINDROW", "ALFALFA_WINDROW", "CLOVER_WINDROW" }
+Observe.WINDROW_TILES = 256
+Observe.WINDROW_TILE_MIN_M = 4
+
+function Observe.fieldWindrow(env, f)
+    local util = try(function() return env.DensityMapHeightUtil end)
+    if type(util) ~= "table" or type(util.getFillTypeAtArea) ~= "function"
+            or type(util.getFillLevelAtArea) ~= "function" then return nil end
+    local names = {}
+    for _, name in ipairs(Observe.WINDROW_TYPES) do
+        local index = try(function() return env.g_fillTypeManager:getFillTypeIndexByName(name) end)
+        if integer(index) then names[index] = name end
+    end
+    local poly = fieldPolygon(env, f)
+    if poly == nil then return nil end
+    local points, step = Observe.fieldGrid(poly, Observe.WINDROW_TILES, Observe.WINDROW_TILE_MIN_M)
+    if #points == 0 then return nil end
+    local out, h = {}, step / 2
+    for _, p in ipairs(points) do
+        local sx, sz = p[1] - h, p[2] - h
+        local kind = util.getFillTypeAtArea(sx, sz, p[1] + h, sz, sx, p[2] + h)
+        if names[kind] ~= nil then
+            local litres = util.getFillLevelAtArea(kind, sx, sz, p[1] + h, sz, sx, p[2] + h)
+            assert(finite(litres))
+            if litres > 0 then out[names[kind]] = (out[names[kind]] or 0) + litres end
+        end
+    end
+    return out
+end
+
 function Observe.fieldCoverage(env, f, track)
     local ground = {}
     for name, v in pairs(env.FieldGroundType) do
@@ -931,8 +974,9 @@ function Observe.fieldCoverage(env, f, track)
     for level = 1, (integer(maxSpray) and maxSpray or 0) do levels[tostring(level)] = level end
     local sprayShare = measure(env, f, env.FieldDensityMap.SPRAY_LEVEL, levels)
     local fruit, sampled, cut = sampleFruit(env, f, track)
+    local okW, windrow = pcall(Observe.fieldWindrow, env, f)
     return { ground = groundShare, spray = sprayShare, total_m2 = total or Observe.NULL, fruit = fruit or Observe.NULL,
-             sampled = sampled or 0, cut = cut or 0 }
+             sampled = sampled or 0, cut = cut or 0, windrow = okW and windrow or Observe.NULL }
 end
 
 -- The owned fields' records; one stale field's coverage is recomputed per call

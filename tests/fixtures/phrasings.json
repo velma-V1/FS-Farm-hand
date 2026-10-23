@@ -254,6 +254,27 @@
           "harvest"
         ]
       }
+    },
+    {
+      "say": "collect the straw on field 5 with the forage wagon and sell it",
+      "expect": {
+        "command": "field_work",
+        "field": 5,
+        "operations": [
+          "collect"
+        ],
+        "destination": "sell"
+      }
+    },
+    {
+      "say": "pick up the straw from field 12",
+      "expect": {
+        "command": "field_work",
+        "field": 12,
+        "operations": [
+          "collect"
+        ]
+      }
     }
   ]
 }

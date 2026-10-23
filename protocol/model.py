@@ -117,12 +117,17 @@ class FieldCoverage:
     fruit: tuple[tuple[str, int], ...] | None
     sampled: int
     cut: int = 0                  # samples whose crop GIANTS counts as cut (harvested)
+    windrow: tuple[tuple[str, float], ...] | None = None   # litres per windrow fill type lying on it
 
     def share(self, *ground_types: str) -> float:
         return sum(share for name, share in self.ground if name in ground_types)
 
     def sprayed(self) -> float:
         return sum(share for level, share in self.spray if level >= 1)
+
+    def windrow_litres(self) -> float | None:
+        """Litres of windrow (straw, grass swaths) lying on the field; None when unreadable."""
+        return None if self.windrow is None else sum(litres for _, litres in self.windrow)
 
 
 @dataclass(frozen=True)

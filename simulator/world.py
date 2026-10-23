@@ -314,7 +314,7 @@ class MockWorld:
 
     # What each implement kind leaves on the field (mock only, never GIANTS').
     MOCK_WORK = {"cultivator": ("CULTIVATED", None), "plow": ("PLOWED", None), "sowing_machine": ("SOWN", "WHEAT"),
-                 "sprayer": (None, None), "cutter": (None, None)}
+                 "sprayer": (None, None), "cutter": (None, None), "forage_wagon": (None, None)}
 
     mock_helper_reach_m = None    # mock-only: GIANTS' helper ends NOT_REACHABLE at once from farther than this
 
@@ -345,6 +345,10 @@ class MockWorld:
             if (self.mock_helper_reach_m is not None
                     and math.dist(tractor.position, field.center) > self.mock_helper_reach_m):
                 return "NOT_REACHABLE"            # GIANTS' helper plans no drive from that far
+            if kind == "forage_wagon":
+                self.mock_pickup(tractor_id, field_id)
+                self._place(tractor, pose)
+                return "FINISHED"
             ground, fruit = self.MOCK_WORK[kind]
             if seed:                          # the crop chosen from the seeder's own list
                 if kind != "sowing_machine":
@@ -370,6 +374,26 @@ class MockWorld:
             self.items[implement.id] = replace(implement, fill_units=units)
             self._place(tractor, pose)
             return "AREA_REACHED" if area_m2 else "FINISHED"
+
+    def mock_pickup(self, tractor_id, field_id=None, litres=None):
+        """Mock-only: the tractor's forage wagon picks up the field's windrow (``litres`` of it,
+        else all), as much as it has room for (GIANTS ForageWagon: what does not fit stays)."""
+        with self._lock:
+            if field_id is None:
+                field_id = self.mock_workers[tractor_id][0]
+            wagon = self.items[self.items[tractor_id].attached_to]
+            field = self.field_map[field_id]
+            lying = dict(field.coverage.windrow or ())
+            unit = wagon.fill_units[0]
+            room = (unit.capacity or 0.0) - (unit.level or 0.0)
+            want = sum(lying.values()) if litres is None else litres
+            taken = min(room, want, sum(lying.values()))
+            kind = next(iter(lying), unit.fill_type)
+            lying[kind] = lying.get(kind, 0.0) - taken
+            self.items[wagon.id] = replace(wagon, fill_units=(replace(unit, level=(unit.level or 0.0) + taken,
+                                                                       fill_type=kind),) + wagon.fill_units[1:])
+            coverage = replace(field.coverage, windrow=tuple(sorted((k, v) for k, v in lying.items() if v > 0)))
+            self.field_map[field_id] = replace(field, coverage=coverage, age_ms=0.0)
 
     mock_workers = {}             # mock-only: tractor id -> a handed-off helper's job
     mock_sell_at = None           # mock-only: where the best paid sell point is; None: none reachable

@@ -20,7 +20,7 @@
     {"id": "straw_collect_sell", "title": "Straw collected with a forage wagon and sold",
      "saves": "any", "say": ["collect the straw on field 5 with the forage wagon and sell it"],
      "expect": [{"status": "COMPLETE"}],
-     "covered_by": [], "implemented": false},
+     "covered_by": ["tests.test_fieldwork.StrawTests"], "implemented": true},
     {"id": "field_plow_seed_fertilize", "title": "Plow, seed wheat, fertilize, each implement returned",
      "saves": "any", "say": ["plow field 3, seed it with wheat, then fertilize it"],
      "expect": [{"status": "COMPLETE"}],

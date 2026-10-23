@@ -397,6 +397,10 @@ COVERAGE_REQUIRED = 0.95
 PREPARED = frozenset({"PLOWED", "CULTIVATED", "SEEDBED", "ROLLED_SEEDBED", "STUBBLE_TILLAGE"})
 PLOWED = frozenset({"PLOWED"})
 SOWN = frozenset({"SOWN", "DIRECT_SOWN", "PLANTED", "RIDGE", "RIDGE_SOWN"})
+# Collecting windrows (straw, grass swaths) with a forage wagon is done when no more than this
+# lies on the field per hectare, as measured (mod/FarmhandObserve.lua Observe.fieldWindrow).
+# Ours: a forage wagon leaves crumbs, a swath left over is thousands of litres.
+WINDROW_LEFT_L_PER_HA = 100.0
 
 
 @dataclass(frozen=True)
@@ -408,6 +412,10 @@ class Operation:
     def done(self, coverage: FieldCoverage) -> float:
         if self.name == "fertilize":
             return coverage.sprayed()
+        if self.name == "collect":
+            left = coverage.windrow_litres()
+            allowed = WINDROW_LEFT_L_PER_HA * (coverage.total_m2 or 0.0) / 10000.0
+            return 1.0 if left is not None and left <= allowed else 0.0
         if self.name == "harvest":
             # The share of the field's crop samples GIANTS counts as cut (getIsCut).
             grown = sum(n for name, n in coverage.fruit or () if name != "NONE")
@@ -422,6 +430,7 @@ OPERATIONS = {
     "sow": Operation("sow", ("sowing_machine",), "seed"),
     "fertilize": Operation("fertilize", ("sprayer",), "spray"),
     "harvest": Operation("harvest", ("cutter",), None),       # a combine (harvester) with its header
+    "collect": Operation("collect", ("forage_wagon",), None),  # windrows picked up (GIANTS ForageWagon)
 }
 
 
@@ -429,8 +438,8 @@ def already_done(operation: Operation, field: Field, area_m2=None) -> bool:
     """The field already shows the operation's result over COVERAGE_REQUIRED of its
     area, or (for a test area) less than that area is left undone."""
     c = field.coverage
-    if c is None:
-        return False
+    if c is None or operation.name == "collect":
+        return False                  # windrow never there is not "collected": crop_problem says it
     done = operation.done(c)
     if area_m2:
         return (1.0 - done) * (c.total_m2 or 0.0) < area_m2
@@ -448,6 +457,10 @@ def crop_problem(operation: Operation, field: Field) -> str | None:
     c = field.coverage
     if c is None or operation.name == "fertilize":
         return None
+    if operation.name == "collect":
+        if c.windrow_litres() is None:
+            return "WINDROW_UNKNOWN"
+        return "NO_WINDROW_ON_FIELD" if operation.done(c) >= 1.0 else None
     if operation.name == "harvest":
         return None if c.share(*CROP_READY) >= CROP_SHARE_BLOCKS else "CROP_NOT_READY"
     if c.share(*CROP_READY) >= CROP_SHARE_BLOCKS:

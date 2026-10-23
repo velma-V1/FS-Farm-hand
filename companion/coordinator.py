@@ -68,7 +68,8 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "store": ("store", "ACCEPTED_STORE", "COMPLETE_STORE"),
         "unload_combine": ("unload_harvester", "ACCEPTED_UNLOAD_COMBINE", "COMPLETE_UNLOAD_COMBINE"),
         "land": ("land", "ACCEPTED_LAND", "COMPLETE_LAND"),
-        "combine_full": ("overload", "COMBINE_FULL", "COMPLETE_UNLOAD_COMBINE")}
+        "combine_full": ("overload", "COMBINE_FULL", "COMPLETE_UNLOAD_COMBINE"),
+        "wagon_full": ("field_work", "WAGON_FULL", "COMPLETE_FIELD_WORK")}
 # The proposal fields that pass into a job command's intent.
 NAMES = ("tractor_name", "implement_name", "cargo_name")
 
@@ -98,6 +99,15 @@ def owned_like(items: tuple[Equipment, ...], farm_id: str, wants) -> int:
                     and of_kind(item, "plow" if want["kind"] == "plow" else "sprayer"):
                 count += 1
     return count
+
+
+def wagon_full(item: Equipment | None, share: float) -> bool:
+    """A forage wagon whose fill units are at least ``share`` full (GIANTS ForageWagon stops
+    picking up when the load no longer fits: fillForageWagon 314-329)."""
+    if item is None or item.category != "forage_wagon":
+        return False
+    units = [u for u in item.fill_units if u.capacity]
+    return bool(units) and sum(u.level or 0.0 for u in units) >= share * sum(u.capacity for u in units)
 
 
 def combine_full(item: Equipment, share: float) -> bool:
@@ -470,7 +480,7 @@ class Job:
 # Goals that are kept when they do not complete (stopped, taken over, blocked, failed):
 # "continue" re-plans them from the observed state; their ``work`` carries the progress
 # (a haul's observed delivery, a sequence's completed steps), so nothing done repeats.
-GOALS = frozenset({"haul_tractor", "sequence", "contract", "combine_full"})
+GOALS = frozenset({"haul_tractor", "sequence", "contract", "combine_full", "wagon_full"})
 
 
 # GIANTS' contract types Farmhand works (by the start of their registered name) -> the
@@ -721,6 +731,10 @@ class Coordinator:
                         and not any(u.operation == "unload" and u.field == w.field for u in workers)):
                     self._worker_ended(w, full=True)
                     continue
+                if w.operation == "collect" and wagon_full(observed.get(tractor.attached_to), self.WAGON_FULL_SHARE):
+                    # Full: it picks up no more (whatever GIANTS' helper does next), so it is stopped.
+                    self._worker_ended(w, full=True)
+                    continue
                 if tractor.busy or not tractor.stopped:
                     continue
                 self._worker_ended(w)
@@ -749,12 +763,15 @@ class Coordinator:
         with self._lock:
             if w in self.workers:
                 self.workers.remove(w)
-            if w.after:
+            if w.after and w.operation != "collect":     # a collect's return waits for its load (_collect_ended)
                 self._after.append(w.after)
             unloaders = [u for u in self.workers if u.operation == "unload" and u.field == w.field] \
                 if w.operation == "harvest" else []
         if w.operation == "unload":
             self.notify("UNLOADER_STOPPED")             # AutoDrive ended it on its own
+            return
+        if w.operation == "collect":
+            self._collect_ended(w, done, full)
             return
         combine = next((i for i in self.world.snapshot() if i.id == w.tractor), None)
         if w.operation == "harvest" and (done is None or done < COVERAGE_REQUIRED) and combine is not None \
@@ -795,6 +812,60 @@ class Coordinator:
             if trailer is not None and sum(f.level or 0.0 for f in trailer.fill_units) > 0:
                 with self._lock:
                     self._after.append([{"task": "sell"}])
+
+    def _collect_ended(self, w: Worker, done, full: bool) -> None:
+        """A forage wagon's helper ended (or was stopped full). Done (the windrow measured gone):
+        the load goes where the request said (sold or stored), then the wagon back and unhitched.
+        Full before it was done: with a destination the load goes there and collecting goes on
+        (a job of its own, kept as a goal); without one it waits full, said."""
+        observed = {i.id: i for i in self.world.snapshot()}
+        tractor = observed.get(w.tractor)
+        wagon = observed.get(tractor.attached_to) if tractor is not None else None
+        destination = self._destination(w.destination)
+        words = _words(tractor.name) if tractor is not None and tractor.name else None
+        deliver = [{"task": destination, **({"tractor_name": words} if words else {})}] if destination else []
+        worked = done is not None and done >= COVERAGE_REQUIRED
+        log.info("worker %s on field %s: collect ended, windrow %s, wagon %s", w.tractor, w.field,
+                 "gone" if worked else "left" if done is not None else "?", "full" if full else "not full")
+        with self._lock:
+            if worked:
+                loaded = wagon is not None and sum(u.level or 0.0 for u in wagon.fill_units) > 0
+                steps = (deliver if loaded else []) + list(w.after or ())
+                if steps:
+                    self._after.append(steps)
+            elif (full or wagon_full(wagon, self.WAGON_FULL_SHARE)) and deliver:
+                self._after.append({"job": "wagon_full", "work": {"field": w.field, "destination": w.destination,
+                                                                   "deliver": deliver, "after": list(w.after or ())}})
+        if worked:
+            self.notify("WORKER_DONE")
+        elif full or wagon_full(wagon, self.WAGON_FULL_SHARE):
+            self.notify("WAGON_FULL" if deliver else "WAGON_FULL_NO_DESTINATION")
+        else:
+            self.notify("WORKER_STOPPED")
+            if w.after:
+                with self._lock:
+                    self._after.append(list(w.after))
+
+    def _wagon_full(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
+        """A forage wagon found full before its field was collected: the load delivered where
+        the request said, then collecting on with the same pair; its return follows the end."""
+        result = self._run_steps(job, cancel, entered, work["deliver"], "w")
+        if result.status != "COMPLETE" and result.reason not in ("NO_RIG_TO_SELL",):   # "continue": already delivered
+            return result
+        field = next((f for f in self.world.fields() if f.id == work["field"]), None)
+        if field is not None and field.coverage is not None and OPERATIONS["collect"].done(field.coverage) >= 1.0:
+            return self._run_steps(job, cancel, entered, work["after"], "a") if work["after"] else result
+        step = {"task": "field_work", "field": work["field"], "operation": "collect", "implement": "forage_wagon",
+                "hand_off": True}
+        intent = {"version": 1, "request_id": f"{job.owner}-c", "farm_id": self.farm(),
+                  "target": "player_at_acceptance", **step}
+        self.running = intent["request_id"]
+        result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
+        if result.status == "COMPLETE" and result.reason == "WORKER_STARTED":
+            self._add_worker(Worker(intent["request_id"], result.equipment_ids[0], work["field"], "collect",
+                                    work["after"], work.get("destination")))
+            self.notify("WORKER_STARTED", job.spoken)
+        return result
 
     def _stop_reserved(self, owner: str) -> None:
         """Pre-empt the running operation; the job's own cleanup confirms the stop."""
@@ -972,6 +1043,8 @@ class Coordinator:
             return self._unload_combine(job, cancel, entered, work)
         if command == "combine_full":
             return self._combine_full(job, cancel, entered, work)
+        if command == "wagon_full":
+            return self._wagon_full(job, cancel, entered, work)
         if command == "load_tractor" and work and work.get("carry"):
             return self._load_with(job, cancel, entered, work)
         if command == "land":
@@ -1297,7 +1370,8 @@ class Coordinator:
                         return Result(result.status, result.reason, tuple(equipment), tuple(states))
                     if result.reason == "WORKER_STARTED":
                         worker = Worker(intent["request_id"], result.equipment_ids[0], field.id, step["operation"],
-                                        steps[i + 1:], work.get("destination") if step["operation"] == "harvest" else None)
+                                        steps[i + 1:], work.get("destination")
+                                        if step["operation"] in ("harvest", "collect") else None)
                         self._add_worker(worker)
                         started.append(worker)
                         self.notify("WORKER_STARTED", job.spoken)
@@ -1314,6 +1388,7 @@ class Coordinator:
 
     COMBINE_FULL_SHARE = 0.9          # a combine this full is emptied before its helper starts
     COMBINE_WAITING_SHARE = 0.95      # a harvesting combine this full and standing waits for a trailer
+    WAGON_FULL_SHARE = 0.97           # a collecting forage wagon this full picks up no more
 
     def _empty_full_combines(self, job: Job, cancel: threading.Event, entered, destination=None, field=None) -> None:
         """Before a harvest: a full combine's helper would not work (live 3dc00834639340f7-2,

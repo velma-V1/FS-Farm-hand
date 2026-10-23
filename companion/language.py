@@ -433,7 +433,7 @@ def _option_words(phrase: str) -> str | None:
 
 # Where crop goes: the farm's own storage, and what the crop is called.
 _SILO = r"(?:the\s+|my\s+|our\s+)?(?:farm\s+)?(?:silos?|grain\s+bins?|bins?|storage)"
-_CROP_NAME = r"(?:the|my|our)\s+(?:grain|crops?|harvest|load|wheat|barley|canola|corn|oats|soybeans|sorghum)"
+_CROP_NAME = r"(?:the|my|our)\s+(?:grain|crops?|harvest|load|wheat|barley|canola|corn|oats|soybeans|sorghum|straw|grass|hay)"
 _CROP_WORDS = rf"(?:it|them|that|{_CROP_NAME})"
 # "harvest field 3 and sell the grain", "... and store it", "... and put it in the silo": where
 # this harvest's crop goes (else the saved harvest policy; else it stays in the trailer).
@@ -442,10 +442,22 @@ _HARVEST_TO = re.compile(rf"\s+(?:and\s+|then\s+)+(?:(?P<sell>sell\b.*)"
                          rf"|(?:put|take|bring|haul)\s+{_CROP_WORDS}\s+(?:in|into|to)\s+{_SILO})(?:\s+please)?$")
 
 
+# "collect the straw on field 5 with the forage wagon", "pick up the grass swaths from field 2":
+# windrows picked up with a forage wagon (GIANTS' helper drives it), field_work "collect".
+_FORAGE_WAGON = r"(?:\s+(?:with|using)\s+(?:the\s+|a\s+|our\s+|my\s+)?(?:forage|loading|loader|pick\s*up)\s+wagon)?"
+_COLLECT_VERB = re.compile(r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?:collect|pick\s+up|gather|load\s+up|bring\s+in|rake\s+up)\s")
+_COLLECT = re.compile(
+    r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?:collect|pick\s+up|gather|load\s+up|bring\s+in|rake\s+up)\s+"
+    r"(?:the\s+|our\s+|my\s+|all\s+the\s+)?(?:straw|grass|hay|windrows?|swaths?|swathes?)"
+    r"(?:\s+(?:windrows?|swaths?|swathes?|rows))?" + _FORAGE_WAGON +
+    r"\s+(?:on|from|off|in|of)\s+(?:the\s+)?field\s+(?:number\s+)?(?P<number>\d{1,5})" + _FORAGE_WAGON +
+    r"(?:\s+please)?$")
+
+
 def field_work(words: str) -> dict | None:
     words = _TRAILING.sub("", words)            # "go cut field 5 for me"
     destination = None
-    if words.startswith("harvest"):
+    if words.startswith("harvest") or _COLLECT_VERB.match(words):
         to = _HARVEST_TO.search(words)
         if to is not None:
             destination = "sell" if to["sell"] else "store"
@@ -454,6 +466,15 @@ def field_work(words: str) -> dict | None:
     over_crop = re.search(r"\s+(?:anyway|anyways|regardless)$", words)
     if over_crop is not None:
         words = words[:over_crop.start()]
+    collect = _COLLECT.match(words)
+    if collect is not None:
+        field = int(collect["number"])
+        if field < 1:
+            return None
+        work = {"version": 1, "command": "field_work", "field": field, "operations": ["collect"]}
+        if destination is not None:
+            work["destination"] = destination
+        return work
     match = _FIELD_WORK.match(words)
     if match is None:
         return None

@@ -244,7 +244,11 @@
                             {"type": "object", "maxProperties": 16, "propertyNames": {"$ref": "#/$defs/token"},
                              "additionalProperties": {"type": "integer", "minimum": 0, "maximum": 256}}]},
         "sampled": {"type": "integer", "minimum": 0, "maximum": 256},
-        "cut": {"type": "integer", "minimum": 0, "maximum": 256}
+        "cut": {"type": "integer", "minimum": 0, "maximum": 256},
+        "windrow": {"description": "Observe.fieldWindrow: litres of each windrow fill type lying on the field; null when unreadable.",
+                    "oneOf": [{"type": "null"},
+                              {"type": "object", "maxProperties": 16, "propertyNames": {"$ref": "#/$defs/token"},
+                               "additionalProperties": {"type": "number", "minimum": 0, "maximum": 1000000000}}]}
       }
     },
     "field": {

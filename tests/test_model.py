@@ -247,7 +247,13 @@ class GroundingTests(unittest.TestCase):
                  (("haul_tractor", "use the gmc to take the deutz to field 3 and unload it"),
                   "put the deutz on the gmc's trailer and drop it off at field 3", True),
                  (("haul_tractor", "use the 379 to take the deutz to field 3 and unload it"),
-                  "put the deutz on the gmc's trailer and drop it off at field 3", False))
+                  "put the deutz on the gmc's trailer and drop it off at field 3", False),
+                 # Qwen3 1.7B: the straw sentence came back "unload the combine".
+                 (("unload_combine", "unload the combine"), "get the loading wagon out and bring the straw in off field 5",
+                  False),
+                 (("unload_combine", "unload the combine"), "the harvester's full of wheat, empty it", True),
+                 (("field_work", "collect the straw on field 5"),
+                  "get the loading wagon out and bring the straw in off field 5", True))
         for (command, say), text, kept in cases:
             with self.subTest(text=text, say=say):
                 got = to_proposal({"command": command, "say": say}, text)

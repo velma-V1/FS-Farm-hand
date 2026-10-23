@@ -270,5 +270,6 @@ def field_from_frame(f) -> Field:
             spray=tuple(sorted((int(level), min(1.0, share)) for level, share in c["spray"].items())),
             total_m2=c["total_m2"],
             fruit=None if c["fruit"] is None else tuple(sorted(c["fruit"].items())),
-            sampled=c["sampled"], cut=c.get("cut", 0))
+            sampled=c["sampled"], cut=c.get("cut", 0),
+            windrow=None if c.get("windrow") is None else tuple(sorted(c["windrow"].items())))
     return Field(f["id"], f["area_ha"], (f["x"], f["z"]), coverage, f["age_ms"])
