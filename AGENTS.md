@@ -330,3 +330,31 @@ have precedence; report conflicts instead of silently changing the scope.
   and the final tree. Report commands/results, implemented vs mocked, and limitations.
 - Passing CI tests never proves mod loading, game physics, attach alignment, route
   reachability, local IPC, Windows service behavior, multiplayer, or actual FS25 integration.
+
+## Shared FS25 Modding Toolkit (Codex and Claude Code)
+- For significant FS25 API, Lua, provider, or control work, use the local toolkit at
+  `/mnt/c/Users/Matt/Desktop/FS25 Modding Toolkit` (Windows:
+  `C:\Users\Matt\Desktop\FS25 Modding Toolkit`). Read its `VERSION.md` and
+  `indexes/providers.md`; search its sources before inventing FS25 behavior.
+- Follow this evidence order: exact installed-game `references/installed-datas`;
+  Community LUADOC; UsedPlus AI Coding Reference; applicable FS25 skills and guides;
+  community dataS; relevant provider source (AutoDrive, Courseplay, Universal Autoload,
+  TerraFarm, FollowMe, and others); web/community research only when local evidence is
+  insufficient. Installed dataS is decompiled, so account for its documented caveats.
+- Prefer **existing GIANTS/provider behavior > thin Farmhand adapter > custom Farmhand
+  implementation**. Farmhand owns intent, target/resource resolution, planning,
+  reservations, sequencing, provider selection/handoff, verification, recovery/replanning,
+  and cross-provider coordination. Do not duplicate reliable provider navigation,
+  fieldwork, transport, cargo handling, excavation, forestry, or physical machine control
+  unless source evidence shows the needed capability is missing.
+- Before adding substantial FS25 Lua/control behavior, establish from exact source evidence
+  the relevant API/function, prerequisites, start mechanism, observable state, safe STOP or
+  cancel behavior, authoritative completion condition, and limitations. Record the source
+  path and version in `adapters/EVIDENCE.md` when it supports a Farmhand adapter.
+  A start, acknowledgement, animation, callback, or successful API call alone does not
+  prove physical completion; verify the requested in-game outcome and stopped equipment.
+- Codex agents use the installed `fs25-master-skill` when relevant. Claude Code and other
+  agents use the same toolkit files and source hierarchy directly. These shared rules live
+  here in `AGENTS.md`; no separate Claude instruction file is required.
+- Toolkit research does not expand Farmhand's authorized motion, change its local-first
+  runtime, or permit copying provider source into Farmhand.
