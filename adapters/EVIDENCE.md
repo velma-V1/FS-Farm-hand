@@ -352,3 +352,45 @@ GitHub release API and the Hugging Face tree API of the pinned revision.
 | Contract completion (`completion`) | PROVEN API (GDN AbstractFieldMission) / UNVERIFIED live | `AbstractFieldMission:getCompletion` 453-456 = `getFieldCompletion() / AbstractMission.SUCCESS_FACTOR`; `getFieldCompletion` 461-487 steps its partitions, so Farmhand reads its result field `fieldPercentageDone` and `AbstractMission.SUCCESS_FACTOR` directly | Each of this farm's contracts carries GIANTS' completion (1: done by GIANTS' own measure), logged when the contract is collected; collection still needs status FINISHED and finishState SUCCESS |
 | Selling through GIANTS' Deliver helper (deliver) | PROVEN API (GDN FS25 2026-10-22) / UNVERIFIED live | AIJobTypeManager registers "DELIVER" -> AIJobDeliver; `new` 22-65 (unloadingStationParameter, loopingParameter, positionAngleParameter), `applyCurrentState` 173-212 (valid stations: storageSystem:getUnloadingStations() the farm may access with AI fill types), `setValues` 69-, `validate` 139-168 (needs AI discharge nodes), `getStartTaskIndex` 258-288 (no empty fill unit: driveToLoading and waitForFilling skipped, so a filled trailer goes straight to the station), `getIsAvailableForVehicle` 426-452; AIParameterUnloadingStation `unloadingStationIds` / `setUnloadingStation` 98-99 / `validate` 179-; the station `getIsFillTypeAISupported`, `getEffectiveFillTypePrice` (as ADTriggerManager:getHighestPayingSellStation), `isa(SellingStation)`. Started like FIELDWORK (`aiSystem:startJob`). Why: AutoDrive's sell needs a map marker within 6 m of the sell trigger and Riverbend's network has none (live 2bfa1536c9e2497b-1, AD_NO_MARKER_AT_SELL_POINT) |
 | A harvesting combine full | PROVEN API / UNVERIFIED live | AIDriveStrategyCombine:getDriveData 231-245: at a full tank the helper stands with the pipe out waiting for a trailer (allowedToDrive false); the coordinator sees the combine busy, at rest and its grain tank 95% full with no AutoDrive unloader, stops the helper, empties it (pipe, ALONGSIDE, overload), sells, and starts the harvest again |
+
+## Farmhand-owned point drive (rebuild, 2026-10-26)
+
+- **Installed source:** FS25 1.25.0.0, dataS SHA256
+  `39bbcaeedf45d39b8f661a7cd702bfa88fccc9d63447466bb31bfc042fe7d1b4`.
+  `references/installed-datas/scripts/vehicles/ai/AIVehicleUtil.lua:4-97`
+  steers with `driveToPoint` and applies motor target, acceleration and brakes;
+  `vehicles/specializations/AIDrivable.lua:266-280,762-764` supplies the vehicle's
+  turn radius; `ai/AISystem.lua:404-415` reads navigation costs;
+  `environment/EnvironmentAreaSystem.lua:269-278` reads water height. Existing
+  Farmhand live motions established `forceIsActive`, takeover detection, the
+  measured speed governor, `overlapBox` and restoration in `mod/FarmhandHitch.lua`.
+- **Reference concepts only:** Courseplay Hybrid A*, Dubins, Reeds-Shepp and pure
+  pursuit at toolkit commit `150dcd51`; GPL-3.0 code is not copied. AutoDrive's
+  slope and water checks at commit `93cff22f` are MIT-licensed reference. The
+  small search in `mod/FarmhandDrive.lua` is independently written.
+- **Start/authority:** the companion selects one owned idle root vehicle and its
+  observed attached and belted units; reserves all atomically. The bridge checks
+  server session and owner, farm, AI, seat, rest, radius, whole-rig geometry,
+  terrain, water and collision query before moving.
+- **Running/STOP:** each frame checks reservation, takeover, AI, rig identity,
+  player, collision clearance, progress and measured speed; steering uses
+  `driveToPoint`. STOP brakes, restores cruise, active and player-control state.
+- **Completion:** bridge arrival is only a motion verdict. Companion requires a
+  fresh snapshot of the same attached/belted rig, its root at the target within
+  3 m and every unit stopped; release follows confirmed stop.
+- **Limitations:** the 4 m forward-arc search and conservative rigid footprint
+  have only Lua stub tests. No reverse or long-map route hierarchy yet. Neither
+  loaded-rig physics nor arbitrary-map reachability is live-qualified. A route
+  search result is never evidence of physical clearance or arrival.
+- **Travel and turning update (2026-10-27, source-inspected only):** installed
+  `AIVehicleUtil.lua:4-52` uses the target's local geometry for steering, caps
+  motor speed by `getCruiseControlSpeed`, and reduces speed while steering catches
+  up; installed `Drivable.lua:588-606,644-655` allows a temporary cruise-speed
+  setting, which Farmhand restores on every end. Courseplay
+  `scripts/ai/util/AIUtil.lua:51-96,145-207` (commit `150dcd51`) derives wider
+  tractor arcs from the observed tow-bar length and turns the tractor outside a
+  trailer's line; its GPL source is reference only. Farmhand computes its own
+  radius from the observed rear unit/axle, expands collision clearance on arcs,
+  previews the route ahead, and commands at most 64 km/h with braking for turns
+  and arrival. These changes need a live GMC and loaded-rig run before any speed
+  or cornering qualification claim.

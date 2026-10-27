@@ -62,7 +62,14 @@ class RuleInterpreterTests(unittest.TestCase):
         rules = RuleInterpreter()
         hitch = {"version": 1, "command": "hitch_pair", "implement": "trailer", "tractor_name": "gmc"}
         self.assertEqual(rules.interpret("hitch the deckover with the gmc"), {**hitch, "implement_name": "deckover"})
+        self.assertEqual(rules.interpret("hitch the deckover to the gmc"), {**hitch, "implement_name": "deckover"})
         self.assertEqual(rules.interpret("hitch the 1124 deckover with the gmc"), {**hitch, "implement_name": "1124"})
+
+    def test_existing_belted_vehicle_is_named_as_cargo_not_the_driver(self):
+        rules = RuleInterpreter()
+        self.assertEqual(rules.interpret("take the GMC and Series 9 to field 5"),
+                         {"version": 1, "command": "move_pair", "tractor_name": "gmc",
+                          "cargo_name": "series 9", "target": {"type": "field_entrance", "field": 5}})
 
     def test_other_implements_by_their_names(self):
         def hitch(kind):

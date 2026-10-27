@@ -137,6 +137,37 @@ end
 local gateCandidates          -- (open_gates) also read by unpark
 Bridge.pendingGoto = {}       -- tractor -> ms left to watch an aborted, unseen GOTO
 
+-- Farmhand's own point-to-point drive. It searches from the observed collision
+-- world and steers the rig itself; no marker or provider job is required.
+function starters.farm_drive(env, spec)
+    local denied = idle(env, spec.tractor, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    local session, reason = Bridge.Drive.begin(env, {
+        tractor = spec.tractor, x = spec.x, z = spec.z,
+        farmId = spec.farmId, isReserved = spec.owned,
+    }, Bridge.Hitch)
+    if session == nil then Bridge.Hitch.disarm(spec.tractor); return nil, reason end
+    Bridge.lastDrive = session
+    return { session = session }
+end
+
+function steppers.farm_drive(env, task, dt)
+    local code = Bridge.Drive.step(env, task.session, dt, Bridge.Hitch)
+    if code == "CONTINUE" then return nil end
+    if not task.endLogged then
+        task.endLogged = true
+        logMotionEnd("farm_drive", code, task.session, function(s)
+            return string.format("target=(%.1f,%.1f) route=%d", s.targetX, s.targetZ, #s.path)
+        end)
+    end
+    if code ~= "ARRIVED" then return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code end
+    return settle(task, code)
+end
+
+function aborts.farm_drive(env, task)
+    Bridge.Drive.abort(env, task.session, Bridge.Hitch)
+end
+
 -- ------------------------------------------------------------------ drive
 -- AutoDrive's external interface: StartDriving(vehicle, destinationID,
 -- unloadDestinationID) starts the vehicle's current mode once both are valid
@@ -2319,10 +2350,14 @@ function steppers.stop(env, task)
     if Bridge.lastUnpark ~= nil and Bridge.lastUnpark.tractor == v then
         Bridge.Hitch.abort(env, Bridge.lastUnpark, "STOPPED")    -- latched: brake + cruise off
     end
+    if Bridge.lastDrive ~= nil and Bridge.lastDrive.tractor == v then
+        Bridge.Drive.abort(env, Bridge.lastDrive, Bridge.Hitch)
+    end
     if Bridge.lastLoad ~= nil and Bridge.lastLoad.tractor == v then
         Bridge.Hitch.abort(env, Bridge.lastLoad, "STOPPED")      -- latched: brake + cruise off
     end
     local ownMotion = Bridge.pendingGoto[v] ~= nil
+        or (target ~= nil and target.op == "farm_drive" and not stopped(v))
         or (task.handed == "fieldwork" and v:getIsAIActive() ~= false)
         or (task.handed == "drive" and v.ad.stateModule:isActive() ~= false) or (target ~= nil
         and ((target.op == "drive" and v.ad.stateModule:isActive() ~= false)
@@ -2458,7 +2493,7 @@ function Bridge:dropSession(code)
     end
     if self:companionOwner() then Bridge.owner = nil end
     Bridge.lastAlign, Bridge.lastManeuver, Bridge.lastDetach, Bridge.lastPull = nil, nil, nil, nil
-    Bridge.lastUnpark, Bridge.lastLoad = nil, nil
+    Bridge.lastUnpark, Bridge.lastLoad, Bridge.lastDrive = nil, nil, nil
     log("bridge session %s dropped: %s", tostring(self.session), code)
     self.dropped[self.session] = true      -- a dropped session is never re-adopted
     self.session = nil
@@ -3200,6 +3235,7 @@ if type(FarmhandObserve) == "table" then
     FarmhandObserve.aiStop = function(v) return Bridge.aiStops[v] end
 end
 Bridge.Hitch = FarmhandHitch
+Bridge.Drive = FarmhandDrive
 FarmhandBridge = Bridge
 if type(addModEventListener) == "function" then addModEventListener(Bridge) end
 return Bridge

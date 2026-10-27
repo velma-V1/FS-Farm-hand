@@ -2118,6 +2118,9 @@ class Executor:
         log.info("%s: %s", label, error.describe() if error else "joints unobservable")
 
     def _run(self, command, cancel=None, on_state=None):
+        if command["task"] == "move_pair" and command.get("tractor_name"):
+            from companion.standalone import StandaloneMove
+            return StandaloneMove(self.world).execute(command, cancel, on_state)
         owner, farm_id = command["request_id"], command["farm_id"]
         states, ids = [], ()
 

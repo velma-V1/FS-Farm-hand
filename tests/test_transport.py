@@ -38,6 +38,16 @@ def hitch(name="deckover"):
 
 
 class TailgateTests(unittest.TestCase):
+    def test_explicit_trailer_name_selects_that_trailer_over_another_compatible_one(self):
+        truck, deck = rig()
+        generic = replace(deck, id="d-near", name="Utility Trailer", position=(8.0, 3.0),
+                          input_joints=(InputJoint(2, "semitrailerCar", (8.0, 9.0), True, frozenset()),))
+        world = MockWorld([generic, truck, deck], PLAYERS, ())
+        result = Executor(world).execute(hitch("deckover"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "HITCH_OBSERVED"), result)
+        self.assertEqual(world.items[deck.id].attached_to, truck.id)
+        self.assertIsNone(world.items[generic.id].attached_to)
+
     def test_the_tailgate_is_lowered_and_verified_before_the_gooseneck_comes_under(self):
         calls = []
 

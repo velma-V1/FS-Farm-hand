@@ -29,11 +29,12 @@ RUNTIME_FILES = (
     "modDesc.xml",
     "FarmhandObserve.lua",
     "FarmhandHitch.lua",
+    "FarmhandDrive.lua",
     "FarmhandBridge.lua",
     "FarmhandProbe.lua",
     "translations/translation_en.xml",
 )
-SOURCE_FILES = RUNTIME_FILES[1:5]
+SOURCE_FILES = RUNTIME_FILES[1:6]
 # The on-foot keys (mod/FarmhandBridge.lua Bridge.KEYS).
 REQUEST_ACTIONS = ["FARMHAND_FETCH_HERE", "FARMHAND_TALK", "FARMHAND_STOP", "FARMHAND_PUSH_TO_TALK",
                    "FARMHAND_SETTINGS"]
@@ -170,6 +171,7 @@ APP_FILES = (
     "companion/bridge.py",
     "companion/buildinfo.py",
     "companion/coordinator.py",
+    "companion/drive_goal.py",
     "companion/executor.py",
     "companion/hitch.py",
     "companion/language.py",
@@ -178,6 +180,7 @@ APP_FILES = (
     "companion/run.py",
     "companion/service.py",
     "companion/setup.py",
+    "companion/standalone.py",
     "companion/voice.py",
     "protocol/command.schema.json",
     "protocol/frame.schema.json",

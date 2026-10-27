@@ -42,6 +42,7 @@
     <extraSourceFiles>
         <sourceFile filename="FarmhandObserve.lua"/>
         <sourceFile filename="FarmhandHitch.lua"/>
+        <sourceFile filename="FarmhandDrive.lua"/>
         <sourceFile filename="FarmhandBridge.lua"/>
         <sourceFile filename="FarmhandProbe.lua"/>
     </extraSourceFiles>

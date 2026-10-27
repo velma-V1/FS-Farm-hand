@@ -636,8 +636,9 @@ def hitch_named(words: str) -> dict | None:
                         "tractor_name": re.sub(r"\s*\btractor\b\s*", " ", tractor).strip() or None}
             if not proposal["tractor_name"]:
                 del proposal["tractor_name"]
-            if model_name(implement):
-                proposal["implement_name"] = model_name(implement)
+            specific = (_trailer_name(implement) if kind == "trailer" else model_name(implement))
+            if specific:
+                proposal["implement_name"] = specific
             return proposal
     return None
 
@@ -998,6 +999,10 @@ class RuleInterpreter:
             # a name is not supported yet; never guessed.
             if (_MOVE_VERB.match(words) and target is not None
                     and (target or re.search(r"\b(?:here|to me|over here)\b", words))):
+                names = re.fullmatch(r"(.+?)\s+and\s+(?:the\s+)?(.+)", named.group(1))
+                if names:
+                    return {"version": 1, "command": "move_pair", "tractor_name": names.group(1),
+                            "cargo_name": names.group(2), **target}
                 return {"version": 1, "command": "move_pair", "tractor_name": named.group(1), **target}
             return {"version": 1, "command": "unsupported", "reason": "named_vehicle"}
         return None

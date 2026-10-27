@@ -43,7 +43,7 @@ HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
 ALIGN_MAX_DISTANCE_M = 10.0      # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
-DONE_TIMEOUT_S = {"drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "ad_marker": 15.0, "ad_connect": 15.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "ad_unload": 20.0, "ad_sell": 14700.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
+DONE_TIMEOUT_S = {"farm_drive": 14700.0, "drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "ad_marker": 15.0, "ad_connect": 15.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "ad_unload": 20.0, "ad_sell": 14700.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -253,7 +253,7 @@ class FS25World:
         # sent once it is set (CommandLink.command).
         self.cancel = None
         self._lock = threading.RLock()
-        self._reservations: dict[str, tuple[str, tuple[str, str]]] = {}
+        self._reservations: dict[str, tuple[str, tuple[str, ...]]] = {}
 
     # ------------------------------------------------------------ observation
     def _observe(self) -> Observation:
@@ -319,10 +319,46 @@ class FS25World:
             log.info("reserved tractor=%s wagon=%s for %s", ids[0], ids[1], owner)
             return True
 
+    def reserve_rig(self, ids: tuple[str, ...], owner: str) -> bool:
+        """Atomically reserve an observed root vehicle and every attached/belted unit."""
+        with self._lock:
+            if not owner or not 1 <= len(ids) <= 6 or len(set(ids)) != len(ids) or owner in self._reservations:
+                return False
+            observed = {i.id: i for i in self.snapshot()}
+            if any(i not in observed for i in ids):
+                return False
+            rig = [observed[i] for i in ids]
+            farm = rig[0].farm_id
+            if rig[0].category != "tractor" or rig[0].belted_to is not None:
+                return False
+            if any(i.farm_id != farm or i.reserved_by is not None or not i.available
+                   or i.busy or i.occupied or not i.stopped for i in rig):
+                return False
+            members = set(ids)
+            if any(i.attached_to not in (None, *members) or i.belted_to not in (None, *members) for i in rig):
+                return False
+            if any(i.id not in members and (i.attached_to in members or i.belted_to in members)
+                   for i in observed.values()):
+                return False
+            if any(i.id != rig[0].id and i.attached_to is None and i.belted_to is None for i in rig):
+                return False
+            self._reservations[owner] = (farm, tuple(ids))
+            log.info("reserved rig %s for %s", ids, owner)
+            return True
+
+    def farm_drive(self, vehicle_id: str, target: tuple[float, float], owner: str) -> None:
+        """Drive the reserved existing rig by Farmhand's game-side route follower."""
+        with self._lock:
+            reservation = self._reservations.get(owner)
+        if reservation is None or reservation[1][0] != vehicle_id:
+            raise StepFailed("NOT_RESERVED")
+        self._run("farm_drive", tractor=int(vehicle_id), x=float(target[0]), z=float(target[1]))
+
     def _reserved(self, tractor_id: str, owner: str, wagon_id: str | None = None) -> tuple[str, str]:
         with self._lock:
             reservation = self._reservations.get(owner)
-        if reservation is None or reservation[1][0] != tractor_id or wagon_id not in (None, reservation[1][1]):
+        if (reservation is None or reservation[1][0] != tractor_id
+                or (wagon_id is not None and wagon_id not in reservation[1][1:])):
             raise StepFailed("NOT_RESERVED")
         return reservation[1]
 

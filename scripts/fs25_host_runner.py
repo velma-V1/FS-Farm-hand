@@ -89,12 +89,12 @@ MOD_SETTINGS = ("modSettings", "FS25_Farmhand")
 LIVE_FOLDER = "livetest"
 # What install-current-build may copy: exactly the built mod and companion files
 # (= scripts/package_probe.py RUNTIME_FILES and APP_FILES; tests/test_livetest.py checks).
-MOD_FILES = ("modDesc.xml", "FarmhandObserve.lua", "FarmhandHitch.lua", "FarmhandBridge.lua", "FarmhandProbe.lua",
+MOD_FILES = ("modDesc.xml", "FarmhandObserve.lua", "FarmhandHitch.lua", "FarmhandDrive.lua", "FarmhandBridge.lua", "FarmhandProbe.lua",
              "translations/translation_en.xml")
 APP_FILES = ("adapters/fs25.py", "adapters/world.py", "companion/ai.py", "companion/bridge.py",
-             "companion/buildinfo.py", "companion/coordinator.py", "companion/executor.py", "companion/hitch.py",
+             "companion/buildinfo.py", "companion/coordinator.py", "companion/drive_goal.py", "companion/executor.py", "companion/hitch.py",
              "companion/language.py", "companion/livetest.py", "companion/model.py", "companion/run.py",
-             "companion/service.py", "companion/setup.py", "companion/voice.py", "protocol/command.schema.json",
+             "companion/service.py", "companion/setup.py", "companion/standalone.py", "companion/voice.py", "protocol/command.schema.json",
              "protocol/frame.schema.json", "protocol/intent.schema.json", "protocol/ipc.py", "protocol/model.py")
 BUILD_FILES = tuple(f"mod/{MOD_NAME}/{n}" for n in MOD_FILES) + tuple(f"app/{n}" for n in APP_FILES)
 MAX_BUILD_FILE_BYTES = 2_000_000

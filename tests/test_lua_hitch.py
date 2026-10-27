@@ -531,6 +531,24 @@ class LuaHitchTests(unittest.TestCase):
             self.assertEqual(self.hitch.commandKmh(speed), max(speed * 0.65, min(speed, 1)))   # under the limit
             self.assertLessEqual(self.drives(w)[-1]["maxSpeed"], self.hitch.commandKmh(speed))   # eased in from 1.5
 
+    def test_driver_can_command_below_the_three_kmh_ceiling(self):
+        w = self.world()
+        session, _ = self.align(w, maxSpeedKmh=3)
+        session.commandShare = 0.5
+        session.elapsed = 2000
+        self.hitch.drive(w.env, session, 100, True, 0, 3)
+        self.assertLessEqual(self.drives(w)[-1]["maxSpeed"], 1.5)
+
+    def test_travel_command_stays_below_the_64_kmh_ceiling(self):
+        w = self.world()
+        session, _ = self.align(w, maxSpeedKmh=3)
+        session.maxSpeedKmh = 64
+        session.commandKmh = 24
+        session.elapsed = 2000
+        session.driveStartMs = 0
+        self.hitch.drive(w.env, session, 100, True, 0, 12)
+        self.assertLessEqual(self.drives(w)[-1]["maxSpeed"], 24)
+
     def test_over_the_limit_the_reverse_stops_braked(self):
         w = self.world(gap=6)
         session, _ = self.align(w)

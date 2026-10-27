@@ -17,6 +17,7 @@ from companion import executor, hitch
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULES = ("FarmhandObserve.lua", "FarmhandHitch.lua", "FarmhandBridge.lua", "FarmhandProbe.lua")
+PACKAGED_MODULES = MODULES[:2] + ("FarmhandDrive.lua",) + MODULES[2:]
 
 WORLD = r"""
 local Probe, Observe, Hitch = ...
@@ -226,7 +227,7 @@ class LuaProbeTests(unittest.TestCase):
                     "function addConsoleCommand(name) commands[#commands + 1] = name end\n"
                     "function removeConsoleCommand(name) end\n"
                     "function getfenv() return {} end")
-        for name in MODULES:
+        for name in PACKAGED_MODULES:
             lua.execute((ROOT / "mod" / name).read_text())
         g = lua.globals()
         self.assertEqual(len(g.listeners), 2)                # bridge, probe
@@ -243,7 +244,7 @@ class LuaProbeTests(unittest.TestCase):
     def test_moddesc_loads_the_dependencies_first(self):
         desc = ET.parse(ROOT / "mod/modDesc.xml").getroot()
         files = [f.get("filename") for f in desc.iter("sourceFile")]
-        self.assertEqual(tuple(files), MODULES)
+        self.assertEqual(tuple(files), PACKAGED_MODULES)
         self.assertTrue(all((ROOT / "mod" / f).is_file() for f in files))
         self.assertEqual(desc.find("multiplayer").get("supported"), "false")
 

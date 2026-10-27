@@ -402,11 +402,14 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
     s.driveStartMs = s.driveStartMs or (s.elapsed or 0)
     local driven = (s.elapsed or 0) - s.driveStartMs
     if s.easeSteering ~= false then lx = lx * math.min(1, driven / S.steerRampMs) end
-    local command = Hitch.commandKmh(cap)
+    local command = s.commandKmh or (s.commandShare and math.max(math.min(cap, 1), cap * s.commandShare)
+        or Hitch.commandKmh(cap))
+    command = math.max(math.min(cap, 1), math.min(cap, command))
     local okF, _, fy = pcall(env.localDirectionToWorld, s.tractor.rootNode, 0, 0, 1)
     local downhill = okF and finite(fy) and ((forwards and fy < -S.downhillSine) or (not forwards and fy > S.downhillSine))
     if downhill then command = math.max(math.min(cap, 1), cap * S.downhillShare) end
     local v, flat = Hitch.measureSpeed(env, s)
+    s.measuredKmh = v
     local okR, reported = pcall(function() return s.tractor:getLastSpeed() end)
     reported = okR and finite(reported) and math.abs(reported) or nil
     if v ~= nil and v > (s.peakKmh or -1) then s.peakKmh, s.peakAlong, s.peakT = v, s.lastAlong, s.elapsed end
@@ -420,9 +423,10 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
     local mode = "drive"
     if v ~= nil and v > cap then
         mode = "over"
-    elseif v ~= nil and (v > cap * S.brakeShare or (downhill and v > command)) then
+    elseif v ~= nil and (v > cap * S.brakeShare or (s.commandKmh ~= nil and v > command + 1)
+            or (downhill and v > command)) then
         mode = "brake"
-    elseif v ~= nil and v > cap * S.coastShare then
+    elseif v ~= nil and (v > cap * S.coastShare or (s.commandKmh ~= nil and v > command)) then
         mode = "coast"
     end
     if downhill then s.downhillFrames = (s.downhillFrames or 0) + 1 end
@@ -1844,6 +1848,101 @@ local function unitBox(env, s, v)
     assert(finite(cx) and finite(top) and finite(cz))
     box.height = top - terrainAt(env, cx, cz)
     return box
+end
+
+-- A conservative box fixed to the drive vehicle for a proposed route. It includes
+-- every attached unit and every object held by its tension belts. This is a
+-- planning envelope: the live envelope still checks each unit at its actual pose.
+function Hitch.routeFootprint(env, tractor)
+    local ok, footprint = pcall(function()
+        local units, excluded = rigUnits(tractor)
+        local initial = #units
+        for index = 1, initial do
+            local belts = units[index].spec_tensionBelts
+            for _, data in pairs(belts ~= nil and belts.objectsToJoint or {}) do
+                if data.object ~= nil and not excluded[data.object] then
+                    assert(#units < Hitch.MAX_RIG_UNITS)
+                    excluded[data.object] = true
+                    units[#units + 1] = data.object
+                end
+            end
+        end
+        local x, _, z = world(env, tractor.rootNode)
+        local fx, _, fz = env.localDirectionToWorld(tractor.rootNode, 0, 0, 1)
+        assert(finite(fx) and finite(fz))
+        local towLength = 0
+        for index = 2, initial do
+            local unit = units[index]
+            local ux, _, uz = world(env, unit.rootNode)
+            if (ux - x) * fx + (uz - z) * fz < -0.5 then
+                local node = unit.steeringAxleNode or unit.rootNode
+                local ax, _, az = world(env, node)
+                towLength = math.max(towLength, math.sqrt((ax - x) ^ 2 + (az - z) ^ 2))
+            end
+        end
+        local frame = { last = { wx = x, wz = z }, dirX = fx, dirZ = fz }
+        local aMin, aMax, lMin, lMax, height = math.huge, -math.huge, math.huge, -math.huge, 0
+        for _, unit in ipairs(units) do
+            local box = unitBox(env, frame, unit)
+            aMin, aMax = math.min(aMin, box.aMin), math.max(aMax, box.aMax)
+            lMin, lMax = math.min(lMin, box.lMin), math.max(lMax, box.lMax)
+            height = math.max(height, box.height)
+        end
+        assert(height > 0 and aMax > aMin and lMax > lMin)
+        return { tractor = tractor, units = units, excluded = excluded, masks = collisionMasks(env),
+                 towLength = towLength,
+                 aMin = aMin, aMax = aMax, lMin = lMin, lMax = lMax, height = height }
+    end)
+    return ok and footprint or nil
+end
+
+-- true only when GIANTS' overlapBox can read the entire proposed rig pose,
+-- including the supporting terrain. Buildings, vehicles, trees and objects all
+-- block; neither the rig nor its belted cargo blocks itself. Nothing is passable.
+function Hitch.routePoseClear(env, foot, x, z, yaw, curvature)
+    if foot == nil or not (finite(x) and finite(z) and finite(yaw)) then return nil end
+    local ok, clear, reason, hits = pcall(function()
+        local side, ahead = (foot.lMin + foot.lMax) / 2, (foot.aMin + foot.aMax) / 2
+        local cx = x + math.sin(yaw) * ahead + math.cos(yaw) * side
+        local cz = z + math.cos(yaw) * ahead - math.sin(yaw) * side
+        local halfW = (foot.lMax - foot.lMin) / 2 + 0.5
+        if foot.towLength ~= nil and foot.towLength > 0 and finite(curvature) and math.abs(curvature) > 0.0001 then
+            local radius = 1 / math.abs(curvature)
+            local inside = math.sqrt(math.max(0, radius * radius - foot.towLength * foot.towLength))
+            halfW = halfW + math.min(foot.towLength, radius - inside)
+        end
+        local halfL = (foot.aMax - foot.aMin) / 2 + 0.5
+        local mission = env.g_currentMission
+        local samples = {}
+        for _, lateral in ipairs({ -halfW, 0, halfW }) do
+            for _, longitudinal in ipairs({ -halfL, 0, halfL }) do
+                local px = cx + math.sin(yaw) * longitudinal + math.cos(yaw) * lateral
+                local pz = cz + math.cos(yaw) * longitudinal - math.sin(yaw) * lateral
+                local groundY = terrainAt(env, px, pz)
+                local waterY = mission.environmentAreaSystem:getWaterYAtWorldPosition(px, groundY, pz)
+                if waterY ~= nil and (not finite(waterY) or waterY > groundY - 0.5) then return false, "WATER" end
+                samples[#samples + 1] = groundY
+            end
+        end
+        -- Adjacent samples at the front, middle and rear. A steep or unreadable
+        -- grade is not a proven route for an arbitrary rig.
+        local maxRise = math.tan(math.rad(22)) * halfL
+        for column = 1, 3 do
+            if math.abs(samples[column * 3] - samples[column * 3 - 1]) > maxRise
+                    or math.abs(samples[column * 3 - 1] - samples[column * 3 - 2]) > maxRise then
+                return false, "GRADE"
+            end
+        end
+        local body = boxQuery(env, foot.excluded, cx, cz, yaw, halfW, halfL, 0.3,
+                              foot.height + 0.5, foot.masks.obstacles)
+        local ground = boxQuery(env, foot.excluded, cx, cz, yaw, halfW * 0.8, halfL * 0.8,
+                                -0.5, 0.5, foot.masks.terrain)
+        if body == nil or ground == nil or ground.terrain == 0 then return nil, "COLLISION_UNREADABLE" end
+        if #body.hits > 0 then return false, "OBSTACLE " .. hitNames(env, body.hits), body.hits end
+        return true, nil
+    end)
+    if not ok then return nil, "QUERY_ERROR " .. tostring(clear) end
+    return clear, reason, hits
 end
 
 -- nil if [a0, a1] (any order) is clear for the rig's width with `side` margin and its height,
