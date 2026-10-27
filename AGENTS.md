@@ -1,360 +1,806 @@
-# Authoritative agent rules
+# FARMHAND — AUTHORITATIVE ENGINEERING CONTRACT
 
-Applies to the entire repository, to Codex, Claude, and every other coding agent.
-Read this file and BUILD_SPEC.md before editing. The user's current instructions
-have precedence; report conflicts instead of silently changing the scope.
+## 0. Required FS25 Reference
 
-## Mission and boundaries
-- Product scope (user-authorized 2026-10-18, replacing the earlier "forage wagon
-  only" task): a local autonomous farmhand/dispatcher. From a plain-language goal it
-  determines the required capabilities, equipment and materials, finds or buys
-  them through the game's own mechanisms, assembles, loads, travels, works, verifies
-  from game state, recovers within bounds and finishes. Grow it capability by
-  capability; each one qualified in the real game (tests/ACCEPTANCE.md matrix).
-- The production farmhand is LOCAL-FIRST. It runs on the user's Windows PC alongside
-  Farming Simulator 25. GitHub, hosted CI, and remote coding environments are
-  development tools only and must never become runtime dependencies.
-- Intended runtime: FS25 + game-side Lua mod + local Windows companion service +
-  local IPC. The planner/LLM, speech recognition, and TTS are local components unless
-  the user explicitly chooses otherwise later.
-- LLMs interpret language and choose high-level intent. They never supply Lua,
-  arbitrary commands, vehicle IDs to bypass selection, or physical control loops.
-- Deterministic executor: FIND → RESERVE → MOVE → ATTACH → VERIFY → DELIVER.
-  Completion requires observed attachment, arrival, and stopped equipment.
-- FS25 and existing mods perform physical work: GIANTS' own jobs (GOTO, field
-  work helpers), AutoDrive, and other installed mods where evidenced. No navigation,
-  pathfinding, driving, field-work, Courseplay, or AutoDrive replacements, and no
-  store-UI automation where a game API exists. Purchasing and field work are in
-  scope only through the game's own APIs, only for the requested job, and only
-  after the requirement, the item's fit and the farm's funds are checked.
-- User-authorized exceptions, all in mod/FarmhandHitch.lua, all steered by GIANTS'
-  AIVehicleUtil.driveToPoint and all hard-capped; never extend them into navigation:
-  1. HITCH's ALIGN_REVERSE, a bounded reverse of the last few metres that stops as
-     soon as GIANTS reports the exact planned joints attachable.
-  2. HITCH's LOCAL_MANEUVER (authorized 2026-10-18 after GIANTS' GOTO ended
-     NOT_REACHABLE 12-19 m off twice at 8ffafcc): forward only, inside a 25 m work
-     radius of the wagon's joint, from the observed joints onto the wagon's
-     centreline so ALIGN_REVERSE can take over. One closed-form curve, no search,
-     no retry; GOTO stays the provider for anything farther.
-  3. DETACH's PULL_CLEAR (authorized 2026-10-19 after GIANTS' agent stayed BLOCKED in
-     every direction next to a just-unhitched implement, live 23a8b1d881c7489b-4):
-     forward and straight only, at most 8 m, at most 3 km/h, only straight after
-     Farmhand's own successful detach while the joints are still within the close
-     separation threshold; stops on player takeover, person or vehicle conflict,
-     obstacle (no progress), stall, timeout or loss of reservation; the separation
-     from the detached implement must keep growing, and it stops as soon as it is
-     clear for normal navigation; every exit restores the temporary vehicle-control
-     state. The implement is never made passable and GIANTS' collision handling is
-     never weakened.
-  4. UNPARK (authorized 2026-10-20 after GIANTS' agent stayed BLOCKED from the first
-     frame inside the Large Shed, live 53c77d1e809645b3-3): only after GIANTS accepted
-     a target and its agent could not start the vehicle from where it stands (blocked,
-     or ended not_reachable, unmoved); never for an invalid destination, with a closed
-     door or gate within 15 m of the rig (refused UNPARK_DOOR_CLOSED: building doors are
-     never opened by Farmhand, the user 2026-10-20 after the Large Shed's wall shoved
-     four vehicles up to 11.7 m, live bfbc32565ecb4472-1), or for a vehicle already in
-     the open. Straight only, no turning: forward with whatever is attached, back only
-     with nothing attached; at most 20 m total, 3 km/h, 40 s; to the nearest exit only.
-     Before moving, GIANTS' own collision query (overlapBox, proven on the rig by its
-     own body and the terrain) must show the whole rig's swept volume (length, width,
-     height of every unit, 0.5 m either side) clear of buildings, beams, trees,
-     vehicles and objects; only the rig's own collision nodes and the terrain are
-     excluded, and an unreadable query is never clear. While moving it re-checks past
-     the leading end (at least 2 m, more with speed) and keeps PULL_CLEAR's guards
-     (takeover, player, vehicles, reservation, divergence, stall, timeout) and stops on
-     any change of the rig. One difference (the user, 2026-10-20, after the Open Hall
-     live run): PULL_CLEAR's 8 m / 6 m vehicle-root clearance applies to vehicles ahead
-     of the rig's leading end in the direction of travel; one beside or behind is
-     checked by its body with the margin and stops it if it moves; the player keeps
-     6 m / 4 m on every side. It ends braked and at rest only where the whole rig is out
-     from under any roof with 1.5 m clear all round and GIANTS' navigation map takes
-     the ground ahead; every exit restores the temporary vehicle-control state. Then
-     GIANTS gets the original target once, which must move it, else
-     UNPARK_HANDOFF_BLOCKED; a hitch re-plans from the exit (the user, 2026-10-20):
-     inside the 25 m local radius the bounded LOCAL_MANEUVER / ALIGN_REVERSE take over
-     with no GOTO, beyond it the one hand-off GOTO. One extraction per vehicle per parent job (its plan's
-     steps and next-tractor attempts included). Nothing is made passable, collisions
-     are never disabled, nothing is teleported, and no safety distance is loosened.
-  5. LOAD / UNLOAD (authorized 2026-10-20 for tractor transport; no GIANTS job or
-     installed mod drives a vehicle onto a deck: Universal Autoload moves pallets,
-     bales and bags only). Nothing is teleported, no collision is disabled, and travel
-     with the load stays GIANTS' or AutoDrive's. Each motion below is its own permission;
-     "live" lists what a live run has shown, nothing more:
-     - LOAD straight. Scope: the tractor alone, straight along the transport trailer's
-       axis up its rear ramps verified down through GIANTS' Foldable state, at most the
-       ramp plus deck length, stopping with its body inside the deck box (the tension
-       belts' span) at rest; the belts then fastened through GIANTS' TensionBelts and the
-       tractor observed belted and at rest. Start window: steering node within 0.5 m and
-       heading within 5 degrees of the axis, its front 0-3 m behind the trailer's rear.
-       Geometry assumed: GIANTS' size boxes bound each unit; the ramps and deck are the
-       trailer's own collision (excluded), the truck is not; the stub never climbs, so
-       physics on the ramps is known only from live runs. Live: d14230aa9fb24d30-2 (Series 9
-       alone, 1124 Deckover, 13.12 m) PASS; its speed was not then measured by Farmhand and
-       the LOAD runs' end readings were 1.98-4.74 km/h: requalification under the speed rule
-       below is pending.
-     - LOAD with a mounted implement (the user, 2026-10-21, "load the tractor and plow on the
-       gooseneck"): one implement on the three-point joint, lifted and, if it folds, folded;
-       only if the whole rig fits (the tractor inside the belt area, the rig forward to its
-       front less 0.3 m, the implement no farther back than the trailer's rear plus 0.25 m),
-       the swept volume and every check over the rig; it stops if the implement is lowered or
-       unfolded on the way. Nothing towed comes along. Geometry assumed: the implement's size
-       box contains it lifted (its low point over the ramps' foot is only observed live).
-       Live: 5f19b1c28f614266-1 (Series 9 + Titan plow) loaded and belted, but its end speed
-       read 4.14 km/h over the 3 km/h cap: not qualified. Requalified once under the governor:
-       7209dc3bcab34075-1 loaded and belted, peak 2.69 km/h, envelope no contact.
-     - Run-in (the user, 2026-10-21, "figure this out"; that instruction authorizes trying it,
-       it is not evidence that it is safe): LOAD may start up to 16 m behind the ramps' foot
-       and, unless already inside the start window, at least 6 m behind it, within 2.5 m and
-       25 degrees of the axis, steering onto the axis with driveToPoint (until 2026-10-22
-       4-12 m and 20 degrees; widened by Farmhand under the same instruction, not by the user:
-       live 3389dfbd1b564660-1 GIANTS' run-up left the Series 9 18.4 degrees turned, and
-       95b84283873043d7-1 from 4.1 m and 19 degrees it reached the foot still 10.5 degrees off);
-       its corridor is swept wide from where it stands to the ramps' foot and the rig's own
-       straight width on the ramps and deck; at the foot it must be inside the start window
-       (0.5 m, 5 degrees) or it stops there braked (NOT_LINED_UP_AT_RAMPS). Geometry assumed:
-       a mounted implement swings out behind the tractor while it steers; the wide corridor
-       is assumed to cover it (not computed), so the live envelope check below is what shows
-       the clearance. Live: 5f19b1c28f614266-1 at the foot 0.01 m off, 4.43 degrees (speed
-       not qualified, as above); 7209dc3bcab34075-1 from 5.7 degrees / 0.92 m off: at the foot
-       0.03 m, 2.40 degrees, peak 2.69 km/h (the attempt before it stopped at the foot 5.8
-       degrees off, NOT_LINED_UP_AT_RAMPS, braked, as designed).
-     - UNLOAD: belts released and observed released, ramps down, straight back off the ramps
-       under the same guards and caps until its front is 3 m behind the trailer's rear, then
-       the ramps up. Live: once (Series 9 alone, 2026-10-21, end reading 3.26 km/h): not
-       qualified on speed; 7209dc3bcab34075-1 (Series 9 + plow) 14.86 m, peak 2.49 km/h,
-       downhill braking, envelope no contact.
-     - BACKOFF (the user, 2026-10-21, "figure this out"; as for the run-in): a tractor (alone
-       or with that mounted implement) waiting at most 10 m behind the transport's rear (8 m until
-       live 95b84283873043d7-1, where the run-in's 6 m minimum made it needed), which
-       GIANTS' agent will not start there, straight back along its own heading, at most 8 m
-       at 3 km/h; refused unmoved unless the swept volume behind is clear in GIANTS' collision
-       query, no other vehicle (the transport aside) or person is near and the rig is as LOAD
-       allows; the transport watched while it moves; so GIANTS GOTO can line it up from the
-       run-up. Geometry assumed: straight back, the implement leading; its swept volume is the
-       rig box. Live: 2f6986868b5245f1-2 (Series 9 + plow) 8.01 m, lateral 0.00, end reading
-       3.02 km/h: not qualified; 7209dc3bcab34075-1 twice 8.00 m, peak 2.20 km/h, envelope no
-       contact.
-     Every one of them: GIANTS' collision query proven on the rig before it moves, the swept
-     volume clear, takeover, a readable seat, reservation, AI, divergence (0.3 m), distance, stall, timeout,
-     other vehicles and the player watched each frame, the trailer and truck unmoved (25 cm),
-     the ramps still down, latched braked and restored on every exit, and the speed and
-     envelope rules below.
-  6. ALONGSIDE (the user, 2026-10-21: "combine full, figure this out, quit stopping at every
-     small issue"; that instruction authorizes trying it, it is not evidence that it is safe;
-     GIANTS' helper cannot start a full combine, AutoDrive's unloader serves only a combine
-     whose AI runs, and GIANTS GOTO takes no spot under the pipe). Scope: only after the
-     standing combine's pipe is out (GIANTS Pipe) and GIANTS GOTO has brought the tractor and
-     its one towed trailer near the pipe's line behind it (the line through the pipe's
-     discharge point along the combine's heading): the tractor forward onto and along that
-     line with driveToPoint, at most 3 km/h and 25 m, until the trailer's middle reaches the
-     pipe point, ending within 0.8 m of it. Refused unmoved unless the tractor starts within
-     2.5 m and 15 degrees of the line, the trailer is swung at most 30 degrees, its middle is
-     behind the point, the rig's swept corridor is clear in GIANTS' collision query (the
-     combine is not excluded) and no other vehicle (the combine and its header aside) or
-     person is near; LOAD's guards while moving (never farther off the line than at the start
-     plus 0.3 m), and it stops if the combine moves or its pipe comes in. PASS: after the
-     overload, the pipe still out, on along the same line under the same guards and caps
-     until the rig's rear is 2 m past the combine's front (GIANTS would not start it from
-     beside the combine). Geometry assumed: the trailer's size-box middle is where the grain
-     lands; the pipe is above the trailer's top; a swung trailer straightens behind the
-     tractor (not modelled: it must end under the pipe or it fails ALONGSIDE_NOT_UNDER). The
-     grain moves by GIANTS' own discharge; a stop or takeover ends it and folds the pipe.
-     Live: 2bfa1536c9e2497b-1 under the pipe 17.97 m, end 0.06 m beside the point, end
-     reading 3.01 km/h; bc801c056bac4966-1 PASS 10.24 m, 2.93 km/h: requalification under the
-     speed and envelope rules pending.
-- Motion speed (the user, 2026-10-22: the 4.14 km/h LOAD reading broke the 3 km/h cap).
-  Every self-driven motion above has its session's limit (3 km/h, ALIGN/LOCAL at most 5 by
-  argument, default 3); driveToPoint's maxSpeed is only GIANTS' motor target, so Farmhand
-  measures the speed itself (the root's travel over the last 0.25 s) and governs that; GIANTS'
-  own per-frame reading is logged beside it but jitters (live c8668155205849e2-1: 0.88-3.22
-  km/h 0.12 s apart while the root travelled 1.2-2.2 km/h), so a GIANTS reading alone, such
-  as the 4.14, is reported, not the enforced measure. It commands 65 % of the limit (never
-  under 1 km/h; 85 % until live 1b18d8f457ce42fe-1, where the motor hunted +-0.5 km/h about
-  its target and touched 3.03), eases the motor's target in from 1.5 km/h to that over the
-  first 1.5 s, throttles in proportion to the margin left under a ceiling eased in from 0.15
-  to full over that time, takes the throttle off above 80 %, brakes a frame above 90 %
-  (downhill above the command), and above the limit ends the motion braked (OVERSPEED,
-  latched, never retried by itself); both readings are logged with a speed trace (every
-  0.1 s for 2 s, then 0.5 s). The limit is
-  never raised to make a run pass, and a run that went over it is not qualified.
-- Travel speed (the user, 2026-10-22: "the speed limit for farmhand is 40mph"; AutoDrive took
-  the loaded GMC at up to 103 km/h, it lost control over rail tracks and ended against a wall):
-  every drive Farmhand hands to AutoDrive runs under AutoDrive's own road and field limits
-  stepped down to 64 km/h (its decreaseSpeedLimit calls) before it starts; a drive Farmhand ends
-  gives the player's limits back; an AutoDrive whose limits cannot be read or set is not
-  started. Every op logs its vehicle's peak travel speed; GIANTS' own helpers (GOTO, Deliver,
-  field work) have no limit Farmhand sets yet, and their observed peaks decide what is needed.
-- Motion envelope: while LOAD / UNLOAD, BACKOFF and ALONGSIDE move, every unit of the rig
-  (the tractor, a mounted implement, a towed trailer) at its own pose, pitched as it is, is
-  asked of GIANTS' collision world every 0.1 s: anything within 0.15 m of a unit (but the rig,
-  the trailer it drives onto, and for BACKOFF the transport it backs away from) ends it braked
-  (ENVELOPE_CONTACT); what comes within 0.5 m is recorded. Kinematic stub tests prove the
-  state machines only; collision clearance is what these live observations show.
-- Keep Python orchestration in companion/, pure contracts in protocol/ and
-  adapters/, game-side Lua in mod/, synthetic state in simulator/, tests in tests/.
-  Never import simulator into companion or mod. No simulated success in real adapters.
+Before implementing or changing Farmhand behavior, use the shared FS25 Modding Toolkit as the primary local reference:
 
-## Goal-directed operation (the user, 2026-10-21)
-- A request is a goal, completed from the observed current state: what is already
-  done (hitched, loaded, belted, bought, delivered) is verified and the work continues;
-  it is never refused for that, nor repeated. A purchase is never made twice for one goal.
-- Autonomous delivery of a loaded transport (a trailer carrying a belted vehicle) is
-  AutoDrive's wherever it can do it. GIANTS GOTO does not start such a rig (build e91fc6c,
-  live d14230aa9fb24d30-3: its agent BLOCKED from the first frame by its own cargo). AutoDrive
-  counts belted cargo as the rig's own by its source: its sensors skip what checkIsConnected
-  calls connected, getHasObjectMounted, which GIANTS' AttacherJoints passes on to the towed
-  trailer and whose TensionBelts holds the cargo (an earlier record here said AutoDrive ignores
-  only what is mounted on the vehicle itself: that missed AttacherJoints' recursion and was
-  wrong). Why live 831d6868b9df40b0-1 (AutoDrive 3.0.1.4, FourFields) never moved is not known:
-  its drive now reports what AutoDrive waits on (planning onto its network, a sensor and what is
-  in its box, paused) and ends FAILED with it after 3 minutes unmoved. Found live 2026-10-22: a
-  vehicle Farmhand hands to AutoDrive must be kept awake (raised active each frame) or AutoDrive's
-  own update never runs, and AutoDrive drives only from a network waypoint with a route (the one
-  nearest the GMC at Riverbend's store is a dead end). Before loading, an empty transport that has
-  no route is taken by GIANTS GOTO onto the nearest waypoint that has one. So the loaded rig goes by
-  AutoDrive to a marker (made AutoDrive's own way where there is none: "Field N", or a farm
-  building by its own name); only when AutoDrive did not move it, or there is no AutoDrive or
-  marker, is the player asked for the smallest help (drive it to the destination, then
-  "continue"), recorded as assisted, never as autonomous delivery. AutoDrive's global traffic
-  detection is never turned off. FollowMe runs only when the player explicitly asks to be
-  followed; it never stands in for a point-to-point delivery.
-- One identity per job (the user, 2026-10-22): equipment selected for a job (a transport, a
-  truck, a tractor, an implement) is kept for all its steps; a changed circumstance is replanned
-  explicitly and said, never answered by silently picking other equipment.
-- The player's own play never cancels a job: walking, driving another vehicle, menus. Being
-  present, nearby or seated (a passenger seat or the driver's seat) is not a takeover (the
-  user, 2026-10-22: "being seated is not taking control"); during Farmhand's self-driven
-  motions GIANTS' player control of that vehicle is off, as under GIANTS' own AI, and restored
-  at their end. Actual control input (steering, throttle, brake) on a Farmhand-controlled
-  vehicle is the one explicit manual handoff: it yields at once, braked, and fails closed (the
-  job kept for "continue"), never two controllers.
-- Travel is complete only at the destination's usable spot (yard, field, parking): the end of
-  a road or recorded route hands over to a final approach; long drives are judged by movement
-  and provider state, not short fixed timeouts.
-- Implements go back where they were collected after their operation (pose kept across
-  reloads) unless the player said otherwise; bought equipment gets a designated home.
-- A run is autonomous only with no developer commands, manual positioning or hidden fixes;
-  assisted runs diagnose, they never qualify.
-- Unloading, storing and selling are separate (the user, 2026-10-22). "Unload the combine"
-  transfers its crop into a trailer and nothing more. A harvest's crop is sold or stored only
-  when the request says so ("harvest field 5 and sell the grain") or the player's saved harvest
-  policy does ("from now on sell the harvest"); otherwise it stays in the trailer, and with no
-  trailer room left the harvest waits and the player is asked where it goes. AutoDrive's
-  combine unloader (it delivers to a sell point) runs only for a harvest that is to be sold.
-- Completion is GIANTS' verdict and the field's measured state together: a harvest is done
-  only when GIANTS ended its helper FINISHED and a grid of samples over the whole field (up to
-  120, at least 4 m apart, plus the helper's track) shows 95 % cut; soil work, sowing and
-  spraying by GIANTS' density maps over the field's whole area; a contract only on GIANTS'
-  FINISHED status with finishState SUCCESS (its completion share logged) and the reward in the
-  farm's balance.
-- Unloading happens only on observed arrival at the intended destination's unloading
-  area. Stopping for traffic, a cancellation, a takeover or a failure never unloads.
-- AutoDrive configuration may be completed only through AutoDrive's own supported
-  mechanisms, with the minimum destination markers in the test save, the existing
-  network preserved and its configuration backed up first. No replacement navigation,
-  and creating markers is never made the player's routine job. One repair besides markers
-  (the user 2026-10-22: "inspect and configure the existing AutoDrive network using supported
-  mechanisms, preserving its configuration"): when AutoDrive's own path from the waypoint
-  nearest the vehicle ends in a dead end and a waypoint with a route to the destination lies
-  within 6 m of that end, continuing its direction (within 60 degrees, its next edge too), the
-  two are joined one way with AutoDrive's own setConnectionBetween, after the backup, and the
-  route confirmed by AutoDrive's own pathFromTo. Nothing else in the network is edited; a gap
-  that does not fit is reported.
-- Pause, a changed destination or equipment, a player takeover and resume keep the
-  original goal; nothing completed is repeated. After a reload or a companion restart
-  the job is reconciled with the observed world and the equipment re-identified.
-- Progress is reported from observed game state only: an accepted or pending command
-  is not proof that anything moves.
-- When the player's help is needed, ask for the smallest intervention and keep the job
-  so that "continue" resumes it.
-- Report implemented, automated-test-passed and live-qualified results separately;
-  one working combination never implies general equipment compatibility.
-- Field work goes on while Farmhand does something else (the user, 2026-10-21): once
-  GIANTS' helper works the field it is the game's own hired worker, its tractor and
-  implement stay reserved for it (no other job takes them, no stale-reservation recovery
-  stops it), and only after the helper is observed ended (no AI job, at rest) is the field
-  measured, the pair released and its equipment brought back. A next operation on the
-  same field follows behind the one ahead; STOP stops every helper Farmhand started, and
-  a lost companion heartbeat does not stop a helper already handed off (like a worker the
-  player hired).
-- Voice stays an optional front end; its further work is deferred.
+- Windows: `C:\\Users\\Matt\\Desktop\\FS25 Modding Toolkit`
+- WSL: `/mnt/c/Users/Matt/Desktop/FS25 Modding Toolkit`
+- Master guidance: `skills/fs25-master-skill/SKILL.md`
 
-## Safe collaboration
-- Work on a dedicated branch. Inspect git status before edits; preserve others'
-  changes. Agree file ownership before concurrent edits; do not share a mutable
-  checkout between writers. No force pushes, merges, or main-branch product edits
-  unless the user explicitly requests them.
-- Change shared schemas and all consumers together. Version incompatible contracts.
-- Do not claim success from command acknowledgement alone. Fail closed on invalid
-  intent, missing capability, ownership conflict, stale/busy equipment, or uncertain
-  observations. Never take occupied equipment or another farm's assets.
-- Reservations must be atomic for both units. Stop before releasing ownership after
-  physical work; retain reservations if stopping cannot be confirmed.
-- Do not add retries, persistence, network transports, dependencies, or scaffolding
-  without a demonstrated requirement. No secrets or paid model calls in tests.
+Use the toolkit before guessing about GIANTS behavior, FS25 APIs, provider mechanics, vehicle systems, pathfinding, attachments, fieldwork, cargo, heavy equipment, or reusable mod code.
 
-## Development workflow and runtime boundary
-- Keep unfinished project work off the user's PC until a genuine live FS25 test is
-  required. GitHub and remote CI may be used for source control, development,
-  review, static checks, mock tests, and release packaging before that point.
-- This remote development workflow does NOT change the local runtime architecture.
-- The finished farmhand must be able to run locally beside FS25 without GitHub or a
-  hosted service being required for ordinary operation.
-- Development-only live tests (user-authorized 2026-10-18): the host runner
-  `scripts/fs25_host_runner.py`, started by the user outside the agent's sandbox,
-  performs only its fixed allowlist (status, install the checkout's build (also under a
-  running FS25, never under a running job: the mod takes effect when the save is next
-  loaded from the main menu; the user, 2026-10-20: reload save 2 from the menu, relaunch
-  FS25 only when unavoidable), launch
-  FS25 by Windows' activation of its installed package (fixed AppUserModelID), else
-  its package's own gamelaunchhelper.exe, else its exe — fixed paths —,
-  restart or stop FS25 — that image only —, a screenshot of the FS25 window to a fixed
-  file, one click inside that window or one key of a fixed list (the game's own menu
-  controls; never while a job or test runs), OK on the Xbox "Sign In Required" dialog
-  (that title and its fixed owner processes only), the production hitch_pair, the player's
-  own typed words through the production rules (letters, digits, spaces, light
-  punctuation; 160 at most), STOP, collect). Never widen it into a shell, file or
-  program interface, and never ship it or `--live-test` as release.
-- Live FS25 behavior, Windows service behavior, local IPC, local model execution,
-  speech, and game/mod integration must eventually be verified on the user's PC.
+Reference priority:
 
-## Evidence and reuse
-- Before adding an external adapter, inspect the exact upstream FS25 version,
-  license, API, capabilities, and failure semantics. Record the evidence and version.
-  Prefer a thin adapter; no vendoring/forking absent license review and demonstrated need.
-- Never invent GIANTS or mod API calls. Unsupported remains unsupported.
-- Keep mock contracts explicitly distinct from upstream APIs and physics.
-- Add behavior tests before implementation. Vary IDs, inventory order, eligibility,
-  compatibility, and failures. Do not weaken tests to hide a failure.
-- Run `python scripts/check.py` before proposing a change. Inspect `git diff --check`
-  and the final tree. Report commands/results, implemented vs mocked, and limitations.
-- Passing CI tests never proves mod loading, game physics, attach alignment, route
-  reachability, local IPC, Windows service behavior, multiplayer, or actual FS25 integration.
+1. exact installed FS25 dataS
+2. Community LUADOC
+3. UsedPlus FS25 AI Coding Reference
+4. applicable FS25 skills/guides
+5. community dataS
+6. provider source
+7. web only when local references are insufficient
 
-## Shared FS25 Modding Toolkit (Codex and Claude Code)
-- For significant FS25 API, Lua, provider, or control work, use the local toolkit at
-  `/mnt/c/Users/Matt/Desktop/FS25 Modding Toolkit` (Windows:
-  `C:\Users\Matt\Desktop\FS25 Modding Toolkit`). Read its `VERSION.md` and
-  `indexes/providers.md`; search its sources before inventing FS25 behavior.
-- Follow this evidence order: exact installed-game `references/installed-datas`;
-  Community LUADOC; UsedPlus AI Coding Reference; applicable FS25 skills and guides;
-  community dataS; relevant provider source (AutoDrive, Courseplay, Universal Autoload,
-  TerraFarm, FollowMe, and others); web/community research only when local evidence is
-  insufficient. Installed dataS is decompiled, so account for its documented caveats.
-- Prefer **existing GIANTS/provider behavior > thin Farmhand adapter > custom Farmhand
-  implementation**. Farmhand owns intent, target/resource resolution, planning,
-  reservations, sequencing, provider selection/handoff, verification, recovery/replanning,
-  and cross-provider coordination. Do not duplicate reliable provider navigation,
-  fieldwork, transport, cargo handling, excavation, forestry, or physical machine control
-  unless source evidence shows the needed capability is missing.
-- Before adding substantial FS25 Lua/control behavior, establish from exact source evidence
-  the relevant API/function, prerequisites, start mechanism, observable state, safe STOP or
-  cancel behavior, authoritative completion condition, and limitations. Record the source
-  path and version in `adapters/EVIDENCE.md` when it supports a Farmhand adapter.
-  A start, acknowledgement, animation, callback, or successful API call alone does not
-  prove physical completion; verify the requested in-game outcome and stopped equipment.
-- Codex agents use the installed `fs25-master-skill` when relevant. Claude Code and other
-  agents use the same toolkit files and source hierarchy directly. These shared rules live
-  here in `AGENTS.md`; no separate Claude instruction file is required.
-- Toolkit research does not expand Farmhand's authorized motion, change its local-first
-  runtime, or permit copying provider source into Farmhand.
+Agents must inspect the relevant toolkit/source first and reuse proven mechanisms where practical.
+
+---
+
+## 1. Mission
+
+Farmhand is a **standalone, universal, autonomous Farming Simulator 25 worker and AI companion**.
+
+The player communicates naturally. Farmhand determines how to accomplish the requested goal using the current world, available equipment, game mechanics, and its own capabilities.
+
+Primary loop:
+
+`USER GOAL → UNDERSTAND → OBSERVE → RESOLVE → PLAN → ACT → VERIFY → RECOVER/REPLAN → COMPLETE`
+
+Farmhand should feel like another competent person working on the farm with the player.
+
+**KEEP CAPABILITY; MINIMIZE IMPLEMENTATION.**
+
+**ONLY BETTER, NEVER WORSE.**
+
+Every patch, fix, bridge, adapter, workaround, or subsystem change must be the smallest general change that solves the real problem while preserving or improving all existing user-visible Farmhand capability.
+
+Prefer:
+
+`smallest general fix → maximum retained capability → minimum new complexity`
+
+Do not:
+
+- replace a broad working capability with a narrower one
+- add policy that blocks previously valid user actions
+- duplicate systems when a small bridge or adapter is enough
+- introduce a new dependency when a small reusable component solves the gap
+- weaken reliability, autonomy, generality, usability, or player control just to make a test pass
+
+A change is not an improvement if it fixes one case by making Farmhand less capable elsewhere.
+
+Do not sacrifice product capability merely to simplify tests or architecture.
+
+---
+
+## 2. Product Standard
+
+The player states **what they want**, not how Farmhand must implement it.
+
+Examples:
+
+- `take the GMC and Series 9 to field 5`
+- `unhitch the trailer`
+- `bring the roller back to the farm`
+- `buy another tractor`
+- `sell the old trailer`
+- `load these pallets`
+- `take this grain to the sell point`
+- `harvest field 7`
+- `follow me`
+- `move that excavator over there`
+- `clear those trees`
+- `dig this area`
+- `what should I plant here?`
+- normal questions, conversation and roleplay
+
+Farmhand owns the implementation.
+
+The user must not need to understand:
+
+- internal command names
+- provider states
+- AutoDrive markers
+- Courseplay jobs
+- pathfinder names
+- recorded homes
+- internal IDs
+- test infrastructure
+
+---
+
+## 3. Single-Command Autonomous Operation
+
+**Every Farmhand task must be executable autonomously from nothing more than a normal typed or spoken command, prompt, sentence, phrase, or conversational request from the user.**
+
+The user specifies the goal. The user does **not** manually perform or coordinate the intermediate steps.
+
+The AI model is responsible for:
+
+- communicating naturally with the user
+- understanding intent and context
+- asking only genuinely necessary clarifying questions
+- selecting and invoking the appropriate Farmhand capabilities
+- explaining progress, results, or real blockers
+
+Farmhand is responsible for:
+
+- converting that intent into executable game actions
+- operating FS25's functions, systems, vehicles, equipment, interfaces, and mechanics
+- operating the capabilities incorporated into Farmhand from other mods
+- sequencing all required intermediate actions
+- recovering and replanning when an action fails
+- verifying the physical result
+
+The required relationship is:
+
+`USER ↔ AI MODEL → FARMHAND → FS25`
+
+The AI model communicates and decides **what Farmhand needs to accomplish**.
+
+Farmhand determines and executes **how to accomplish it inside the game**.
+
+The user must never be required to manually orchestrate a task that Farmhand has the physical/game capability to perform.
+
+---
+
+## 4. Standalone Architecture
+
+Farmhand must provide its **core worker capability without requiring other gameplay mods**.
+
+Other mods are source material or optional accelerators.
+
+Farmhand owns:
+
+- natural-language intent
+- conversation/context
+- world observation
+- equipment identification
+- persistent identity
+- attachment/cargo relationships
+- equipment selection
+- planning
+- task sequencing
+- driving
+- hitch/detach
+- loading/unloading
+- equipment operation
+- purchasing/selling
+- storage/delivery
+- recovery/replanning
+- STOP/cancel
+- verification
+- persistent task state
+- user-facing responses
+
+Farmhand remains the single coordinator.
+
+Only one controller owns a vehicle or machine at a time.
+
+---
+
+## 5. Reuse Existing Proven Work
+
+Do not unnecessarily recreate systems already solved well.
+
+Use the local FS25 Modding Toolkit and available source from:
+
+### Courseplay
+Useful for:
+
+- Hybrid A*
+- A*
+- JPS
+- Dubins
+- Reeds-Shepp
+- field course generation
+- vehicle dimensions
+- collision/path constraints
+- proximity
+- pure pursuit
+- field operation logic
+
+### AutoDrive
+Useful for:
+
+- road routing
+- pathfinding concepts
+- road network information
+- collision/slope/water checks
+- speed control
+- turn behavior
+- obstacle/stuck detection
+
+### GIANTS FS25
+Use native:
+
+- vehicle controls
+- world state
+- AI/navigation data
+- traffic/road splines
+- terrain information
+- attachment mechanics
+- production/economy/store systems
+- field systems
+- equipment specializations
+
+### Other useful sources
+- FollowMe → following/convoys
+- Universal Autoload → cargo/loading
+- TerraFarm → digging/material/terrain operations
+- GPS/WayPoint systems → road and last-mile routing concepts
+- forestry mods/tools → specialized forestry behavior
+
+Port/adapt only useful pieces.
+
+Do not import unnecessary:
+
+- menus
+- configuration frameworks
+- duplicate coordinators
+- complete competing job managers
+- redundant state systems
+
+External mods may still be supported optionally, but **Farmhand must not become dependent on them for ordinary worker behavior**.
+
+---
+
+## 6. Universal World and Map Requirement
+
+Farmhand must work on **any normal FS25 map**, including:
+
+- base-game maps
+- mod maps
+- sandbox maps
+- maps with roads
+- maps with poor road networks
+- maps with no predetermined routes
+- farms created entirely by the player
+
+Do not hardcode Riverbend, specific fields, fixed coordinates, named roads, specific equipment, or known layouts.
+
+Discover the world at runtime.
+
+Farmhand must reason from:
+
+- terrain
+- roads/splines when available
+- traversable ground
+- obstacles
+- buildings
+- fields
+- productions
+- sell points
+- shops
+- placeables
+- equipment
+- player-created areas
+
+---
+
+## 7. Universal Driving Contract
+
+Authoritative rule:
+
+> If a competent player can drive the SAME selected vehicle or rig from its current position to the requested destination using normal FS25 controls, Farmhand should ultimately be capable of doing the same autonomously.
+
+Routes must not require:
+
+- predefined AutoDrive routes
+- AutoDrive markers
+- roads
+- predetermined paths
+- predetermined passages
+
+Farmhand must support:
+
+- road driving
+- farmyards
+- fields
+- trails
+- open terrain
+- off-road travel
+- arbitrary destinations
+- player-created farms
+- last-mile movement
+- reversing
+- trailers
+- articulated/long equipment where practical
+
+Navigation:
+
+`DESTINATION`
+→ determine usable operational pose
+→ use road route where helpful
+→ generate missing route
+→ create off-road/last-mile connection
+→ account for current rig
+→ drive
+→ observe
+→ recover/replan
+→ arrive
+→ stop
+→ verify
+
+Provider failure is not destination failure.
+
+These alone must never terminate the objective:
+
+- `AD_NO_PATH`
+- AutoDrive has no destination
+- AutoDrive has no marker
+- GIANTS helper refuses the rig
+- Courseplay has no applicable job
+- another provider is unavailable
+
+Only actual physical limitations or genuinely exhausted Farmhand capability justify terminal navigation failure.
+
+Never tell the player to drive it manually merely because one provider failed.
+
+---
+
+## 8. Equipment and Rig Understanding
+
+Farmhand must understand the **current assembled physical configuration**.
+
+Example:
+
+`GMC → Deckover → belted Series 9`
+
+is an existing transport rig.
+
+If the player says:
+
+`take the GMC and Series 9 to field 5`
+
+Farmhand preserves and moves that existing rig.
+
+Do not incorrectly convert it into:
+
+- find tractor
+- find implement
+- fetch pair
+- detach
+- rehitch
+- rebuild rig
+
+Explicit names mean exact equipment.
+
+Generic terms may select suitable equipment:
+
+- tractor
+- truck
+- trailer
+- cultivator
+- harvester
+- loader
+- excavator
+
+Contextual terms must work when unambiguous:
+
+- it
+- this
+- that
+- rig
+- trailer
+- machine
+- tractor
+
+Ask only the smallest necessary clarification when genuinely ambiguous.
+
+---
+
+## 9. Hitching / Detaching / Equipment Configuration
+
+Farmhand owns:
+
+- finding compatible equipment
+- approaching
+- alignment
+- reversing
+- hitching
+- attachment verification
+- PTO/connection state where applicable
+- detaching
+- folding/unfolding
+- straps/belts
+- configuration sequencing
+
+Explicit user intent overrides convenience policy.
+
+Example:
+
+`unhitch the trailer`
+
+means:
+
+`identify → stop safely → detach here → verify → COMPLETE`
+
+A recorded home is **not required**.
+
+Homes are useful for autonomous parking/put-away behavior only.
+
+---
+
+## 10. Loading / Unloading / Transport
+
+Farmhand must support transportation workflows including:
+
+- trailers
+- flatbeds
+- vehicles on trailers
+- implements
+- pallets
+- bales
+- grain
+- seed
+- fertilizer
+- liquids
+- logs
+- supported bulk/material cargo
+
+General loop:
+
+`find/load cargo`
+→ `secure/configure`
+→ `transport`
+→ `position`
+→ `unload`
+→ `verify`
+
+Use existing proven loading systems where useful, but Farmhand owns the objective and verification.
+
+---
+
+## 11. Farming and Field Work
+
+Farmhand should ultimately support:
+
+- cultivating
+- plowing
+- seeding
+- planting
+- fertilizing
+- spraying
+- rolling
+- mowing
+- tedding
+- windrowing
+- baling
+- harvesting
+- collecting
+- transporting
+- field preparation
+- appropriate implement selection
+
+Use proven field-course and machine-control algorithms rather than recreating them unnecessarily.
+
+---
+
+## 12. Economy / Store / Business Operations
+
+Farmhand must be able to reason about and, when authorized, perform economic actions involving:
+
+- vehicles
+- tractors
+- trucks
+- trailers
+- implements
+- attachments
+- equipment
+- products
+- seed
+- fertilizer
+- crops
+- pallets
+- bales
+- materials
+- livestock-related products where supported
+
+Required classes of actions:
+
+- inspect available equipment
+- determine compatibility
+- buy
+- lease where supported
+- sell
+- deliver purchases
+- transport products
+- choose sell points
+- sell products
+- move goods into/out of storage
+- use productions
+- assist with farm/business decisions
+
+Irreversible or expensive actions must respect authorization policy, but Farmhand should not create unnecessary confirmation loops.
+
+---
+
+## 13. Heavy Equipment / Construction / Forestry
+
+Farmhand is not limited to tractors.
+
+It should ultimately operate supported:
+
+- excavators
+- dozers
+- wheel loaders
+- skid steers
+- telehandlers
+- forestry harvesters
+- forwarders
+- loaders
+- trucks
+- cranes
+- other controllable equipment
+
+Tasks may include:
+
+- driving
+- positioning
+- digging
+- grading
+- loading
+- unloading
+- moving material
+- tree cutting
+- processing
+- log handling
+- transport
+
+Use TerraFarm/forestry/provider mechanics where valuable, but integrate required capability into Farmhand's autonomous worker model.
+
+---
+
+## 14. AI Companion
+
+Farmhand is also a companion, not only an executor.
+
+It must support:
+
+- normal conversation
+- farming questions
+- equipment questions
+- explanations
+- planning
+- recommendations
+- farm/business assistance
+- context-aware dialogue
+- roleplay/personality
+- discussion while work is occurring
+
+Execution and conversation share context.
+
+The player should be able to ask things such as:
+
+- `what are you doing?`
+- `why did you stop?`
+- `what should we plant next?`
+- `how much grain do we have?`
+- `what tractor would work here?`
+- casual conversation/roleplay
+
+Conversation must not corrupt active task state.
+
+---
+
+## 15. Explicit Intent and Internal Policy
+
+User intent is the objective.
+
+Internal policies exist to help accomplish it, not to block reasonable explicit commands.
+
+Examples:
+
+- no equipment home → does not block explicit detach
+- no AutoDrive route → does not block driving
+- provider refuses → does not end objective
+- currently assembled rig → preserve it unless change requested
+
+Do not create arbitrary restrictions merely because they simplify implementation.
+
+---
+
+## 16. Failure Semantics
+
+Keep failures layered.
+
+### Interpretation
+Farmhand genuinely cannot determine requested action.
+
+### Resolution
+Requested equipment/place/object cannot be uniquely resolved.
+
+### Authorization
+Action requires authorization that is absent.
+
+### Planning
+No valid plan has yet been constructed.
+
+### Execution/provider
+A chosen execution method failed.
+
+### Physical
+Actual world geometry/physics prevents the action.
+
+Do not report downstream failures as:
+
+`NOT_UNDERSTOOD`
+
+Do not expose provider implementation details unnecessarily.
+
+Farmhand should attempt recovery/replanning before returning failure.
+
+---
+
+## 17. Verification
+
+Command acceptance is not completion.
+
+Farmhand verifies actual world outcome.
+
+Examples:
+
+- vehicle physically arrived
+- trailer is actually detached
+- implement actually attached
+- cargo actually loaded/unloaded
+- product actually sold
+- purchase actually exists
+- field operation actually occurred
+- machine actually stopped safely
+
+Insufficient proof means incomplete/unverified, not success.
+
+---
+
+## 18. Persistence and Recovery
+
+A task must survive reasonable interruption/restart without becoming a different task.
+
+Persist enough identity/state to preserve:
+
+- objective
+- exact equipment
+- attachments
+- cargo
+- destination
+- progress
+- authorization
+- reservations
+
+Recovery must never silently substitute the wrong vehicle/rig/objective.
+
+---
+
+## 19. Teleport
+
+Teleport may exist as an explicit optional capability.
+
+Modes may include:
+
+- Drive only
+- Ask before teleport
+- Allow teleport recovery
+
+Normal autonomous behavior uses physical gameplay.
+
+Never silently teleport because navigation became difficult.
+
+---
+
+## 20. Development Method
+
+Do not perform broad audits while an important player-facing behavior is broken.
+
+Fix vertically through the actual product.
+
+Required loop:
+
+`REAL Alt+K FAILURE`
+→ `ROOT CAUSE`
+→ `SMALLEST GENERAL FIX`
+→ `FOCUSED TEST`
+→ `REAL Alt+K RETEST`
+
+Once live behavior works:
+
+→ relevant regression suite
+→ full `scripts/check.py`
+→ `git diff --check`
+→ inspect
+→ one logical commit
+→ install exact build
+→ final live verification
+
+Do not burn model usage repeatedly running full gates after tiny edits.
+
+Do not abandon the current failing command to work on unrelated easier features.
+
+Do not create phrase-specific fixes where a general semantic/mechanical fix is possible.
+
+---
+
+## 21. Live Acceptance
+
+The actual FS25 Farmhand interface is authoritative.
+
+A capability is not LIVE-QUALIFIED merely because:
+
+- unit tests pass
+- mocked tests pass
+- interpreter JSON is correct
+- runner request succeeds
+- provider accepts the command
+
+LIVE-QUALIFIED means the player requests the action through Farmhand and the correct physical result occurs in FS25.
+
+---
+
+## 22. Immediate Blocking Acceptance Gate
+
+Before unrelated expansion, make these work through actual Alt+K:
+
+### A
+`unhitch the trailer`
+
+Expected:
+
+`stop → detach current trailer here → verify → COMPLETE`
+
+### B
+`take the GMC to the farm barn`
+
+Expected:
+
+`resolve exact GMC/current rig → route → physically drive → stop → verify → COMPLETE`
+
+### C
+`take the GMC and Series 9 to field 5`
+
+Expected:
+
+`resolve existing GMC + Deckover + belted Series 9 → preserve rig → autonomously route anywhere traversable → drive → stop → verify → COMPLETE`
+
+No:
+
+- fetch/re-hitch mistake
+- home requirement
+- AutoDrive marker requirement
+- `drive it yourself`
+
+---
+
+## 23. Runtime Discipline
+
+Preserve a known-working Xbox/Game Pass FS25 process.
+
+Do not kill/restart FS25 merely to activate normal Farmhand changes.
+
+Prefer:
+
+`build/install → unload save → reload save → verify exact build`
+
+Codex/Claude must manage Farmhand development-runner restarts themselves when possible.
+
+Do not make the user perform routine terminal work the agent can perform.
+
+---
+
+## 24. Engineering Priorities
+
+In priority order:
+
+1. usable end-to-end behavior
+2. correctness
+3. recovery/reliability
+4. generality
+5. reuse of proven code
+6. maintainability
+7. test coverage
+8. documentation/polish
+
+Tests serve the product.
+
+The product does not serve the tests.
+
+---
+
+## 25. Final Definition
+
+Farmhand is complete when it behaves like a reliable additional farm worker and companion rather than a collection of automation providers.
+
+The player should be able to give **one natural typed or spoken request** and then let Farmhand perform the entire task autonomously.
+
+The AI model communicates with the player and directs Farmhand.
+
+Farmhand operates FS25 and its integrated standalone capabilities.
+
+**The player tells Farmhand what needs done. Farmhand figures out and performs everything required to do it.**
