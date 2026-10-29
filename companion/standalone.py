@@ -14,19 +14,24 @@ from companion.drive_goal import GoalError, resolve_drive_goal
 from protocol.model import Result
 
 ARRIVE_M = 3.0   # a place's point; for a field, any rig unit this close to its edge
+CLEAR_M = 15.0   # a field-edge target keeps this far from equipment outside the rig
 
 
-def _edge_point(outline, point):
-    """The point on the closed outline nearest ``point``, and its distance."""
+def _edge_point(outline, point, avoid=()):
+    """The point on the closed outline nearest ``point`` and at least CLEAR_M from
+    every position in ``avoid``, and its distance (None, inf if there is none)."""
     best, best_d = None, math.inf
     for (ax, az), (bx, bz) in zip(outline, outline[1:] + outline[:1]):
         dx, dz = bx - ax, bz - az
         length2 = dx * dx + dz * dz
         t = 0.0 if length2 == 0 else max(0.0, min(1.0, ((point[0] - ax) * dx + (point[1] - az) * dz) / length2))
-        candidate = (ax + dx * t, az + dz * t)
-        d = math.dist(candidate, point)
-        if d < best_d:
-            best, best_d = candidate, d
+        steps = int(math.sqrt(length2)) if avoid else 0
+        # The projection first; with something parked on the edge, every metre of it.
+        for s in (t, *(i / steps for i in range(steps + 1) if steps)):
+            candidate = (ax + dx * s, az + dz * s)
+            d = math.dist(candidate, point)
+            if d < best_d and all(math.dist(candidate, a) >= CLEAR_M for a in avoid):
+                best, best_d = candidate, d
     return best, best_d
 
 
@@ -53,8 +58,9 @@ class StandaloneMove:
     def __init__(self, world):
         self.world = world
 
-    def _target(self, command, start):
-        """The drive's point and, for a field, its outline (else ())."""
+    def _target(self, command, start, avoid=()):
+        """The drive's point and, for a field, its outline (else ()). A field's edge
+        point stays clear of the ``avoid`` positions (equipment outside the rig)."""
         from companion.executor import resolve_place, standoff_pose, valid_position
 
         wanted = command["target"]
@@ -84,7 +90,8 @@ class StandaloneMove:
                 return matches[0].position, ()
             # From point A to the nearest point of the field's edge: arriving
             # there, or anywhere along the edge, is arriving at the field.
-            return _edge_point(outline, start.position)[0], outline
+            point = _edge_point(outline, start.position, avoid)[0] or _edge_point(outline, start.position)[0]
+            return point, outline
         if wanted["type"] == "autodrive_marker":
             matches = [p for p in self.world.destinations() if p.id == str(wanted["id"])]
             if len(matches) != 1 or not valid_position(matches[0].position):
@@ -110,7 +117,11 @@ class StandaloneMove:
                      and all(w in (i.name or "").casefold() for w in command["tractor_name"].casefold().split())]
             if len(named) != 1:
                 raise GoalError("VEHICLE_AMBIGUOUS" if named else "VEHICLE_UNAVAILABLE")
-            target, outline = self._target(command, named[0])
+            # The rig first (its units never block its own target), then the target.
+            from companion.executor import valid_position
+            rig = resolve_drive_goal(items, farm_id, command["tractor_name"], command.get("cargo_name"), (0.0, 0.0))
+            avoid = tuple(i.position for i in items if i.id not in rig.rig_ids and valid_position(i.position))
+            target, outline = self._target(command, named[0], avoid)
             goal = resolve_drive_goal(items, farm_id, command["tractor_name"], command.get("cargo_name"), target)
             ids = goal.rig_ids
             enter("RESERVE")

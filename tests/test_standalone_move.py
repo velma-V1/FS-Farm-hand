@@ -3,7 +3,7 @@ from dataclasses import replace
 import math
 import unittest
 
-from companion.standalone import StandaloneMove
+from companion.standalone import CLEAR_M, StandaloneMove, _edge_point
 from companion.executor import Executor
 from protocol.model import Destination, Equipment
 
@@ -135,6 +135,22 @@ class StandaloneMoveTests(unittest.TestCase):
                                                 "tractor_name": "gmc",
                                                 "target": {"type": "field_entrance", "field": 5}})
         self.assertEqual(result.status, "COMPLETE")   # the root 10 m out, its trailer on the field
+        self.assertEqual(world.calls[1][2], (-640.0, 215.0))   # its own trailer never pushes the target
+
+    def test_a_field_edge_point_held_by_parked_equipment_moves_along_the_edge(self):
+        # Live: the GMC rig was sent to the edge point a parked 3650 and its stand stood on.
+        truck = unit("611", "GMC Sierra", "tractor", position=(-700.0, 215.0))
+        parked = unit("615", "3650", "tractor", attached="614", position=(-641.0, 216.0))
+        stand = unit("614", "Solid Stand", "implement", attached="615", position=(-640.0, 212.0))
+        world = World((truck, parked, stand))
+        result = StandaloneMove(world).execute({"request_id": "p", "farm_id": "1", "task": "move_pair",
+                                                "tractor_name": "gmc",
+                                                "target": {"type": "field_entrance", "field": 5}})
+        self.assertEqual(result.status, "COMPLETE")
+        target = world.calls[1][2]
+        self.assertAlmostEqual(_edge_point(FIELD_5, target)[1], 0.0, places=6)
+        self.assertGreaterEqual(min(math.dist(target, p) for p in ((-641.0, 216.0), (-640.0, 212.0))), CLEAR_M)
+        self.assertLess(math.dist(target, (-700.0, 215.0)), 70.0)   # still the near side, not across the field
 
 
 if __name__ == "__main__":
