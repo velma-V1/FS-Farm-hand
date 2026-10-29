@@ -265,17 +265,30 @@ class CommandFramingTests(unittest.TestCase):
         self.assertEqual(ids, sorted(set(ids)))                    # never reused
 
     def test_acknowledgement_is_not_completion(self):
-        cases = {"unread": (StepFailed, "NOT_ACCEPTED"), "lost": (StepUnverified, "NO_ACCEPTANCE"),
+        # An unread stop is never withdrawn (live bb8dc55381b14a54-1: a stalled game resumed
+        # a drive whose removed stop it never saw); it stays for the game and is unverified.
+        cases = {"unread": (StepUnverified, "NO_ACCEPTANCE"), "lost": (StepUnverified, "NO_ACCEPTANCE"),
                  "REJECTED:BUSY": (StepFailed, "REJECTED_BUSY"), "no_terminal": (StepUnverified, "RESULT_TIMEOUT")}
         for fault, (error, code) in cases.items():
             with self.subTest(fault=fault):
                 game = FakeGame(faults={"stop": fault})
                 self.addCleanup(game.stop)
-                with unittest.mock.patch.object(bridge, "ACCEPT_TIMEOUT_S", 0.2), \
+                with unittest.mock.patch.object(bridge, "STOP_ACCEPT_TIMEOUT_S", 0.2), \
                         unittest.mock.patch.dict(bridge.DONE_TIMEOUT_S, {"stop": 0.2}):
                     with self.assertRaises(error) as caught:
                         game.link.command("stop", {"tractor": 11})
                 self.assertEqual(caught.exception.code, code)
+                if fault == "unread":
+                    self.assertIn("command.xml", game.link.files.files)
+
+    def test_an_unread_ordinary_command_is_withdrawn(self):
+        game = FakeGame(faults={"unpark": "unread"})
+        self.addCleanup(game.stop)
+        with unittest.mock.patch.object(bridge, "ACCEPT_TIMEOUT_S", 0.2):
+            with self.assertRaises(StepFailed) as caught:
+                game.link.command("unpark", {"tractor": 11})
+        self.assertEqual(caught.exception.code, "NOT_ACCEPTED")
+        self.assertNotIn("command.xml", game.link.files.files)
 
     def test_silent_game_is_link_lost_not_success(self):
         game = FakeGame(faults={"stage": "no_terminal"})

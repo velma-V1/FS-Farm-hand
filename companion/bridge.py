@@ -39,6 +39,7 @@ MOD_DIR = ("modSettings", "FS25_Farmhand")   # = mod/FarmhandBridge.lua Bridge.M
 COMMAND_FILE, SESSION_FILE = "command.xml", "session.xml"
 SNAPSHOT_TIMEOUT_S = 3.0      # game sends one every 0.5 s while linked
 ACCEPT_TIMEOUT_S = 5.0        # the game reads the command file every frame
+STOP_ACCEPT_TIMEOUT_S = 30.0  # a stop is never withdrawn: a stalled game reads it when it resumes
 HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
@@ -219,9 +220,12 @@ class CommandLink:
             text = encode_command(self.session, command_id, op, args)
             log.info("command id=%d op=%s %s", command_id, op, args)
             self.files.write(COMMAND_FILE, text)
-            first = self._wait(lambda: (self._results.get(command_id) or [None])[0], ACCEPT_TIMEOUT_S)
-            # Removing the file proves the game never read it; otherwise unknown.
-            unread = first is None and self.files.remove(COMMAND_FILE)
+            first = self._wait(lambda: (self._results.get(command_id) or [None])[0],
+                               STOP_ACCEPT_TIMEOUT_S if op == "stop" else ACCEPT_TIMEOUT_S)
+            # Removing the file proves the game never read it; otherwise unknown. A stop
+            # stays (live bb8dc55381b14a54-1: a removed, unread stop let a stalled game's
+            # drive resume with no job behind it).
+            unread = first is None and op != "stop" and self.files.remove(COMMAND_FILE)
         if first is None:
             if unread:
                 raise StepFailed("NOT_ACCEPTED")
