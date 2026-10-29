@@ -380,6 +380,20 @@ GitHub release API and the Hugging Face tree API of the pinned revision.
   the same way under `Drive.FRAME_BUDGET_S` (10 ms of `getTimeSec`); a planning step
   past it is replayed next frame from its starting state with finished searches kept,
   the rig braked by `Hitch.halt`, the guard and STOP live every frame.
+- **Reverse with a towed unit (UNVERIFIED live):** a straight-wheel reverse lets a
+  semi-trailer's hitch angle grow (live `dee63f6c79b24196-4`: the GMC's deckover
+  jackknifed on a 32 m escape). `Drive.reverseAim` holds the first wheeled unit
+  behind the tractor (`spec_wheels.wheels`, as `Hitch`'s steering read; its
+  `steeringAxleNode` else `rootNode`) on the straight line with the structure of
+  Courseplay `scripts/ai/AIReverseDriver.lua:247-280` (Ridley and Corke 2003: a
+  wanted hitch angle from orientation and cross-track errors, the tractor turned by
+  its difference from the current one) and its lookahead
+  (`PurePursuitController.lua:64`); independently written, gains tuned in
+  `tests/test_lua_drive.TowedReverseTests`. A reverse off its checked line stops and
+  the route search resumes from that pose. `Hitch.routeFootprint` plans a unit
+  behind the tractor more than 5 degrees off its heading straight behind at its
+  observed distance (`localDirectionToWorld` of the unit's root); the live
+  envelope still checks each unit where it is.
 - **Reference concepts only:** Courseplay Hybrid A*, Dubins, Reeds-Shepp and pure
   pursuit at toolkit commit `150dcd51`; GPL-3.0 code is not copied. AutoDrive's
   slope and water checks at commit `93cff22f` are MIT-licensed reference. The

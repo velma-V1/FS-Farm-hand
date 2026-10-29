@@ -1876,7 +1876,7 @@ function Hitch.routeFootprint(env, tractor)
         local x, _, z = world(env, tractor.rootNode)
         local fx, _, fz = env.localDirectionToWorld(tractor.rootNode, 0, 0, 1)
         assert(finite(fx) and finite(fz))
-        local towLength = 0
+        local towLength, towed = 0, nil
         for index = 2, initial do
             local unit = units[index]
             local ux, _, uz = world(env, unit.rootNode)
@@ -1884,19 +1884,37 @@ function Hitch.routeFootprint(env, tractor)
                 local node = unit.steeringAxleNode or unit.rootNode
                 local ax, _, az = world(env, node)
                 towLength = math.max(towLength, math.sqrt((ax - x) ^ 2 + (az - z) ^ 2))
+                -- The first wheeled unit behind is the one a reverse must keep in line.
+                if towed == nil and #(readOr(function() return unit.spec_wheels.wheels end) or {}) > 0 then
+                    towed = unit
+                end
             end
         end
         local frame = { last = { wx = x, wz = z }, dirX = fx, dirZ = fz }
         local aMin, aMax, lMin, lMax, height = math.huge, -math.huge, math.huge, -math.huge, 0
         for _, unit in ipairs(units) do
             local box = unitBox(env, frame, unit)
+            -- A unit behind at an angle to the tractor (a trailer left jackknifed, its
+            -- cargo) is planned straight behind at its observed distance: the route
+            -- straightens it, and the live envelope checks every unit where it is.
+            local ux, _, uz = world(env, unit.rootNode)
+            local ufx, _, ufz = env.localDirectionToWorld(unit.rootNode, 0, 0, 1)
+            local ul, fl = math.sqrt(ufx * ufx + ufz * ufz), math.sqrt(fx * fx + fz * fz)
+            assert(finite(ul) and ul > 0 and fl > 0)
+            ufx, ufz = ufx / ul, ufz / ul
+            if unit ~= tractor and (ux - x) * fx + (uz - z) * fz < -0.5
+                    and (fx * ufx + fz * ufz) / fl < math.cos(math.rad(5)) then
+                box = unitBox(env, { last = { wx = ux, wz = uz }, dirX = ufx, dirZ = ufz }, unit)
+                local back = math.sqrt((ux - x) ^ 2 + (uz - z) ^ 2)
+                box.aMin, box.aMax = box.aMin - back, box.aMax - back
+            end
             aMin, aMax = math.min(aMin, box.aMin), math.max(aMax, box.aMax)
             lMin, lMax = math.min(lMin, box.lMin), math.max(lMax, box.lMax)
             height = math.max(height, box.height)
         end
         assert(height > 0 and aMax > aMin and lMax > lMin)
         return { tractor = tractor, units = units, excluded = excluded, masks = collisionMasks(env),
-                 towLength = towLength,
+                 towLength = towLength, towed = towed,
                  aMin = aMin, aMax = aMax, lMin = lMin, lMax = lMax, height = height }
     end)
     return ok and footprint or nil

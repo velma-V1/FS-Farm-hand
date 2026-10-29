@@ -7,6 +7,7 @@ from lupa import lua51, lua54
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "mod" / "FarmhandDrive.lua"
+HITCH = SOURCE.with_name("FarmhandHitch.lua")
 
 
 class DrivePlannerTests(unittest.TestCase):
@@ -357,6 +358,38 @@ class DrivePlannerTests(unittest.TestCase):
             self.assertEqual((session.reached, session.sectionAttempt), (1, 2), departure)
             self.assertFalse(session.recovering, departure)
 
+    def test_a_reverse_pushed_off_its_line_stops_there_says_why_and_searches_on(self):
+        # Live dee63f6c79b24196-4: RETREAT_DIVERGED ended the job with the rig left bent.
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        drive = lua.execute(SOURCE.read_text())
+        said = []
+        lua.globals().print = said.append
+        env, session, hitch = lua.execute("""
+            local vehicle = {rootNode=1, ownerFarmId='1',
+                getLastSpeed=function() return 0 end,
+                getIsAIActive=function() return false end,
+                getIsEntered=function() return true end}
+            local foot={units={vehicle},lMin=-1,lMax=1}
+            local env={getWorldTranslation=function() return 1.2,0,-5 end,
+                localDirectionToWorld=function() return 0,0,1 end}
+            local hitch={routeFootprint=function() return foot end,
+                routePoseClear=function() return true end,
+                driverConflict=function() return nil end,
+                halt=function() end}
+            local session={tractor=vehicle,farmId='1',isReserved=function() return true end,
+                foot=foot,targetX=300,targetZ=0,radius=6,elapsed=0,replans=0,movedAt=0,
+                retreat={x=0,z=0,yaw=0,length=32}}
+            return env,session,hitch
+        """)
+        self.assertEqual(drive.step(env, session, 16, hitch), "CONTINUE")
+        line = [text for text in said if "reverse diverged" in text]
+        self.assertEqual(len(line), 1)
+        self.assertIn("at 1.2,-5.0", line[0])
+        self.assertIn("after 5.0 of 32.0m: lateral 1.20", line[0])
+        self.assertIsNone(session.retreat)
+        self.assertIsNotNone(session.corridor)
+        self.assertTrue(any("stopped off its line after 5.0m; route search resumed" in t for t in said))
+
     def test_giants_navigation_map_steers_the_corridor_but_never_decides_passage(self):
         lua = lua54.LuaRuntime(unpack_returned_tuples=True)
         drive = lua.execute(SOURCE.read_text())
@@ -585,6 +618,93 @@ class FrameBudgetTests(unittest.TestCase):
         self.assertGreater(frames, 2)
         self.assertIsNotNone(done)
         self.assertEqual(self.points(done)[-1], (-300.0, 60.0))   # never the kept search to (300, 60)
+
+
+# Nodes as {x, z, yaw}; GIANTS' Y rotation: local +z is (sin yaw, cos yaw), local +x is (cos yaw, -sin yaw).
+RIG = """
+local function rotate(n, x, z) return x*math.cos(n.yaw)+z*math.sin(n.yaw), -x*math.sin(n.yaw)+z*math.cos(n.yaw) end
+local env = {getWorldTranslation=function(n) return n.x,0,n.z end,
+    localDirectionToWorld=function(n,x,y,z) local a,b = rotate(n,x,z); return a,y,b end,
+    localToWorld=function(n,x,y,z) local a,b = rotate(n,x,z); return n.x+a,y,n.z+b end,
+    getTerrainHeightAtWorldPos=function() return 0 end,
+    g_currentMission={terrainRootNode=0},
+    CollisionFlag=setmetatable({}, {__index=function() return 1 end})}
+local function size(w,l) return {width=w,length=l,height=2,widthOffset=0,lengthOffset=0,heightOffset=0} end
+local trailerNode = {x=0,z=-8,yaw=0}
+local trailer = {rootNode=trailerNode, steeringAxleNode=trailerNode, spec_wheels={wheels={1,2}}, size=size(2.5,10)}
+local tractorNode = {x=0,z=0,yaw=0}
+local tractor = {rootNode=tractorNode, size=size(2.5,6),
+    getAttachedImplements=function() return {{object=trailer}} end}
+return env, tractor, trailerNode, tractorNode
+"""
+
+
+class TowedReverseTests(unittest.TestCase):
+    RUNTIME = lua54
+
+    def setUp(self):
+        self.lua = self.RUNTIME.LuaRuntime(unpack_returned_tuples=True)
+        self.drive = self.lua.execute(SOURCE.read_text())
+        self.hitch = self.lua.execute(HITCH.read_text())
+        self.env, self.tractor, self.trailer, self.root = self.lua.execute(RIG)
+
+    def footprint(self):
+        foot = self.hitch.routeFootprint(self.env, self.tractor)
+        self.assertIsNotNone(foot)
+        return foot
+
+    def test_a_trailer_left_at_an_angle_is_planned_straight_behind(self):
+        # Live 07eb4cc505f04b31-1/-2: the GMC's deckover left jackknifed made the planning box
+        # as wide as the trailer is long; every forward search on an open road failed.
+        straight = self.footprint()
+        box = lambda f: tuple(round(f[k], 6) for k in ("aMin", "aMax", "lMin", "lMax"))
+        angle = math.radians(60)
+        self.trailer.x, self.trailer.z, self.trailer.yaw = -8 * math.sin(angle), -8 * math.cos(angle), angle
+        bent = self.footprint()
+        self.assertEqual(box(bent), box(straight))
+        self.assertTrue(self.lua.eval("function(a, b) return a == b end")(bent.towed, straight.towed))
+        self.assertIsNotNone(bent.towed)
+        # A rigid unit beside the tractor's axis (same heading) keeps its observed place.
+        self.trailer.x, self.trailer.z, self.trailer.yaw = 3.0, -8.0, 0.0
+        self.assertGreater(self.footprint().lMax, straight.lMax + 2.9)
+
+    def reverse(self, steer, metres=32.0, start_hitch=2.0, length=8.0, radius=9.0):
+        """Kinematic tractor + semi-trailer (hitch at the tractor's root, axle `length` behind)
+        reversing along the line it started on; returns the largest hitch angle (degrees)
+        and the trailer's largest distance from the line."""
+        line = self.lua.table_from({"x": 0.0, "z": 0.0, "yaw": 0.0})
+        foot = self.lua.table_from({"towed": self.lua.table_from({"rootNode": self.trailer}), "towLength": length})
+        yaw, theta, x, z, worst, drift = 0.0, math.radians(start_hitch), 0.0, 0.0, 0.0, 0.0
+        ds = 0.05
+        for _ in range(int(metres / ds)):
+            self.trailer.x, self.trailer.z = x - length * math.sin(theta), z - length * math.cos(theta)
+            self.trailer.yaw = theta
+            lx, lz = steer(line, foot, yaw)
+            # Toward the local aim point (pure pursuit, 10 m) at most a 6 m radius: aiming
+            # at the tractor's local -x while reversing turns it to a larger yaw.
+            curvature = max(-1 / radius, min(1 / radius, -2 * lx / (lx * lx + lz * lz)))
+            x, z = x - ds * math.sin(yaw), z - ds * math.cos(yaw)
+            yaw += ds * curvature
+            theta += -ds * math.sin(yaw - theta) / length
+            worst = max(worst, abs(math.degrees(theta - yaw)))
+            drift = max(drift, abs(self.trailer.x))
+        return worst, drift
+
+    def test_a_reverse_holds_a_towed_trailer_in_line_where_a_straight_wheel_jackknifes(self):
+        # Live dee63f6c79b24196-4: a straight-wheel 32 m escape left the deckover jackknifed.
+        straight = lambda line, foot, yaw: (0.0, -10.0)
+        held = lambda line, foot, yaw: self.drive.reverseAim(self.env, foot, line, yaw, 9.0)[:2]
+        self.assertGreater(self.reverse(straight)[0], 30)
+        for length in (6.0, 8.0, 12.0, 15.0):
+            worst, drift = self.reverse(held, length=length)
+            self.assertLess(worst, 5, length)
+            self.assertLess(drift, 0.75, length)
+        self.assertEqual(tuple(self.drive.reverseAim(self.env, None, self.lua.table_from(
+            {"x": 0, "z": 0, "yaw": 0}), 0)[:2]), (0, -10))   # nothing towed: straight back
+
+
+class Lua51TowedReverseTests(TowedReverseTests):
+    RUNTIME = lua51
 
 
 if __name__ == "__main__":

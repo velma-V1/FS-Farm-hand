@@ -566,6 +566,35 @@ function Drive.planRetreatRoute(start, target, radius, probe, navHint)
     return nil
 end
 
+-- The local aim point (in the tractor's frame) that reverses the rig straight
+-- back along `line` ({x,z,yaw} it started from), and the towed unit's hitch angle.
+-- With a straight wheel that angle grows on its own (live dee63f6c79b24196-4: the
+-- GMC's deckover jackknifed on a 32 m escape). A towed wheeled unit is held in line
+-- with Courseplay AIReverseDriver's structure (150dcd5, 247-280; Ridley and Corke
+-- 2003): a wanted hitch angle from the unit's orientation and cross-track errors,
+-- the tractor turned by its difference from the current one, aimed at Courseplay's
+-- lookahead (PurePursuitController 64: the turning radius, at most 6 m). Its gains
+-- suit a semi-trailer on this straight line (tests: tow 6-15 m, radius 6-12 m).
+function Drive.reverseAim(env, foot, line, yaw, radius)
+    local towed = foot ~= nil and foot.towed or nil
+    if towed == nil then return 0,-10 end
+    local ok, tx,_,tz = pcall(env.getWorldTranslation, towed.steeringAxleNode or towed.rootNode)
+    local okD, dx,_,dz = pcall(env.localDirectionToWorld, towed.steeringAxleNode or towed.rootNode, 0,0,1)
+    if not (ok and okD and finite(tx) and finite(tz) and finite(dx) and finite(dz)) then return nil end
+    local function wrap(a) return (a+pi)%(2*pi)-pi end
+    local unitYaw = (math.atan2 or math.atan)(dx,dz)
+    -- Courseplay's errors are in the travel direction (line.yaw + pi).
+    local crossTrack = -((tx-line.x)*cos(line.yaw)-(tz-line.z)*sin(line.yaw))
+    local orientation = wrap(line.yaw-unitYaw)
+    local hitch = wrap(unitYaw-yaw)
+    local limit = math.rad(35)
+    local wanted = math.max(-limit, math.min(limit, 1.5*orientation-0.05*crossTrack))
+    local turn = math.max(-math.rad(75), math.min(math.rad(75), -2*(wanted-hitch)))
+    local ahead = math.min(6, finite(radius) and radius or 6)
+    ahead = math.min(ahead+abs(crossTrack), 2*ahead)
+    return -sin(turn)*ahead, -cos(turn)*ahead, hitch
+end
+
 -- A pivoting trailer cuts inside the tractor's arc. Requiring the tractor's
 -- arc to preserve at least its own solo radius for the trailer gives this
 -- geometric radius (Courseplay AIUtil uses the same axle relationship).
@@ -971,10 +1000,16 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
         local r = s.retreat
         local along = (x-r.x)*sin(r.yaw)+(z-r.z)*cos(r.yaw)
         local lateral = abs((x-r.x)*cos(r.yaw)-(z-r.z)*sin(r.yaw))
-        if lateral > 0.75 or abs((yaw-r.yaw+pi)%(2*pi)-pi) > pi/12 then
-            return "RETREAT_DIVERGED"
+        -- Off its checked straight line it stops there and the route search resumes
+        -- from that pose (the guard still checks every unit), as a forward divergence does.
+        if not r.diverged and (lateral > 0.75 or abs((yaw-r.yaw+pi)%(2*pi)-pi) > pi/12) then
+            local _,_,hitch = Drive.reverseAim(env,s.foot,r,yaw,s.radius)
+            say(string.format("[Farmhand] drive reverse diverged at %.1f,%.1f yaw %.2f after %.1f of %.1fm: lateral %.2f yaw error %.2f hitch %s",
+                              x,z,yaw,-along,r.length,lateral,(yaw-r.yaw+pi)%(2*pi)-pi,
+                              hitch and string.format("%.2f",hitch) or "-"))
+            r.diverged = true
         end
-        if along <= -r.length+0.25 then
+        if r.diverged or along <= -r.length+0.25 then
             Hitch.halt(env,s,dt)
             if not stopped(s.tractor) then return "CONTINUE" end
             local function clear(px,pz,pyaw,curve)
@@ -997,7 +1032,8 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
             s.path,s.next,s.retreat,s.replans = path,2,nil,0
             s.maxSpeedKmh,s.commandShare,s.driveStartMs = 64,nil,nil
             s.lastMovedX,s.lastMovedZ,s.movedAt = x,z,s.elapsed
-            say(string.format("[Farmhand] drive reverse departure complete %.1fm; route search resumed", -along))
+            say(string.format("[Farmhand] drive reverse departure %s %.1fm; route search resumed",
+                              r.diverged and "stopped off its line after" or "complete", -along))
             return "CONTINUE"
         end
         local backX,backZ = x-sin(yaw),z-cos(yaw)
@@ -1010,7 +1046,9 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
         end
         Hitch.holdActive(s)
         v:raiseActive()
-        return Hitch.drive(env,s,dt,false,0,-10) or "CONTINUE"
+        local lx,lz = Drive.reverseAim(env,s.foot,r,yaw,s.radius)
+        if lx == nil then return "UNKNOWN_OBSERVATION" end
+        return Hitch.drive(env,s,dt,false,lx,lz) or "CONTINUE"
     end
     if atTarget then return "ARRIVED" end
     if s.recovering or (s.corridor ~= nil and (s.path == nil
