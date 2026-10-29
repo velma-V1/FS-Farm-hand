@@ -482,5 +482,110 @@ class DrivePlannerTests(unittest.TestCase):
         self.assertEqual(session.retreats, 1)
 
 
+
+class FrameBudgetTests(unittest.TestCase):
+    """Courseplay-style search across frames (FS25 has no coroutine.yield): a search
+    past its frame budget continues next frame from its kept state, the rig braked."""
+
+    WORLD = """
+        local tick = ...
+        local calls = { halts = 0 }
+        local vehicle = {ownerFarmId='1', rootNode=1, maxTurningRadius=6,
+            spec_drivable={cruiseControl={speed=40}},
+            getLastSpeed=function() return 0 end,
+            getIsAIActive=function() return false end,
+            getIsEntered=function() return false end,
+            getAITurningRadius=function() return 6 end,
+            getCruiseControlMaxSpeed=function() return 50 end,
+            setCruiseControlMaxSpeed=function() end}
+        vehicle.rootVehicle = vehicle
+        local foot = {units={vehicle}, lMin=-1, lMax=1, aMin=-2, aMax=2, towLength=0}
+        local now = 0
+        local env = {getWorldTranslation=function() return 0,0,0 end,
+            localDirectionToWorld=function() return 0,0,1 end,
+            g_localPlayer={getPosition=function() return 900,0,900 end}}
+        if tick then env.getTimeSec = function() now = now + tick; return now end end
+        local hitch = {routeFootprint=function() return foot end,
+            routePoseClear=function(_,_,x,z) return not (z > 20 and z < 40 and x < 150) end,
+            watchDriver=function() end, driverConflict=function() return nil end,
+            halt=function() calls.halts = calls.halts + 1 end}
+        local args = {tractor=vehicle, farmId='1', x=300, z=60, isReserved=function() return true end}
+        return env, args, hitch, calls
+    """
+
+    def runtime(self):
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        self.lines = []
+        lua.globals().print = lambda *parts: self.lines.append(" ".join(str(p) for p in parts))
+        return lua, lua.execute(SOURCE.read_text())
+
+    @staticmethod
+    def points(route):
+        return [tuple(round(route[i][k], 6) for k in (1, 2)) for i in range(1, len(route) + 1)]
+
+    def resume(self, drive, env, session, hitch, done, limit=20000):
+        for frames in range(limit):
+            if done():
+                return frames
+            self.assertEqual(drive.step(env, session, 16, hitch), "CONTINUE")
+        self.fail("search never finished")
+
+    def test_a_long_first_search_continues_over_frames_to_the_same_route(self):
+        lua, drive = self.runtime()
+        env, args, hitch, _ = lua.execute(self.WORLD, None)
+        whole, reason = drive.begin(env, args, hitch)
+        self.assertIsNone(reason)
+        lua, drive = self.runtime()
+        env, args, hitch, calls = lua.execute(self.WORLD, 0.004)
+        sliced, reason = drive.begin(env, args, hitch)
+        self.assertIsNone(reason)
+        self.assertIsNotNone(sliced.episode)            # started, the search not finished
+        self.assertIsNone(sliced.corridor)
+        self.resume(drive, env, sliced, hitch, lambda: sliced.initial is None)
+        self.assertEqual(self.points(sliced.corridor), self.points(whole.corridor))
+        self.assertEqual(self.points(sliced.path), self.points(whole.path))
+        self.assertGreater(calls.halts, 10)             # braked while it searched
+        starts = [l for l in self.lines if "drive starting corridor section" in l]
+        self.assertEqual(len(starts), 1, self.lines[-5:])
+
+    def test_stop_while_a_search_continues_ends_it(self):
+        lua, drive = self.runtime()
+        env, args, hitch, _ = lua.execute(self.WORLD, 0.004)
+        session, _ = drive.begin(env, args, hitch)
+        self.assertEqual(drive.step(env, session, 16, hitch), "CONTINUE")
+        drive.abort(env, session, hitch)
+        self.assertEqual(drive.step(env, session, 16, hitch), "STOPPED")
+
+    def test_a_replayed_replan_counts_and_logs_once(self):
+        lua, drive = self.runtime()
+        env, args, hitch, _ = lua.execute(self.WORLD, None)
+        session, _ = drive.begin(env, args, hitch)
+        env.getTimeSec = lua.eval("function() local now = 0 return function() now = now + 0.004; return now end end")()
+        session.recovering = True
+        frames = self.resume(drive, env, session, hitch,
+                             lambda: session.episode is None and not session.recovering and session.path is not None)
+        self.assertGreater(frames, 2)                   # the replan was replayed across frames
+        self.assertEqual(session.replans, 1)
+        self.assertEqual(len([l for l in self.lines if "drive replan 1" in l]), 1)
+
+    def test_a_replay_that_asks_for_a_different_search_does_not_reuse_a_kept_one(self):
+        lua, drive = self.runtime()
+        holder, clock = lua.table(), lua.eval(
+            "function() local now = 0 return function() now = now + 0.004; return now end end")()
+        targets = [(300, 60), (300, 60), (-300, 60)]
+        step = lua.eval("""function(drive, target)
+            return function() return drive.globalRoute({0,0,0}, target, function() return true end, 6) end
+        end""")
+        same, done, frames = lua.eval("function(a, b) return a == b end"), None, 0
+        for frames in range(20000):
+            result = drive.planned(holder, clock, step(drive, lua.table_from(targets[min(frames, 2)])))
+            if not same(result, drive.PENDING):
+                done = result
+                break
+        self.assertGreater(frames, 2)
+        self.assertIsNotNone(done)
+        self.assertEqual(self.points(done)[-1], (-300.0, 60.0))   # never the kept search to (300, 60)
+
+
 if __name__ == "__main__":
     unittest.main()

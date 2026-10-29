@@ -54,6 +54,95 @@ local function pop(heap)
     return root
 end
 
+-- Courseplay's pathfinder runs a bounded share of a search per update and
+-- resumes from its kept open list (Courseplay HybridAStar.lua:625-637): FS25 has
+-- no coroutine.yield (HybridAStar.lua:46). GIANTS budgets work by getTimeSec()
+-- the same way (OrchardBuildRequest.BUILD_TIME_BUDGET). A planning step that
+-- spends its frame budget unwinds with PENDING and is replayed next frame from
+-- the state it began with: finished searches answer from their kept results,
+-- the unfinished one resumes. Without a game clock every search runs to its end.
+Drive.FRAME_BUDGET_S = 0.010
+local PENDING = setmetatable({}, { __tostring = function() return "PENDING" end })
+Drive.PENDING = PENDING
+local unpack = unpack or table.unpack
+local episode -- the planning step running in this frame, if any
+
+local function pack(...) return { n = select("#", ...), ... } end
+
+local function overBudget()
+    return episode ~= nil and episode.deadline ~= nil and episode.clock() >= episode.deadline
+end
+
+-- A search kept across frames: make() builds its state, advance(job) runs it
+-- until it sets job.result and returns true, or returns false when over budget.
+-- A replay that asks for a different search in the same place discards the rest.
+local function resumable(signature, make, advance)
+    local job
+    if episode ~= nil then
+        episode.n = episode.n + 1
+        job = episode.jobs[episode.n]
+        if job ~= nil and job.signature ~= signature then
+            for n = episode.n, #episode.jobs do episode.jobs[n] = nil end
+            job = nil
+        end
+        if job == nil then
+            job = make()
+            job.signature = signature
+            episode.jobs[episode.n] = job
+        end
+    else
+        job = make()
+    end
+    if not job.done then
+        if not advance(job) then error(PENDING, 0) end
+        job.done = true
+    end
+    return unpack(job.result, 1, job.result.n)
+end
+
+-- A replayed planning step does not repeat the lines it already logged.
+local function say(text)
+    if episode ~= nil then
+        episode.said = episode.said + 1
+        if episode.said <= episode.printed then return end
+        episode.printed = episode.said
+    end
+    print(text)
+end
+
+local function signature(...)
+    local parts = {}
+    for i = 1, select("#", ...) do
+        local value = select(i, ...)
+        parts[i] = type(value) == "number" and string.format("%.3f", value) or tostring(value)
+    end
+    return table.concat(parts, "|")
+end
+
+-- fn(...) as one replayable planning step kept on holder.episode: PENDING, or
+-- fn's own results. clock is GIANTS' getTimeSec, or nil (run to the end).
+local function planned(holder, clock, fn, ...)
+    local ep = holder.episode or { jobs = {}, printed = 0 }
+    ep.n, ep.said, ep.clock = 0, 0, clock
+    ep.deadline = clock ~= nil and clock() + Drive.FRAME_BUDGET_S or nil
+    episode = ep
+    local results = pack(pcall(fn, ...))
+    episode = nil
+    if not results[1] and results[2] == PENDING then
+        holder.episode = ep
+        return PENDING
+    end
+    holder.episode = nil
+    if not results[1] then error(results[2], 0) end
+    return unpack(results, 2, results.n)
+end
+
+Drive.planned = planned
+
+local function gameClock(env)
+    return type(env.getTimeSec) == "function" and env.getTimeSec or nil
+end
+
 -- Courseplay's HybridAStarWithAStarInTheMiddle first finds a fast 2D route
 -- around large obstacles, then applies vehicle constraints. Here the 2D
 -- search supplies a corridor to Farmhand's existing whole-rig Hybrid A*.
@@ -62,27 +151,34 @@ end
 -- navHint(x,z) optionally returns false where GIANTS' live navigation map
 -- (static placeables, fences, trees, map no-go layers) is blocking; it only
 -- raises cost so corridors keep clearance. The rig probe alone decides passage.
+local DIRS = { {0,1}, {1,1}, {1,0}, {1,-1}, {0,-1}, {-1,-1}, {-1,0}, {-1,1} }
+local function gridKey(i,j) return i .. ':' .. j end
+
 local function globalPlan(start, target, probe, margin, step, offsetX, offsetZ, radius, avoided, navHint)
     local sx, sz, gx, gz = start[1], start[2], target[1], target[2]
-    local dirs = { {0,1}, {1,1}, {1,0}, {1,-1}, {0,-1}, {-1,-1}, {-1,0}, {-1,1} }
+    return resumable(signature("global", sx, sz, gx, gz, margin, step, offsetX, offsetZ, #(avoided or {})),
+                     function()
+        local heap = {}
+        push(heap, { i=0, j=0, x=sx, z=sz, cost=0, score=distance(sx,sz,gx,gz) })
+        return { heap = heap, best = { [gridKey(0,0)] = 0 }, expanded = 0, rejected = {} }
+    end, function(job)
+    local dirs = DIRS
     local minX, maxX = math.min(sx,gx)-margin, math.max(sx,gx)+margin
     local minZ, maxZ = math.min(sz,gz)-margin, math.max(sz,gz)+margin
-    local function gridKey(i,j) return i .. ':' .. j end
-    local first = { i=0, j=0, x=sx, z=sz, cost=0, score=distance(sx,sz,gx,gz) }
-    local heap, best = {}, { [gridKey(0,0)] = 0 }
-    push(heap, first)
-    local expanded, rejected = 0, {}
-    while #heap > 0 and expanded < 7000 do
+    local heap, best, rejected = job.heap, job.best, job.rejected
+    while #heap > 0 and job.expanded < 7000 do
+        if overBudget() then return false end
         local node = pop(heap)
         if node.cost <= (best[gridKey(node.i,node.j)] or math.huge) then
-            expanded = expanded + 1
+            job.expanded = job.expanded + 1
             if distance(node.x,node.z,gx,gz) < step * 1.4 then
                 local route = { {gx,gz} }
                 while node ~= nil do
                     table.insert(route, 1, {node.x,node.z})
                     node = node.parent
                 end
-                return route
+                job.result = pack(route)
+                return true
             end
             for _, dir in ipairs(dirs) do
                 local i, j = node.i+dir[1], node.j+dir[2]
@@ -143,8 +239,10 @@ local function globalPlan(start, target, probe, margin, step, offsetX, offsetZ, 
         if n > count then dominant, count = why, n end
     end
     print(string.format("[Farmhand] drive global search cell %.0f offset %.1f,%.1f margin %.0f expanded %d open %d blocked %s:%d",
-                        step,offsetX,offsetZ,margin,expanded,#heap,tostring(dominant), count))
-    return nil
+                        step,offsetX,offsetZ,margin,job.expanded,#heap,tostring(dominant), count))
+    job.result = pack(nil)
+    return true
+    end)
 end
 
 local function corridorHeuristic(x,z,guide)
@@ -165,7 +263,7 @@ local function guidedRoute(start,target,probe,radius,avoided,navHint)
             local route = globalPlan(start,target,probe,margin,grid[1],grid[2],grid[3],
                                      radius,avoided,navHint)
             if route ~= nil then
-            print(string.format("[Farmhand] drive global corridor %d nodes cell %.0f offset %.1f,%.1f margin %.0f",
+            say(string.format("[Farmhand] drive global corridor %d nodes cell %.0f offset %.1f,%.1f margin %.0f",
                                 #route,grid[1],grid[2],grid[3], margin))
             local remaining = 0
             for i = #route, 1, -1 do
@@ -225,15 +323,20 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
             minZ, maxZ = math.min(minZ,point[2]-45), math.max(maxZ,point[2]+45)
         end
     end
-    local first = { x = sx, z = sz, yaw = syaw, cost = 0,
-                    score = guide and corridorHeuristic(sx,sz,guide)*1.5 or distance(sx,sz,gx,gz) }
-    local heap, best = {}, { [key(sx, sz, syaw)] = 0 }
-    push(heap, first)
-    local expanded = 0
-    while #heap > 0 and expanded < (maxExpanded or (guide and LIMIT*3 or LIMIT)) do
+    local limit = maxExpanded or (guide and LIMIT*3 or LIMIT)
+    local found, expanded = resumable(signature("plan", sx, sz, syaw, gx, gz, radius, goalYaw, limit,
+                                                guide and #guide or 0), function()
+        local heap = {}
+        push(heap, { x = sx, z = sz, yaw = syaw, cost = 0,
+                     score = guide and corridorHeuristic(sx,sz,guide)*1.5 or distance(sx,sz,gx,gz) })
+        return { heap = heap, best = { [key(sx, sz, syaw)] = 0 }, expanded = 0 }
+    end, function(job)
+    local heap, best = job.heap, job.best
+    while #heap > 0 and job.expanded < limit do
+        if overBudget() then return false end
         local node = pop(heap)
         if node.cost <= (best[key(node.x, node.z, node.yaw)] or math.huge) then
-            expanded = expanded + 1
+            job.expanded = job.expanded + 1
             local headingError = goalYaw and abs((node.yaw-goalYaw+pi)%(2*pi)-pi) or 0
             -- The final goal is planned inside the 3 m arrival check less the
             -- follower's 1 m endpoint tolerance; corridor waypoints keep 3 m.
@@ -245,7 +348,8 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
                 end
                 local path = {}
                 for i = #reversed, 1, -1 do path[#path + 1] = reversed[i] end
-                return path, nil
+                job.result = pack(path, job.expanded)
+                return true
             end
             for _, steer in ipairs({ 0, -1, 1 }) do
                 local curve = steer / radius
@@ -271,6 +375,10 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
             end
         end
     end
+    job.result = pack(nil, job.expanded)
+    return true
+    end)
+    if found ~= nil then return found, nil end
     if guide == nil and not localOnly then
         local avoided = {}
         for attempt = 1, 4 do
@@ -284,7 +392,7 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
                 for n = firstIndex, math.min(#global,firstIndex+7) do
                     pieces[#pieces+1] = string.format("%d:(%.0f,%.0f)",n,global[n][1],global[n][2])
                 end
-                print("[Farmhand] drive corridor " .. table.concat(pieces," "))
+                say("[Farmhand] drive corridor " .. table.concat(pieces," "))
             end
             local path, current, reached = {}, start, 1
             local failed = false
@@ -311,7 +419,7 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
                 if section == nil then
                     local bad = global[math.min(#global,reached+math.max(2,math.floor(stride/2)))]
                     avoided[#avoided+1] = {bad[1],bad[2],math.max(12,radius*1.5)}
-                    print(string.format("[Farmhand] drive corridor refinement failed after %d/%d (%.1f,%.1f yaw %.2f); avoiding %.1f,%.1f for next corridor",
+                    say(string.format("[Farmhand] drive corridor refinement failed after %d/%d (%.1f,%.1f yaw %.2f); avoiding %.1f,%.1f for next corridor",
                                         reached, #global, current[1],current[2],current[3],bad[1],bad[2]))
                     failed = true
                     break
@@ -321,26 +429,26 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
             end
             if not failed then return path, nil end
         else
-            print(string.format("[Farmhand] drive no global corridor from %.1f,%.1f to %.1f,%.1f",
+            say(string.format("[Farmhand] drive no global corridor from %.1f,%.1f to %.1f,%.1f",
                                 sx,sz,gx,gz))
             break
         end
         end
     end
     if localOnly then
-        print(string.format("[Farmhand] drive local search exhausted expanded=%d start=(%.1f,%.1f,%.2f) goal=(%.1f,%.1f) radius=%.1f goalYaw=%s guide=%d",
+        say(string.format("[Farmhand] drive local search exhausted expanded=%d start=(%.1f,%.1f,%.2f) goal=(%.1f,%.1f) radius=%.1f goalYaw=%s guide=%d",
                             expanded,sx,sz,syaw,gx,gz,radius,tostring(goalYaw),guide and #guide or 0))
         if expanded == 1 and guide == nil then
             for _, steer in ipairs({0,-1,1}) do
                 local px,pz,pyaw = advance(sx,sz,syaw,1,steer/radius)
                 local pass, why = probe(px,pz,pyaw,steer/radius)
-                print(string.format("[Farmhand] drive departure forward steer=%d clear=%s reason=%s",
+                say(string.format("[Farmhand] drive departure forward steer=%d clear=%s reason=%s",
                                     steer,tostring(pass),tostring(why)))
             end
             for d = 1, 8 do
                 local px,pz = sx-sin(syaw)*d,sz-cos(syaw)*d
                 local pass, why = probe(px,pz,syaw,0)
-                print(string.format("[Farmhand] drive departure reverse %dm clear=%s reason=%s",
+                say(string.format("[Farmhand] drive departure reverse %dm clear=%s reason=%s",
                                     d,tostring(pass),tostring(why)))
                 if pass ~= true then break end
             end
@@ -373,7 +481,7 @@ function Drive.section(start, radius, probe, corridor, reached, attempt)
     local section, why = Drive.plan(start,{waypoint[1],waypoint[2]},radius,probe,
                                     guide,goalYaw,true,4000)
     if section == nil then
-        print(string.format("[Farmhand] drive section attempt %d from=%d to=%d radius=%.1f reason=%s",
+        say(string.format("[Farmhand] drive section attempt %d from=%d to=%d radius=%.1f reason=%s",
                             attempt,reached,i,radius,tostring(why)))
     end
     return section,i,section and nil or "SECTION_BLOCKED"
@@ -593,6 +701,69 @@ local function sameRig(env, s, Hitch)
     return true
 end
 
+-- The first route of a drive, as a replayable planning step (Drive.begin, and
+-- Drive.step while it continues over frames). nil, or the failure code.
+local function initialPlan(env, s, Hitch)
+    local function clear(px, pz, pyaw, curve)
+        return Hitch.routePoseClear(env, s.foot, px, pz, pyaw, curve)
+    end
+    local start, target = s.initial.start, { s.targetX, s.targetZ }
+    local path, why, corridor, reached, sectionAttempt, retreat
+    if distance(start[1],start[2],target[1],target[2]) <= 200 then
+        path, why = Drive.plan(start,target,s.radius,clear,nil,nil,true)
+    end
+    if path == nil and s.egress == nil then
+        retreat = Drive.planRetreat(start,s.radius,clear)
+        if retreat ~= nil then
+            say(string.format("[Farmhand] drive collision-checked reverse departure %.1fm", retreat))
+        end
+    end
+    if path == nil and retreat == nil then
+        corridor = guidedRoute(start,target,clear,s.radius,nil,s.navHint)
+        if corridor == nil then return "NO_ROUTE" end
+        path,reached = Drive.section(start,s.radius,clear,corridor,1,1)
+        if path == nil then
+            if s.egress == nil then
+                retreat = Drive.planRetreatRoute(start,target,s.radius,clear,s.navHint)
+            end
+            if retreat ~= nil then
+                corridor,reached = nil,nil
+                say(string.format("[Farmhand] drive rig-clear reverse escape %.1fm before route", retreat))
+            else
+                reached,sectionAttempt = 1,2
+                say("[Farmhand] drive first corridor section blocked; trying alternate spans")
+            end
+        else
+            say(string.format("[Farmhand] drive starting corridor section 1-%d/%d from %.1f,%.1f yaw %.2f to %.1f,%.1f yaw %.2f steps %d",
+                                reached,#corridor,start[1],start[2],start[3],
+                                path[#path][1],path[#path][2],path[#path][3],#path))
+        end
+    end
+    s.path, s.corridor, s.reached, s.sectionAttempt = path, corridor, reached, sectionAttempt or 1
+    if retreat ~= nil then
+        s.retreat = { x = s.initial.x, z = s.initial.z, yaw = s.initial.yaw, length = retreat }
+        s.maxSpeedKmh, s.commandShare = 3, 0.5
+    end
+    s.initial = nil
+    return nil
+end
+
+local function snapshot(s)
+    local copy = {}
+    for k, v in pairs(s) do copy[k] = v end
+    return copy
+end
+
+-- Back to the state a replayed planning step began with (its clock keeps running).
+local function restore(s, saved)
+    for k in pairs(s) do
+        if saved[k] == nil and k ~= "elapsed" and k ~= "episode" then s[k] = nil end
+    end
+    for k, v in pairs(saved) do
+        if k ~= "elapsed" and k ~= "episode" then s[k] = v end
+    end
+end
+
 -- Start only from an observed, reserved, stopped rig. The planner uses a
 -- conservative whole-rig collision box; execution checks the live rig again.
 function Drive.begin(env, args, Hitch)
@@ -647,13 +818,12 @@ function Drive.begin(env, args, Hitch)
             egress = { obstacle = obstacle, ox = ox, oz = oz, initialDistance = distance(x, z, ox, oz),
                        lastDistance = distance(x, z, ox, oz), x = x, z = z, yaw = yaw,
                        ignoredFoot = ignoredFoot, plannedM = length }
-            print(string.format("[Farmhand] drive bounded departure %.1fm from %s", length,
+            say(string.format("[Farmhand] drive bounded departure %.1fm from %s", length,
                                 tostring(obstacle.getName and obstacle:getName() or obstacle.typeName)))
         elseif startClear ~= true then
-            print("[Farmhand] drive start clearance: " .. tostring(startReason))
+            say("[Farmhand] drive start clearance: " .. tostring(startReason))
             return nil, "START_NOT_CLEAR"
         end
-        local path, why, corridor, reached, sectionAttempt, retreat
         local navHint = Drive.navHint(env)
         local planStart
         if egress == nil then
@@ -663,36 +833,6 @@ function Drive.begin(env, args, Hitch)
             local pz = z + cos(yaw) * egress.plannedM
             planStart = {px,pz,yaw}
         end
-        if distance(planStart[1],planStart[2],args.x,args.z) <= 200 then
-            path, why = Drive.plan(planStart,{args.x,args.z},radius,clear,nil,nil,true)
-        end
-        if path == nil and egress == nil then
-            retreat = Drive.planRetreat(planStart,radius,clear)
-            if retreat ~= nil then
-                print(string.format("[Farmhand] drive collision-checked reverse departure %.1fm", retreat))
-            end
-        end
-        if path == nil and retreat == nil then
-            corridor = guidedRoute(planStart,{args.x,args.z},clear,radius,nil,navHint)
-            if corridor == nil then return nil,"NO_ROUTE" end
-            path,reached = Drive.section(planStart,radius,clear,corridor,1,1)
-            if path == nil then
-                if egress == nil then
-                    retreat = Drive.planRetreatRoute(planStart,{args.x,args.z},radius,clear,navHint)
-                end
-                if retreat ~= nil then
-                    corridor,reached = nil,nil
-                    print(string.format("[Farmhand] drive rig-clear reverse escape %.1fm before route", retreat))
-                else
-                    reached,sectionAttempt = 1,2
-                    print("[Farmhand] drive first corridor section blocked; trying alternate spans")
-                end
-            else
-                print(string.format("[Farmhand] drive starting corridor section 1-%d/%d from %.1f,%.1f yaw %.2f to %.1f,%.1f yaw %.2f steps %d",
-                                    reached,#corridor,planStart[1],planStart[2],planStart[3],
-                                    path[#path][1],path[#path][2],path[#path][3],#path))
-            end
-        end
         local cruise = v.spec_drivable and v.spec_drivable.cruiseControl
         local savedCruise = cruise and cruise.speed
         local vehicleMax = v:getCruiseControlMaxSpeed()
@@ -700,18 +840,25 @@ function Drive.begin(env, args, Hitch)
             return nil, "CRUISE_UNREADABLE"
         end
         local travelLimit = math.min(64, vehicleMax)
-        Hitch.watchDriver(env, v)
         local s = { tractor = v, farmId = args.farmId, isReserved = args.isReserved,
-                    maxSpeedKmh = (egress ~= nil or retreat ~= nil) and 3 or 64,
-                    commandShare = (egress ~= nil or retreat ~= nil) and 0.5 or nil, elapsed = 0,
+                    maxSpeedKmh = egress ~= nil and 3 or 64,
+                    commandShare = egress ~= nil and 0.5 or nil, elapsed = 0,
                     cruiseBefore = savedCruise, travelLimit = travelLimit,
                     targetX = args.x, targetZ = args.z,
-                    path = path, next = 2, foot = foot, egress = egress,
-                    retreat = retreat and {x=x,z=z,yaw=yaw,length=retreat} or nil, radius = radius,
-                    corridor = corridor, reached = reached, sectionAttempt = sectionAttempt or 1,
-                    navHint = navHint,
+                    path = nil, next = 2, foot = foot, egress = egress, radius = radius,
+                    sectionAttempt = 1, navHint = navHint,
                     result = nil, movedAt = 0,
-                    lastMovedX = x, lastMovedZ = z, replans = 0 }
+                    lastMovedX = x, lastMovedZ = z, replans = 0,
+                    initial = { start = planStart, x = x, z = z, yaw = yaw } }
+        local saved = snapshot(s)
+        local code = planned(s, gameClock(env), initialPlan, env, s, Hitch)
+        if code == PENDING then
+            s.episode.saved, s.episode.pose = saved, { x, z, yaw }
+            print("[Farmhand] drive route search continues over the next frames; the rig waits braked")
+        elseif code ~= nil then
+            return nil, code
+        end
+        Hitch.watchDriver(env, v)
         v:setCruiseControlMaxSpeed(travelLimit)
         return s
     end)
@@ -749,13 +896,13 @@ local function guard(env, s, Hitch, x, z, yaw, atTarget)
             contacts = ok and observed or "?"
         end
         if contacts ~= "-" then
-            print(string.format("[Farmhand] drive current rig pose blocked at %.1f,%.1f yaw %.2f: %s; units %s",
+            say(string.format("[Farmhand] drive current rig pose blocked at %.1f,%.1f yaw %.2f: %s; units %s",
                                 x,z,yaw,tostring(hereReason),tostring(contacts)))
             return here == nil and "UNKNOWN_OBSERVATION" or "ENVELOPE_CONTACT"
         end
         if not s.rigidBoxLogged then
             s.rigidBoxLogged = true
-            print(string.format("[Farmhand] drive rigid route box touches %s at %.1f,%.1f yaw %.2f; every unit's own box is clear",
+            say(string.format("[Farmhand] drive rigid route box touches %s at %.1f,%.1f yaw %.2f; every unit's own box is clear",
                                 tostring(hereReason),x,z,yaw))
         end
     end
@@ -767,7 +914,7 @@ local function guard(env, s, Hitch, x, z, yaw, atTarget)
         local aheadX, aheadZ = x + sin(yaw) * 2, z + cos(yaw) * 2
         local ahead, aheadReason = Hitch.routePoseClear(env, probeFoot, aheadX, aheadZ, yaw)
         if ahead ~= true then
-            print(string.format("[Farmhand] drive front blocked at %.2f,%.2f yaw %.2f: %s",
+            say(string.format("[Farmhand] drive front blocked at %.2f,%.2f yaw %.2f: %s",
                                 aheadX, aheadZ, yaw, tostring(aheadReason)))
             return ahead == nil and "UNKNOWN_OBSERVATION" or "OBSTACLE_AHEAD"
         end
@@ -788,7 +935,7 @@ local function guard(env, s, Hitch, x, z, yaw, atTarget)
                 end
                 local clear, why = Hitch.routePoseClear(env, s.foot, px, pz, pyaw, turn)
                 if clear ~= true then
-                    print(string.format("[Farmhand] drive preview blocked at %.2f,%.2f yaw %.2f: %s",
+                    say(string.format("[Farmhand] drive preview blocked at %.2f,%.2f yaw %.2f: %s",
                                         px, pz, pyaw, tostring(why)))
                     return clear == nil and "UNKNOWN_OBSERVATION" or "OBSTACLE_AHEAD"
                 end
@@ -810,234 +957,52 @@ end
 
 -- One frame of Farmhand's own route follower, under the existing measured-speed
 -- governor, takeover watch, brake and vehicle-control restoration. Any end latches.
-function Drive.step(env, s, dt, Hitch)
-    if s.result ~= nil then halt(env, s, dt, Hitch); return s.result end
-    local ok, code = pcall(function()
-        s.elapsed = s.elapsed + dt
-        local x, z, yaw = pose(env, s.tractor)
-        if x == nil then return "UNKNOWN_OBSERVATION" end
-        local atTarget = distance(x, z, s.targetX, s.targetZ) < 3
-        local denied = guard(env, s, Hitch, x, z, yaw, atTarget)
-        if denied == "OBSTACLE_AHEAD" then s.recovering = true
-        elseif denied ~= nil then return denied end
-        if s.retreat ~= nil then
-            local r = s.retreat
-            local along = (x-r.x)*sin(r.yaw)+(z-r.z)*cos(r.yaw)
-            local lateral = abs((x-r.x)*cos(r.yaw)-(z-r.z)*sin(r.yaw))
-            if lateral > 0.75 or abs((yaw-r.yaw+pi)%(2*pi)-pi) > pi/12 then
-                return "RETREAT_DIVERGED"
-            end
-            if along <= -r.length+0.25 then
-                Hitch.halt(env,s,dt)
-                if not stopped(s.tractor) then return "CONTINUE" end
-                local function clear(px,pz,pyaw,curve)
-                    return Hitch.routePoseClear(env,s.foot,px,pz,pyaw,curve)
-                end
-                local start = {x,z,yaw}
-                local path
-                if distance(x,z,s.targetX,s.targetZ) <= 200 then
-                    path = Drive.plan(start,{s.targetX,s.targetZ},s.radius,
-                                      clear,nil,nil,true)
-                end
-                if path == nil then
-                    s.corridor = guidedRoute(start,{s.targetX,s.targetZ},clear,s.radius,nil,s.navHint)
-                    if s.corridor == nil then return "NO_ROUTE" end
-                    path,s.reached = Drive.section(start,s.radius,clear,s.corridor,1,1)
-                    -- A failed first span still returns its index; alternates start at 1.
-                    if path == nil then s.reached = 1 end
-                    s.sectionAttempt = path and 1 or 2
-                end
-                s.path,s.next,s.retreat,s.replans = path,2,nil,0
-                s.maxSpeedKmh,s.commandShare,s.driveStartMs = 64,nil,nil
-                s.lastMovedX,s.lastMovedZ,s.movedAt = x,z,s.elapsed
-                print(string.format("[Farmhand] drive reverse departure complete %.1fm; route search resumed", -along))
-                return "CONTINUE"
-            end
-            local backX,backZ = x-sin(yaw),z-cos(yaw)
-            local clear = Hitch.routePoseClear(env,s.foot,backX,backZ,yaw,0)
-            if clear ~= true then return clear == nil and "UNKNOWN_OBSERVATION" or "OBSTACLE_AHEAD" end
-            local v = s.tractor
-            if not v:getIsMotorStarted() then
-                if not v:getCanMotorRun() then return "MOTOR_UNAVAILABLE" end
-                v:startMotor()
-            end
-            Hitch.holdActive(s)
-            v:raiseActive()
-            return Hitch.drive(env,s,dt,false,0,-10) or "CONTINUE"
+local function frame(env, s, dt, Hitch, x, z, yaw)
+    local atTarget = distance(x, z, s.targetX, s.targetZ) < 3
+    local denied = guard(env, s, Hitch, x, z, yaw, atTarget)
+    if denied == "OBSTACLE_AHEAD" then s.recovering = true
+    elseif denied ~= nil then return denied end
+    if s.initial ~= nil then
+        -- The first route is still being searched: the rig waits braked.
+        Hitch.halt(env, s, dt)
+        return initialPlan(env, s, Hitch) or "CONTINUE"
+    end
+    if s.retreat ~= nil then
+        local r = s.retreat
+        local along = (x-r.x)*sin(r.yaw)+(z-r.z)*cos(r.yaw)
+        local lateral = abs((x-r.x)*cos(r.yaw)-(z-r.z)*sin(r.yaw))
+        if lateral > 0.75 or abs((yaw-r.yaw+pi)%(2*pi)-pi) > pi/12 then
+            return "RETREAT_DIVERGED"
         end
-        if atTarget then return "ARRIVED" end
-        if s.recovering or (s.corridor ~= nil and (s.path == nil
-                or Drive.sectionReached(s.path,x,z,yaw))) then
+        if along <= -r.length+0.25 then
             Hitch.halt(env,s,dt)
             if not stopped(s.tractor) then return "CONTINUE" end
             local function clear(px,pz,pyaw,curve)
                 return Hitch.routePoseClear(env,s.foot,px,pz,pyaw,curve)
             end
             local start = {x,z,yaw}
-            -- A pose with no forward continuation is recovered by the same
-            -- rig-clear straight reverse used at departure, before NO_ROUTE.
-            local function escape(after)
-                local retreat = (s.retreats or 0) < 2 and Drive.planRetreatRoute(
-                    start,{s.targetX,s.targetZ},s.radius,clear,s.navHint) or nil
-                if retreat == nil then return "NO_ROUTE" end
-                s.retreat = {x=x,z=z,yaw=yaw,length=retreat}
-                s.retreats = (s.retreats or 0)+1
-                s.path,s.corridor,s.recovering = nil,nil,false
-                s.maxSpeedKmh,s.commandShare,s.driveStartMs = 3,0.5,nil
-                print(string.format("[Farmhand] drive rig-clear reverse escape %.1fm after %s", retreat, after))
-                return "CONTINUE"
+            local path
+            if distance(x,z,s.targetX,s.targetZ) <= 200 then
+                path = Drive.plan(start,{s.targetX,s.targetZ},s.radius,
+                                  clear,nil,nil,true)
             end
-            if s.recovering then
-                s.replans = s.replans + 1
-                if s.replans > 4 then return "OBSTACLE_AHEAD" end
+            if path == nil then
                 s.corridor = guidedRoute(start,{s.targetX,s.targetZ},clear,s.radius,nil,s.navHint)
-                s.reached,s.sectionAttempt,s.recovering = 1,1,false
-                s.path = nil
-                s.lastMovedX,s.lastMovedZ,s.movedAt = x,z,s.elapsed
-                if s.corridor == nil then return escape("no corridor on replan") end
-                print(string.format("[Farmhand] drive replan %d retains target %.1f,%.1f",
-                                    s.replans,s.targetX,s.targetZ))
+                if s.corridor == nil then return "NO_ROUTE" end
+                path,s.reached = Drive.section(start,s.radius,clear,s.corridor,1,1)
+                -- A failed first span still returns its index; alternates start at 1.
+                if path == nil then s.reached = 1 end
+                s.sectionAttempt = path and 1 or 2
             end
-            if s.reached >= #s.corridor then
-                -- The corridor is spent but the rig stopped short: plan again
-                -- from the observed pose, within the same replan bound.
-                s.recovering = true
-                return "CONTINUE"
-            end
-            local section,nextReached = Drive.section(start,s.radius,clear,s.corridor,
-                                                       s.reached,s.sectionAttempt)
-            if section == nil then
-                s.sectionAttempt = s.sectionAttempt + 1
-                if s.sectionAttempt > #SECTION_SPANS then
-                    s.replans = s.replans + 1
-                if s.replans > 4 then return escape("blocked sections") end
-                    local bad = s.corridor[math.min(#s.corridor,s.reached+2)]
-                    s.avoided = s.avoided or {}
-                    s.avoided[#s.avoided+1] = {bad[1],bad[2],math.max(12,s.radius*1.5)}
-                    s.corridor = guidedRoute(start,{s.targetX,s.targetZ},clear,
-                                             s.radius,s.avoided,s.navHint)
-                    if s.corridor == nil then return escape("no alternate corridor") end
-                    s.path,s.reached,s.sectionAttempt = nil,1,1
-                    print(string.format("[Farmhand] drive found alternate corridor %d after blocked turn",
-                                        s.replans))
-                end
-                return "CONTINUE"
-            end
-            Drive.activateSection(s,section,nextReached,x,z)
-            print(string.format("[Farmhand] drive corridor section to %d/%d from %.1f,%.1f yaw %.2f to %.1f,%.1f yaw %.2f steps %d",
-                                nextReached,#s.corridor,x,z,yaw,
-                                section[#section][1],section[#section][2],section[#section][3],#section))
+            s.path,s.next,s.retreat,s.replans = path,2,nil,0
+            s.maxSpeedKmh,s.commandShare,s.driveStartMs = 64,nil,nil
+            s.lastMovedX,s.lastMovedZ,s.movedAt = x,z,s.elapsed
+            say(string.format("[Farmhand] drive reverse departure complete %.1fm; route search resumed", -along))
             return "CONTINUE"
         end
-        if s.egress ~= nil then
-            local e = s.egress
-            local ox, _, oz = env.getWorldTranslation(e.obstacle.rootNode)
-            if not (finite(ox) and finite(oz)) or distance(ox, oz, e.ox, e.oz) > 0.25 then
-                return "EGRESS_OBSTACLE_MOVED"
-            end
-            local separation = distance(x, z, ox, oz)
-            local along = (x - e.x) * sin(e.yaw) + (z - e.z) * cos(e.yaw)
-            local lateral = abs((x - e.x) * cos(e.yaw) - (z - e.z) * sin(e.yaw))
-            if separation < e.lastDistance - 0.05 or lateral > 0.3
-                    or abs((yaw - e.yaw + pi) % (2 * pi) - pi) > pi / 36 then
-                return "EGRESS_DIVERGED"
-            end
-            e.lastDistance = separation
-            if along > 8 or s.elapsed > 30000 then return "EGRESS_LIMIT" end
-            if Hitch.routePoseClear(env, s.foot, x, z, yaw) == true then
-                local function clear(px, pz, pyaw)
-                    return Hitch.routePoseClear(env, s.foot, px, pz, pyaw)
-                end
-                local start = {x,z,yaw}
-                local path
-                if distance(x,z,s.targetX,s.targetZ) <= 200 then
-                    path = Drive.plan(start,{s.targetX,s.targetZ},s.radius,
-                                      clear,nil,nil,true)
-                end
-                if path == nil then
-                    s.corridor = guidedRoute(start,{s.targetX,s.targetZ},clear,s.radius,nil,s.navHint)
-                    if s.corridor == nil then return "NO_ROUTE" end
-                    path,s.reached = Drive.section(start,s.radius,clear,s.corridor,1,1)
-                    if path == nil then s.reached = 1 end
-                    s.sectionAttempt = path and 1 or 2
-                end
-                s.path, s.next, s.egress = path, 2, nil
-                s.driveStartMs = nil
-                s.maxSpeedKmh, s.commandShare = 64, nil
-                print(string.format("[Farmhand] drive departure clear after %.2fm", along))
-                if path == nil then return "CONTINUE" end
-            else
-                local v = s.tractor
-                if not v:getIsMotorStarted() then
-                    if not v:getCanMotorRun() then return "MOTOR_UNAVAILABLE" end
-                    v:startMotor()
-                end
-                Hitch.holdActive(s)
-                v:raiseActive()
-                return Hitch.drive(env, s, dt, true, 0, 3) or "CONTINUE"
-            end
-        end
-        if s.elapsed - s.movedAt >= 8000 then
-            if distance(x, z, s.lastMovedX, s.lastMovedZ) < 0.5 then
-                s.recovering = true
-                Hitch.halt(env,s,dt)
-                return "CONTINUE"
-            end
-            s.lastMovedX, s.lastMovedZ, s.movedAt = x, z, s.elapsed
-        end
-        if s.elapsed > 14400000 then return "TIMEOUT" end
-        local pathError = Drive.pathError(s.path,s.next,x,z)
-        local maxError = math.max(3,(s.foot.lMax-s.foot.lMin)/2+1)
-        if pathError > maxError then
-            print(string.format("[Farmhand] drive %.1fm off route at %.1f,%.1f (limit %.1f); braking to replan",
-                                pathError,x,z,maxError))
-            s.recovering = true
-            Hitch.halt(env,s,dt)
-            return "CONTINUE"
-        end
-        local node = s.tractor:getAISteeringNode()
-        local _, y = env.getWorldTranslation(node)
-        local speed = s.measuredKmh or math.abs(s.tractor:getLastSpeed())
-        if not finite(speed) then return "UNKNOWN_OBSERVATION" end
-        while s.next < #s.path do
-            local current = s.path[s.next]
-            local px, _, pz = env.worldToLocal(node, current[1], y, current[2])
-            if not (finite(px) and finite(pz)) then return "UNKNOWN_OBSERVATION" end
-            if pz >= 0 and distance(x, z, current[1], current[2]) >= math.max(2, speed / 18) then break end
-            s.next = s.next + 1
-        end
-        local point = s.path[s.next]
-        if point == nil then return "ROUTE_LOST" end
-        local routeSpeed = Drive.travelSpeed(s.path, s.next, x, z, s.radius)
-        if routeSpeed == nil then return "ROUTE_LOST" end
-        local headingError = abs((yaw - point[3] + pi) % (2 * pi) - pi)
-        s.commandKmh = Drive.trackingSpeed(routeSpeed,pathError,maxError,headingError)
-        if s.commandKmh == nil then return "ROUTE_LOST" end
-        local lookahead = math.max(6,math.min(12,speed/3.6*0.6))
-        local aimX,aimZ = Drive.goalPoint(s.path,s.next,x,z,lookahead)
-        if aimX == nil then return "ROUTE_LOST" end
-        local lx, _, lz = env.worldToLocal(node, aimX, y, aimZ)
-        if not (finite(lx) and finite(lz)) then return "UNKNOWN_OBSERVATION" end
-        if s.elapsed >= (s.trackAt or 0) then
-            s.trackAt = s.elapsed + 1000
-            local length2 = lx*lx+lz*lz
-            local curve = length2 > 0.00001 and 2*lx/length2 or 0
-            local rotOk, wantedRot = pcall(s.tractor.getSteeringRotTimeByCurvature,
-                                           s.tractor,curve)
-            local revOk, reverser = pcall(s.tractor.getReverserDirection,s.tractor)
-            print(string.format("[Farmhand] drive track pos %.1f,%.1f yaw %.2f speed %.1f target %.1f/%.1f error %.2f next %d/%d point %.1f,%.1f aim %.1f,%.1f local %.1f,%.1f steer %s/%s mode %s reverse %s",
-                                x,z,yaw,speed,routeSpeed,s.commandKmh,pathError,s.next,#s.path,
-                                point[1],point[2],aimX,aimZ,lx,lz,
-                                tostring(s.tractor.rotatedTime),tostring(rotOk and wantedRot),
-                                tostring(s.lastSpeedMode),tostring(revOk and reverser)))
-        end
-        if lz < -1 then
-            print(string.format("[Farmhand] drive route diverged at %.1f,%.1f yaw %.2f aim %.1f,%.1f local %.1f,%.1f next %d/%d; braking to replan to %.1f,%.1f",
-                                x,z,yaw,aimX,aimZ,lx,lz,s.next,#s.path,s.targetX,s.targetZ))
-            s.recovering = true
-            Hitch.halt(env,s,dt)
-            return "CONTINUE"
-        end
+        local backX,backZ = x-sin(yaw),z-cos(yaw)
+        local clear = Hitch.routePoseClear(env,s.foot,backX,backZ,yaw,0)
+        if clear ~= true then return clear == nil and "UNKNOWN_OBSERVATION" or "OBSTACLE_AHEAD" end
         local v = s.tractor
         if not v:getIsMotorStarted() then
             if not v:getCanMotorRun() then return "MOTOR_UNAVAILABLE" end
@@ -1045,10 +1010,220 @@ function Drive.step(env, s, dt, Hitch)
         end
         Hitch.holdActive(s)
         v:raiseActive()
-        return Hitch.drive(env, s, dt, true, lx, lz) or "CONTINUE"
+        return Hitch.drive(env,s,dt,false,0,-10) or "CONTINUE"
+    end
+    if atTarget then return "ARRIVED" end
+    if s.recovering or (s.corridor ~= nil and (s.path == nil
+            or Drive.sectionReached(s.path,x,z,yaw))) then
+        Hitch.halt(env,s,dt)
+        if not stopped(s.tractor) then return "CONTINUE" end
+        local function clear(px,pz,pyaw,curve)
+            return Hitch.routePoseClear(env,s.foot,px,pz,pyaw,curve)
+        end
+        local start = {x,z,yaw}
+        -- A pose with no forward continuation is recovered by the same
+        -- rig-clear straight reverse used at departure, before NO_ROUTE.
+        local function escape(after)
+            local retreat = (s.retreats or 0) < 2 and Drive.planRetreatRoute(
+                start,{s.targetX,s.targetZ},s.radius,clear,s.navHint) or nil
+            if retreat == nil then return "NO_ROUTE" end
+            s.retreat = {x=x,z=z,yaw=yaw,length=retreat}
+            s.retreats = (s.retreats or 0)+1
+            s.path,s.corridor,s.recovering = nil,nil,false
+            s.maxSpeedKmh,s.commandShare,s.driveStartMs = 3,0.5,nil
+            say(string.format("[Farmhand] drive rig-clear reverse escape %.1fm after %s", retreat, after))
+            return "CONTINUE"
+        end
+        if s.recovering then
+            s.replans = s.replans + 1
+            if s.replans > 4 then return "OBSTACLE_AHEAD" end
+            s.corridor = guidedRoute(start,{s.targetX,s.targetZ},clear,s.radius,nil,s.navHint)
+            s.reached,s.sectionAttempt,s.recovering = 1,1,false
+            s.path = nil
+            s.lastMovedX,s.lastMovedZ,s.movedAt = x,z,s.elapsed
+            if s.corridor == nil then return escape("no corridor on replan") end
+            say(string.format("[Farmhand] drive replan %d retains target %.1f,%.1f",
+                                s.replans,s.targetX,s.targetZ))
+        end
+        if s.reached >= #s.corridor then
+            -- The corridor is spent but the rig stopped short: plan again
+            -- from the observed pose, within the same replan bound.
+            s.recovering = true
+            return "CONTINUE"
+        end
+        local section,nextReached = Drive.section(start,s.radius,clear,s.corridor,
+                                                   s.reached,s.sectionAttempt)
+        if section == nil then
+            s.sectionAttempt = s.sectionAttempt + 1
+            if s.sectionAttempt > #SECTION_SPANS then
+                s.replans = s.replans + 1
+            if s.replans > 4 then return escape("blocked sections") end
+                local bad = s.corridor[math.min(#s.corridor,s.reached+2)]
+                local avoided = {}
+                for _, area in ipairs(s.avoided or {}) do avoided[#avoided+1] = area end
+                avoided[#avoided+1] = {bad[1],bad[2],math.max(12,s.radius*1.5)}
+                s.avoided = avoided
+                s.corridor = guidedRoute(start,{s.targetX,s.targetZ},clear,
+                                         s.radius,s.avoided,s.navHint)
+                if s.corridor == nil then return escape("no alternate corridor") end
+                s.path,s.reached,s.sectionAttempt = nil,1,1
+                say(string.format("[Farmhand] drive found alternate corridor %d after blocked turn",
+                                    s.replans))
+            end
+            return "CONTINUE"
+        end
+        Drive.activateSection(s,section,nextReached,x,z)
+        say(string.format("[Farmhand] drive corridor section to %d/%d from %.1f,%.1f yaw %.2f to %.1f,%.1f yaw %.2f steps %d",
+                            nextReached,#s.corridor,x,z,yaw,
+                            section[#section][1],section[#section][2],section[#section][3],#section))
+        return "CONTINUE"
+    end
+    if s.egress ~= nil then
+        local e = s.egress
+        local ox, _, oz = env.getWorldTranslation(e.obstacle.rootNode)
+        if not (finite(ox) and finite(oz)) or distance(ox, oz, e.ox, e.oz) > 0.25 then
+            return "EGRESS_OBSTACLE_MOVED"
+        end
+        local separation = distance(x, z, ox, oz)
+        local along = (x - e.x) * sin(e.yaw) + (z - e.z) * cos(e.yaw)
+        local lateral = abs((x - e.x) * cos(e.yaw) - (z - e.z) * sin(e.yaw))
+        if separation < e.lastDistance - 0.05 or lateral > 0.3
+                or abs((yaw - e.yaw + pi) % (2 * pi) - pi) > pi / 36 then
+            return "EGRESS_DIVERGED"
+        end
+        e.lastDistance = separation
+        if along > 8 or s.elapsed > 30000 then return "EGRESS_LIMIT" end
+        if Hitch.routePoseClear(env, s.foot, x, z, yaw) == true then
+            local function clear(px, pz, pyaw)
+                return Hitch.routePoseClear(env, s.foot, px, pz, pyaw)
+            end
+            local start = {x,z,yaw}
+            local path
+            if distance(x,z,s.targetX,s.targetZ) <= 200 then
+                path = Drive.plan(start,{s.targetX,s.targetZ},s.radius,
+                                  clear,nil,nil,true)
+            end
+            if path == nil then
+                s.corridor = guidedRoute(start,{s.targetX,s.targetZ},clear,s.radius,nil,s.navHint)
+                if s.corridor == nil then return "NO_ROUTE" end
+                path,s.reached = Drive.section(start,s.radius,clear,s.corridor,1,1)
+                if path == nil then s.reached = 1 end
+                s.sectionAttempt = path and 1 or 2
+            end
+            s.path, s.next, s.egress = path, 2, nil
+            s.driveStartMs = nil
+            s.maxSpeedKmh, s.commandShare = 64, nil
+            say(string.format("[Farmhand] drive departure clear after %.2fm", along))
+            if path == nil then return "CONTINUE" end
+        else
+            local v = s.tractor
+            if not v:getIsMotorStarted() then
+                if not v:getCanMotorRun() then return "MOTOR_UNAVAILABLE" end
+                v:startMotor()
+            end
+            Hitch.holdActive(s)
+            v:raiseActive()
+            return Hitch.drive(env, s, dt, true, 0, 3) or "CONTINUE"
+        end
+    end
+    if s.elapsed - s.movedAt >= 8000 then
+        if distance(x, z, s.lastMovedX, s.lastMovedZ) < 0.5 then
+            s.recovering = true
+            Hitch.halt(env,s,dt)
+            return "CONTINUE"
+        end
+        s.lastMovedX, s.lastMovedZ, s.movedAt = x, z, s.elapsed
+    end
+    if s.elapsed > 14400000 then return "TIMEOUT" end
+    local pathError = Drive.pathError(s.path,s.next,x,z)
+    local maxError = math.max(3,(s.foot.lMax-s.foot.lMin)/2+1)
+    if pathError > maxError then
+        say(string.format("[Farmhand] drive %.1fm off route at %.1f,%.1f (limit %.1f); braking to replan",
+                            pathError,x,z,maxError))
+        s.recovering = true
+        Hitch.halt(env,s,dt)
+        return "CONTINUE"
+    end
+    local node = s.tractor:getAISteeringNode()
+    local _, y = env.getWorldTranslation(node)
+    local speed = s.measuredKmh or math.abs(s.tractor:getLastSpeed())
+    if not finite(speed) then return "UNKNOWN_OBSERVATION" end
+    while s.next < #s.path do
+        local current = s.path[s.next]
+        local px, _, pz = env.worldToLocal(node, current[1], y, current[2])
+        if not (finite(px) and finite(pz)) then return "UNKNOWN_OBSERVATION" end
+        if pz >= 0 and distance(x, z, current[1], current[2]) >= math.max(2, speed / 18) then break end
+        s.next = s.next + 1
+    end
+    local point = s.path[s.next]
+    if point == nil then return "ROUTE_LOST" end
+    local routeSpeed = Drive.travelSpeed(s.path, s.next, x, z, s.radius)
+    if routeSpeed == nil then return "ROUTE_LOST" end
+    local headingError = abs((yaw - point[3] + pi) % (2 * pi) - pi)
+    s.commandKmh = Drive.trackingSpeed(routeSpeed,pathError,maxError,headingError)
+    if s.commandKmh == nil then return "ROUTE_LOST" end
+    local lookahead = math.max(6,math.min(12,speed/3.6*0.6))
+    local aimX,aimZ = Drive.goalPoint(s.path,s.next,x,z,lookahead)
+    if aimX == nil then return "ROUTE_LOST" end
+    local lx, _, lz = env.worldToLocal(node, aimX, y, aimZ)
+    if not (finite(lx) and finite(lz)) then return "UNKNOWN_OBSERVATION" end
+    if s.elapsed >= (s.trackAt or 0) then
+        s.trackAt = s.elapsed + 1000
+        local length2 = lx*lx+lz*lz
+        local curve = length2 > 0.00001 and 2*lx/length2 or 0
+        local rotOk, wantedRot = pcall(s.tractor.getSteeringRotTimeByCurvature,
+                                       s.tractor,curve)
+        local revOk, reverser = pcall(s.tractor.getReverserDirection,s.tractor)
+        say(string.format("[Farmhand] drive track pos %.1f,%.1f yaw %.2f speed %.1f target %.1f/%.1f error %.2f next %d/%d point %.1f,%.1f aim %.1f,%.1f local %.1f,%.1f steer %s/%s mode %s reverse %s",
+                            x,z,yaw,speed,routeSpeed,s.commandKmh,pathError,s.next,#s.path,
+                            point[1],point[2],aimX,aimZ,lx,lz,
+                            tostring(s.tractor.rotatedTime),tostring(rotOk and wantedRot),
+                            tostring(s.lastSpeedMode),tostring(revOk and reverser)))
+    end
+    if lz < -1 then
+        say(string.format("[Farmhand] drive route diverged at %.1f,%.1f yaw %.2f aim %.1f,%.1f local %.1f,%.1f next %d/%d; braking to replan to %.1f,%.1f",
+                            x,z,yaw,aimX,aimZ,lx,lz,s.next,#s.path,s.targetX,s.targetZ))
+        s.recovering = true
+        Hitch.halt(env,s,dt)
+        return "CONTINUE"
+    end
+    local v = s.tractor
+    if not v:getIsMotorStarted() then
+        if not v:getCanMotorRun() then return "MOTOR_UNAVAILABLE" end
+        v:startMotor()
+    end
+    Hitch.holdActive(s)
+    v:raiseActive()
+    return Hitch.drive(env, s, dt, true, lx, lz) or "CONTINUE"
+end
+
+-- A route search longer than the frame budget continues next frame from its kept
+-- state while the rig waits braked; the guard still runs every frame.
+function Drive.step(env, s, dt, Hitch)
+    if s.result ~= nil then halt(env, s, dt, Hitch); return s.result end
+    local ok, code = pcall(function()
+        s.elapsed = s.elapsed + dt
+        local x, z, yaw = pose(env, s.tractor)
+        if x == nil then return "UNKNOWN_OBSERVATION" end
+        local saved
+        if s.episode ~= nil then
+            saved = s.episode.saved
+            restore(s, saved)
+            x, z, yaw = s.episode.pose[1], s.episode.pose[2], s.episode.pose[3]
+        else
+            saved = snapshot(s)
+        end
+        local result = planned(s, gameClock(env), frame, env, s, dt, Hitch, x, z, yaw)
+        if result == PENDING then
+            s.episode.saved = s.episode.saved or saved
+            s.episode.pose = s.episode.pose or { x, z, yaw }
+            Hitch.halt(env, s, dt)
+            return "CONTINUE"
+        end
+        return result
     end)
     if not ok then
-        print("[Farmhand] drive step error: " .. tostring(code))
+        say("[Farmhand] drive step error: " .. tostring(code))
         code = "UNKNOWN_OBSERVATION"
     end
     if code ~= "CONTINUE" then

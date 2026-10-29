@@ -372,6 +372,14 @@ GitHub release API and the Hugging Face tree API of the pinned revision.
   server through `getIsPositionReachable` (403-416) as extra cost for the 2D
   corridor search; it never blocks a cell, and the whole-rig probe stays the only
   passage check.
+- **Search across frames (UNVERIFIED live):** FS25 has no `coroutine.yield`
+  (Courseplay `scripts/pathfinder/HybridAStar.lua:46`, toolkit commit `150dcd51`);
+  Courseplay keeps its open list and returns after 20 ms (`HybridAStar.lua:625-637`),
+  GIANTS budgets with `getTimeSec()` (`construction/OrchardBuildRequest.lua:131,291`,
+  `BUILD_TIME_BUDGET = 0.008`). Farmhand's corridor A* and Hybrid A* keep their state
+  the same way under `Drive.FRAME_BUDGET_S` (10 ms of `getTimeSec`); a planning step
+  past it is replayed next frame from its starting state with finished searches kept,
+  the rig braked by `Hitch.halt`, the guard and STOP live every frame.
 - **Reference concepts only:** Courseplay Hybrid A*, Dubins, Reeds-Shepp and pure
   pursuit at toolkit commit `150dcd51`; GPL-3.0 code is not copied. AutoDrive's
   slope and water checks at commit `93cff22f` are MIT-licensed reference. The
