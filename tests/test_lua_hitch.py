@@ -441,6 +441,20 @@ class LuaHitchTests(unittest.TestCase):
         self.assertEqual(self.W.run(w, session, 100, 1000)[0], "CANDIDATE")
         self.assertIs(w.tractor.forceIsActive, True)
 
+    def test_temporary_brake_can_reacquire_vehicle_control_for_next_route_section(self):
+        w = self.world(gap=4)
+        w.entered = True
+        session = self.lua.table_from({"tractor": w.tractor, "maxSpeedKmh": 3})
+        self.hitch.holdActive(session)
+        self.assertTrue(w.tractor.forceIsActive)
+        self.assertFalse(w.tractor.getIsVehicleControlledByPlayer(w.tractor))
+        self.hitch.halt(w.env, session, 100)
+        self.assertFalse(w.tractor.forceIsActive)
+        self.assertTrue(w.tractor.getIsVehicleControlledByPlayer(w.tractor))
+        self.hitch.holdActive(session)
+        self.assertTrue(w.tractor.forceIsActive)
+        self.assertFalse(w.tractor.getIsVehicleControlledByPlayer(w.tractor))
+
     def test_reverse_distance_is_bounded(self):
         # The joint passes beside the drawbar (never a candidate): it must stop
         # within maxDistanceM (+ one step), never keep reversing.
@@ -548,6 +562,26 @@ class LuaHitchTests(unittest.TestCase):
         session.driveStartMs = 0
         self.hitch.drive(w.env, session, 100, True, 0, 12)
         self.assertLessEqual(self.drives(w)[-1]["maxSpeed"], 24)
+
+    def test_speed_braking_keeps_giants_steering_active(self):
+        # GIANTS driveToPoint skips steering when allowedToDrive is false.
+        # A moving route follower needs opposing pedal input as well as the
+        # motor speed limit while keeping the steering target active.
+        w = self.world()
+        session, _ = self.align(w, maxSpeedKmh=3)
+        session.maxSpeedKmh = 64
+        session.commandKmh = 4
+        session.elapsed = 2000
+        session.driveStartMs = 0
+        root = w.tractor.rootNode
+        session.speedHistory = self.lua.table_from(({"t": 1700, "x": root.x - 2,
+                                                       "y": root.y, "z": root.z},), recursive=True)
+        self.hitch.drive(w.env, session, 100, True, 4, 8)
+        command = self.drives(w)[-1]
+        self.assertTrue(command["allowed"])
+        self.assertLess(command["acc"], 0)
+        self.assertGreater(command["lx"], 0)
+        self.assertLessEqual(command["maxSpeed"], 4)
 
     def test_over_the_limit_the_reverse_stops_braked(self):
         w = self.world(gap=6)

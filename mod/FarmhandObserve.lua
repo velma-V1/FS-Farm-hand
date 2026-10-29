@@ -1042,11 +1042,15 @@ end
 -- Every field of the map (owned or not), where GIANTS places it (Field posX/posZ, the
 -- position FieldState samples, sampleFruit above): a delivery to "field N" on any map.
 Observe.MAX_FIELD_PLACES = 200
+Observe.MAX_FIELD_OUTLINE = 64   -- = protocol/frame.schema.json field_places outline maxItems
+-- Outlines are static map data: sent on every OUTLINE_EVERY-th snapshot only (the
+-- companion keeps them), so ordinary frames stay small and quick to validate.
+Observe.OUTLINE_EVERY = 20
 -- Every map field at GIANTS' own position, and the farmland parcel it lies on as a buyable:
 -- its id (Field.farmland), owner (FarmlandManager:getFarmlandOwner 407-414: this farm,
 -- none, another farm, or NOT_BUYABLE_FARM_ID), price (Farmland.price, set by updatePrice)
 -- and area (setArea, ha). Read only; unreadable parts are left out.
-function Observe.fieldPlaces(env, farmId)
+function Observe.fieldPlaces(env, farmId, withOutline)
     local out = Observe.array()
     local fields = try(function() return env.g_fieldManager.fields end)
     local manager = try(function() return env.g_farmlandManager end)
@@ -1056,6 +1060,15 @@ function Observe.fieldPlaces(env, farmId)
         local x, z = try(function() return f.posX end), try(function() return f.posZ end)
         if id ~= nil and finite(x) and finite(z) then
             local place = { id = id, x = x, z = z }
+            -- The field's edge: a drive to "field N" arrives anywhere along it.
+            local outline = withOutline and fieldPolygon(env, f) or nil
+            if outline ~= nil then
+                local stride = math.ceil(#outline / Observe.MAX_FIELD_OUTLINE)
+                place.outline = Observe.array()
+                for i = 1, #outline, stride do
+                    place.outline[#place.outline + 1] = Observe.array({ outline[i][1], outline[i][2] })
+                end
+            end
             local land = try(function() return f.farmland end)
             local landId = land and try(function() return land.id end)
             if integer(landId) and landId > 0 and manager ~= nil then
@@ -1370,7 +1383,9 @@ function Observe.snapshot(env, seq, session, dt)
         destinations = destinations,
         places = places,
         fields = try(function() return Observe.fields(env, farmId) end) or Observe.array(),
-        field_places = try(function() return Observe.fieldPlaces(env, farmId) end) or Observe.array(),
+        field_places = try(function()
+            return Observe.fieldPlaces(env, farmId, seq % Observe.OUTLINE_EVERY == 1)
+        end) or Observe.array(),
         contracts = try(function() return Observe.contracts(env, farmId) end) or Observe.array(),
         farm = farmInfo(env, farmId),
     }), nil

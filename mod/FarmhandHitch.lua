@@ -302,11 +302,12 @@ end
 local function passengerOnly() return false end
 
 function Hitch.holdActive(s)
-    if s.heldActive == nil then
+    if s.heldActive == nil or s.heldActive == false then
         s.heldActive = s.tractor.forceIsActive ~= true
         if s.heldActive then s.tractor.forceIsActive = true end
     end
-    if s.heldControl == nil and type(s.tractor.getIsVehicleControlledByPlayer) == "function" then
+    if (s.heldControl == nil or s.heldControl == false)
+            and type(s.tractor.getIsVehicleControlledByPlayer) == "function" then
         s.heldControl = { fn = rawget(s.tractor, "getIsVehicleControlledByPlayer") }
         s.tractor.getIsVehicleControlledByPlayer = passengerOnly
     end
@@ -432,6 +433,7 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
     if downhill then s.downhillFrames = (s.downhillFrames or 0) + 1 end
     s.speedModes = s.speedModes or { drive = 0, coast = 0, brake = 0, over = 0 }
     s.speedModes[mode] = s.speedModes[mode] + 1
+    s.lastSpeedMode = mode
     if (s.elapsed or 0) >= (s.traceAt or 0) or mode == "over" then
         s.traceAt = (s.elapsed or 0) + (driven < S.fastTraceUntilMs and S.fastTraceMs or S.traceMs)
         s.speedRows = s.speedRows or {}
@@ -448,7 +450,11 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
     local ease = math.min(1, driven / S.throttleRampMs)
     local target = math.min(command, S.softStartKmh + (command - S.softStartKmh) * ease)
     if mode == "brake" then
-        env.AIVehicleUtil.driveToPoint(s.tractor, dt, 0, false, forwards, lx, lz, target)
+        -- GIANTS updates steering only when allowedToDrive is true. Its wheel
+        -- physics interprets acceleration opposite the current travel as a
+        -- brake pedal; zero throttle can coast downhill through an endpoint.
+        local pedal = math.max(0.2, math.min(1, (v - command) / 6))
+        env.AIVehicleUtil.driveToPoint(s.tractor, dt, -pedal, true, forwards, lx, lz, target)
     else
         local throttle = 0
         if mode == "drive" then

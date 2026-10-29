@@ -207,10 +207,12 @@ class HitchPlan:
 class Destination:
     """A routable delivery point, e.g. an AutoDrive map marker. Opaque ID.
 
-    ``name`` is the marker's display name, used only for exact explicit selection."""
+    ``name`` is the marker's display name, used only for exact explicit selection.
+    ``outline`` is a field's boundary (GIANTS Field polygonPoints), else empty."""
     id: str
     position: Position
     name: str = ""
+    outline: tuple[Position, ...] = ()
 
 
 @dataclass(frozen=True)

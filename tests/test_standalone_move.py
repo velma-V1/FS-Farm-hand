@@ -13,9 +13,13 @@ def unit(identifier, name, category, *, attached=None, belted_to=None, belted=()
                      belted_to=belted_to, belted=belted, capabilities=frozenset({"move", "stop"}))
 
 
+FIELD_5 = ((-640.0, 200.0), (-610.0, 200.0), (-610.0, 230.0), (-640.0, 230.0))
+
+
 class World:
-    def __init__(self, items):
+    def __init__(self, items, outline=FIELD_5, stop_short=0.0):
         self.items = {item.id: item for item in items}
+        self.outline, self.stop_short = outline, stop_short
         self.calls = []
         self.owner = None
 
@@ -29,7 +33,7 @@ class World:
         return ()
 
     def field_places(self):
-        return (Destination("field-5", (-629.0, 211.0), "Field 5"),)
+        return (Destination("field-5", (-629.0, 211.0), "Field 5", self.outline),)
 
     def player_position(self, farm_id):
         return (-696.0, 139.0)
@@ -46,7 +50,9 @@ class World:
     def farm_drive(self, vehicle_id, target, owner):
         self.calls.append(("drive", vehicle_id, target))
         origin = self.items[vehicle_id].position
-        delta = (target[0] - origin[0], target[1] - origin[1])
+        span = math.dist(origin, target)
+        share = 0.0 if span == 0 else max(0.0, span - self.stop_short) / span
+        delta = ((target[0] - origin[0]) * share, (target[1] - origin[1]) * share)
         self.items = {i: replace(item, position=(item.position[0] + delta[0], item.position[1] + delta[1]))
                       for i, item in self.items.items()}
 
@@ -91,6 +97,44 @@ class StandaloneMoveTests(unittest.TestCase):
         self.assertEqual(world.items["611"].attached_to, "620")
         self.assertEqual(world.items["622"].belted_to, "620")
         self.assertFalse(any(c[0] in ("attach", "detach", "load") for c in world.calls))
+
+
+    def field_trip(self, stop_short, outline=FIELD_5):
+        truck = unit("611", "GMC Sierra", "tractor", position=(-700.0, 215.0))
+        world = World((truck,), outline, stop_short)
+        result = StandaloneMove(world).execute({"request_id": "f", "farm_id": "1", "task": "move_pair",
+                                                "tractor_name": "gmc",
+                                                "target": {"type": "field_entrance", "field": 5}})
+        return world, result
+
+    def test_a_field_is_reached_at_the_nearest_point_of_its_edge(self):
+        world, result = self.field_trip(0.0)
+        self.assertEqual(result.status, "COMPLETE")
+        self.assertEqual(world.calls[1][2], (-640.0, 215.0))   # its west edge, not its centre
+
+    def test_a_rig_on_the_fields_boundary_has_arrived_but_short_of_it_has_not(self):
+        self.assertEqual(self.field_trip(2.5)[1].status, "COMPLETE")
+        world, result = self.field_trip(5.0)
+        self.assertEqual((result.status, result.reason), ("FAILED", "ARRIVAL_NOT_OBSERVED"))
+
+    def test_a_field_without_a_readable_edge_keeps_its_point_and_a_place_keeps_three_metres(self):
+        world, result = self.field_trip(0.0, outline=())
+        self.assertEqual(world.calls[1][2], (-629.0, 211.0))
+        world = World((unit("611", "GMC Sierra", "tractor", position=(-696.0, 139.0)),), stop_short=4.0)
+        result = StandaloneMove(world).execute({"request_id": "a", "farm_id": "1", "task": "move_pair",
+                                                "tractor_name": "gmc", "target": {"type": "place", "name": "farm barn"}})
+        self.assertEqual((result.status, result.reason), ("FAILED", "ARRIVAL_NOT_OBSERVED"))
+
+
+    def test_a_towed_unit_inside_the_field_counts_for_the_rig(self):
+        truck = unit("611", "GMC Sierra", "tractor", attached="620", position=(-650.0, 215.0))
+        deck = unit("620", "1124 Deckover", "implement", attached="611", position=(-636.0, 215.0))
+        world = World((truck, deck), stop_short=0.0)
+        world.farm_drive = lambda vehicle_id, target, owner: world.calls.append(("drive", vehicle_id, target))
+        result = StandaloneMove(world).execute({"request_id": "t", "farm_id": "1", "task": "move_pair",
+                                                "tractor_name": "gmc",
+                                                "target": {"type": "field_entrance", "field": 5}})
+        self.assertEqual(result.status, "COMPLETE")   # the root 10 m out, its trailer on the field
 
 
 if __name__ == "__main__":

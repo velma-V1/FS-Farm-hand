@@ -177,7 +177,10 @@
                          "farmland": {"type": "integer", "minimum": 1, "maximum": 100000},
                          "owner": {"enum": ["mine", "none", "other", "not_buyable"]},
                          "price": {"type": "number", "minimum": 0, "maximum": 1e12},
-                         "area_ha": {"type": "number", "minimum": 0, "maximum": 1e6}}}},
+                         "area_ha": {"type": "number", "minimum": 0, "maximum": 1e6},
+                         "outline": {"type": "array", "minItems": 3, "maxItems": 64, "items": {
+                           "type": "array", "minItems": 2, "maxItems": 2,
+                           "items": {"$ref": "#/$defs/coordinate"}}}}}},
         "fields": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/field"}},
         "contracts": {"type": "array", "maxItems": 50, "items": {
           "type": "object", "additionalProperties": false, "required": ["field", "kind", "status", "mine", "reward"],

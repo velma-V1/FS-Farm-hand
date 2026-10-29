@@ -250,7 +250,8 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = N
         destinations=destinations,
         places=places,
         fields=fields,
-        field_places=tuple(Destination(f"field-{f['id']}", (f["x"], f["z"]), f"field {f['id']}")
+        field_places=tuple(Destination(f"field-{f['id']}", (f["x"], f["z"]), f"field {f['id']}",
+                                       tuple((p[0], p[1]) for p in f.get("outline", ())))
                            for f in sorted(frame.get("field_places", ()), key=lambda f: f["id"])),
         contracts=tuple(Contract(c["field"], c["kind"], c["status"], c["mine"], c["reward"], c.get("completion"))
                         for c in frame.get("contracts", ())),

@@ -211,14 +211,16 @@ function W.new(o)
     env.AIVehicleUtil = {}
     function env.AIVehicleUtil.driveToPoint(v, dt, acc, allowed, forwards, lx, lz, maxSpeed)
         table.insert(w.drives, { allowed = allowed, forwards = forwards, lx = lx, lz = lz, maxSpeed = maxSpeed, acc = acc })
-        table.insert(w.events, allowed and (acc > 0 and "drive" or "coast") or "brake")
+        -- GIANTS: acceleration against the commanded direction is the brake pedal
+        -- (driveToPoint negates it for reverse; WheelsUtil 206-251 with stopAndGoBraking).
+        table.insert(w.events, allowed and (acc > 0 and "drive" or acc == 0 and "coast" or "brake") or "brake")
         -- w.speedFactor: the vehicle runs faster than commanded (as GIANTS' motor did on the
         -- ramps, live 5f19b1c28f614266-1); w.coastKmh: what it keeps while not accelerating
         -- (momentum); w.runawayKmh: what it does whatever it is told (rolling down a ramp).
         local kmh = maxSpeed * (w.speedFactor or 1)
         if w.runawayKmh then
             kmh = w.runawayKmh
-        elseif not allowed or w.stuck then
+        elseif not allowed or w.stuck or acc < 0 then
             w.speed = 0; return
         elseif acc <= 0 then
             if not w.coastKmh then w.speed = 0; return end

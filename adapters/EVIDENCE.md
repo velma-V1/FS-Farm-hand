@@ -364,6 +364,14 @@ GitHub release API and the Hugging Face tree API of the pinned revision.
   `environment/EnvironmentAreaSystem.lua:269-278` reads water height. Existing
   Farmhand live motions established `forceIsActive`, takeover detection, the
   measured speed governor, `overlapBox` and restoration in `mod/FarmhandHitch.lua`.
+- **Navigation-map hint (UNVERIFIED live):** `ai/AISystem.lua:216-248,318-322`
+  builds GIANTS' 1 m vehicle navigation map from slope, the `navigationCollision`
+  info layer and `AI_BLOCKING` collisions, and re-scans areas that placeables,
+  fences, planted trees, destructible objects and landscaping mark dirty
+  (`setAreaDirty`); vehicles are not in it. `Drive.navHint` reads it only on the
+  server through `getIsPositionReachable` (403-416) as extra cost for the 2D
+  corridor search; it never blocks a cell, and the whole-rig probe stays the only
+  passage check.
 - **Reference concepts only:** Courseplay Hybrid A*, Dubins, Reeds-Shepp and pure
   pursuit at toolkit commit `150dcd51`; GPL-3.0 code is not copied. AutoDrive's
   slope and water checks at commit `93cff22f` are MIT-licensed reference. The
@@ -375,6 +383,10 @@ GitHub release API and the Hugging Face tree API of the pinned revision.
 - **Running/STOP:** each frame checks reservation, takeover, AI, rig identity,
   player, collision clearance, progress and measured speed; steering uses
   `driveToPoint`. STOP brakes, restores cruise, active and player-control state.
+  When the rigid whole-rig route box at the root's heading reports an obstacle,
+  each unit's own observed size box (`Hitch.rigContacts`, the LOAD envelope
+  watch's `overlapBox`) decides: any unit touching or unreadable is
+  `ENVELOPE_CONTACT`; all clear continues on the rig-checked path (UNVERIFIED live).
 - **Completion:** bridge arrival is only a motion verdict. Companion requires a
   fresh snapshot of the same attached/belted rig, its root at the target within
   3 m and every unit stopped; release follows confirmed stop.

@@ -157,7 +157,7 @@ function steppers.farm_drive(env, task, dt)
     if not task.endLogged then
         task.endLogged = true
         logMotionEnd("farm_drive", code, task.session, function(s)
-            return string.format("target=(%.1f,%.1f) route=%d", s.targetX, s.targetZ, #s.path)
+            return string.format("target=(%.1f,%.1f) route=%d", s.targetX, s.targetZ, #(s.path or {}))
         end)
     end
     if code ~= "ARRIVED" then return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code end

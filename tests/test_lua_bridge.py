@@ -182,6 +182,18 @@ class LuaBridgeTests(unittest.TestCase):
         return list(self.w.calls.values())
 
     # tests
+    def test_farm_drive_reports_no_route_when_no_section_was_created(self):
+        self.bridge.Drive = self.lua.table_from({
+            "step": self.lua.eval("function() return 'NO_ROUTE' end"),
+            "abort": self.lua.eval("function() end"),
+        })
+        session = self.lua.table_from({"targetX": 30, "targetZ": 40, "path": None})
+        task = self.lua.table_from({"op": "farm_drive", "session": session,
+                                    "spec": self.lua.table_from({"tractor": self.w.tractor}),
+                                    "elapsed": 0})
+        status, code = self.bridge.step(self.w.env, task, 100)
+        self.assertEqual((status, code), ("FAILED", "NO_ROUTE"))
+
     def test_inert_until_a_companion_session_exists(self):
         self.send(1, "drive", {"tractor": 11, "marker": 3})
         self.W.run(self.w, 3000)

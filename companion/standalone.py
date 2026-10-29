@@ -13,12 +13,48 @@ import time
 from companion.drive_goal import GoalError, resolve_drive_goal
 from protocol.model import Result
 
+ARRIVE_M = 3.0   # a place's point; for a field, any rig unit this close to its edge
+
+
+def _edge_point(outline, point):
+    """The point on the closed outline nearest ``point``, and its distance."""
+    best, best_d = None, math.inf
+    for (ax, az), (bx, bz) in zip(outline, outline[1:] + outline[:1]):
+        dx, dz = bx - ax, bz - az
+        length2 = dx * dx + dz * dz
+        t = 0.0 if length2 == 0 else max(0.0, min(1.0, ((point[0] - ax) * dx + (point[1] - az) * dz) / length2))
+        candidate = (ax + dx * t, az + dz * t)
+        d = math.dist(candidate, point)
+        if d < best_d:
+            best, best_d = candidate, d
+    return best, best_d
+
+
+def _inside(outline, point):
+    x, z = point
+    inside = False
+    for (ax, az), (bx, bz) in zip(outline, outline[1:] + outline[:1]):
+        if (az > z) != (bz > z) and x < ax + (bx - ax) * (z - az) / (bz - az):
+            inside = not inside
+    return inside
+
+
+def reached(goal_outline, target, root, rig_positions):
+    """A field: any observed unit of the rig inside its boundary or within ARRIVE_M
+    of it. Anything else (farm, store, sell point, production, barn): the root at
+    its point."""
+    if len(goal_outline) >= 3:
+        return any(_inside(goal_outline, p) or _edge_point(goal_outline, p)[1] <= ARRIVE_M
+                   for p in rig_positions)
+    return math.dist(root, target) <= ARRIVE_M
+
 
 class StandaloneMove:
     def __init__(self, world):
         self.world = world
 
     def _target(self, command, start):
+        """The drive's point and, for a field, its outline (else ())."""
         from companion.executor import resolve_place, standoff_pose, valid_position
 
         wanted = command["target"]
@@ -27,7 +63,7 @@ class StandaloneMove:
             if not valid_position(player):
                 raise GoalError("INVALID_REQUESTER_POSITION")
             point = standoff_pose(tuple(player), start.position, start.heading or 0.0, 10)
-            return point.x, point.z
+            return (point.x, point.z), ()
         if not isinstance(wanted, dict):
             raise GoalError("DESTINATION_INVALID")
         if wanted["type"] == "place":
@@ -37,18 +73,23 @@ class StandaloneMove:
             # A building's centre is occupied. Approach its yard from the rig's side.
             if place.building is not None:
                 point = standoff_pose(place.building.position, start.position, start.heading or 0.0, 20)
-                return point.x, point.z
-            return place.marker.position
+                return (point.x, point.z), ()
+            return place.marker.position, ()
         if wanted["type"] == "field_entrance":
             matches = [p for p in self.world.field_places() if p.id == f"field-{wanted['field']}"]
             if len(matches) != 1 or not valid_position(matches[0].position):
                 raise GoalError("FIELD_NOT_FOUND")
-            return matches[0].position
+            outline = tuple(matches[0].outline)
+            if len(outline) < 3:
+                return matches[0].position, ()
+            # From point A to the nearest point of the field's edge: arriving
+            # there, or anywhere along the edge, is arriving at the field.
+            return _edge_point(outline, start.position)[0], outline
         if wanted["type"] == "autodrive_marker":
             matches = [p for p in self.world.destinations() if p.id == str(wanted["id"])]
             if len(matches) != 1 or not valid_position(matches[0].position):
                 raise GoalError("DESTINATION_NOT_FOUND")
-            return matches[0].position
+            return matches[0].position, ()
         raise GoalError("DESTINATION_INVALID")
 
     def execute(self, command, cancel: threading.Event | None = None, on_state=None) -> Result:
@@ -69,7 +110,7 @@ class StandaloneMove:
                      and all(w in (i.name or "").casefold() for w in command["tractor_name"].casefold().split())]
             if len(named) != 1:
                 raise GoalError("VEHICLE_AMBIGUOUS" if named else "VEHICLE_UNAVAILABLE")
-            target = self._target(command, named[0])
+            target, outline = self._target(command, named[0])
             goal = resolve_drive_goal(items, farm_id, command["tractor_name"], command.get("cargo_name"), target)
             ids = goal.rig_ids
             enter("RESERVE")
@@ -97,7 +138,8 @@ class StandaloneMove:
                        or after[i].belted_to != before[i].belted_to
                        or after[i].belted != before[i].belted for i in ids):
                     raise GoalError("RIG_CHANGED")
-                if math.dist(after[goal.vehicle_id].position, goal.target) > 3:
+                if not reached(outline, goal.target, after[goal.vehicle_id].position,
+                               [after[i].position for i in ids]):
                     raise GoalError("ARRIVAL_NOT_OBSERVED")
                 status, reason = "COMPLETE", "DELIVERY_OBSERVED"
         except GoalError as error:

@@ -5,6 +5,7 @@ usage in adapters/EVIDENCE.md, with the shapes those upstream mods rely on.
 Passing proves our two halves agree; it does not prove FS25 behaves this way.
 """
 import json
+import math
 from pathlib import Path
 import unittest
 
@@ -684,6 +685,33 @@ class LuaContractTests(unittest.TestCase):
         self.assertIsNone(self.observe.fieldWindrow(world.env, world.env.g_fieldManager.fields[1]))
         self.assertTrue(self.observe.refreshField(world.env, 7))
         self.assertIsNone(observation_from_snapshot(self.snapshot(world)).fields[0].coverage.windrow)
+
+    def test_every_field_place_carries_its_giants_outline_through_the_schema(self):
+        world = self.stubs.world()
+        self.lua.execute(self.FIELD_STUBS, world.env, self.observe)
+        self.lua.execute("""
+            local env, fields = ...
+            local f = fields[1]
+            f.polygonPoints = {}
+            for i = 1, 100 do                      -- more corners than the frame carries
+                local a = (i - 1) / 100 * 2 * math.pi
+                f.polygonPoints[i] = { x = 50 + 40 * math.cos(a), z = 50 + 40 * math.sin(a) }
+            end
+            env.getWorldTranslation = function(n) return n.x, 0, n.z end
+        """, world.env, self.lua.eval("function(e) return e.g_fieldManager.fields end")(world.env))
+        place = observation_from_snapshot(self.snapshot(world)).field_places[0]
+        self.assertTrue(3 <= len(place.outline) <= 64)
+        self.assertAlmostEqual(place.outline[0][0], 90.0)
+        self.assertTrue(all(abs(math.dist(p, (50, 50)) - 40) < 1e-3 for p in place.outline))
+        # Static map data: ordinary snapshots leave it out and the companion keeps the last.
+        plain = self.snapshot(world, seq=2)
+        self.assertNotIn("outline", plain["field_places"][0])
+        from companion.bridge import FS25World
+        frames = [self.snapshot(world), plain]
+        link = type("Link", (), {"session": None, "fresh_snapshot": lambda self: frames.pop(0)})()
+        companion = FS25World(link)
+        self.assertEqual(companion.field_places()[0].outline, place.outline)
+        self.assertEqual(companion.field_places()[0].outline, place.outline)
 
     def test_crop_is_sampled_where_the_work_happened(self):
         # Live: 9 points across field 8 all missed a 400 m2 sown strip.

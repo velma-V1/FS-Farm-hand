@@ -253,13 +253,24 @@ class FS25World:
         # sent once it is set (CommandLink.command).
         self.cancel = None
         self._lock = threading.RLock()
+        self._outlines: dict[tuple, tuple] = {}   # (map id, field place id) -> outline
         self._reservations: dict[str, tuple[str, tuple[str, ...]]] = {}
 
     # ------------------------------------------------------------ observation
     def _observe(self) -> Observation:
         frame = self.link.fresh_snapshot()
-        return observation_from_snapshot(frame, self.categories,
-                                         bridge_ready=frame["session"] == self.link.session)
+        observation = observation_from_snapshot(frame, self.categories,
+                                                bridge_ready=frame["session"] == self.link.session)
+        # Field outlines come on every Observe.OUTLINE_EVERY-th snapshot (= mod/FarmhandObserve.lua);
+        # they are static per map, so the last one seen is kept.
+        with self._lock:
+            outlines = self._outlines
+            for place in observation.field_places:
+                if place.outline:
+                    outlines[(observation.map_id, place.id)] = place.outline
+            places = tuple(place if place.outline else replace(
+                place, outline=outlines.get((observation.map_id, place.id), ())) for place in observation.field_places)
+        return replace(observation, field_places=places)
 
     def snapshot(self) -> tuple[Equipment, ...]:
         observation = self._observe()
@@ -798,8 +809,13 @@ def start_local_link(profile_dir: Path | None = None) -> CommandLink:
     PipeServer(link).start()
 
     def beat():
+        last = time.monotonic()
         while not link.closed.wait(HEARTBEAT_S):
             link.heartbeat()
+            now = time.monotonic()
+            if now - last > 3 * HEARTBEAT_S:      # the game drops the session at 10 s
+                log.warning("heartbeat late: %.1f s since the previous beat", now - last)
+            last = now
 
     link.heartbeat()
 
