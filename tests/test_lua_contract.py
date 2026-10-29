@@ -706,11 +706,13 @@ class LuaContractTests(unittest.TestCase):
         # Static map data: ordinary snapshots leave it out and the companion keeps the last.
         plain = self.snapshot(world, seq=2)
         self.assertNotIn("outline", plain["field_places"][0])
-        from companion.bridge import FS25World
-        frames = [self.snapshot(world), plain]
-        link = type("Link", (), {"session": None, "fresh_snapshot": lambda self: frames.pop(0)})()
+        # Every arriving frame is seen by the link, even ones no observation fetches.
+        from companion.bridge import CommandLink, FS25World
+        link = CommandLink(files=None)
+        link.on_frame(self.snapshot(world))
+        link.on_frame(plain)
         companion = FS25World(link)
-        self.assertEqual(companion.field_places()[0].outline, place.outline)
+        link.fresh_snapshot = lambda: plain
         self.assertEqual(companion.field_places()[0].outline, place.outline)
 
     def test_crop_is_sampled_where_the_work_happened(self):

@@ -70,6 +70,9 @@ class CommandLink:
         self._requests: deque[dict] = deque()
         self._last_request = 0
         self._notices: deque[tuple[int, str]] = deque(maxlen=MAX_NOTICES)
+        # Field outlines are static map data on every Observe.OUTLINE_EVERY-th snapshot
+        # (= mod/FarmhandObserve.lua): (map id, "field-N") -> the last outline received.
+        self.field_outlines: dict[tuple, tuple] = {}
         self._notice_id = 0
         # The heartbeat and pipe threads both write the session file.
         self._write_lock = threading.Lock()
@@ -151,6 +154,10 @@ class CommandLink:
             elif event == "snapshot":
                 self._snapshot, self._snapshots = frame, self._snapshots + 1
                 self._last_session = frame["session"]
+                for place in frame.get("field_places", ()):
+                    if place.get("outline"):
+                        self.field_outlines[(frame.get("map_id"), f"field-{place['id']}")] = tuple(
+                            (p[0], p[1]) for p in place["outline"])
             elif event == "catalog":
                 # In pages (page 0 starts a catalog); complete only once every page is here.
                 page, pages = frame.get("page", 0), frame.get("pages", 1)
@@ -253,7 +260,6 @@ class FS25World:
         # sent once it is set (CommandLink.command).
         self.cancel = None
         self._lock = threading.RLock()
-        self._outlines: dict[tuple, tuple] = {}   # (map id, field place id) -> outline
         self._reservations: dict[str, tuple[str, tuple[str, ...]]] = {}
 
     # ------------------------------------------------------------ observation
@@ -261,15 +267,10 @@ class FS25World:
         frame = self.link.fresh_snapshot()
         observation = observation_from_snapshot(frame, self.categories,
                                                 bridge_ready=frame["session"] == self.link.session)
-        # Field outlines come on every Observe.OUTLINE_EVERY-th snapshot (= mod/FarmhandObserve.lua);
-        # they are static per map, so the last one seen is kept.
-        with self._lock:
-            outlines = self._outlines
-            for place in observation.field_places:
-                if place.outline:
-                    outlines[(observation.map_id, place.id)] = place.outline
-            places = tuple(place if place.outline else replace(
-                place, outline=outlines.get((observation.map_id, place.id), ())) for place in observation.field_places)
+        # The link keeps every field outline received (CommandLink.field_outlines).
+        outlines = getattr(self.link, "field_outlines", {})
+        places = tuple(place if place.outline else replace(
+            place, outline=outlines.get((observation.map_id, place.id), ())) for place in observation.field_places)
         return replace(observation, field_places=places)
 
     def snapshot(self) -> tuple[Equipment, ...]:
