@@ -15,6 +15,8 @@ from protocol.model import Result
 
 ARRIVE_M = 3.0   # a place's point; for a field, any rig unit this close to its edge
 CLEAR_M = 15.0   # a field-edge target keeps this far from equipment outside the rig
+APPROACH_M = 40.0      # a building is reached at any clear approach point this near its centre
+MAX_APPROACH_M = 100.0  # = mod/FarmhandDrive.lua Drive.MAX_APPROACH_M
 
 
 def _edge_point(outline, point, avoid=()):
@@ -44,14 +46,14 @@ def _inside(outline, point):
     return inside
 
 
-def reached(goal_outline, target, root, rig_positions):
+def reached(goal_outline, target, root, rig_positions, area=0.0):
     """A field: any observed unit of the rig inside its boundary or within ARRIVE_M
-    of it. Anything else (farm, store, sell point, production, barn): the root at
-    its point."""
+    of it. A building (farm, store, sell point, production, barn): the root at one
+    of its approach points, all within ``area`` of its centre. A point: the root there."""
     if len(goal_outline) >= 3:
         return any(_inside(goal_outline, p) or _edge_point(goal_outline, p)[1] <= ARRIVE_M
                    for p in rig_positions)
-    return math.dist(root, target) <= ARRIVE_M
+    return math.dist(root, target) <= area + ARRIVE_M
 
 
 class StandaloneMove:
@@ -59,8 +61,9 @@ class StandaloneMove:
         self.world = world
 
     def _target(self, command, start, avoid=()):
-        """The drive's point and, for a field, its outline (else ()). A field's edge
-        point stays clear of the ``avoid`` positions (equipment outside the rig)."""
+        """The drive's point, for a field its outline (else ()) and for a building
+        the approach radius around that point (else 0). A field's edge point stays
+        clear of the ``avoid`` positions (equipment outside the rig)."""
         from companion.executor import resolve_place, standoff_pose, valid_position
 
         wanted = command["target"]
@@ -69,34 +72,35 @@ class StandaloneMove:
             if not valid_position(player):
                 raise GoalError("INVALID_REQUESTER_POSITION")
             point = standoff_pose(tuple(player), start.position, start.heading or 0.0, 10)
-            return (point.x, point.z), ()
+            return (point.x, point.z), (), 0.0
         if not isinstance(wanted, dict):
             raise GoalError("DESTINATION_INVALID")
         if wanted["type"] == "place":
             place, failure = resolve_place(wanted["name"], self.world.destinations(), self.world.places())
             if place is None:
                 raise GoalError(failure)
-            # A building's centre is occupied. Approach its yard from the rig's side.
+            # A building's centre is occupied, and one standoff beside it can be fenced
+            # in (live 9315e713c7e3430f-3). The game searches every clear approach
+            # point around it at once and drives to one the rig reaches.
             if place.building is not None:
-                point = standoff_pose(place.building.position, start.position, start.heading or 0.0, 20)
-                return (point.x, point.z), ()
-            return place.marker.position, ()
+                return place.building.position, (), APPROACH_M
+            return place.marker.position, (), 0.0
         if wanted["type"] == "field_entrance":
             matches = [p for p in self.world.field_places() if p.id == f"field-{wanted['field']}"]
             if len(matches) != 1 or not valid_position(matches[0].position):
                 raise GoalError("FIELD_NOT_FOUND")
             outline = tuple(matches[0].outline)
             if len(outline) < 3:
-                return matches[0].position, ()
+                return matches[0].position, (), 0.0
             # From point A to the nearest point of the field's edge: arriving
             # there, or anywhere along the edge, is arriving at the field.
             point = _edge_point(outline, start.position, avoid)[0] or _edge_point(outline, start.position)[0]
-            return point, outline
+            return point, outline, 0.0
         if wanted["type"] == "autodrive_marker":
             matches = [p for p in self.world.destinations() if p.id == str(wanted["id"])]
             if len(matches) != 1 or not valid_position(matches[0].position):
                 raise GoalError("DESTINATION_NOT_FOUND")
-            return matches[0].position, ()
+            return matches[0].position, (), 0.0
         raise GoalError("DESTINATION_INVALID")
 
     def execute(self, command, cancel: threading.Event | None = None, on_state=None) -> Result:
@@ -121,7 +125,7 @@ class StandaloneMove:
             from companion.executor import valid_position
             rig = resolve_drive_goal(items, farm_id, command["tractor_name"], command.get("cargo_name"), (0.0, 0.0))
             avoid = tuple(i.position for i in items if i.id not in rig.rig_ids and valid_position(i.position))
-            target, outline = self._target(command, named[0], avoid)
+            target, outline, area = self._target(command, named[0], avoid)
             goal = resolve_drive_goal(items, farm_id, command["tractor_name"], command.get("cargo_name"), target)
             ids = goal.rig_ids
             enter("RESERVE")
@@ -133,7 +137,7 @@ class StandaloneMove:
             else:
                 enter("DRIVE")
                 attempted = True
-                self.world.farm_drive(goal.vehicle_id, goal.target, owner)
+                self.world.farm_drive(goal.vehicle_id, goal.target, owner, area)
                 enter("VERIFY")
                 deadline = time.monotonic() + 10.0
                 while True:
@@ -150,7 +154,7 @@ class StandaloneMove:
                        or after[i].belted != before[i].belted for i in ids):
                     raise GoalError("RIG_CHANGED")
                 if not reached(outline, goal.target, after[goal.vehicle_id].position,
-                               [after[i].position for i in ids]):
+                               [after[i].position for i in ids], area):
                     raise GoalError("ARRIVAL_NOT_OBSERVED")
                 status, reason = "COMPLETE", "DELIVERY_OBSERVED"
         except GoalError as error:

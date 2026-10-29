@@ -143,7 +143,7 @@ function starters.farm_drive(env, spec)
     local denied = idle(env, spec.tractor, spec.farmId)
     if denied ~= nil then return nil, denied end
     local session, reason = Bridge.Drive.begin(env, {
-        tractor = spec.tractor, x = spec.x, z = spec.z,
+        tractor = spec.tractor, x = spec.x, z = spec.z, area = spec.area,
         farmId = spec.farmId, isReserved = spec.owned,
     }, Bridge.Hitch)
     if session == nil then Bridge.Hitch.disarm(spec.tractor); return nil, reason end

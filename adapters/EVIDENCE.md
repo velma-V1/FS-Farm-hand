@@ -394,6 +394,27 @@ GitHub release API and the Hugging Face tree API of the pinned revision.
   behind the tractor more than 5 degrees off its heading straight behind at its
   observed distance (`localDirectionToWorld` of the unit's root); the live
   envelope still checks each unit where it is.
+- **Place approach points (UNVERIFIED live):** a building is a centre, not one
+  standoff (live `9315e713c7e3430f-3`: the one 20 m west of the barn was fenced
+  in). `Drive.approaches` keeps the points on four rings and 16 bearings within the
+  approach radius where `Hitch.routePoseClear` passes at some heading; the 2D
+  corridor search takes them all as goals (A* with several goals, each hop to one
+  probed) and its end becomes the target. No GIANTS or provider call is added.
+- **Forward/reverse shuffle (UNVERIFIED live):** live `df635e4133aa4940-1` left the
+  GMC rig (radius 11.2 m) in a yard pocket where every forward search expanded 7
+  nodes. `Drive.plan` with `switches` adds a straight-reverse primitive (the
+  towed rig's only controlled reverse, `Drive.reverseAim`) and a gear-change cost,
+  as in Courseplay's Hybrid A* with reversing (concepts only); each leg is driven by
+  the existing follower or straight reverse and the next leg planned from the
+  observed pose.
+- **Out of a dead end, held fast (UNVERIFIED live in part):** with no shuffle onto
+  its corridor the rig avoids the corridor's next point and shuffles onto another,
+  or backs straight out to where one begins (live `7fd526481ca24c1c-2`: 44 m out of
+  the lane at the farm gate, then COMPLETE). A turning towed rig's route box grows on
+  the inside of the turn only. Stopped 8 s under throttle, just past the front counts
+  as blocked in `Hitch.routePoseClear` for the drive (live `7fd526481ca24c1c-3`: an
+  unseen catch by Field 2); a reverse not moving 0.5 m in 8 s stops. Hit nodes are
+  logged with `getWorldTranslation`.
 - **Reference concepts only:** Courseplay Hybrid A*, Dubins, Reeds-Shepp and pure
   pursuit at toolkit commit `150dcd51`; GPL-3.0 code is not copied. AutoDrive's
   slope and water checks at commit `93cff22f` are MIT-licensed reference. The

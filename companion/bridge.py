@@ -362,13 +362,15 @@ class FS25World:
             log.info("reserved rig %s for %s", ids, owner)
             return True
 
-    def farm_drive(self, vehicle_id: str, target: tuple[float, float], owner: str) -> None:
-        """Drive the reserved existing rig by Farmhand's game-side route follower."""
+    def farm_drive(self, vehicle_id: str, target: tuple[float, float], owner: str, area: float = 0.0) -> None:
+        """Drive the reserved existing rig by Farmhand's game-side route follower: to
+        the point, or (``area`` > 0) to any clear approach point that near it."""
         with self._lock:
             reservation = self._reservations.get(owner)
         if reservation is None or reservation[1][0] != vehicle_id:
             raise StepFailed("NOT_RESERVED")
-        self._run("farm_drive", tractor=int(vehicle_id), x=float(target[0]), z=float(target[1]))
+        self._run("farm_drive", tractor=int(vehicle_id), x=float(target[0]), z=float(target[1]),
+                  area=float(area))
 
     def _reserved(self, tractor_id: str, owner: str, wagon_id: str | None = None) -> tuple[str, str]:
         with self._lock:

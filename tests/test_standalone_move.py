@@ -3,7 +3,7 @@ from dataclasses import replace
 import math
 import unittest
 
-from companion.standalone import CLEAR_M, StandaloneMove, _edge_point
+from companion.standalone import APPROACH_M, ARRIVE_M, CLEAR_M, StandaloneMove, _edge_point
 from companion.executor import Executor
 from protocol.model import Destination, Equipment
 
@@ -47,9 +47,12 @@ class World:
                       for i, item in self.items.items()}
         return True
 
-    def farm_drive(self, vehicle_id, target, owner):
-        self.calls.append(("drive", vehicle_id, target))
+    def farm_drive(self, vehicle_id, target, owner, area=0.0):
+        self.calls.append(("drive", vehicle_id, target, area))
         origin = self.items[vehicle_id].position
+        if area:   # the game's chosen approach point: here 20 m short of the centre
+            span = math.dist(origin, target)
+            target = tuple(t - (t - o) * 20.0 / span for t, o in zip(target, origin))
         span = math.dist(origin, target)
         share = 0.0 if span == 0 else max(0.0, span - self.stop_short) / span
         delta = ((target[0] - origin[0]) * share, (target[1] - origin[1]) * share)
@@ -81,8 +84,9 @@ class StandaloneMoveTests(unittest.TestCase):
         self.assertEqual(result.status, "COMPLETE")
         self.assertEqual(result.equipment_ids, ("611",))
         self.assertEqual([c[0] for c in world.calls], ["reserve", "drive", "stop", "release"])
-        self.assertLess(world.calls[1][2][0], -730)   # near the barn, clear of its centre
-        self.assertGreaterEqual(math.dist(world.calls[1][2], (-759.0, 129.0)), 19.9)
+        # The barn's centre and its approach radius: the game picks the approach point
+        # the rig can reach (a single standoff beside it was fenced in live).
+        self.assertEqual(world.calls[1][2:], ((-759.0, 129.0), APPROACH_M))
 
     def test_existing_belted_rig_moves_without_reassembly(self):
         truck = unit("611", "GMC Sierra", "tractor", attached="620")
@@ -117,10 +121,11 @@ class StandaloneMoveTests(unittest.TestCase):
         world, result = self.field_trip(5.0)
         self.assertEqual((result.status, result.reason), ("FAILED", "ARRIVAL_NOT_OBSERVED"))
 
-    def test_a_field_without_a_readable_edge_keeps_its_point_and_a_place_keeps_three_metres(self):
+    def test_a_field_without_a_readable_edge_keeps_its_point_and_a_place_its_approach_area(self):
         world, result = self.field_trip(0.0, outline=())
-        self.assertEqual(world.calls[1][2], (-629.0, 211.0))
-        world = World((unit("611", "GMC Sierra", "tractor", position=(-696.0, 139.0)),), stop_short=4.0)
+        self.assertEqual(world.calls[1][2:], ((-629.0, 211.0), 0.0))
+        short = APPROACH_M + ARRIVE_M + 1.0 - 20.0   # stopped outside every approach point
+        world = World((unit("611", "GMC Sierra", "tractor", position=(-659.0, 129.0)),), stop_short=short)
         result = StandaloneMove(world).execute({"request_id": "a", "farm_id": "1", "task": "move_pair",
                                                 "tractor_name": "gmc", "target": {"type": "place", "name": "farm barn"}})
         self.assertEqual((result.status, result.reason), ("FAILED", "ARRIVAL_NOT_OBSERVED"))
@@ -130,7 +135,7 @@ class StandaloneMoveTests(unittest.TestCase):
         truck = unit("611", "GMC Sierra", "tractor", attached="620", position=(-650.0, 215.0))
         deck = unit("620", "1124 Deckover", "implement", attached="611", position=(-636.0, 215.0))
         world = World((truck, deck), stop_short=0.0)
-        world.farm_drive = lambda vehicle_id, target, owner: world.calls.append(("drive", vehicle_id, target))
+        world.farm_drive = lambda vehicle_id, target, owner, area: world.calls.append(("drive", vehicle_id, target))
         result = StandaloneMove(world).execute({"request_id": "t", "farm_id": "1", "task": "move_pair",
                                                 "tractor_name": "gmc",
                                                 "target": {"type": "field_entrance", "field": 5}})

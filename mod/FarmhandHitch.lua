@@ -703,6 +703,11 @@ local function hitNames(env, hits)
     for i = 1, math.min(#hits, 4) do
         local ok, name = pcall(env.getName, hits[i])
         names[i] = ok and tostring(name) or tostring(hits[i])
+        -- Where it is: map scenery has no owning object (live "col,col,col").
+        local okAt, hx, _, hz = pcall(env.getWorldTranslation, hits[i])
+        if okAt and finite(hx) and finite(hz) then
+            names[i] = names[i] .. string.format("(%.0f,%.0f)", hx, hz)
+        end
         -- The object the shape belongs to (a vehicle's or placeable's name), for diagnosis.
         pcall(function()
             local object = env.g_currentMission:getNodeObject(hits[i])
@@ -1927,15 +1932,28 @@ function Hitch.routePoseClear(env, foot, x, z, yaw, curvature)
     if foot == nil or not (finite(x) and finite(z) and finite(yaw)) then return nil end
     local ok, clear, reason, hits = pcall(function()
         local side, ahead = (foot.lMin + foot.lMax) / 2, (foot.aMin + foot.aMax) / 2
-        local cx = x + math.sin(yaw) * ahead + math.cos(yaw) * side
-        local cz = z + math.cos(yaw) * ahead - math.sin(yaw) * side
         local halfW = (foot.lMax - foot.lMin) / 2 + 0.5
         if foot.towLength ~= nil and foot.towLength > 0 and finite(curvature) and math.abs(curvature) > 0.0001 then
+            -- A towed unit cuts to the inside of the turn only (positive curvature turns
+            -- to local +x): the box grows by its off-tracking on that side alone. Widened
+            -- both ways, no turn fitted a lane under ~12 m (live 83e039589c2743dc-2).
             local radius = 1 / math.abs(curvature)
             local inside = math.sqrt(math.max(0, radius * radius - foot.towLength * foot.towLength))
-            halfW = halfW + math.min(foot.towLength, radius - inside)
+            local offtrack = math.min(foot.towLength, radius - inside)
+            halfW = halfW + offtrack / 2
+            side = side + (curvature > 0 and 1 or -1) * offtrack / 2
         end
+        local cx = x + math.sin(yaw) * ahead + math.cos(yaw) * side
+        local cz = z + math.cos(yaw) * ahead - math.sin(yaw) * side
         local halfL = (foot.aMax - foot.aMin) / 2 + 0.5
+        -- Where this drive was held fast by something no query saw (Drive: a stall).
+        for _, point in ipairs(foot.held or {}) do
+            local dx, dz = point[1] - cx, point[2] - cz
+            if math.abs(dx * math.sin(yaw) + dz * math.cos(yaw)) <= halfL
+                    and math.abs(dx * math.cos(yaw) - dz * math.sin(yaw)) <= halfW then
+                return false, string.format("HELD_FAST(%.0f,%.0f)", point[1], point[2])
+            end
+        end
         local mission = env.g_currentMission
         local samples = {}
         for _, lateral in ipairs({ -halfW, 0, halfW }) do

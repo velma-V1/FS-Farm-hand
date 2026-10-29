@@ -154,31 +154,71 @@ end
 local DIRS = { {0,1}, {1,1}, {1,0}, {1,-1}, {0,-1}, {-1,-1}, {-1,0}, {-1,1} }
 local function gridKey(i,j) return i .. ':' .. j end
 
+-- A target is a point {x,z}, or {goals={{x,z,extra},...}}: any one of several
+-- approach points, the search ending at the cheapest it reaches (extra metres
+-- added for a less preferred one).
+local function goalsOf(target)
+    return target.goals or { { target[1], target[2], 0 } }
+end
+
+local function toGoals(goals, x, z)
+    local nearest = math.huge
+    for _, goal in ipairs(goals) do
+        nearest = math.min(nearest, distance(x, z, goal[1], goal[2]) + goal[3])
+    end
+    return nearest
+end
+
 local function globalPlan(start, target, probe, margin, step, offsetX, offsetZ, radius, avoided, navHint)
-    local sx, sz, gx, gz = start[1], start[2], target[1], target[2]
-    return resumable(signature("global", sx, sz, gx, gz, margin, step, offsetX, offsetZ, #(avoided or {})),
-                     function()
+    local goals = goalsOf(target)
+    local sx, sz, gx, gz = start[1], start[2], goals[1][1], goals[1][2]
+    return resumable(signature("global", sx, sz, gx, gz, #goals, margin, step, offsetX, offsetZ,
+                               #(avoided or {})), function()
         local heap = {}
-        push(heap, { i=0, j=0, x=sx, z=sz, cost=0, score=distance(sx,sz,gx,gz) })
+        push(heap, { i=0, j=0, x=sx, z=sz, cost=0, score=toGoals(goals,sx,sz) })
         return { heap = heap, best = { [gridKey(0,0)] = 0 }, expanded = 0, rejected = {} }
     end, function(job)
     local dirs = DIRS
-    local minX, maxX = math.min(sx,gx)-margin, math.max(sx,gx)+margin
-    local minZ, maxZ = math.min(sz,gz)-margin, math.max(sz,gz)+margin
+    local minX, maxX, minZ, maxZ = sx, sx, sz, sz
+    for _, goal in ipairs(goals) do
+        minX, maxX = math.min(minX,goal[1]), math.max(maxX,goal[1])
+        minZ, maxZ = math.min(minZ,goal[2]), math.max(maxZ,goal[2])
+    end
+    minX, maxX, minZ, maxZ = minX-margin, maxX+margin, minZ-margin, maxZ+margin
     local heap, best, rejected = job.heap, job.best, job.rejected
     while #heap > 0 and job.expanded < 7000 do
         if overBudget() then return false end
         local node = pop(heap)
+        if node.goal ~= nil then
+            local route = { {node.goal[1],node.goal[2]} }
+            node = node.parent
+            while node ~= nil do
+                table.insert(route, 1, {node.x,node.z})
+                node = node.parent
+            end
+            job.result = pack(route)
+            return true
+        end
         if node.cost <= (best[gridKey(node.i,node.j)] or math.huge) then
             job.expanded = job.expanded + 1
-            if distance(node.x,node.z,gx,gz) < step * 1.4 then
-                local route = { {gx,gz} }
-                while node ~= nil do
-                    table.insert(route, 1, {node.x,node.z})
-                    node = node.parent
+            for _, goal in ipairs(goals) do
+                local d = distance(node.x,node.z,goal[1],goal[2])
+                local open = d < step * 1.4
+                -- An approach point's hop is probed too: unchecked, it crossed a fence
+                -- into a closed pen. (Each point is clear at some heading of its own.)
+                if open and target.goals ~= nil then
+                    local yaw = (math.atan2 or math.atan)(goal[1]-node.x, goal[2]-node.z)
+                    for sample = 3, d - 1, 3 do
+                        local f = sample / d
+                        if probe(node.x+(goal[1]-node.x)*f, node.z+(goal[2]-node.z)*f, yaw, 0) ~= true then
+                            open = false
+                            break
+                        end
+                    end
                 end
-                job.result = pack(route)
-                return true
+                if open then
+                    push(heap, { goal=goal, cost=node.cost+d+goal[3], score=node.cost+d+goal[3], parent=node })
+                end
             end
             for _, dir in ipairs(dirs) do
                 local i, j = node.i+dir[1], node.j+dir[2]
@@ -227,7 +267,7 @@ local function globalPlan(start, target, probe, margin, step, offsetX, offsetZ, 
                         if cost < (best[k] or math.huge) then
                             best[k] = cost
                             push(heap, {i=i,j=j,x=x,z=z,cost=cost,
-                                        score=cost+distance(x,z,gx,gz),parent=node})
+                                        score=cost+toGoals(goals,x,z),parent=node})
                         end
                     end
                 end
@@ -255,7 +295,7 @@ local function corridorHeuristic(x,z,guide)
 end
 
 local function guidedRoute(start,target,probe,radius,avoided,navHint)
-    local direct = distance(start[1],start[2],target[1],target[2])
+    local direct = toGoals(goalsOf(target),start[1],start[2])
     local grids = {{10,0,0}, {10,5,5}, {5,0,0}, {5,2.5,2.5}}
     for _, grid in ipairs(grids) do
         for _, margin in ipairs({math.max(90,direct*0.8), math.max(220,direct*1.5),
@@ -301,7 +341,11 @@ end
 -- start={x,z,yaw}, target={x,z}; radius is GIANTS' observed minimum turning
 -- radius or larger. The probe returns true only when the rig's entire swept box
 -- and terrain are readable and clear at x,z,yaw. Each arc is sampled every metre.
-function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, maxExpanded)
+-- With `switches` the search may also reverse straight (a towed rig's only
+-- controlled reverse, Drive.reverseAim) and change gear at most that often: the
+-- bounded forward/reverse shuffle that turns a long rig out of a confined place.
+-- Its nodes carry their gear (-1 reversing); it always ends driving forward.
+function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, maxExpanded, switches)
     if type(start) ~= "table" or not (finite(start[1]) and finite(start[2]) and finite(start[3])) then
         return nil, "INVALID_START"
     end
@@ -324,26 +368,35 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
         end
     end
     local limit = maxExpanded or (guide and LIMIT*3 or LIMIT)
+    switches = switches or 0
+    local function nodeKey(node)
+        local k = key(node.x, node.z, node.yaw)
+        return node.gear < 0 and k .. ":r" or k
+    end
     local found, expanded = resumable(signature("plan", sx, sz, syaw, gx, gz, radius, goalYaw, limit,
-                                                guide and #guide or 0), function()
+                                                guide and #guide or 0, switches), function()
         local heap = {}
-        push(heap, { x = sx, z = sz, yaw = syaw, cost = 0,
-                     score = guide and corridorHeuristic(sx,sz,guide)*1.5 or distance(sx,sz,gx,gz) })
-        return { heap = heap, best = { [key(sx, sz, syaw)] = 0 }, expanded = 0 }
+        local first = { x = sx, z = sz, yaw = syaw, cost = 0, gear = 1, switches = 0,
+                        score = guide and corridorHeuristic(sx,sz,guide)*1.5 or distance(sx,sz,gx,gz) }
+        push(heap, first)
+        return { heap = heap, best = { [nodeKey(first)] = 0 }, expanded = 0 }
     end, function(job)
     local heap, best = job.heap, job.best
+    local moves = { {1,0}, {1,-1}, {1,1} }
+    if switches > 0 then moves[4] = {-1,0} end
     while #heap > 0 and job.expanded < limit do
         if overBudget() then return false end
         local node = pop(heap)
-        if node.cost <= (best[key(node.x, node.z, node.yaw)] or math.huge) then
+        if node.cost <= (best[nodeKey(node)] or math.huge) then
             job.expanded = job.expanded + 1
             local headingError = goalYaw and abs((node.yaw-goalYaw+pi)%(2*pi)-pi) or 0
             -- The final goal is planned inside the 3 m arrival check less the
             -- follower's 1 m endpoint tolerance; corridor waypoints keep 3 m.
-            if distance(node.x, node.z, gx, gz) < (goalYaw and 3 or 2) and headingError < pi/12 then
+            if node.gear > 0 and distance(node.x, node.z, gx, gz) < (goalYaw and 3 or 2)
+                    and headingError < pi/12 then
                 local reversed = {}
                 while node ~= nil do
-                    reversed[#reversed + 1] = { node.x, node.z, node.yaw }
+                    reversed[#reversed + 1] = { node.x, node.z, node.yaw, node.gear < 0 and -1 or nil }
                     node = node.parent
                 end
                 local path = {}
@@ -351,25 +404,30 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
                 job.result = pack(path, job.expanded)
                 return true
             end
-            for _, steer in ipairs({ 0, -1, 1 }) do
-                local curve = steer / radius
-                local clear = true
+            for _, move in ipairs(moves) do
+                local gear, curve = move[1], move[2] / radius
+                local switched = gear ~= node.gear and node.parent ~= nil
+                local clear = not switched or node.switches < switches
                 for d = 1, STEP do
-                    local x, z, yaw = advance(node.x, node.z, node.yaw, d, curve)
+                    if not clear then break end
+                    local x, z, yaw = advance(node.x, node.z, node.yaw, d * gear, curve)
                     if x < minX or x > maxX or z < minZ or z > maxZ or probe(x, z, yaw, curve) ~= true then
                         clear = false
-                        break
                     end
                 end
                 if clear then
-                    local x, z, yaw = advance(node.x, node.z, node.yaw, STEP, curve)
-                    local cost = node.cost + STEP + (steer ~= 0 and 0.3 or 0)
-                    local k = key(x, z, yaw)
+                    local x, z, yaw = advance(node.x, node.z, node.yaw, STEP * gear, curve)
+                    -- Reversing is slower and less sure; each gear change costs a stop.
+                    local cost = node.cost + STEP * (gear < 0 and 2 or 1) + (curve ~= 0 and 0.3 or 0)
+                                 + (switched and STEP * 3 or 0)
+                    local child = { x = x, z = z, yaw = yaw, cost = cost, gear = gear,
+                                    switches = node.switches + (switched and 1 or 0), parent = node,
+                                    score = cost + (guide and corridorHeuristic(x,z,guide)*1.5
+                                                  or distance(x,z,gx,gz)) }
+                    local k = nodeKey(child)
                     if cost < (best[k] or math.huge) then
                         best[k] = cost
-                        push(heap, { x = x, z = z, yaw = yaw, cost = cost,
-                                     score = cost + (guide and corridorHeuristic(x,z,guide)*1.5
-                                                   or distance(x,z,gx,gz)), parent = node })
+                        push(heap, child)
                     end
                 end
             end
@@ -458,16 +516,19 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
 end
 
 local SECTION_SPANS = {4,8,12,16,2,1}
+Drive.SHUFFLE_SWITCHES = 6      -- gear changes in one planned shuffle
+Drive.SHUFFLE_LEGS = 16         -- legs driven in one drive's shuffles
+local SHUFFLE_LIMIT = 8000
+Drive.MAX_APPROACH_M = 100      -- = companion/standalone.py MAX_APPROACH_M
 
--- One bounded rig-aware refinement attempt. A long route is refined only as
--- the vehicle reaches each section, so search never monopolizes a game frame
--- for an entire map crossing.
-function Drive.section(start, radius, probe, corridor, reached, attempt)
+-- Where a section attempt aims on the corridor: its index, point, the corridor
+-- points it is guided by and the heading it must arrive with (none at the end).
+local function sectionGoal(corridor, reached, attempt)
     local gridStep = #corridor > 2 and distance(corridor[2][1],corridor[2][2],
                                                 corridor[3][1],corridor[3][2]) or 10
     local stride = gridStep < 8 and 8 or 4
     local span = SECTION_SPANS[attempt]
-    if span == nil then return nil,nil,"SECTION_EXHAUSTED" end
+    if span == nil then return nil end
     if span ~= 1 then span = span * stride / 4 end
     local i = math.min(reached + span,#corridor)
     local waypoint = corridor[i]
@@ -478,13 +539,45 @@ function Drive.section(start, radius, probe, corridor, reached, attempt)
         goalYaw = (math.atan2 or math.atan)(waypoint[1]-corridor[i-1][1],
                                             waypoint[2]-corridor[i-1][2])
     end
-    local section, why = Drive.plan(start,{waypoint[1],waypoint[2]},radius,probe,
-                                    guide,goalYaw,true,4000)
+    return i, {waypoint[1],waypoint[2]}, guide, goalYaw
+end
+
+-- One bounded rig-aware refinement attempt. A long route is refined only as
+-- the vehicle reaches each section, so search never monopolizes a game frame
+-- for an entire map crossing. With `switches`, a forward/reverse shuffle.
+function Drive.section(start, radius, probe, corridor, reached, attempt, switches)
+    local i, waypoint, guide, goalYaw = sectionGoal(corridor, reached, attempt)
+    if i == nil then return nil,nil,"SECTION_EXHAUSTED" end
+    local section, why = Drive.plan(start,waypoint,radius,probe,guide,goalYaw,true,
+                                    switches and SHUFFLE_LIMIT or 4000,switches)
     if section == nil then
-        say(string.format("[Farmhand] drive section attempt %d from=%d to=%d radius=%.1f reason=%s",
-                            attempt,reached,i,radius,tostring(why)))
+        say(string.format("[Farmhand] drive section attempt %d from=%d to=%d radius=%.1f%s reason=%s",
+                            attempt,reached,i,radius,switches and " shuffle" or "",tostring(why)))
     end
     return section,i,section and nil or "SECTION_BLOCKED"
+end
+
+-- A place (a building's centre) is approached anywhere around it within `area`
+-- where the rig's box fits at some heading, nearer rings preferred; the route
+-- search then ends at the cheapest one the rig can reach (live 9315e713c7e3430f-3:
+-- the one standoff beside the barn was fenced in).
+function Drive.approaches(cx, cz, area, probe)
+    local goals, inner = {}, area * 0.3
+    for _, share in ipairs({0.3, 0.5, 0.75, 1}) do
+        local r = area * share
+        for n = 0, 15 do
+            local bearing = n * pi / 8
+            local x, z = cx + sin(bearing) * r, cz + cos(bearing) * r
+            local facing = bearing + pi
+            for _, yaw in ipairs({facing, facing + pi/2, facing - pi/2, bearing}) do
+                if probe(x, z, yaw, 0) == true then
+                    goals[#goals+1] = {x, z, r - inner}
+                    break
+                end
+            end
+        end
+    end
+    return goals
 end
 
 function Drive.activateSection(s, section, reached, x, z)
@@ -542,7 +635,7 @@ end
 -- A narrow forward pocket may have a few clear motion primitives but no
 -- usable continuation. Before backing out, prove that a candidate backed
 -- pose has both a clear swept retreat and a rig-aware forward first section.
-function Drive.planRetreatRoute(start, target, radius, probe, navHint)
+function Drive.planRetreatRoute(start, target, radius, probe, navHint, avoided)
     local sx,sz,yaw = start[1],start[2],start[3]
     local maxBack = math.min(64,math.max(16,radius*4))
     for d = 1, maxBack do
@@ -551,17 +644,34 @@ function Drive.planRetreatRoute(start, target, radius, probe, navHint)
         if d % 4 == 0 then
             local backed = {x,z,yaw}
             local path
-            if distance(x,z,target[1],target[2]) <= 200 then
+            if target[1] ~= nil and distance(x,z,target[1],target[2]) <= 200 then
                 path = Drive.plan(backed,target,radius,probe,nil,nil,true)
             end
             if path == nil then
-                local corridor = guidedRoute(backed,target,probe,radius,nil,navHint)
+                local corridor = guidedRoute(backed,target,probe,radius,avoided,navHint)
                 if corridor ~= nil then
                     path = Drive.section(backed,radius,probe,corridor,1,1)
                 end
             end
             if path ~= nil then return d end
         end
+    end
+    return nil
+end
+
+-- Straight back out of a dead end: the farthest clear reverse (as planRetreatRoute
+-- bounds it) from whose end a corridor avoiding `avoided` begins; the rig turns
+-- onto it there by a shuffle. Corridors are searched from the far end inwards.
+function Drive.planBackOut(start, target, radius, probe, navHint, avoided)
+    local sx,sz,yaw = start[1],start[2],start[3]
+    local farthest = 0
+    for d = 1, math.min(64,math.max(16,radius*4)) do
+        if probe(sx-sin(yaw)*d,sz-cos(yaw)*d,yaw,0) ~= true then break end
+        farthest = d
+    end
+    for d = farthest - farthest % 4, 8, -4 do
+        local backed = {sx-sin(yaw)*d,sz-cos(yaw)*d,yaw}
+        if guidedRoute(backed,target,probe,radius,avoided,navHint) ~= nil then return d end
     end
     return nil
 end
@@ -730,6 +840,144 @@ local function sameRig(env, s, Hitch)
     return true
 end
 
+-- The drive's target as the searches take it: its current point and, for a
+-- place, every approach point the corridor search may end at instead.
+local function destination(s)
+    return { s.targetX, s.targetZ, goals = s.goals }
+end
+
+-- A corridor from `start`; for a place, the approach point it reaches becomes
+-- the drive's target.
+local function corridorFrom(s, start, clear, avoided)
+    local route = guidedRoute(start, destination(s), clear, s.radius, avoided, s.navHint)
+    if route ~= nil and s.goals ~= nil then
+        local last = route[#route]
+        if distance(last[1], last[2], s.targetX, s.targetZ) > 0.01 then
+            say(string.format("[Farmhand] drive approaches the place at %.1f,%.1f, %.0fm from its centre (reachable of %d clear points)",
+                              last[1], last[2], distance(last[1], last[2], s.placeX, s.placeZ), #s.goals))
+            s.targetX, s.targetZ = last[1], last[2]
+        end
+    end
+    return route
+end
+
+-- One leg of a shuffle: forward by the route follower, slowly, or straight back
+-- by the collision-checked reverse. The rest is planned again from the pose each
+-- leg stops in; the last leg ends on the corridor and the route goes on from there.
+local function beginLeg(s, path, x, z, yaw)
+    local gear = path[2] ~= nil and path[2][4] or 1
+    local last = math.min(2, #path)
+    while path[last+1] ~= nil and (path[last+1][4] or 1) == gear do last = last + 1 end
+    s.shuffleLegs = (s.shuffleLegs or 0) + 1
+    if gear < 0 then
+        s.retreat, s.path = {x=x,z=z,yaw=yaw,length=(last-1)*STEP}, nil
+        s.maxSpeedKmh,s.commandShare,s.driveStartMs = 3,0.5,nil
+        say(string.format("[Farmhand] drive shuffle leg %d: reverse %.0fm from %.1f,%.1f yaw %.2f",
+                          s.shuffleLegs,(last-1)*STEP,x,z,yaw))
+        return
+    end
+    local leg = {}
+    for i = 1, last do leg[i] = path[i] end
+    local final = path[last+1] == nil
+    Drive.activateSection(s, leg, final and s.shuffle.reached or s.reached, x, z)
+    s.maxSpeedKmh, s.commandShare = final and 64 or 5, nil
+    say(string.format("[Farmhand] drive shuffle leg %d: forward %.0fm from %.1f,%.1f yaw %.2f to %.1f,%.1f yaw %.2f%s",
+                      s.shuffleLegs,(last-1)*STEP,x,z,yaw,leg[last][1],leg[last][2],leg[last][3],
+                      final and "; back on the corridor" or ""))
+    if final then s.shuffle = nil end
+end
+
+-- The next legs of a running shuffle from the observed pose; false when none.
+local function shuffleOn(s, start, clear)
+    local sh = s.shuffle
+    s.shuffle = nil
+    if (s.shuffleLegs or 0) >= Drive.SHUFFLE_LEGS then
+        say(string.format("[Farmhand] drive shuffle ended after %d legs", s.shuffleLegs))
+        return false
+    end
+    local path = Drive.plan(start, sh.waypoint, s.radius, clear, sh.guide, sh.goalYaw, true,
+                            SHUFFLE_LIMIT, Drive.SHUFFLE_SWITCHES)
+    if path == nil then
+        say(string.format("[Farmhand] drive shuffle has no next leg from %.1f,%.1f yaw %.2f",
+                          start[1],start[2],start[3]))
+        return false
+    end
+    s.shuffle = sh
+    beginLeg(s, path, start[1], start[2], start[3])
+    return true
+end
+
+-- A rig with no forward continuation and no straight escape turns out of the
+-- place by a planned forward/reverse shuffle onto its corridor.
+local function startShuffle(s, start, clear, after)
+    if (s.shuffleLegs or 0) >= Drive.SHUFFLE_LEGS then return "NO_ROUTE" end
+    local corridor = s.corridor or corridorFrom(s, start, clear)
+    if corridor == nil then return "NO_ROUTE" end
+    local reached = s.corridor ~= nil and s.reached or 1
+    local function onto(corridor, reached)
+        for attempt = 1, 2 do
+            local path, i = Drive.section(start,s.radius,clear,corridor,reached,attempt,Drive.SHUFFLE_SWITCHES)
+            if path ~= nil then
+                local _, waypoint, guide, goalYaw = sectionGoal(corridor, reached, attempt)
+                s.corridor, s.reached, s.recovering, s.replans = corridor, reached, false, 0
+                s.shuffle = { waypoint = waypoint, guide = guide, goalYaw = goalYaw, reached = i }
+                local gears = 0
+                for n = 3, #path do
+                    if (path[n][4] or 1) ~= (path[n-1][4] or 1) then gears = gears + 1 end
+                end
+                say(string.format("[Farmhand] drive shuffle after %s: %d steps, %d gear changes, to corridor %d/%d",
+                                  after, #path, gears, i, #corridor))
+                beginLeg(s, path, start[1], start[2], start[3])
+                return true
+            end
+        end
+        return false
+    end
+    if onto(corridor, reached) then return "CONTINUE" end
+    -- The way this corridor goes on is closed to the rig: avoid its next point, inside
+    -- the rig's own distance to it (an area around the rig is never avoided), and
+    -- shuffle onto another corridor (live 47d6feb676f24e32-2: a gate the rig could
+    -- face but not turn through, every alternate corridor through it).
+    for n = reached + 1, #corridor do
+        local point = corridor[n]
+        local d = distance(start[1], start[2], point[1], point[2])
+        if d >= 7 then
+            local avoided = {}
+            for _, area in ipairs(s.avoided or {}) do avoided[#avoided+1] = area end
+            avoided[#avoided+1] = {point[1], point[2], math.min(math.max(12, s.radius*1.5), d - 3)}
+            local alternate = corridorFrom(s, start, clear, avoided)
+            if alternate ~= nil then
+                say(string.format("[Farmhand] drive shuffle tries another corridor (%d nodes) avoiding %.1f,%.1f",
+                                  #alternate, point[1], point[2]))
+                s.avoided = avoided
+                if onto(alternate, 1) then return "CONTINUE" end
+            end
+            -- Not even another corridor from here (a lane the grid's headings miss,
+            -- live 33e1238ca71b481d-2): straight back out, where one avoiding it begins.
+            local back = Drive.planBackOut(start, destination(s), s.radius, clear, s.navHint, avoided)
+            if back ~= nil then
+                s.avoided = avoided
+                s.retreat = {x=start[1],z=start[2],yaw=start[3],length=back,backOut=true}
+                s.shuffleLegs = (s.shuffleLegs or 0) + 1
+                s.path,s.corridor,s.recovering = nil,nil,false
+                s.maxSpeedKmh,s.commandShare,s.driveStartMs = 3,0.5,nil
+                say(string.format("[Farmhand] drive backs %.0fm out to a corridor avoiding %.1f,%.1f",
+                                  back, point[1], point[2]))
+                return "CONTINUE"
+            end
+            break
+        end
+    end
+    for _, move in ipairs({ {1,0}, {1,-1}, {1,1}, {-1,0} }) do
+        local px, pz, pyaw = advance(start[1], start[2], start[3], 2 * move[1], move[2] / s.radius)
+        local pass, why = clear(px, pz, pyaw, move[2] / s.radius)
+        say(string.format("[Farmhand] drive no shuffle from %.1f,%.1f yaw %.2f: %s 2m steer %d clear=%s %s",
+                          start[1], start[2], start[3], move[1] > 0 and "forward" or "reverse", move[2],
+                          tostring(pass), tostring(why)))
+    end
+    return "NO_ROUTE"
+end
+
 -- The first route of a drive, as a replayable planning step (Drive.begin, and
 -- Drive.step while it continues over frames). nil, or the failure code.
 local function initialPlan(env, s, Hitch)
@@ -748,12 +996,12 @@ local function initialPlan(env, s, Hitch)
         end
     end
     if path == nil and retreat == nil then
-        corridor = guidedRoute(start,target,clear,s.radius,nil,s.navHint)
+        corridor = corridorFrom(s,start,clear)
         if corridor == nil then return "NO_ROUTE" end
         path,reached = Drive.section(start,s.radius,clear,corridor,1,1)
         if path == nil then
             if s.egress == nil then
-                retreat = Drive.planRetreatRoute(start,target,s.radius,clear,s.navHint)
+                retreat = Drive.planRetreatRoute(start,destination(s),s.radius,clear,s.navHint)
             end
             if retreat ~= nil then
                 corridor,reached = nil,nil
@@ -773,6 +1021,8 @@ local function initialPlan(env, s, Hitch)
         s.retreat = { x = s.initial.x, z = s.initial.z, yaw = s.initial.yaw, length = retreat }
         s.maxSpeedKmh, s.commandShare = 3, 0.5
     end
+    -- The search time is not time spent stalled (live 2268b28b08994e3b-2).
+    s.lastMovedX, s.lastMovedZ, s.movedAt = s.initial.x, s.initial.z, s.elapsed
     s.initial = nil
     return nil
 end
@@ -853,6 +1103,22 @@ function Drive.begin(env, args, Hitch)
             say("[Farmhand] drive start clearance: " .. tostring(startReason))
             return nil, "START_NOT_CLEAR"
         end
+        -- area > 0: (x, z) is a place's centre, reached at any clear approach point.
+        local goals, targetX, targetZ = nil, args.x, args.z
+        if args.area ~= nil and args.area ~= 0 then
+            if not (finite(args.area) and args.area > 0 and args.area <= Drive.MAX_APPROACH_M) then
+                return nil, "INVALID_DESTINATION"
+            end
+            goals = Drive.approaches(args.x, args.z, args.area, clear)
+            if #goals == 0 then return nil, "NO_CLEAR_APPROACH" end
+            local nearest = math.huge
+            for _, goal in ipairs(goals) do
+                local d = distance(x, z, goal[1], goal[2]) + goal[3]
+                if d < nearest then nearest, targetX, targetZ = d, goal[1], goal[2] end
+            end
+            say(string.format("[Farmhand] drive place at %.1f,%.1f: %d clear approach points within %.0fm",
+                              args.x, args.z, #goals, args.area))
+        end
         local navHint = Drive.navHint(env)
         local planStart
         if egress == nil then
@@ -873,7 +1139,8 @@ function Drive.begin(env, args, Hitch)
                     maxSpeedKmh = egress ~= nil and 3 or 64,
                     commandShare = egress ~= nil and 0.5 or nil, elapsed = 0,
                     cruiseBefore = savedCruise, travelLimit = travelLimit,
-                    targetX = args.x, targetZ = args.z,
+                    targetX = targetX, targetZ = targetZ, goals = goals,
+                    placeX = args.x, placeZ = args.z,
                     path = nil, next = 2, foot = foot, egress = egress, radius = radius,
                     sectionAttempt = 1, navHint = navHint,
                     result = nil, movedAt = 0,
@@ -1009,6 +1276,17 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
                               hitch and string.format("%.2f",hitch) or "-"))
             r.diverged = true
         end
+        -- Reversing without moving is held fast too (live 2268b28b08994e3b-2: five
+        -- minutes at 0.2 km/h): it stops there and the search goes on from it.
+        if not r.diverged then
+            if r.markAt == nil or distance(x,z,r.markX,r.markZ) >= 0.5 then
+                r.markX,r.markZ,r.markAt = x,z,s.elapsed
+            elseif s.elapsed - r.markAt >= 8000 then
+                say(string.format("[Farmhand] drive held fast reversing at %.1f,%.1f after %.1f of %.1fm",
+                                  x,z,-along,r.length))
+                r.diverged = true
+            end
+        end
         if r.diverged or along <= -r.length+0.25 then
             Hitch.halt(env,s,dt)
             if not stopped(s.tractor) then return "CONTINUE" end
@@ -1016,18 +1294,29 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
                 return Hitch.routePoseClear(env,s.foot,px,pz,pyaw,curve)
             end
             local start = {x,z,yaw}
+            if s.shuffle ~= nil then
+                s.retreat = nil
+                if shuffleOn(s,start,clear) then return "CONTINUE" end
+                s.retreat = r
+            end
             local path
             if distance(x,z,s.targetX,s.targetZ) <= 200 then
                 path = Drive.plan(start,{s.targetX,s.targetZ},s.radius,
                                   clear,nil,nil,true)
             end
             if path == nil then
-                s.corridor = guidedRoute(start,{s.targetX,s.targetZ},clear,s.radius,nil,s.navHint)
+                s.corridor = corridorFrom(s,start,clear,s.avoided)
                 if s.corridor == nil then return "NO_ROUTE" end
                 path,s.reached = Drive.section(start,s.radius,clear,s.corridor,1,1)
                 -- A failed first span still returns its index; alternates start at 1.
                 if path == nil then s.reached = 1 end
                 s.sectionAttempt = path and 1 or 2
+                -- Backed out of a dead end: turn onto the corridor from here.
+                if path == nil and r.backOut then
+                    s.retreat = nil
+                    if startShuffle(s,start,clear,"backing out") == "CONTINUE" then return "CONTINUE" end
+                    s.retreat = r
+                end
             end
             s.path,s.next,s.retreat,s.replans = path,2,nil,0
             s.maxSpeedKmh,s.commandShare,s.driveStartMs = 64,nil,nil
@@ -1059,12 +1348,17 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
             return Hitch.routePoseClear(env,s.foot,px,pz,pyaw,curve)
         end
         local start = {x,z,yaw}
+        if s.shuffle ~= nil then
+            s.recovering = false
+            if shuffleOn(s,start,clear) then return "CONTINUE" end
+            s.recovering = true
+        end
         -- A pose with no forward continuation is recovered by the same
         -- rig-clear straight reverse used at departure, before NO_ROUTE.
         local function escape(after)
             local retreat = (s.retreats or 0) < 2 and Drive.planRetreatRoute(
-                start,{s.targetX,s.targetZ},s.radius,clear,s.navHint) or nil
-            if retreat == nil then return "NO_ROUTE" end
+                start,destination(s),s.radius,clear,s.navHint) or nil
+            if retreat == nil then return startShuffle(s,start,clear,after) end
             s.retreat = {x=x,z=z,yaw=yaw,length=retreat}
             s.retreats = (s.retreats or 0)+1
             s.path,s.corridor,s.recovering = nil,nil,false
@@ -1075,11 +1369,12 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
         if s.recovering then
             s.replans = s.replans + 1
             if s.replans > 4 then return "OBSTACLE_AHEAD" end
-            s.corridor = guidedRoute(start,{s.targetX,s.targetZ},clear,s.radius,nil,s.navHint)
-            s.reached,s.sectionAttempt,s.recovering = 1,1,false
-            s.path = nil
+            local fresh = corridorFrom(s,start,clear)
+            s.recovering,s.path = false,nil
             s.lastMovedX,s.lastMovedZ,s.movedAt = x,z,s.elapsed
-            if s.corridor == nil then return escape("no corridor on replan") end
+            -- Without a new corridor the last one still guides a shuffle out.
+            if fresh == nil then return escape("no corridor on replan") end
+            s.corridor,s.reached,s.sectionAttempt = fresh,1,1
             say(string.format("[Farmhand] drive replan %d retains target %.1f,%.1f",
                                 s.replans,s.targetX,s.targetZ))
         end
@@ -1101,10 +1396,9 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
                 for _, area in ipairs(s.avoided or {}) do avoided[#avoided+1] = area end
                 avoided[#avoided+1] = {bad[1],bad[2],math.max(12,s.radius*1.5)}
                 s.avoided = avoided
-                s.corridor = guidedRoute(start,{s.targetX,s.targetZ},clear,
-                                         s.radius,s.avoided,s.navHint)
-                if s.corridor == nil then return escape("no alternate corridor") end
-                s.path,s.reached,s.sectionAttempt = nil,1,1
+                local alternate = corridorFrom(s,start,clear,s.avoided)
+                if alternate == nil then return escape("no alternate corridor") end
+                s.corridor,s.path,s.reached,s.sectionAttempt = alternate,nil,1,1
                 say(string.format("[Farmhand] drive found alternate corridor %d after blocked turn",
                                     s.replans))
             end
@@ -1142,7 +1436,7 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
                                   clear,nil,nil,true)
             end
             if path == nil then
-                s.corridor = guidedRoute(start,{s.targetX,s.targetZ},clear,s.radius,nil,s.navHint)
+                s.corridor = corridorFrom(s,start,clear)
                 if s.corridor == nil then return "NO_ROUTE" end
                 path,s.reached = Drive.section(start,s.radius,clear,s.corridor,1,1)
                 if path == nil then s.reached = 1 end
@@ -1166,6 +1460,22 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
     end
     if s.elapsed - s.movedAt >= 8000 then
         if distance(x, z, s.lastMovedX, s.lastMovedZ) < 0.5 then
+            -- Held fast under throttle by something the route box did not see (live
+            -- 7fd526481ca24c1c-3: stopped dead from 6.6 km/h, every replan drove at it
+            -- again): just past the rig's front is blocked for the rest of this drive.
+            if s.lastSpeedMode == "drive" then
+                local held = s.foot.held or {}
+                local ahead = s.foot.aMax + 0.75
+                for _, side in ipairs({ s.foot.lMin + 0.3, (s.foot.lMin + s.foot.lMax) / 2, s.foot.lMax - 0.3 }) do
+                    if #held < 12 then
+                        held[#held+1] = { x + sin(yaw)*ahead + cos(yaw)*side, z + cos(yaw)*ahead - sin(yaw)*side }
+                    end
+                end
+                s.foot.held = held
+                local ok, contacts = pcall(Hitch.rigContacts, env, s.tractor)
+                say(string.format("[Farmhand] drive held fast at %.1f,%.1f yaw %.2f under throttle; %.1f,%.1f ahead counts as blocked; units %s",
+                                  x, z, yaw, held[#held-1][1], held[#held-1][2], ok and tostring(contacts) or "?"))
+            end
             s.recovering = true
             Hitch.halt(env,s,dt)
             return "CONTINUE"
