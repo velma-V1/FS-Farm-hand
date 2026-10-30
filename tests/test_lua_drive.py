@@ -1025,6 +1025,61 @@ class ShuffleAndApproachTests(unittest.TestCase):
         self.assertTrue(session.retreat.onTowed)               # back along the trailer, into line
         self.assertEqual(session.unbends, 1)
 
+    AHEAD = """
+        local tick = ...
+        local vehicle = {rootNode=1, ownerFarmId='1'}
+        local foot = {units={vehicle}, lMin=-1, lMax=1, aMin=-2, aMax=2, towLength=0}
+        local now = 0
+        local env = {}
+        if tick then env.getTimeSec = function() now = now + tick; return now end end
+        local hitch = {routePoseClear=function() return true end}
+        local path = {}
+        for i = 0, 10 do path[#path+1] = {0, i*4, 0} end
+        local corridor = {}
+        for i = 0, 30 do corridor[#corridor+1] = {0, i*10, (30-i)*10} end
+        local session = {tractor=vehicle, foot=foot, radius=6, path=path, next=6,
+            corridor=corridor, reached=4, elapsed=0}
+        return env, session, hitch
+    """
+
+    def test_the_next_section_is_joined_while_driving_without_a_stop(self):
+        lines = []
+        self.lua.globals().print = lambda *parts: lines.append(" ".join(map(str, parts)))
+        env, session, hitch = self.lua.execute(self.AHEAD, None)
+        starts = []
+        self.drive.section = self.lua.eval("""function(log) return function(start, _, _, _, reached, attempt)
+            log(start[1], start[2], start[3], reached, attempt)
+            return {{start[1],start[2],start[3]},{0,44,0},{0,48,0},{0,52,0}}, 9
+        end end""")(lambda *a: starts.append(a))
+        self.assertTrue(self.drive.planAhead(env, session, hitch))
+        self.assertEqual(starts, [(0, 40, 0, 4, 1)])           # from the planned end of this one
+        points = [(session.path[i][1], session.path[i][2]) for i in range(1, len(session.path) + 1)]
+        self.assertEqual(points[-1], (0, 52))
+        self.assertEqual(len(set(points)), len(points))         # the end point joined once
+        self.assertEqual(session.path[session.next][2], 20)     # the follower still at its point
+        self.assertEqual(session.reached, 9)
+        self.assertTrue(any("joined ahead" in l for l in lines))
+        for name, value in (("shuffle", self.lua.table()), ("legKmh", 5), ("recovering", True)):
+            env, session, hitch = self.lua.execute(self.AHEAD, None)
+            session[name] = value
+            self.assertIsNone(self.drive.planAhead(env, session, hitch), name)
+        env, session, hitch = self.lua.execute(self.AHEAD, None)
+        session.reached = 31                                      # the last section: it stops there
+        self.assertIsNone(self.drive.planAhead(env, session, hitch))
+
+    def test_a_section_searched_ahead_spreads_over_frames_and_leaves_the_driven_path_alone(self):
+        env, session, hitch = self.lua.execute(self.AHEAD, 0.001)
+        before = [(session.path[i][1], session.path[i][2]) for i in range(1, len(session.path) + 1)]
+        frames = 0
+        while not self.drive.planAhead(env, session, hitch):
+            frames += 1
+            self.assertLess(frames, 5000)
+            now = [(session.path[i][1], session.path[i][2]) for i in range(1, len(session.path) + 1)]
+            self.assertEqual(now, before)
+        self.assertGreater(frames, 1)                             # it did not fit one frame's budget
+        self.assertGreater(len(session.path), len(before))
+        self.assertGreater(session.reached, 4)
+
 class Lua51ShuffleAndApproachTests(ShuffleAndApproachTests):
     RUNTIME = lua51
 

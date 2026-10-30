@@ -434,6 +434,11 @@ GitHub release API and the Hugging Face tree API of the pinned revision.
   as blocked in `Hitch.routePoseClear` for the drive (live `7fd526481ca24c1c-3`: an
   unseen catch by Field 2); a reverse not moving 0.5 m in 8 s stops. Hit nodes are
   logged with `getWorldTranslation`.
+- **Non-stop section handoff (concept, Courseplay):** Courseplay plans the next part of
+  its course while driving; `Drive.planAhead` searches the next corridor section from
+  the driven section's planned end pose in its own episode (`Drive.AHEAD_BUDGET_S`,
+  4 ms a frame; `planned` restores the frame's own) and joins it on. No new GIANTS
+  call. Live `ce15bf32aebd4c54-2`: 9 of 9 sections joined, none stopped at.
 - **Reference concepts only:** Courseplay Hybrid A*, Dubins, Reeds-Shepp and pure
   pursuit at toolkit commit `150dcd51`; GPL-3.0 code is not copied. AutoDrive's
   slope and water checks at commit `93cff22f` are MIT-licensed reference. The

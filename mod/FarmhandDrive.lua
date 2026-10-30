@@ -121,13 +121,16 @@ end
 
 -- fn(...) as one replayable planning step kept on holder.episode: PENDING, or
 -- fn's own results. clock is GIANTS' getTimeSec, or nil (run to the end).
+-- holder.budget (seconds) overrides the frame budget; a planning step may run inside
+-- another (Drive.planAhead inside a frame), each in its own episode.
 local function planned(holder, clock, fn, ...)
     local ep = holder.episode or { jobs = {}, printed = 0 }
     ep.n, ep.said, ep.clock = 0, 0, clock
-    ep.deadline = clock ~= nil and clock() + Drive.FRAME_BUDGET_S or nil
+    ep.deadline = clock ~= nil and clock() + (holder.budget or Drive.FRAME_BUDGET_S) or nil
+    local outer = episode
     episode = ep
     local results = pack(pcall(fn, ...))
-    episode = nil
+    episode = outer
     if not results[1] and results[2] == PENDING then
         holder.episode = ep
         return PENDING
@@ -519,6 +522,7 @@ local SECTION_SPANS = {4,8,12,16,2,1}
 Drive.SHUFFLE_SWITCHES = 6      -- gear changes in one planned shuffle
 Drive.SHUFFLE_LEGS = 16         -- legs driven in one drive's shuffles
 local SHUFFLE_LIMIT = 8000
+Drive.AHEAD_BUDGET_S = 0.004    -- per frame for the next section, searched while driving
 Drive.MAX_APPROACH_M = 100      -- = companion/standalone.py MAX_APPROACH_M
 
 -- Where a section attempt aims on the corridor: its index, point, the corridor
@@ -582,9 +586,49 @@ end
 
 function Drive.activateSection(s, section, reached, x, z)
     s.path,s.next,s.reached,s.sectionAttempt = section,2,reached,1
+    s.ahead,s.aheadAttempt = nil,1
     s.previewAt = s.elapsed + 250
     s.driveStartMs = nil -- each stopped handoff reuses Hitch's steering/throttle ramp
     s.lastMovedX,s.lastMovedZ,s.movedAt = x,z,s.elapsed
+end
+
+-- The next corridor section searched while the rig drives the current one, from that
+-- one's planned end pose, a few milliseconds a frame, and joined on when found: the
+-- route goes on without braking to a stop at every section end (Courseplay plans the
+-- next part of a course while driving the current one). Only on an ordinary forward
+-- section with more corridor after it; a shuffle, reverse, straightening or recovery,
+-- and the last section, keep their stops. Not found in time: the stop and search at
+-- the section end as before. Every joined section was planned by the same probe.
+function Drive.planAhead(env, s, Hitch)
+    if s.corridor == nil or s.path == nil or #s.path < 2 or s.shuffle ~= nil or s.legKmh ~= nil
+            or s.recovering or s.retreat ~= nil or s.egress ~= nil or s.straightenForward ~= nil
+            or s.reached == nil or s.reached >= #s.corridor
+            or (s.aheadAttempt or 1) > #SECTION_SPANS then return nil end
+    local last = s.path[#s.path]
+    if (last[4] or 1) < 0 then return nil end
+    local function clear(px, pz, pyaw, curve)
+        return Hitch.routePoseClear(env, s.foot, px, pz, pyaw, curve)
+    end
+    s.ahead = s.ahead or { budget = Drive.AHEAD_BUDGET_S }
+    local section, reached = planned(s.ahead, gameClock(env), Drive.section,
+                                     { last[1], last[2], last[3] }, s.radius, clear,
+                                     s.corridor, s.reached, s.aheadAttempt or 1)
+    if section == PENDING then return nil end
+    s.ahead = nil
+    if section == nil then
+        s.aheadAttempt = (s.aheadAttempt or 1) + 1
+        return nil
+    end
+    local keep = math.max(1, s.next - 2)
+    local path = {}
+    for n = keep, #s.path do path[#path+1] = s.path[n] end
+    for n = 2, #section do path[#path+1] = section[n] end
+    s.next = s.next - keep + 1
+    s.path, s.reached, s.aheadAttempt = path, reached, 1
+    s.joined = (s.joined or 0) + 1
+    say(string.format("[Farmhand] drive next section to %d/%d joined ahead at %.1f,%.1f (%d steps), no stop",
+                      reached, #s.corridor, last[1], last[2], #section))
+    return true
 end
 
 -- A parked obstacle can overlap the conservative box at the current pose even
@@ -1707,6 +1751,7 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
             return Hitch.drive(env, s, dt, true, 0, 3) or "CONTINUE"
         end
     end
+    Drive.planAhead(env, s, Hitch)
     if s.elapsed - s.movedAt >= 8000 then
         if distance(x, z, s.lastMovedX, s.lastMovedZ) < 0.5 then
             -- Held fast under throttle by something the route box did not see (live
