@@ -1987,6 +1987,60 @@ function Hitch.routePoseClear(env, foot, x, z, yaw, curvature)
     return clear, reason, hits
 end
 
+-- Measurement only (no route is refused on it yet): the terrain under the rig's route box
+-- at x, z, yaw, sampled every 2 m along its centre line and both sides: the whole box's
+-- grade, the steepest 2 m climb and the worst side tilt (degrees), the largest height
+-- step between neighbouring samples (m), and the rig's root pitch and roll as GIANTS
+-- has it (localDirectionToWorld). The 22 degree GRADE check compares points ~half the
+-- rig apart, so a bank or ditch edge shorter than that is not seen (live 7fd526481ca24c1c-3).
+function Hitch.terrainProfile(env, foot, x, z, yaw, rootNode)
+    if foot == nil or not (finite(x) and finite(z) and finite(yaw)) then return nil end
+    local ok, out = pcall(function()
+        local side, ahead = (foot.lMin + foot.lMax) / 2, (foot.aMin + foot.aMax) / 2
+        local cx = x + math.sin(yaw) * ahead + math.cos(yaw) * side
+        local cz = z + math.cos(yaw) * ahead - math.sin(yaw) * side
+        local halfW, halfL = (foot.lMax - foot.lMin) / 2, (foot.aMax - foot.aMin) / 2
+        local n = math.max(1, math.floor(halfL))
+        local lines = {}
+        for li, lateral in ipairs({ -halfW, 0, halfW }) do
+            lines[li] = {}
+            for i = -n, n do
+                local longitudinal = halfL * i / n
+                local px = cx + math.sin(yaw) * longitudinal + math.cos(yaw) * lateral
+                local pz = cz + math.cos(yaw) * longitudinal - math.sin(yaw) * lateral
+                lines[li][#lines[li] + 1] = terrainAt(env, px, pz)
+            end
+        end
+        local gap = halfL / n
+        local climb, cross, step = 0, 0, 0
+        for _, line in ipairs(lines) do
+            for i = 2, #line do
+                local rise = math.abs(line[i] - line[i - 1])
+                step = math.max(step, rise)
+                climb = math.max(climb, math.deg(math.atan(rise / gap)))
+            end
+        end
+        for i = 1, #lines[1] do
+            local rise = math.abs(lines[3][i] - lines[1][i])
+            step = math.max(step, math.abs(lines[2][i] - lines[1][i]), math.abs(lines[3][i] - lines[2][i]))
+            if halfW > 0 then cross = math.max(cross, math.deg(math.atan(rise / (2 * halfW)))) end
+        end
+        local mid = lines[2]
+        local grade = math.deg(math.atan((mid[#mid] - mid[1]) / (2 * halfL)))
+        local pitch, roll
+        if rootNode ~= nil then
+            local _, fy = env.localDirectionToWorld(rootNode, 0, 0, 1)
+            local _, sy = env.localDirectionToWorld(rootNode, 1, 0, 0)
+            if finite(fy) and finite(sy) then
+                pitch = math.deg(math.asin(math.max(-1, math.min(1, fy))))
+                roll = math.deg(math.asin(math.max(-1, math.min(1, sy))))
+            end
+        end
+        return { grade = grade, climb = climb, cross = cross, step = step, pitch = pitch, roll = roll }
+    end)
+    return ok and out or nil
+end
+
 -- nil if [a0, a1] (any order) is clear for the rig's width with `side` margin and its height,
 -- else "HIT" and the names, or "UNKNOWN". Slabs of at most `slab` metres.
 local function clearVolume(env, s, a0, a1, side, slab, h0, h1, mask)

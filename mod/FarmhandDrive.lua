@@ -702,7 +702,47 @@ function Drive.reverseAim(env, foot, line, yaw, radius)
     local turn = math.max(-math.rad(75), math.min(math.rad(75), -2*(wanted-hitch)))
     local ahead = math.min(6, finite(radius) and radius or 6)
     ahead = math.min(ahead+abs(crossTrack), 2*ahead)
-    return -sin(turn)*ahead, -cos(turn)*ahead, hitch
+    return -sin(turn)*ahead, -cos(turn)*ahead, hitch, crossTrack, orientation
+end
+
+-- The straight line a towed rig reverses on: the towed unit's own axis through it
+-- ({x, z, yaw}), or nil with nothing towed or nothing readable. Measured from the
+-- tractor's line, a trailer left angled starts off it and the controller could not
+-- settle it (tests: 23 degrees on 6 m reached a 72 degree hitch); on its own axis it
+-- leads straight back and the tractor swings in behind it.
+function Drive.towedLine(env, foot)
+    local towed = foot ~= nil and foot.towed or nil
+    if towed == nil then return nil end
+    local node = towed.steeringAxleNode or towed.rootNode
+    local ok, tx,_,tz = pcall(env.getWorldTranslation, node)
+    local okD, dx,_,dz = pcall(env.localDirectionToWorld, node, 0,0,1)
+    if not (ok and okD and finite(tx) and finite(tz) and finite(dx) and finite(dz)) then return nil end
+    return { x = tx, z = tz, yaw = (math.atan2 or math.atan)(dx,dz) }
+end
+
+-- Why a reverse has left its checked line (nil while it holds it). With a towed unit
+-- the line is the unit's (Drive.towedLine) and the unit is what must track it (live:
+-- every reverse with an angled trailer stopped on the tractor's 15 degrees after
+-- 0.2-7.6 m, hitch 0.08-0.15): it may not get further off or turn further away than
+-- it began, the hitch stays inside the controller's 35 degrees (the jackknife guard),
+-- and the tractor, measured from the same line, inside a wider bound. `trailer` =
+-- {cross=, orient=, hitch=}, or nil; lateral and yawError are the tractor's.
+function Drive.reverseOffLine(r, lateral, yawError, trailer)
+    if trailer == nil then
+        if lateral > 0.75 then return "lateral" end
+        if abs(yawError) > pi/12 then return "heading" end
+        return nil
+    end
+    local start = r.started or { cross = abs(trailer.cross), orient = abs(trailer.orient),
+                                 hitch = abs(trailer.hitch), lateral = lateral, yaw = abs(yawError) }
+    r.started = start
+    if abs(trailer.cross) > math.max(0.75, start.cross + 0.25) then return "trailer lateral" end
+    if abs(trailer.orient) > math.max(pi/12, start.orient + math.rad(5)) then return "trailer heading" end
+    if abs(trailer.hitch) > math.max(math.rad(35), start.hitch + math.rad(5)) then return "hitch" end
+    if lateral > math.max(2, start.lateral + 1) or abs(yawError) > math.max(math.rad(35), start.yaw + math.rad(5)) then
+        return "tractor"
+    end
+    return nil
 end
 
 -- A pivoting trailer cuts inside the tractor's arc. Requiring the tractor's
@@ -818,6 +858,45 @@ function Drive.trackingSpeed(base, error, limit, headingError)
 end
 
 local atan2 = math.atan2 or math.atan
+
+-- The worst terrain a drive has driven over, measured once a second (Hitch.terrainProfile)
+-- and logged at its end: the data the slope limits are to be set from.
+local function profileText(p)
+    return string.format("grade %.1f climb %.1f cross %.1f step %.2fm pitch %s roll %s",
+                         p.grade, p.climb, p.cross, p.step,
+                         p.pitch and string.format("%.1f", p.pitch) or "?",
+                         p.roll and string.format("%.1f", p.roll) or "?")
+end
+
+local function measureTerrain(env, s, Hitch, x, z, yaw)
+    if type(Hitch.terrainProfile) ~= "function" or s.elapsed < (s.terrainAt or 0) then return end
+    s.terrainAt = s.elapsed + 1000
+    local p = Hitch.terrainProfile(env, s.foot, x, z, yaw, s.tractor.rootNode)
+    if p == nil then return end
+    local worst = s.terrain or { samples = 0 }
+    worst.samples = worst.samples + 1
+    for _, k in ipairs({ "climb", "cross", "step" }) do
+        if worst[k] == nil or p[k] > worst[k][1] then worst[k] = { p[k], x, z } end
+    end
+    for _, k in ipairs({ "grade", "pitch", "roll" }) do
+        if p[k] ~= nil and (worst[k] == nil or math.abs(p[k]) > math.abs(worst[k][1])) then
+            worst[k] = { p[k], x, z }
+        end
+    end
+    s.terrain = worst
+end
+
+local function terrainSummary(s)
+    local w = s.terrain
+    if w == nil then return nil end
+    local parts = {}
+    for _, k in ipairs({ "grade", "climb", "cross", "step", "pitch", "roll" }) do
+        if w[k] ~= nil then
+            parts[#parts+1] = string.format("%s %.2f at %.0f,%.0f", k, w[k][1], w[k][2], w[k][3])
+        end
+    end
+    return string.format("[Farmhand] drive terrain worst over %d samples: %s", w.samples, table.concat(parts, "; "))
+end
 
 local function pose(env, tractor)
     local x, y, z = env.getWorldTranslation(tractor.rootNode)
@@ -985,7 +1064,7 @@ local function initialPlan(env, s, Hitch)
         return Hitch.routePoseClear(env, s.foot, px, pz, pyaw, curve)
     end
     local start, target = s.initial.start, { s.targetX, s.targetZ }
-    local path, why, corridor, reached, sectionAttempt, retreat
+    local path, why, corridor, reached, sectionAttempt, retreat, backOut
     if distance(start[1],start[2],target[1],target[2]) <= 200 then
         path, why = Drive.plan(start,target,s.radius,clear,nil,nil,true)
     end
@@ -997,7 +1076,19 @@ local function initialPlan(env, s, Hitch)
     end
     if path == nil and retreat == nil then
         corridor = corridorFrom(s,start,clear)
-        if corridor == nil then return "NO_ROUTE" end
+        -- No corridor from where it was left (live 7353315fb9eb453a-3: parked at the
+        -- barn's approach point between a shed and a tree): straight back out to where
+        -- one begins, and turn onto it there.
+        if corridor == nil and s.egress == nil then
+            retreat = Drive.planBackOut(start,destination(s),s.radius,clear,s.navHint,nil)
+            if retreat == nil then return "NO_ROUTE" end
+            backOut = true
+            say(string.format("[Farmhand] drive no corridor from here; backs %.0fm out to where one begins", retreat))
+        elseif corridor == nil then
+            return "NO_ROUTE"
+        end
+    end
+    if path == nil and retreat == nil then
         path,reached = Drive.section(start,s.radius,clear,corridor,1,1)
         if path == nil then
             if s.egress == nil then
@@ -1018,7 +1109,8 @@ local function initialPlan(env, s, Hitch)
     end
     s.path, s.corridor, s.reached, s.sectionAttempt = path, corridor, reached, sectionAttempt or 1
     if retreat ~= nil then
-        s.retreat = { x = s.initial.x, z = s.initial.z, yaw = s.initial.yaw, length = retreat }
+        s.retreat = { x = s.initial.x, z = s.initial.z, yaw = s.initial.yaw, length = retreat,
+                      backOut = backOut }
         s.maxSpeedKmh, s.commandShare = 3, 0.5
     end
     -- The search time is not time spent stalled (live 2268b28b08994e3b-2).
@@ -1269,11 +1361,25 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
         local lateral = abs((x-r.x)*cos(r.yaw)-(z-r.z)*sin(r.yaw))
         -- Off its checked straight line it stops there and the route search resumes
         -- from that pose (the guard still checks every unit), as a forward divergence does.
-        if not r.diverged and (lateral > 0.75 or abs((yaw-r.yaw+pi)%(2*pi)-pi) > pi/12) then
-            local _,_,hitch = Drive.reverseAim(env,s.foot,r,yaw,s.radius)
-            say(string.format("[Farmhand] drive reverse diverged at %.1f,%.1f yaw %.2f after %.1f of %.1fm: lateral %.2f yaw error %.2f hitch %s",
-                              x,z,yaw,-along,r.length,lateral,(yaw-r.yaw+pi)%(2*pi)-pi,
-                              hitch and string.format("%.2f",hitch) or "-"))
+        r.line = r.line or Drive.towedLine(env,s.foot) or { x = r.x, z = r.z, yaw = r.yaw }
+        local line = r.line
+        local yawError = (yaw-r.yaw+pi)%(2*pi)-pi
+        local _,_,hitch,cross,orient = Drive.reverseAim(env,s.foot,line,yaw,s.radius)
+        local trailer = cross ~= nil and { cross = cross, orient = orient, hitch = hitch } or nil
+        local why
+        if not r.diverged then
+            if trailer ~= nil then
+                why = Drive.reverseOffLine(r, abs((x-line.x)*cos(line.yaw)-(z-line.z)*sin(line.yaw)),
+                                           (yaw-line.yaw+pi)%(2*pi)-pi, trailer)
+            else
+                why = Drive.reverseOffLine(r, lateral, yawError, nil)
+            end
+        end
+        if why then
+            say(string.format("[Farmhand] drive reverse diverged at %.1f,%.1f yaw %.2f after %.1f of %.1fm: lateral %.2f yaw error %.2f hitch %s (%s%s)",
+                              x,z,yaw,-along,r.length,lateral,yawError,
+                              hitch and string.format("%.2f",hitch) or "-", why,
+                              trailer and string.format("; trailer lateral %.2f heading %.2f",cross,orient) or ""))
             r.diverged = true
         end
         -- Reversing without moving is held fast too (live 2268b28b08994e3b-2: five
@@ -1335,7 +1441,8 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
         end
         Hitch.holdActive(s)
         v:raiseActive()
-        local lx,lz = Drive.reverseAim(env,s.foot,r,yaw,s.radius)
+        measureTerrain(env, s, Hitch, x, z, yaw)
+        local lx,lz = Drive.reverseAim(env,s.foot,r.line,yaw,s.radius)
         if lx == nil then return "UNKNOWN_OBSERVATION" end
         return Hitch.drive(env,s,dt,false,lx,lz) or "CONTINUE"
     end
@@ -1473,6 +1580,12 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
                 end
                 s.foot.held = held
                 local ok, contacts = pcall(Hitch.rigContacts, env, s.tractor)
+                if type(Hitch.terrainProfile) == "function" then
+                    local here = Hitch.terrainProfile(env, s.foot, x, z, yaw, s.tractor.rootNode)
+                    local on = Hitch.terrainProfile(env, s.foot, x + sin(yaw)*2, z + cos(yaw)*2, yaw)
+                    say(string.format("[Farmhand] drive held-fast terrain here: %s; 2 m on: %s",
+                                      here and profileText(here) or "?", on and profileText(on) or "?"))
+                end
                 say(string.format("[Farmhand] drive held fast at %.1f,%.1f yaw %.2f under throttle; %.1f,%.1f ahead counts as blocked; units %s",
                                   x, z, yaw, held[#held-1][1], held[#held-1][2], ok and tostring(contacts) or "?"))
             end
@@ -1515,6 +1628,7 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
     if aimX == nil then return "ROUTE_LOST" end
     local lx, _, lz = env.worldToLocal(node, aimX, y, aimZ)
     if not (finite(lx) and finite(lz)) then return "UNKNOWN_OBSERVATION" end
+    measureTerrain(env, s, Hitch, x, z, yaw)
     if s.elapsed >= (s.trackAt or 0) then
         s.trackAt = s.elapsed + 1000
         local length2 = lx*lx+lz*lz
@@ -1576,6 +1690,8 @@ function Drive.step(env, s, dt, Hitch)
     end
     if code ~= "CONTINUE" then
         s.result = code
+        local summary = terrainSummary(s)
+        if summary ~= nil then say(summary .. " (" .. tostring(code) .. ")") end
         halt(env, s, dt, Hitch)
     end
     return code
@@ -1583,6 +1699,10 @@ end
 
 function Drive.abort(env, s, Hitch)
     if s ~= nil then
+        if s.result == nil then
+            local summary = terrainSummary(s)
+            if summary ~= nil then say(summary .. " (STOPPED)") end
+        end
         s.result = s.result or "STOPPED"
         halt(env, s, 0, Hitch)
     end

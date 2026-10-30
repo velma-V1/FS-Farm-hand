@@ -384,16 +384,25 @@ GitHub release API and the Hugging Face tree API of the pinned revision.
   semi-trailer's hitch angle grow (live `dee63f6c79b24196-4`: the GMC's deckover
   jackknifed on a 32 m escape). `Drive.reverseAim` holds the first wheeled unit
   behind the tractor (`spec_wheels.wheels`, as `Hitch`'s steering read; its
-  `steeringAxleNode` else `rootNode`) on the straight line with the structure of
+  `steeringAxleNode` else `rootNode`) on a straight line with the structure of
   Courseplay `scripts/ai/AIReverseDriver.lua:247-280` (Ridley and Corke 2003: a
   wanted hitch angle from orientation and cross-track errors, the tractor turned by
   its difference from the current one) and its lookahead
   (`PurePursuitController.lua:64`); independently written, gains tuned in
-  `tests/test_lua_drive.TowedReverseTests`. A reverse off its checked line stops and
-  the route search resumes from that pose. `Hitch.routeFootprint` plans a unit
-  behind the tractor more than 5 degrees off its heading straight behind at its
-  observed distance (`localDirectionToWorld` of the unit's root); the live
-  envelope still checks each unit where it is.
+  `tests/test_lua_drive.TowedReverseTests`. The line is the unit's own axis
+  (`Drive.towedLine`, its node's `getWorldTranslation` and `localDirectionToWorld`)
+  and the unit, the hitch and (from that line, wider) the tractor judge whether it
+  holds (`Drive.reverseOffLine`). Live motive: every reverse with an angled trailer
+  stopped on the tractor's own 15 degrees after 0.2-7.6 m (`7fd526481ca24c1c-2`,
+  `3703bb62ebd94f1b-1`, hitch 0.08-0.15 rad); measured from the tractor's line the
+  simulated controller could not settle a 23 degree trailer. A reverse off its line
+  stops and the route search resumes from that pose. `Hitch.routeFootprint` plans a
+  unit behind the tractor more than 5 degrees off its heading straight behind at its
+  observed distance; the live envelope still checks each unit where it is.
+- **Terrain profile (measurement only):** `Hitch.terrainProfile` reads
+  `getTerrainHeightAtWorldPos` (PROVEN, as the GRADE check) every 2 m along the route
+  box and `localDirectionToWorld` of the root for its pitch and roll; nothing is
+  refused on it until live data sets limits.
 - **Place approach points (UNVERIFIED live):** a building is a centre, not one
   standoff (live `9315e713c7e3430f-3`: the one 20 m west of the barn was fenced
   in). `Drive.approaches` keeps the points on four rings and 16 bearings within the

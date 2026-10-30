@@ -813,6 +813,31 @@ class ShuffleAndApproachTests(unittest.TestCase):
         self.assertTrue(any("held fast reversing" in l for l in lines))
         self.assertGreaterEqual(session.elapsed, 8000)
 
+    def test_a_drive_starting_where_no_corridor_begins_backs_out_to_where_one_does(self):
+        # Live 7353315fb9eb453a-3: left at the barn's approach point between a shed and a
+        # tree, the first corridor search found nothing and the drive ended NO_ROUTE unmoved.
+        axis = 0.35                               # a lane no grid heading (45 degree steps) fits
+        def lane(x, z, yaw):
+            along = x * math.sin(axis) + z * math.cos(axis)
+            across = x * math.cos(axis) - z * math.sin(axis)
+            aligned = abs((yaw - axis + math.pi) % math.pi) < 0.1 or abs((yaw - axis + math.pi) % math.pi - math.pi) < 0.1
+            return (abs(across) < 3 and -30 < along < 6 and aligned) or along < -30 or x > 60
+        lines = []
+        self.lua.globals().print = lambda *parts: lines.append(" ".join(map(str, parts)))
+        env, args, hitch = self.lua.execute(self.PLACE, lane, None)
+        args.x, args.z = 80, 80
+        self.lua.execute("""
+            local env, args = ...
+            env.localDirectionToWorld = function() return math.sin(0.35), 0, math.cos(0.35) end
+            args.tractor.getAITurningRadius = function() return 9 end
+        """, env, args)
+        session, reason = self.drive.begin(env, args, hitch)
+        self.assertIsNone(reason)
+        self.assertIsNotNone(session.retreat)
+        self.assertTrue(session.retreat.backOut)
+        self.assertEqual(session.retreat.length, 28)          # the lane ends 30 m back
+        self.assertTrue(any("backs" in l and "out to where one begins" in l for l in lines))
+
 class Lua51ShuffleAndApproachTests(ShuffleAndApproachTests):
     RUNTIME = lua51
 
@@ -990,6 +1015,81 @@ class TowedReverseTests(unittest.TestCase):
             worst = max(worst, abs(math.degrees(theta - yaw)))
             drift = max(drift, abs(self.trailer.x))
         return worst, drift
+
+    def towed_reverse(self, start_deg, length, held=True, metres=32.0, radius=9.0):
+        """The live reverse in the same kinematics: on the towed unit's own line
+        (Drive.towedLine), steered by reverseAim, judged by reverseOffLine every step.
+        Returns where it stopped and why (None: the whole leg), the largest hitch
+        angle (degrees), the trailer's largest distance from its line, the end hitch,
+        and where the old rule (the tractor 0.75 m or 15 degrees off its own line) stopped."""
+        foot = self.lua.table_from({"towed": self.lua.table_from({"rootNode": self.trailer}), "towLength": length})
+        yaw, theta, x, z = 0.0, math.radians(start_deg), 0.0, 0.0
+        self.trailer.x, self.trailer.z = x - length * math.sin(theta), z - length * math.cos(theta)
+        self.trailer.yaw = theta
+        line = self.drive.towedLine(self.env, foot)
+        r = self.lua.table()
+        ds, travelled, stop, old, worst, drift = 0.05, 0.0, None, None, 0.0, 0.0
+        wrap = lambda a: (a + math.pi) % (2 * math.pi) - math.pi
+        for _ in range(int(metres / ds)):
+            self.trailer.x, self.trailer.z = x - length * math.sin(theta), z - length * math.cos(theta)
+            self.trailer.yaw = theta
+            lx, lz, hitch, cross, orient = self.drive.reverseAim(self.env, foot, line, yaw, radius)
+            if old is None and (abs(x) > 0.75 or abs(yaw) > math.pi / 12):
+                old = travelled
+            lateral = abs((x - line.x) * math.cos(line.yaw) - (z - line.z) * math.sin(line.yaw))
+            why = self.drive.reverseOffLine(r, lateral, wrap(yaw - line.yaw), self.lua.table_from(
+                {"cross": cross, "orient": orient, "hitch": hitch}))
+            if why:
+                stop = (travelled, why)
+                break
+            if not held:
+                lx, lz = 0.0, -10.0
+            curvature = max(-1 / radius, min(1 / radius, -2 * lx / (lx * lx + lz * lz)))
+            x, z = x - ds * math.sin(yaw), z - ds * math.cos(yaw)
+            yaw += ds * curvature
+            theta += -ds * math.sin(yaw - theta) / length
+            travelled += ds
+            worst = max(worst, abs(math.degrees(theta - yaw)))
+            drift = max(drift, abs(cross))
+        return stop, worst, drift, abs(math.degrees(theta - yaw)), old
+
+    def test_a_trailer_left_angled_reverses_the_whole_leg_on_its_own_line_and_straightens(self):
+        # Live: every reverse with an angled trailer stopped on the tractor's 15 degrees after
+        # 0.2-7.6 m (7fd526481ca24c1c-2, 3703bb62ebd94f1b-1), hitch 0.08-0.15 rad.
+        for length in (6.0, 8.0, 12.0, 15.0):
+            for start in (5.0, 10.0, 15.0):
+                stop, worst, drift, end, old = self.towed_reverse(start, length)
+                self.assertIsNone(stop, (length, start, stop))
+                self.assertLess(old, 16, (length, start))               # the old rule stopped it early
+                self.assertLessEqual(worst, start + 0.5, (length, start))   # never more bent than it began
+                self.assertLess(drift, 0.75, (length, start))
+                self.assertLess(end, 2, (length, start))                # straight at the end
+        # A straight wheel jackknifes; the hitch guard stops it first.
+        stop, worst, _, _, _ = self.towed_reverse(10.0, 8.0, held=False)
+        self.assertIsNotNone(stop)
+        self.assertLess(worst, 40)
+
+    def test_the_terrain_under_the_route_box_is_measured_for_grade_climb_tilt_and_steps(self):
+        # Measurement only: the data the slope limits are to be set from.
+        foot = self.footprint()
+        def profile(height):
+            self.env.getTerrainHeightAtWorldPos = self.lua.eval(
+                "function(f) return function(_, x, _, z) return f(x, z) end end")(height)
+            p = self.hitch.terrainProfile(self.env, foot, 0, 0, 0, self.root)
+            return {k: p[k] for k in ("grade", "climb", "cross", "step", "pitch", "roll")}
+        flat = profile(lambda x, z: 0.0)
+        self.assertEqual((flat["grade"], flat["climb"], flat["cross"], flat["step"]), (0, 0, 0, 0))
+        self.assertEqual((flat["pitch"], flat["roll"]), (0, 0))
+        ramp = profile(lambda x, z: z * math.tan(math.radians(10)))
+        self.assertAlmostEqual(ramp["grade"], 10, places=6)
+        self.assertAlmostEqual(ramp["climb"], 10, places=6)
+        self.assertAlmostEqual(ramp["cross"], 0, places=6)
+        tilt = profile(lambda x, z: x * math.tan(math.radians(6)))
+        self.assertAlmostEqual(tilt["cross"], 6, places=6)
+        self.assertAlmostEqual(tilt["grade"], 0, places=6)
+        bank = profile(lambda x, z: 0.5 if z > 2.2 else 0.0)
+        self.assertAlmostEqual(bank["step"], 0.5)
+        self.assertGreater(bank["climb"], 14)
 
     def test_a_turning_trailer_widens_the_route_box_on_the_inside_of_the_turn_only(self):
         # Live 83e039589c2743dc-2: widened by the full off-tracking on both sides, the GMC rig's
