@@ -665,13 +665,33 @@ local function terrainAt(env, x, z)
     return y
 end
 
+-- The surface a wheel stands on at x, z: the terrain, or a road above it. A bridge deck is
+-- GIANTS' ROAD_BRIDGE collision, CollisionFlag.ROAD (CollisionPreset.lua 46); it is read as
+-- GIANTS' VehicleSystem finds where to place a vehicle, a ray straight down from 25 m above
+-- (VehicleSystem.lua 841-847, RaycastUtil.raycastClosest). Read as terrain alone, a bridge
+-- was a cliff over a riverbed (GRADE) and no route crossed the river (live 5aafb45731a844eb-1).
+-- An overpass reads as its deck too, so a road under one is refused, never driven blind.
+-- true as the second result for a road deck above the terrain.
+Hitch.DECK = { aboveM = 25, minM = 0.3 }
+local function surfaceAt(env, x, z)
+    local ground = terrainAt(env, x, z)
+    local flag = env.CollisionFlag ~= nil and env.CollisionFlag.ROAD or nil
+    if type(env.raycastClosest) ~= "function" or not finite(flag) then return ground, false end
+    local hit = {}
+    function hit.onFarmhandSurface(_, node, _, y) hit.y = y end
+    env.raycastClosest(x, ground + Hitch.DECK.aboveM, z, 0, -1, 0, Hitch.DECK.aboveM + 1,
+                       "onFarmhandSurface", hit, flag)
+    if finite(hit.y) and hit.y > ground + Hitch.DECK.minM then return hit.y, true end
+    return ground, false
+end
+
 -- GIANTS overlapBox over an oriented box (centre x z, yaw, half width, half length), h0..h1
--- metres above the terrain at its centre, with `mask`. Returns the query: hits (node ids
+-- metres above the terrain at its centre (or above `base`), with `mask`. Returns the query: hits (node ids
 -- that are neither `rig` nor the terrain), own and terrain counts; nil when it cannot be
 -- trusted (the shape count GIANTS returns must equal the callbacks performed, GDN overlapBox).
-local function boxQuery(env, rig, x, z, yaw, halfWidth, halfLength, h0, h1, mask)
+local function boxQuery(env, rig, x, z, yaw, halfWidth, halfLength, h0, h1, mask, base)
     local mission = env.g_currentMission
-    local ground = terrainAt(env, x, z)
+    local ground = base or terrainAt(env, x, z)
     local q = { seen = 0, own = 0, terrain = 0, hits = {} }
     function q.onUnparkOverlap(_, nodeId)
         q.seen = q.seen + 1
@@ -1959,15 +1979,18 @@ function Hitch.routePoseClear(env, foot, x, z, yaw, curvature)
             end
         end
         local mission = env.g_currentMission
-        local samples = {}
+        local samples, decks = {}, {}
         for _, lateral in ipairs({ -halfW, 0, halfW }) do
             for _, longitudinal in ipairs({ -halfL, 0, halfL }) do
                 local px = cx + math.sin(yaw) * longitudinal + math.cos(yaw) * lateral
                 local pz = cz + math.cos(yaw) * longitudinal - math.sin(yaw) * lateral
-                local groundY = terrainAt(env, px, pz)
-                local waterY = mission.environmentAreaSystem:getWaterYAtWorldPosition(px, groundY, pz)
-                if waterY ~= nil and (not finite(waterY) or waterY > groundY - 0.5) then return false, "WATER" end
+                local groundY, deck = surfaceAt(env, px, pz)
+                if not deck then
+                    local waterY = mission.environmentAreaSystem:getWaterYAtWorldPosition(px, groundY, pz)
+                    if waterY ~= nil and (not finite(waterY) or waterY > groundY - 0.5) then return false, "WATER" end
+                end
                 samples[#samples + 1] = groundY
+                decks[#samples] = deck
             end
         end
         -- Adjacent samples at the front, middle and rear. A steep or unreadable
@@ -1976,19 +1999,48 @@ function Hitch.routePoseClear(env, foot, x, z, yaw, curvature)
         for column = 1, 3 do
             if math.abs(samples[column * 3] - samples[column * 3 - 1]) > maxRise
                     or math.abs(samples[column * 3 - 1] - samples[column * 3 - 2]) > maxRise then
-                return false, "GRADE"
+                -- Third: what was read, rear/mid/front of the line (a deck marked d), and the limit.
+                local read = {}
+                for i = column * 3 - 2, column * 3 do
+                    read[#read + 1] = string.format("%.1f%s", samples[i], decks[i] and "d" or "")
+                end
+                return false, "GRADE", string.format("%s>%.1f", table.concat(read, "/"), maxRise)
             end
         end
+        -- The centre sample; on a deck the ray that read it is the support (no terrain there).
+        local base, deck = samples[5], decks[5]
         local body = boxQuery(env, foot.excluded, cx, cz, yaw, halfW, halfL, 0.3,
-                              foot.height + 0.5, foot.masks.obstacles)
+                              foot.height + 0.5, foot.masks.obstacles, base)
         local ground = boxQuery(env, foot.excluded, cx, cz, yaw, halfW * 0.8, halfL * 0.8,
-                                -0.5, 0.5, foot.masks.terrain)
-        if body == nil or ground == nil or ground.terrain == 0 then return nil, "COLLISION_UNREADABLE" end
+                                -0.5, 0.5, foot.masks.terrain, base)
+        if body == nil or ground == nil or (ground.terrain == 0 and not deck) then
+            return nil, "COLLISION_UNREADABLE"
+        end
         if #body.hits > 0 then return false, "OBSTACLE " .. hitNames(env, body.hits), body.hits end
         return true, nil
     end)
     if not ok then return nil, "QUERY_ERROR " .. tostring(clear) end
     return clear, reason, hits
+end
+
+-- Diagnostics: the surface (surfaceAt) along a line from x, z at yaw, every metre for
+-- `metres`, at each lateral offset: "lateral: h h h ...", a deck marked d.
+function Hitch.surfaceScan(env, x, z, yaw, metres, laterals)
+    local ok, out = pcall(function()
+        local lines = {}
+        for _, lateral in ipairs(laterals) do
+            local read = {}
+            for d = 0, metres do
+                local px = x + math.sin(yaw) * d + math.cos(yaw) * lateral
+                local pz = z + math.cos(yaw) * d - math.sin(yaw) * lateral
+                local y, deck = surfaceAt(env, px, pz)
+                read[#read + 1] = string.format("%.1f%s", y, deck and "d" or "")
+            end
+            lines[#lines + 1] = string.format("%+.0f: %s", lateral, table.concat(read, " "))
+        end
+        return table.concat(lines, " | ")
+    end)
+    return ok and out or nil
 end
 
 -- Measurement only (no route is refused on it yet): the terrain under the rig's route box

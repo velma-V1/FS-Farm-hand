@@ -1547,7 +1547,8 @@ class Coordinator:
                      sorted({f for u in new.fill_units for f in u.supported})[:8], crop)
             return Result("UNVERIFIED", "BOUGHT_ITEM_UNSUITABLE", (new.id,))
         log.info("job %d grain rig: bought the %s; the %s to it", job.number, new.name, name)
-        return self._execute(job, cancel, entered, "gh2", task="hitch_pair", implement="trailer",
+        # Its own id, never one a trailer tried above had (live 5aafb45731a844eb-1: "gh2" was the third's).
+        return self._execute(job, cancel, entered, "ghb", task="hitch_pair", implement="trailer",
                              implement_name=_words(new.name), tractor_name=name)
 
     def _clear_of_dropped_implement(self, job: Job, cancel: threading.Event, entered, tractor_name: str):

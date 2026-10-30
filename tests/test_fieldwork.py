@@ -1254,6 +1254,44 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertEqual(world.items["w-5"].attached_to, "t-5")
         self.assertIsNone(world.items["w-far"].attached_to)
 
+    def test_a_trailer_bought_after_three_out_of_reach_is_its_own_request(self):
+        # Live 5aafb45731a844eb-1: the third trailer tried and the bought one shared a request
+        # id (REQUEST_ID_CONFLICT); the bought trailer was never hitched.
+        from protocol.model import StoreItem
+
+        class OutOfReach(CoordinatedWorld):
+            def navigate(self, tractor_id, pose, owner):
+                reserved = self._reservations.get(owner, (None, (None, None)))[1]
+                if str(reserved[1]).startswith("w-far"):
+                    raise StepFailed("NAVIGATE_GOTO_INVALID")
+                return super().navigate(tractor_id, pose, owner)
+
+            def stage(self, tractor_id, wagon_id, pose, owner):
+                if wagon_id.startswith("w-far"):
+                    raise StepFailed("NAVIGATE_GOTO_INVALID")
+                return super().stage(tractor_id, wagon_id, pose, owner)
+
+        world = self.full_combine_world()
+        world.__class__ = OutOfReach
+        t, w = world.items["t-5"], world.items.pop("w-5")
+        world.items["t-5"] = replace(t, attached_to=None, name="3650",
+                                     output_joints=(OutputJoint(2, "trailer", 0.0, -2.0, True),))
+        for n, name in enumerate(("Titan Trailer", "Bulk Cart", "Grain Wagon")):
+            at = (100.0 + 40 * n, -200.0)
+            world.items[f"w-far{n}"] = replace(w, id=f"w-far{n}", attached_to=None, name=name, position=at,
+                                               heading=0.0, input_joints=(InputJoint(1, "trailer", (at[0], at[1] + 3.0), True),))
+        shop = (210.0, 90.0)
+        world.mock_bought = replace(w, id="tmp", attached_to=None, name="Tipper 8", position=shop, heading=0.0,
+                                    input_joints=(InputJoint(1, "trailer", (shop[0], shop[1] + 3.0), True),))
+        world.store_items = (StoreItem(33, "Tipper 8", "Z", ("TRAILERS",), 6000.0, False, None, None, None,
+                                       capacity=30000.0, fill_types=("WHEAT",)),)
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "COMBINE_UNLOADED"), (c.last, notices))
+        new = [i for i in world.items.values() if i.id.startswith("new-")]
+        self.assertEqual(len(new), 1)
+
     def test_a_bought_trailer_that_arrives_unable_to_take_the_crop_is_said_and_never_hitched(self):
         # Live e3e3b0c194914776-2: the store specs said grain, the default configuration bought
         # was a bale loader. Checked as it arrived: UNVERIFIED BOUGHT_ITEM_UNSUITABLE, not hitched.
