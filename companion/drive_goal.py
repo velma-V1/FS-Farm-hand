@@ -41,16 +41,18 @@ def _usable(item: Equipment, farm_id: str) -> bool:
             and not item.occupied and item.reserved_by is None and item.stopped)
 
 
-def resolve_drive_goal(items: tuple[Equipment, ...], farm_id: str, vehicle_name: str,
-                       cargo_name: str | None, target: Position) -> DriveGoal:
+def resolve_drive_goal(items: tuple[Equipment, ...], farm_id: str, vehicle_name: str | None,
+                       cargo_name: str | None, target: Position, vehicle_id: str | None = None) -> DriveGoal:
     """Select exactly one owned idle vehicle and preserve its observed rig.
 
-    The names are player words only. IDs come entirely from the observation.
-    Missing or contradictory attachment and belt reports are never guessed.
+    The names are player words only; ``vehicle_id`` is one this observation already
+    resolved (the tractor towing an implement the player named). Missing or
+    contradictory attachment and belt reports are never guessed.
     """
     if (len(target) != 2 or not all(type(x) in (int, float) and math.isfinite(x) for x in target)):
         raise GoalError("DESTINATION_INVALID")
-    candidates = [item for item in items if item.category == "tractor" and _named(item, vehicle_name)
+    candidates = [item for item in items if item.category == "tractor"
+                  and (item.id == vehicle_id if vehicle_id is not None else _named(item, vehicle_name))
                   and _usable(item, farm_id) and item.belted_to is None]
     if not candidates:
         raise GoalError("VEHICLE_UNAVAILABLE")

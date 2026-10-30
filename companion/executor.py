@@ -2117,10 +2117,46 @@ class Executor:
             log.info("%s: no observation (%s)", label, type(failure).__name__)
         log.info("%s: %s", label, error.describe() if error else "joints unobservable")
 
+    def _hitched_rig(self, command):
+        """The one tractor already towing the implement a fetch names (its kind, or its
+        name; the tractor's name when given), or None. That assembled rig is the
+        equipment the player means (AGENTS.md 8: preserve it), never a new pair: live
+        a852385ab373498b-2, "take the 3650 and planter to field 4" was NO_ELIGIBLE_PAIR,
+        every planter and tractor being hitched already."""
+        target = command.get("target")
+        if not (target == "player_at_acceptance" or (isinstance(target, dict) and target.get("type") in (
+                "place", "field_entrance", "autodrive_marker"))):
+            return None
+        try:
+            items = tuple(self.world.snapshot())
+        except (StepFailed, StepUnverified):
+            return None                            # the ordinary flow observes again and says why
+        observed = {i.id: i for i in items}
+        kind, name = command.get("implement", "forage_wagon"), command.get("implement_name")
+        rigs = []
+        for tractor in items:
+            implement = observed.get(tractor.attached_to) if tractor.attached_to else None
+            if (tractor.category != "tractor" or tractor.farm_id != command["farm_id"] or implement is None
+                    or implement.attached_to != tractor.id or implement.category not in IMPLEMENT_CATEGORIES):
+                continue
+            if not (named(implement, name) if name else of_kind(implement, kind)):
+                continue
+            if command.get("tractor_name") and not named(tractor, command["tractor_name"]):
+                continue
+            rigs.append(tractor.id)
+        return rigs[0] if len(rigs) == 1 else None
+
     def _run(self, command, cancel=None, on_state=None):
         if command["task"] == "move_pair" and command.get("tractor_name"):
             from companion.standalone import StandaloneMove
             return StandaloneMove(self.world).execute(command, cancel, on_state)
+        if command["task"] == "deliver_tractor_and_forage_wagon" and getattr(type(self.world), "farm_drive", None):
+            vehicle = self._hitched_rig(command)
+            if vehicle is not None:
+                from companion.standalone import StandaloneMove
+                log.info("the named implement is hitched to %s: that rig is moved", vehicle)
+                return StandaloneMove(self.world).execute({**command, "task": "move_pair", "vehicle_id": vehicle},
+                                                          cancel, on_state)
         owner, farm_id = command["request_id"], command["farm_id"]
         states, ids = [], ()
 

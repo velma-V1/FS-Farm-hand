@@ -158,5 +158,34 @@ class StandaloneMoveTests(unittest.TestCase):
         self.assertLess(math.dist(target, (-700.0, 215.0)), 70.0)   # still the near side, not across the field
 
 
+    def test_fetching_an_implement_already_hitched_moves_that_rig(self):
+        # Live a852385ab373498b-2: "take the 3650 and planter to field 4" was NO_ELIGIBLE_PAIR,
+        # the planter being hitched to the 3650 already.
+        def rig(tractor_name="3650"):
+            tractor = replace(unit("615", "3650", "tractor", attached="614", position=(-700.0, 215.0)),
+                              capabilities=frozenset({"move", "attach", "stop"}))
+            planter = replace(unit("614", "SOLID STAND 1500", "implement", attached="615", position=(-708.0, 215.0)),
+                              kinds=frozenset({"sowing_machine"}))
+            other = unit("611", "GMC Sierra", "tractor", attached="620", position=(-600.0, 100.0))
+            deck = replace(unit("620", "1124 Deckover", "implement", attached="611", position=(-608.0, 100.0)),
+                           kinds=frozenset({"trailer"}))
+            return World((tractor, planter, other, deck))
+        for words in ({"tractor_name": "3650"}, {}):
+            world = rig()
+            intent = {"version": 1, "request_id": f"r{len(words)}", "farm_id": "1",
+                      "task": "deliver_tractor_and_forage_wagon", "implement": "sowing_machine",
+                      "target": {"type": "field_entrance", "field": 5}, **words}
+            result = Executor(world).execute(intent)
+            self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), words)
+            self.assertEqual(result.equipment_ids, ("615", "614"))
+            self.assertEqual(world.calls[1][:2], ("drive", "615"))
+            self.assertEqual(world.items["615"].attached_to, "614")          # the rig kept
+        world = rig()
+        result = Executor(world).execute({"version": 1, "request_id": "x", "farm_id": "1",
+                                          "task": "deliver_tractor_and_forage_wagon", "implement": "sowing_machine",
+                                          "tractor_name": "gmc", "target": {"type": "field_entrance", "field": 5}})
+        self.assertNotEqual(result.reason, "DELIVERY_OBSERVED")             # the GMC tows no planter
+        self.assertFalse(any(c[0] == "drive" for c in world.calls))
+
 if __name__ == "__main__":
     unittest.main()

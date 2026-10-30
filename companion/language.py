@@ -1030,6 +1030,13 @@ class RuleInterpreter:
         if target is None:
             return None
         proposal = {"version": 1, "implement": kind}
+        # "take the 3650 and planter to field 4": the name before "and <that implement>"
+        # is the tractor (live a852385ab373498b-2 dropped it and fetched a new pair).
+        named = _NAMED.match(words)
+        pair = named and re.fullmatch(r"(.+?)\s+and\s+(?:the\s+|its\s+)?(.+)", named.group(1))
+        if (pair and not _KNOWN_THING.search(pair.group(1)) and implement_kind(pair.group(1)) is None
+                and implement_kind(pair.group(2)) == kind):
+            proposal["tractor_name"] = pair.group(1)
         if target == _EQUIPMENT_TARGET:
             return {**proposal, "command": "hitch_pair"}
         if target or _DELIVERY.search(words) or (_FETCH_VERB.search(words) and not _HITCH_VERB.search(words)):

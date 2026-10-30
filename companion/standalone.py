@@ -117,16 +117,19 @@ class StandaloneMove:
         try:
             enter("FIND")
             items = tuple(self.world.snapshot())
-            named = [i for i in items if i.category == "tractor" and command.get("tractor_name")
-                     and all(w in (i.name or "").casefold() for w in command["tractor_name"].casefold().split())]
+            vehicle_id = command.get("vehicle_id")     # resolved by the executor from the player's words
+            named = [i for i in items if i.category == "tractor" and (
+                i.id == vehicle_id if vehicle_id is not None else command.get("tractor_name") and all(
+                    w in (i.name or "").casefold() for w in command["tractor_name"].casefold().split()))]
             if len(named) != 1:
                 raise GoalError("VEHICLE_AMBIGUOUS" if named else "VEHICLE_UNAVAILABLE")
             # The rig first (its units never block its own target), then the target.
             from companion.executor import valid_position
-            rig = resolve_drive_goal(items, farm_id, command["tractor_name"], command.get("cargo_name"), (0.0, 0.0))
+            name, cargo = command.get("tractor_name"), command.get("cargo_name")
+            rig = resolve_drive_goal(items, farm_id, name, cargo, (0.0, 0.0), vehicle_id)
             avoid = tuple(i.position for i in items if i.id not in rig.rig_ids and valid_position(i.position))
             target, outline, area = self._target(command, named[0], avoid)
-            goal = resolve_drive_goal(items, farm_id, command["tractor_name"], command.get("cargo_name"), target)
+            goal = resolve_drive_goal(items, farm_id, name, cargo, target, vehicle_id)
             ids = goal.rig_ids
             enter("RESERVE")
             if not self.world.reserve_rig(ids, owner):

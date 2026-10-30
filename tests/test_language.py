@@ -12,6 +12,20 @@ STATUS = {"version": 1, "command": "status"}
 class RuleInterpreterTests(unittest.TestCase):
     rules = RuleInterpreter()
 
+    def test_a_named_tractor_and_its_implement_keep_the_tractor_name(self):
+        # Live a852385ab373498b-2: "the 3650" was dropped and a new pair fetched.
+        field4 = {"target": {"type": "field_entrance", "field": 4}}
+        self.check([
+            ("take the 3650 and planter to field 4",
+             {"version": 1, "command": "fetch_pair", "implement": "sowing_machine", "tractor_name": "3650", **field4}),
+            ("take the 3650 and the seeder to field 4",
+             {"version": 1, "command": "fetch_pair", "implement": "sowing_machine", "tractor_name": "3650", **field4}),
+            ("take the planter to field 4",
+             {"version": 1, "command": "fetch_pair", "implement": "sowing_machine", **field4}),
+            ("take the tractor and planter to field 4",
+             {"version": 1, "command": "fetch_pair", "implement": "sowing_machine", **field4}),
+        ])
+
     def check(self, cases):
         for text, expected in cases:
             with self.subTest(text=text):
