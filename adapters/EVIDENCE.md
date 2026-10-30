@@ -403,6 +403,16 @@ GitHub release API and the Hugging Face tree API of the pinned revision.
   `getTerrainHeightAtWorldPos` (PROVEN, as the GRADE check) every 2 m along the route
   box and `localDirectionToWorld` of the root for its pitch and roll; nothing is
   refused on it until live data sets limits.
+  Live data so far (save 1, GMC + deckover + Series 9, all completed): the yard and
+  roads up to climb 3.2, cross 0.7 degrees, steps 0.06 m; the route to Field 6
+  (`d991808ba95e40c9-2`) grade -7.8, climb 11.7, cross 7.9 degrees, step 0.36 m,
+  the root's pitch -8.3 and roll -8.1 degrees, driven at up to 45 km/h. No failure on
+  a slope yet, so no limit can be set from it.
+- **Bent rig (UNVERIFIED in general):** a route box planned straight behind the tractor
+  that touches what no unit touches (`Hitch.rigContacts` "-") is straightened first,
+  back along the towed unit's line or forward (`Drive.planUnbend`); live
+  `07d720c908304dc4-2`, `45b4ea8c443d4f3d-2` and `125141b03ef949ff-2` had ended
+  START_NOT_CLEAR or NO_ROUTE there; `d991808ba95e40c9-2` COMPLETE.
 - **Place approach points (UNVERIFIED live):** a building is a centre, not one
   standoff (live `9315e713c7e3430f-3`: the one 20 m west of the barn was fenced
   in). `Drive.approaches` keeps the points on four rings and 16 bearings within the

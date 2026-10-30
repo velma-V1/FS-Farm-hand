@@ -802,9 +802,11 @@ class ShuffleAndApproachTests(unittest.TestCase):
                 drive=function() return nil end}
             local session={tractor=vehicle,farmId='1',isReserved=function() return true end,
                 foot=foot,targetX=300,targetZ=0,radius=6,elapsed=0,replans=0,movedAt=0,
-                retreat={x=0,z=0,yaw=0,length=36}}
+                retreat={x=0,z=0,yaw=0,length=36},commandKmh=14}
             return env,session,hitch
         """)
+        self.assertEqual(self.drive.step(env, session, 16, hitch), "CONTINUE")
+        self.assertIsNone(session.commandKmh)       # never a forward command left at the reverse's cap
         for _ in range(600):
             self.assertEqual(self.drive.step(env, session, 16, hitch), "CONTINUE")
             if session.retreat is None:
@@ -837,6 +839,191 @@ class ShuffleAndApproachTests(unittest.TestCase):
         self.assertTrue(session.retreat.backOut)
         self.assertEqual(session.retreat.length, 28)          # the lane ends 30 m back
         self.assertTrue(any("backs" in l and "out to where one begins" in l for l in lines))
+
+    def test_a_forward_leg_before_a_gear_change_aims_below_its_overspeed_cap(self):
+        # Live 4e62355bbe684190-4: a 16 m leg aimed at its own 5 km/h cap; 5.01 latched OVERSPEED.
+        env, session, hitch = self.lua.execute("""
+            local vehicle = {rootNode=1, ownerFarmId='1',
+                getLastSpeed=function() return 0 end,
+                getIsAIActive=function() return false end,
+                getIsEntered=function() return true end}
+            local foot={units={vehicle},lMin=-1,lMax=1}
+            local env={getWorldTranslation=function() return 0,0,0 end,
+                localDirectionToWorld=function() return 0,0,1 end}
+            local hitch={routeFootprint=function() return foot end,
+                routePoseClear=function() return true end,
+                driverConflict=function() return nil end,
+                halt=function() end}
+            local session={tractor=vehicle,farmId='1',isReserved=function() return true end,
+                foot=foot,targetX=0,targetZ=60,path=nil,retreats=2,
+                corridor={{0,0,60},{0,10,50},{0,20,40},{0,60,0}},reached=1,sectionAttempt=6,
+                radius=6,elapsed=0,replans=5,movedAt=0,commandKmh=14}
+            return env,session,hitch
+        """)
+        self.drive.section = self.lua.eval("""function(_,_,_,_,_,_,switches)
+            if switches then return {{0,0,0},{0,4,0},{0,8,0},{0,4,0,-1},{0,8,0}}, 4 end
+            return nil,2,'SECTION_BLOCKED'
+        end""")
+        self.drive.planRetreatRoute = self.lua.eval("function() return nil end")
+        self.assertEqual(self.drive.step(env, session, 16, hitch), "CONTINUE")
+        self.assertIsNotNone(session.shuffle)                 # a forward leg, then a reverse
+        self.assertEqual(len(session.path), 3)
+        self.assertEqual((session.maxSpeedKmh, session.legKmh), (8, 5))
+
+    def test_a_reverse_checks_behind_along_the_trailer_line_and_a_blocked_one_searches_on(self):
+        # Live e44e3f6ba43348a2-2: the tractor swung 29 degrees straightening the trailer; the
+        # rigid box at its heading touched a tree beside the rig (each unit's box was clear)
+        # and the drive ended OBSTACLE_AHEAD.
+        env, session, hitch, probes = self.lua.execute("""
+            local probes = {}
+            local trailer = {x=0, z=-8, yaw=0}
+            local vehicle = {rootNode={x=0,z=0,yaw=0.5}, ownerFarmId='1',
+                getLastSpeed=function() return 0 end,
+                getIsAIActive=function() return false end,
+                getIsEntered=function() return true end,
+                getIsMotorStarted=function() return true end,
+                raiseActive=function() end}
+            local foot={units={vehicle},lMin=-1,lMax=1,towed={rootNode=trailer},towLength=8}
+            local env={getWorldTranslation=function(n) return n.x,0,n.z end,
+                localDirectionToWorld=function(n) return math.sin(n.yaw),0,math.cos(n.yaw) end}
+            local hitch={routeFootprint=function() return foot end,
+                routePoseClear=function(_,_,x,z,yaw)
+                    probes[#probes+1] = {x,z,yaw}
+                    return math.abs(yaw) < 0.01, "OBSTACLE tree"
+                end,
+                driverConflict=function() return nil end,
+                halt=function() end, holdActive=function() end,
+                drive=function() return nil end, rigContacts=function() return "-" end}
+            local session={tractor=vehicle,farmId='1',isReserved=function() return true end,
+                foot=foot,targetX=300,targetZ=0,radius=6,elapsed=0,replans=0,movedAt=0,
+                retreat={x=0,z=0,yaw=0.5,length=12}}
+            return env,session,hitch,probes
+        """)
+        self.assertEqual(self.drive.step(env, session, 16, hitch), "CONTINUE")
+        self.assertIsNotNone(session.retreat)
+        self.assertFalse(session.retreat.diverged)          # behind it along the trailer: clear
+        last = probes[len(probes)]
+        self.assertAlmostEqual(last[3], 0)                  # probed at the trailer line's heading
+        hitch.routePoseClear = self.lua.eval("function() return false, 'OBSTACLE wall' end")
+        self.assertEqual(self.drive.step(env, session, 16, hitch), "CONTINUE")   # not OBSTACLE_AHEAD
+        self.assertIsNone(session.result)
+
+    def test_a_rig_left_bent_straightens_back_along_its_trailer_before_it_plans(self):
+        # Live 07d720c908304dc4-2: the box planned straight behind the truck touched a tree
+        # its bent trailer was clear of; START_NOT_CLEAR with nothing moved.
+        lines = []
+        self.lua.globals().print = lambda *parts: lines.append(" ".join(map(str, parts)))
+        env, args, hitch = self.lua.execute("""
+            local trailer = {x=-4, z=-7, yaw=0.5}
+            local root = {x=0, z=0, yaw=0}
+            local vehicle = {ownerFarmId='1', rootNode=root,
+                spec_drivable={cruiseControl={speed=40}}, maxTurningRadius=6,
+                getLastSpeed=function() return 0 end,
+                getIsAIActive=function() return false end,
+                getIsEntered=function() return false end,
+                getAITurningRadius=function() return 6 end,
+                getCruiseControlMaxSpeed=function() return 50 end,
+                setCruiseControlMaxSpeed=function() end}
+            vehicle.rootVehicle = vehicle
+            local foot = {units={vehicle}, towLength=8, towed={rootNode=trailer}, lMin=-1, lMax=1, aMin=-12, aMax=3}
+            local env = {getWorldTranslation=function(n) return n.x,0,n.z end,
+                localDirectionToWorld=function(n) return math.sin(n.yaw),0,math.cos(n.yaw) end,
+                g_currentMission={getNodeObject=function() return nil end}}
+            local hitch = {routeFootprint=function() return foot end,
+                routePoseClear=function(_,_,x,z,yaw)
+                    if math.abs(yaw - 0.5) < 0.01 then return true end
+                    return false, "OBSTACLE LOD0(-8,-6)", {1}
+                end,
+                rigContacts=function() return "-" end, watchDriver=function() end}
+            return env, {tractor=vehicle, farmId='1', x=300, z=60, isReserved=function() return true end}, hitch
+        """)
+        session, reason = self.drive.begin(env, args, hitch)
+        self.assertIsNone(reason)
+        self.assertIsNone(session.initial)                       # planned once it is in line
+        self.assertEqual(session.retreat.length, 10)             # the trailer's length and 2 m
+        self.assertAlmostEqual(session.retreat.line.yaw, 0.5)
+        self.assertTrue(any("straightening back 10m along the trailer" in l for l in lines))
+        hitch.rigContacts = self.lua.eval("function() return 'unit2:LOD0' end")   # really touching
+        self.assertEqual(self.drive.begin(env, args, hitch)[1], "START_NOT_CLEAR")
+
+    def test_a_bent_rig_with_its_way_back_blocked_straightens_forward_then_plans(self):
+        # Live 45b4ea8c443d4f3d-2: the tree was behind the trailer; START_NOT_CLEAR again.
+        lines = []
+        self.lua.globals().print = lambda *parts: lines.append(" ".join(map(str, parts)))
+        env, args, hitch, state = self.lua.execute("""
+            local state = {full = false}
+            local trailer = {x=-4, z=-7, yaw=0.5}
+            local root = {x=0, z=0, yaw=0}
+            local vehicle = {ownerFarmId='1', rootNode=root,
+                spec_drivable={cruiseControl={speed=40}}, maxTurningRadius=6,
+                getLastSpeed=function() return 0 end,
+                getIsAIActive=function() return false end,
+                getIsEntered=function() return true end,
+                getAITurningRadius=function() return 6 end,
+                getCruiseControlMaxSpeed=function() return 50 end,
+                setCruiseControlMaxSpeed=function() end,
+                getIsMotorStarted=function() return true end, raiseActive=function() end}
+            vehicle.rootVehicle = vehicle
+            local foot = {units={vehicle}, towLength=8, towed={rootNode=trailer}, lMin=-1, lMax=1, aMin=-12, aMax=3}
+            local env = {getWorldTranslation=function(n) return n.x,0,n.z end,
+                localDirectionToWorld=function(n) return math.sin(n.yaw),0,math.cos(n.yaw) end,
+                g_currentMission={getNodeObject=function() return nil end}}
+            local hitch = {routeFootprint=function() return foot end,
+                routePoseClear=function(_,f,x,z,yaw)
+                    if f.aMin == -1 then return true end          -- the tractor's own box ahead
+                    if state.full then return true end
+                    return false, "OBSTACLE LOD0(-8,-9)", {1}      -- the box planned straight behind
+                end,
+                rigContacts=function() return "-" end, watchDriver=function() end,
+                driverConflict=function() return nil end, halt=function() end,
+                holdActive=function() end, drive=function() state.drove = true end}
+            return env, {tractor=vehicle, farmId='1', x=300, z=60, isReserved=function() return true end}, hitch, state
+        """)
+        session, reason = self.drive.begin(env, args, hitch)
+        self.assertIsNone(reason)
+        self.assertIsNotNone(session.straightenForward)
+        self.assertEqual(session.straightenForward.length, 10)
+        self.assertEqual(self.drive.step(env, session, 16, hitch), "CONTINUE")
+        self.assertTrue(state.drove)                           # forward, the rig braked otherwise
+        state.full = True                                       # in line: it still goes its length
+        self.assertEqual(self.drive.step(env, session, 16, hitch), "CONTINUE")
+        self.assertIsNotNone(session.straightenForward)
+        self.lua.execute("local env = ... ; env.getWorldTranslation = function(n) if n.z == -7 then return -4,0,-7 end return 0,0,10.5 end", env)
+        self.assertEqual(self.drive.step(env, session, 16, hitch), "CONTINUE")
+        self.assertIsNone(session.straightenForward)
+        self.assertTrue(any("straightened forward" in l and "its length, in line" in l for l in lines))
+        self.assertTrue(any("back along the trailer blocked after 1m" in l for l in lines))
+
+    def test_a_rig_bent_by_a_turn_straightens_before_it_plans_on(self):
+        # Live 125141b03ef949ff-2: a 48 m leg ended in a turn beside a fill station; every
+        # plan from there was START_NOT_CLEAR and the drive ended NO_ROUTE.
+        env, session, hitch = self.lua.execute("""
+            local trailer = {x=-4, z=-7, yaw=0.5}
+            local vehicle = {rootNode={x=0,z=0,yaw=0}, ownerFarmId='1',
+                getLastSpeed=function() return 0 end,
+                getIsAIActive=function() return false end,
+                getIsEntered=function() return true end}
+            local foot={units={vehicle},lMin=-1,lMax=1,aMin=-12,aMax=3,towed={rootNode=trailer},towLength=8}
+            local env={getWorldTranslation=function(n) return n.x,0,n.z end,
+                localDirectionToWorld=function(n) return math.sin(n.yaw),0,math.cos(n.yaw) end}
+            local hitch={routeFootprint=function() return foot end,
+                routePoseClear=function(_,_,x,z,yaw)
+                    if math.abs(yaw - 0.5) < 0.01 then return true end
+                    return false, "OBSTACLE collision@Fill Station"
+                end,
+                rigContacts=function() return "-" end,
+                driverConflict=function() return nil end,
+                halt=function() end}
+            local session={tractor=vehicle,farmId='1',isReserved=function() return true end,
+                foot=foot,targetX=0,targetZ=60,path=nil,
+                corridor={{0,0,60},{0,10,50},{0,20,40},{0,60,0}},reached=1,sectionAttempt=1,
+                radius=6,elapsed=0,replans=0,movedAt=0}
+            return env,session,hitch
+        """)
+        self.assertEqual(self.drive.step(env, session, 16, hitch), "CONTINUE")
+        self.assertIsNone(session.result)
+        self.assertTrue(session.retreat.onTowed)               # back along the trailer, into line
+        self.assertEqual(session.unbends, 1)
 
 class Lua51ShuffleAndApproachTests(ShuffleAndApproachTests):
     RUNTIME = lua51

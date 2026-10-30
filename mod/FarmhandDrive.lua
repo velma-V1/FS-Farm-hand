@@ -720,6 +720,69 @@ function Drive.towedLine(env, foot)
     return { x = tx, z = tz, yaw = (math.atan2 or math.atan)(dx,dz) }
 end
 
+-- A rig left bent (its towed unit angled) whose route box, planned straight behind,
+-- touches something its units do not (live 07d720c908304dc4-2: START_NOT_CLEAR beside
+-- a tree after a straightening reverse stopped): first straight back along the unit's
+-- own line, about its length and every metre of it clear there, so the rig comes into
+-- line and a route can be planned from it. The line and the length, or nil.
+function Drive.planStraighten(env, foot, x, z, probe)
+    local line = Drive.towedLine(env, foot)
+    if line == nil or not finite(foot.towLength) or foot.towLength <= 0 then return nil end
+    local t = (x-line.x)*sin(line.yaw)+(z-line.z)*cos(line.yaw)
+    local length = math.ceil(foot.towLength) + 2
+    for d = 1, length do
+        if probe(line.x+sin(line.yaw)*(t-d), line.z+cos(line.yaw)*(t-d), line.yaw, 0) ~= true then
+            return nil, nil, d
+        end
+    end
+    return line, length
+end
+
+-- The tractor's own part of the route box (from 1 m behind its root to its front): what
+-- a forward straightening move sweeps first; the towed unit follows inside its path.
+function Drive.frontFoot(foot)
+    local front = {}
+    for k, v in pairs(foot) do front[k] = v end
+    front.aMin = math.max(foot.aMin, -1)
+    front.towLength = 0
+    return front
+end
+
+-- A rig left bent (its towed unit angled) whose route box, planned straight behind, touches
+-- something none of its units does (Hitch.rigContacts): the move that brings it into line
+-- first, back along the unit's line (Drive.planStraighten) or else forward with the
+-- tractor's own box ahead clear (live 45b4ea8c443d4f3d-2: the tree was behind the
+-- trailer). A straighten table for s.retreat or s.straightenForward, or nil.
+function Drive.planUnbend(env, foot, Hitch, vehicle, x, z, yaw, clear, why)
+    if type(Hitch.rigContacts) ~= "function" then return nil end
+    local okC, contacts = pcall(Hitch.rigContacts, env, vehicle)
+    if not okC then return nil end
+    if contacts ~= "-" then
+        say("[Farmhand] drive rig: units in contact " .. tostring(contacts))
+        return nil
+    end
+    local line, length, backBlocked = Drive.planStraighten(env, foot, x, z, clear)
+    if line ~= nil then
+        say(string.format("[Farmhand] drive rig left bent: the route box touches %s, every unit's own box is clear; straightening back %dm along the trailer first",
+                          tostring(why), length))
+        return { x = x, z = z, yaw = yaw, length = length, line = line, onTowed = true }
+    end
+    if Drive.towedLine(env, foot) == nil then return nil end
+    local front, ahead = Drive.frontFoot(foot), math.ceil(foot.towLength) + 2
+    local open = true
+    for d = 1, ahead do
+        if Hitch.routePoseClear(env, front, x + sin(yaw)*d, z + cos(yaw)*d, yaw, 0) ~= true then
+            open = false
+            break
+        end
+    end
+    say(string.format("[Farmhand] drive rig left bent: the route box touches %s, every unit's own box is clear; back along the trailer blocked after %sm; %s",
+                      tostring(why), tostring(backBlocked),
+                      open and string.format("straightening forward up to %dm first", ahead) or "forward blocked too"))
+    if not open then return nil end
+    return { forward = true, x = x, z = z, yaw = yaw, length = ahead, front = front }
+end
+
 -- Why a reverse has left its checked line (nil while it holds it). With a towed unit
 -- the line is the unit's (Drive.towedLine) and the unit is what must track it (live:
 -- every reverse with an angled trailer stopped on the tractor's 15 degrees after
@@ -959,7 +1022,9 @@ local function beginLeg(s, path, x, z, yaw)
     for i = 1, last do leg[i] = path[i] end
     local final = path[last+1] == nil
     Drive.activateSection(s, leg, final and s.shuffle.reached or s.reached, x, z)
-    s.maxSpeedKmh, s.commandShare = final and 64 or 5, nil
+    -- A leg ending in a gear change aims at 5 km/h under an 8 km/h overspeed cap
+    -- (live 4e62355bbe684190-4: aimed at its own 5 km/h cap, 5.01 latched OVERSPEED).
+    s.maxSpeedKmh, s.commandShare, s.legKmh = final and 64 or 8, nil, not final and 5 or nil
     say(string.format("[Farmhand] drive shuffle leg %d: forward %.0fm from %.1f,%.1f yaw %.2f to %.1f,%.1f yaw %.2f%s",
                       s.shuffleLegs,(last-1)*STEP,x,z,yaw,leg[last][1],leg[last][2],leg[last][3],
                       final and "; back on the corridor" or ""))
@@ -970,6 +1035,7 @@ end
 local function shuffleOn(s, start, clear)
     local sh = s.shuffle
     s.shuffle = nil
+    s.maxSpeedKmh, s.legKmh = 64, nil       -- the route goes on at its own speeds, else the next leg sets them
     if (s.shuffleLegs or 0) >= Drive.SHUFFLE_LEGS then
         say(string.format("[Farmhand] drive shuffle ended after %d legs", s.shuffleLegs))
         return false
@@ -1163,7 +1229,12 @@ function Drive.begin(env, args, Hitch)
         end
         local startClear, startReason, hits = Hitch.routePoseClear(env, foot, x, z, yaw)
         local egress
-        if startClear == false and hits ~= nil and #hits > 0 then
+        local straighten = startClear == false and hits ~= nil and #hits > 0
+                           and Drive.planUnbend(env, foot, Hitch, v, x, z, yaw, clear, startReason) or nil
+        if straighten ~= nil then
+            -- planned after the straightening reverse, from the pose it ends in
+        elseif startClear == false and hits ~= nil and #hits > 0 then
+            say("[Farmhand] drive start clearance: " .. tostring(startReason))
             local obstacle
             for _, node in ipairs(hits) do
                 local object = env.g_currentMission:getNodeObject(node)
@@ -1238,8 +1309,13 @@ function Drive.begin(env, args, Hitch)
                     result = nil, movedAt = 0,
                     lastMovedX = x, lastMovedZ = z, replans = 0,
                     initial = { start = planStart, x = x, z = z, yaw = yaw } }
+        if straighten ~= nil then
+            s.initial = nil
+            if straighten.forward then s.straightenForward = straighten else s.retreat = straighten end
+            s.maxSpeedKmh, s.commandShare = 3, 0.5
+        end
         local saved = snapshot(s)
-        local code = planned(s, gameClock(env), initialPlan, env, s, Hitch)
+        local code = straighten == nil and planned(s, gameClock(env), initialPlan, env, s, Hitch) or nil
         if code == PENDING then
             s.episode.saved, s.episode.pose = saved, { x, z, yaw }
             print("[Farmhand] drive route search continues over the next frames; the rig waits braked")
@@ -1361,7 +1437,11 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
         local lateral = abs((x-r.x)*cos(r.yaw)-(z-r.z)*sin(r.yaw))
         -- Off its checked straight line it stops there and the route search resumes
         -- from that pose (the guard still checks every unit), as a forward divergence does.
-        r.line = r.line or Drive.towedLine(env,s.foot) or { x = r.x, z = r.z, yaw = r.yaw }
+        if r.line == nil then
+            r.line = Drive.towedLine(env,s.foot)
+            r.onTowed = r.line ~= nil
+            r.line = r.line or { x = r.x, z = r.z, yaw = r.yaw }
+        end
         local line = r.line
         local yawError = (yaw-r.yaw+pi)%(2*pi)-pi
         local _,_,hitch,cross,orient = Drive.reverseAim(env,s.foot,line,yaw,s.radius)
@@ -1425,15 +1505,31 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
                 end
             end
             s.path,s.next,s.retreat,s.replans = path,2,nil,0
-            s.maxSpeedKmh,s.commandShare,s.driveStartMs = 64,nil,nil
+            s.maxSpeedKmh,s.commandShare,s.driveStartMs,s.legKmh = 64,nil,nil,nil
             s.lastMovedX,s.lastMovedZ,s.movedAt = x,z,s.elapsed
             say(string.format("[Farmhand] drive reverse departure %s %.1fm; route search resumed",
                               r.diverged and "stopped off its line after" or "complete", -along))
             return "CONTINUE"
         end
-        local backX,backZ = x-sin(yaw),z-cos(yaw)
-        local clear = Hitch.routePoseClear(env,s.foot,backX,backZ,yaw,0)
-        if clear ~= true then return clear == nil and "UNKNOWN_OBSERVATION" or "OBSTACLE_AHEAD" end
+        -- The next metre behind, as the rig sweeps it: along the towed unit's line, the
+        -- tractor's place projected onto it (at the tractor's own heading the rigid box
+        -- of a rig bent while it straightens touched a tree beside it, live
+        -- e44e3f6ba43348a2-2). Blocked, the reverse stops there and the search goes on.
+        local backX,backZ,backYaw = x-sin(yaw),z-cos(yaw),yaw
+        if r.onTowed then
+            local l = r.line
+            local t = (x-l.x)*sin(l.yaw)+(z-l.z)*cos(l.yaw)
+            backX,backZ,backYaw = l.x+sin(l.yaw)*(t-1),l.z+cos(l.yaw)*(t-1),l.yaw
+        end
+        local clear, blocked = Hitch.routePoseClear(env,s.foot,backX,backZ,backYaw,0)
+        if clear == nil then return "UNKNOWN_OBSERVATION" end
+        if clear ~= true then
+            say(string.format("[Farmhand] drive reverse blocked behind at %.1f,%.1f after %.1f of %.1fm: %s; stopping to search on",
+                              x,z,-along,r.length,tostring(blocked)))
+            r.diverged = true
+            Hitch.halt(env,s,dt)
+            return "CONTINUE"
+        end
         local v = s.tractor
         if not v:getIsMotorStarted() then
             if not v:getCanMotorRun() then return "MOTOR_UNAVAILABLE" end
@@ -1442,9 +1538,42 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
         Hitch.holdActive(s)
         v:raiseActive()
         measureTerrain(env, s, Hitch, x, z, yaw)
+        -- A forward command left from before would aim at the reverse's own cap.
+        s.commandKmh = nil
         local lx,lz = Drive.reverseAim(env,s.foot,r.line,yaw,s.radius)
         if lx == nil then return "UNKNOWN_OBSERVATION" end
         return Hitch.drive(env,s,dt,false,lx,lz) or "CONTINUE"
+    end
+    if s.straightenForward ~= nil then
+        local f = s.straightenForward
+        local along = (x-f.x)*sin(f.yaw)+(z-f.z)*cos(f.yaw)
+        local lateral = abs((x-f.x)*cos(f.yaw)-(z-f.z)*sin(f.yaw))
+        local inLine = Hitch.routePoseClear(env,s.foot,x,z,yaw) == true
+        local ahead = Hitch.routePoseClear(env,f.front,x+sin(yaw)*2,z+cos(yaw)*2,yaw,0)
+        if ahead == nil then return "UNKNOWN_OBSERVATION" end
+        -- The whole length: stopped as soon as the box cleared, the rig stood with the
+        -- tree at its box's edge and no room to reverse (live a44780ff73c84857-2).
+        if along >= f.length or ahead ~= true or lateral > 0.75
+                or abs((yaw-f.yaw+pi)%(2*pi)-pi) > pi/12 then
+            Hitch.halt(env,s,dt)
+            if not stopped(s.tractor) then return "CONTINUE" end
+            say(string.format("[Farmhand] drive straightened forward %.1fm (%s, %s); route search from here",
+                              along, ahead ~= true and "front blocked" or "its length",
+                              inLine and "in line" or "the route box still touching"))
+            s.straightenForward = nil
+            s.initial = { start = {x,z,yaw}, x = x, z = z, yaw = yaw }
+            s.maxSpeedKmh,s.commandShare,s.driveStartMs = 64,nil,nil
+            return "CONTINUE"
+        end
+        local v = s.tractor
+        if not v:getIsMotorStarted() then
+            if not v:getCanMotorRun() then return "MOTOR_UNAVAILABLE" end
+            v:startMotor()
+        end
+        Hitch.holdActive(s)
+        v:raiseActive()
+        s.commandKmh = nil
+        return Hitch.drive(env,s,dt,true,0,6) or "CONTINUE"
     end
     if atTarget then return "ARRIVED" end
     if s.recovering or (s.corridor ~= nil and (s.path == nil
@@ -1455,6 +1584,19 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
             return Hitch.routePoseClear(env,s.foot,px,pz,pyaw,curve)
         end
         local start = {x,z,yaw}
+        -- Bent by a turn (live 125141b03ef949ff-2: a 48 m leg ended in a turn beside a fill
+        -- station; every plan from there was START_NOT_CLEAR): into line first.
+        if (s.unbends or 0) < 4 and s.foot.towed ~= nil then
+            local here, why = Hitch.routePoseClear(env,s.foot,x,z,yaw)
+            local straighten = here == false and Drive.planUnbend(env,s.foot,Hitch,s.tractor,x,z,yaw,clear,why) or nil
+            if straighten ~= nil then
+                s.unbends = (s.unbends or 0) + 1
+                s.path,s.shuffle,s.recovering = nil,nil,false
+                if straighten.forward then s.straightenForward = straighten else s.retreat = straighten end
+                s.maxSpeedKmh,s.commandShare,s.driveStartMs,s.legKmh = 3,0.5,nil,nil
+                return "CONTINUE"
+            end
+        end
         if s.shuffle ~= nil then
             s.recovering = false
             if shuffleOn(s,start,clear) then return "CONTINUE" end
@@ -1623,6 +1765,7 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
     local headingError = abs((yaw - point[3] + pi) % (2 * pi) - pi)
     s.commandKmh = Drive.trackingSpeed(routeSpeed,pathError,maxError,headingError)
     if s.commandKmh == nil then return "ROUTE_LOST" end
+    if s.legKmh ~= nil then s.commandKmh = math.min(s.commandKmh, s.legKmh) end
     local lookahead = math.max(6,math.min(12,speed/3.6*0.6))
     local aimX,aimZ = Drive.goalPoint(s.path,s.next,x,z,lookahead)
     if aimX == nil then return "ROUTE_LOST" end
