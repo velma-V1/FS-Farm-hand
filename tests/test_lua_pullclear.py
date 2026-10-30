@@ -183,7 +183,8 @@ class LuaPullClearTests(unittest.TestCase):
              "PERSON_TOO_CLOSE"),
             (lambda w, i: i == 10 and setattr(w.eye, "x", w.eye.x + 0.5), "IMPLEMENT_MOVED"),
             (lambda w, i: i == 10 and setattr(w, "stuck", True), "STALLED"),
-            (lambda w, i: i == 10 and setattr(w.steer, "z", w.steer.z - 0.2), "SEPARATION_LOST"),
+            # Backing towards it by more than a settling roll-back (Hitch.PULL.separationSlackM).
+            (lambda w, i: i == 20 and setattr(w.steer, "z", w.steer.z - 0.25), "SEPARATION_LOST"),
             (lambda w, i: i == 10 and setattr(w.steer, "x", w.steer.x + 0.8), "DIVERGED"),
         ]
         for hook, reason in cases:
@@ -194,6 +195,14 @@ class LuaPullClearTests(unittest.TestCase):
                 code, _ = self.pull(w, session, hook=lambda i, w=w, hook=hook: (hook(w, i), w.sync()))
                 self.assertEqual(code, reason)
                 self.assert_ended_braked_and_restored(w)
+
+    def test_a_settling_roll_back_as_the_brake_lets_go_is_not_separation_lost(self):
+        # Live b4d1db624d374aa4-1: 0.05 -> 0.00 m within the first 5 cm ended it SEPARATION_LOST.
+        w = self.world()
+        session, why = self.start(w)
+        self.assertIsNotNone(session, why)
+        code, _ = self.pull(w, session, hook=lambda i: (i == 2 and setattr(w.steer, "z", w.steer.z - 0.07), w.sync()))
+        self.assertEqual(code, "CLEAR")
 
     def test_another_vehicle_moving_nearby_stops_it(self):
         w = self.world()

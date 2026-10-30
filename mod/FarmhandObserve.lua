@@ -1169,14 +1169,24 @@ end
 -- Only units the shop counts in litres (FillUnit.UNIT.LITER.l10n, the default display unit,
 -- 2811-2822): live e3e3b0c194914776-3 a Lizard "40' Flatbed Autoloading Bale Trailer" listed
 -- grain with a capacity counted in bales; unreadable: none counted (fail closed).
+-- Most trailers show cubic metres (shopDisplayUnit CUBICMETER, the litres times 0.001,
+-- FillUnit.UNIT 14-19; live e2f7e0a5a32548ee-1: every grain trailer read no capacity and none
+-- was bought): those count as their litres again.
 function Observe.storeCapacity(specs, env)
     local configuration = type(specs.capacity) == "table" and specs.capacity[1] or nil
     if type(configuration) ~= "table" then return nil end
     local litre = try(function() return env.FillUnit.UNIT.LITER.l10n end)
+    local cubic = try(function() return env.FillUnit.UNIT.CUBICMETER.l10n end)
     if litre == nil then return nil end
     local sum = 0
     for _, unit in ipairs(type(configuration.fillUnits) == "table" and configuration.fillUnits or {}) do
-        if finite(unit.capacity) and unit.capacity > 0 and unit.unit == litre then sum = sum + unit.capacity end
+        if finite(unit.capacity) and unit.capacity > 0 then
+            if unit.unit == litre then
+                sum = sum + unit.capacity
+            elseif cubic ~= nil and unit.unit == cubic then
+                sum = sum + unit.capacity * 1000
+            end
+        end
     end
     return sum > 0 and sum or nil
 end

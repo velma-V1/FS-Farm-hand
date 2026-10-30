@@ -509,6 +509,12 @@ class ObserveStoreSpecTests(unittest.TestCase):
         self.assertEqual(self.observe.storeCapacity(specs, units), 10000)       # the default (first) configuration, litres only
         self.assertIsNone(self.observe.storeCapacity(self.lua.eval("{}"), units))
         self.assertIsNone(self.observe.storeCapacity(specs, self.lua.eval("{}")))   # the unit unreadable: none
+        # Shown in cubic metres (most trailers, live e2f7e0a5a32548ee-1): their litres again.
+        cubic = self.lua.eval("""{ capacity = { { isSelectable = true, fillUnits = {
+            { capacity = 14.5, unit = "m3" }, { capacity = 12, unit = "bales" } } } } }""")
+        both = self.lua.eval("""{ FillUnit = { UNIT = { LITER = { l10n = "l" }, CUBICMETER = { l10n = "m3" } } } }""")
+        self.assertEqual(self.observe.storeCapacity(cubic, both), 14500)
+        self.assertIsNone(self.observe.storeCapacity(cubic, units))            # no cubic unit known: not counted
         env = self.lua.eval("""{ FillUnit = { getSpecValueFillTypes = function(item, real, configs)
                 assert(configs.fillUnit == 1); return { 3, 7 } end },
             g_fillTypeManager = { getFillTypeNameByIndex = function(_, i) return ({ [3] = "WHEAT", [7] = "BARLEY" })[i] end } }""")

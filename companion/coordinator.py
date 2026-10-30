@@ -200,7 +200,12 @@ def _tractor_for(items, farm_id: str, name: str | None, transports):
 
 # A hitch that could not get to its implement at all (its place has no way in).
 UNREACHABLE_IMPLEMENT = frozenset({"LOCAL_PATH_HITS_WAGON", "NO_SAFE_APPROACH", "TRAVEL_ENDED_TOO_FAR", "TRAPPED",
-                                   "LOCAL_PATH_BLOCKED", "LOCAL_PATH_OBSTRUCTED", "AGAINST_IMPLEMENT"})
+                                   "LOCAL_PATH_BLOCKED", "LOCAL_PATH_OBSTRUCTED", "AGAINST_IMPLEMENT",
+                                   # No route of Farmhand's own and GIANTS could not start it (live
+                                   # d58e38ce474b416e-2: the Titan trailer beyond grades 330 m off).
+                                   "UNPARK_START_NOT_CLEAR", "NO_ROUTE",
+                                   # Its one UNPARK spent on the trailer before (live 9c6b1d904f544423-1).
+                                   "UNPARK_ALREADY_USED"})
 
 
 def work_for(proposal: dict) -> dict | None:
@@ -1515,9 +1520,11 @@ class Coordinator:
         if cleared is not None and cleared.status != "COMPLETE":
             return cleared
         hitched = None
-        for trailer in trailers:
+        for n, trailer in enumerate(trailers):
             log.info("job %d grain rig: the %s to the %s", job.number, name, trailer.name)
-            hitched = self._execute(job, cancel, entered, "gh", task="hitch_pair", implement="trailer",
+            # One request id per trailer tried (live 7059fb537cf04e6a-1: the second one,
+            # under the first's id, was REQUEST_ID_CONFLICT).
+            hitched = self._execute(job, cancel, entered, f"gh{n or ''}", task="hitch_pair", implement="trailer",
                                     implement_name=_words(trailer.name), tractor_name=name)
             if hitched.status == "COMPLETE" or hitched.reason not in UNREACHABLE_IMPLEMENT:
                 return hitched

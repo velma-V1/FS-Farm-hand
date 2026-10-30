@@ -2625,6 +2625,23 @@ class Executor:
                 if against_loose_implement(tractor, [i for i in self.world.snapshot() if i.id != ids[1]]):
                     raise _Blocked("AGAINST_IMPLEMENT")
                 self._tailgate_down(tractor, plan.tractor_joint, owner)
+                if isinstance(travel, Pose) and self._farm_drives():
+                    # Near the implement by Farmhand's own drive (live f27757a15ce94d2a-2: GIANTS
+                    # GOTO ended at once at every aim, the 3650 unmoved 340 m from the trailer);
+                    # GIANTS GOTO below only if that finds no route.
+                    tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
+                    near = min(aims, key=lambda a: math.dist(tractor.position, (a.x, a.z)))
+                    enter("TRAVEL_NEAR")
+                    try:
+                        self.world.farm_drive(ids[0], (near.x, near.z), owner, 0.0)
+                    except StepFailed as failure:
+                        log.info("TRAVEL_NEAR by Farmhand's own drive: %s; GIANTS GOTO is tried", failure.code)
+                    else:
+                        tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
+                        left = min(math.dist(tractor.position, (a.x, a.z)) for a in aims)
+                        log.info("TRAVEL_NEAR by Farmhand's own drive: %.1f m from the approaches", left)
+                        if left <= NEAR_RADIUS_M + TRACTOR_ARRIVAL_TOLERANCE_M:
+                            travel = None
                 if travel is not None:
                     tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
                     while True:

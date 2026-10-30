@@ -637,13 +637,16 @@ end
 -- when the vehicle can pull straight away from it. This bounded departure is
 -- considered only for a stationary object behind the driver; the collision
 -- engine stays active. Every metre ahead must be clear of all other objects.
-function Drive.planEgress(start, obstacle, ordinary, ignoring)
+-- `dir` -1: the obstacle touches the rig ahead (live 2d946758a8054123-1: the 3650's nose
+-- against a tree after a pull-clear) and the departure is straight back.
+function Drive.planEgress(start, obstacle, ordinary, ignoring, dir)
     local sx, sz, yaw = start[1], start[2], start[3]
+    dir = dir or 1
     if not (finite(sx) and finite(sz) and finite(yaw) and finite(obstacle[1])
             and finite(obstacle[2])) then return nil, "EGRESS_UNREADABLE" end
-    local fx, fz = sin(yaw), cos(yaw)
+    local fx, fz = sin(yaw) * dir, cos(yaw) * dir
     if (obstacle[1] - sx) * fx + (obstacle[2] - sz) * fz >= -0.5 then
-        return nil, "EGRESS_NOT_BEHIND"
+        return nil, dir > 0 and "EGRESS_NOT_BEHIND" or "EGRESS_NOT_AHEAD"
     end
     for d = 0, 8 do
         local x, z = sx + fx * d, sz + fz * d
@@ -1281,33 +1284,49 @@ function Drive.begin(env, args, Hitch)
             -- planned after the straightening reverse, from the pose it ends in
         elseif startClear == false and hits ~= nil and #hits > 0 then
             say("[Farmhand] drive start clearance: " .. tostring(startReason))
-            local obstacle
+            -- One stationary thing touches the box: an owned parked vehicle, or scenery (a
+            -- tree, a post) by its own collision nodes. A bounded straight departure away
+            -- from it, ignoring only it, each metre otherwise clear.
+            local obstacle, ox, oz, n = nil, 0, 0, 0
             for _, node in ipairs(hits) do
                 local object = env.g_currentMission:getNodeObject(node)
                 object = object ~= nil and (object.rootVehicle or object) or nil
-                if object == nil or (obstacle ~= nil and obstacle ~= object) then
+                if (obstacle ~= nil and obstacle ~= (object or "scenery")) then return nil, "START_NOT_CLEAR" end
+                obstacle = object or "scenery"
+                local okAt, hx, _, hz = pcall(env.getWorldTranslation, node)
+                if not (okAt and finite(hx) and finite(hz)) then return nil, "START_NOT_CLEAR" end
+                ox, oz, n = ox + hx, oz + hz, n + 1
+            end
+            ox, oz = ox / n, oz / n
+            local vehicle = obstacle ~= "scenery" and obstacle or nil
+            if vehicle ~= nil then
+                if vehicle.rootNode == nil or vehicle.ownerFarmId ~= args.farmId or not stopped(vehicle) then
                     return nil, "START_NOT_CLEAR"
                 end
-                obstacle = object
+                ox, _, oz = env.getWorldTranslation(vehicle.rootNode)
             end
-            if obstacle == nil or obstacle.rootNode == nil or obstacle.ownerFarmId ~= args.farmId
-                    or not stopped(obstacle) then return nil, "START_NOT_CLEAR" end
-            local ox, _, oz = env.getWorldTranslation(obstacle.rootNode)
             local ignoredFoot, excluded = {}, {}
             for key, value in pairs(foot) do ignoredFoot[key] = value end
             for key, value in pairs(foot.excluded) do excluded[key] = value end
-            excluded[obstacle] = true
+            if vehicle ~= nil then
+                excluded[vehicle] = true
+            else
+                for _, node in ipairs(hits) do excluded[node] = true end
+            end
             ignoredFoot.excluded = excluded
             local function ignoring(px, pz, pyaw)
                 return Hitch.routePoseClear(env, ignoredFoot, px, pz, pyaw)
             end
-            local length, why = Drive.planEgress({ x, z, yaw }, { ox, oz }, clear, ignoring)
+            local dir = ((ox - x) * sin(yaw) + (oz - z) * cos(yaw)) > 0 and -1 or 1
+            local length, why = Drive.planEgress({ x, z, yaw }, { ox, oz }, clear, ignoring, dir)
             if length == nil then return nil, why end
-            egress = { obstacle = obstacle, ox = ox, oz = oz, initialDistance = distance(x, z, ox, oz),
-                       lastDistance = distance(x, z, ox, oz), x = x, z = z, yaw = yaw,
+            egress = { obstacle = vehicle, ox = ox, oz = oz, initialDistance = distance(x, z, ox, oz),
+                       lastDistance = distance(x, z, ox, oz), x = x, z = z, yaw = yaw, dir = dir,
                        ignoredFoot = ignoredFoot, plannedM = length }
-            say(string.format("[Farmhand] drive bounded departure %.1fm from %s", length,
-                                tostring(obstacle.getName and obstacle:getName() or obstacle.typeName)))
+            say(string.format("[Farmhand] drive bounded departure %.1fm %s from %s", length,
+                                dir > 0 and "ahead" or "back",
+                                vehicle ~= nil and tostring(vehicle.getName and vehicle:getName() or vehicle.typeName)
+                                or tostring(startReason)))
         elseif startClear ~= true then
             say("[Farmhand] drive start clearance: " .. tostring(startReason))
             return nil, "START_NOT_CLEAR"
@@ -1333,8 +1352,8 @@ function Drive.begin(env, args, Hitch)
         if egress == nil then
             planStart = {x,z,yaw}
         else
-            local px = x + sin(yaw) * egress.plannedM
-            local pz = z + cos(yaw) * egress.plannedM
+            local px = x + sin(yaw) * egress.plannedM * (egress.dir or 1)
+            local pz = z + cos(yaw) * egress.plannedM * (egress.dir or 1)
             planStart = {px,pz,yaw}
         end
         local cruise = v.spec_drivable and v.spec_drivable.cruiseControl
@@ -1421,7 +1440,8 @@ local function guard(env, s, Hitch, x, z, yaw, atTarget)
     -- previews the actual rig-aware arcs below; checking a point straight in
     -- front would reject a valid turn around an object beside that arc.
     if s.egress ~= nil then
-        local aheadX, aheadZ = x + sin(yaw) * 2, z + cos(yaw) * 2
+        local dir = s.egress.dir or 1
+        local aheadX, aheadZ = x + sin(yaw) * 2 * dir, z + cos(yaw) * 2 * dir
         local ahead, aheadReason = Hitch.routePoseClear(env, probeFoot, aheadX, aheadZ, yaw)
         if ahead ~= true then
             say(string.format("[Farmhand] drive front blocked at %.2f,%.2f yaw %.2f: %s",
@@ -1707,12 +1727,16 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
     end
     if s.egress ~= nil then
         local e = s.egress
-        local ox, _, oz = env.getWorldTranslation(e.obstacle.rootNode)
-        if not (finite(ox) and finite(oz)) or distance(ox, oz, e.ox, e.oz) > 0.25 then
-            return "EGRESS_OBSTACLE_MOVED"
+        local ox, oz = e.ox, e.oz
+        if e.obstacle ~= nil then
+            ox, _, oz = env.getWorldTranslation(e.obstacle.rootNode)
+            if not (finite(ox) and finite(oz)) or distance(ox, oz, e.ox, e.oz) > 0.25 then
+                return "EGRESS_OBSTACLE_MOVED"
+            end
         end
         local separation = distance(x, z, ox, oz)
-        local along = (x - e.x) * sin(e.yaw) + (z - e.z) * cos(e.yaw)
+        local dir = e.dir or 1
+        local along = ((x - e.x) * sin(e.yaw) + (z - e.z) * cos(e.yaw)) * dir
         local lateral = abs((x - e.x) * cos(e.yaw) - (z - e.z) * sin(e.yaw))
         if separation < e.lastDistance - 0.05 or lateral > 0.3
                 or abs((yaw - e.yaw + pi) % (2 * pi) - pi) > pi / 36 then
@@ -1750,6 +1774,7 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
             end
             Hitch.holdActive(s)
             v:raiseActive()
+            if dir < 0 then return Hitch.drive(env, s, dt, false, 0, -10) or "CONTINUE" end
             return Hitch.drive(env, s, dt, true, 0, 3) or "CONTINUE"
         end
     end

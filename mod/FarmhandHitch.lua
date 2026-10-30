@@ -680,7 +680,8 @@ local function boxQuery(env, rig, x, z, yaw, halfWidth, halfLength, h0, h1, mask
         else
             -- The object a collision node belongs to, as AutoDrive asks (PathFinderModule.lua:3040).
             local object = mission:getNodeObject(nodeId)
-            if object ~= nil and (rig[object] or (object.rootVehicle ~= nil and rig[object.rootVehicle])) then
+            if (object ~= nil and (rig[object] or (object.rootVehicle ~= nil and rig[object.rootVehicle])))
+                    or rig[nodeId] then           -- a scenery node a bounded departure leaves (Drive.begin)
                 q.own = q.own + 1
             else
                 q.hits[#q.hits + 1] = nodeId
@@ -1571,7 +1572,10 @@ Hitch.PULL = {
     timeoutMs = 20000,        -- 8 m at the governor's 1.95 km/h is 14.8 s
     lookaheadM = 3,
     divergeM = 0.5,           -- farther than this off the starting line: DIVERGED
-    separationSlackM = 0.05,  -- the separation may never shrink more than this: SEPARATION_LOST
+    -- The separation may never shrink more than this: SEPARATION_LOST. The tractor settles
+    -- or rolls back a few cm as its brake lets go (live a1d3a7852497400f-2-cd, b4d1db624d374aa4-1:
+    -- 0.05 -> 0.00 m within the first 5 cm, joints 5 cm apart); backing into it is more.
+    separationSlackM = 0.15,
     -- The unhitched implement is behind when its joint is no farther ahead than the
     -- tractor's own joint plus this (= companion/hitch.py FRONT_JOINT_SLACK_M) and its root
     -- is behind the steering node: a gooseneck ball sits over the steering axle (live

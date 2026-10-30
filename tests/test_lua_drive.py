@@ -131,6 +131,51 @@ class DrivePlannerTests(unittest.TestCase):
         ahead = lua.table_from((0, 5))
         self.assertEqual(drive.planEgress(start, ahead, ordinary, ignored)[1], "EGRESS_NOT_BEHIND")
 
+    def test_a_rig_touching_something_ahead_departs_straight_back_ignoring_only_it(self):
+        # Live 2d946758a8054123-1: the 3650's nose against a tree after a pull-clear; every start
+        # (Farmhand's and GIANTS') refused, the job ended.
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        drive = lua.execute(SOURCE.read_text())
+        start, tree = lua.table_from((0, 0, 0)), lua.table_from((0, 5))
+        ordinary = lua.eval("function() return function(_, z) return z <= -3 end end")()
+        ignored = lua.eval("function() return function() return true end end")()
+        self.assertEqual(drive.planEgress(start, tree, ordinary, ignored, -1), (3, None))
+        self.assertEqual(drive.planEgress(start, tree, ordinary, ignored, 1)[1], "EGRESS_NOT_BEHIND")
+        behind = lua.table_from((0, -5))
+        self.assertEqual(drive.planEgress(start, behind, ordinary, ignored, -1)[1], "EGRESS_NOT_AHEAD")
+        lines = []
+        lua.globals().print = lambda *p: lines.append(" ".join(map(str, p)))
+        env, args, hitch = lua.execute("""
+            local tree = {x=0, z=4}
+            local vehicle = {ownerFarmId='1', rootNode={x=0,z=0,yaw=0},
+                spec_drivable={cruiseControl={speed=40}}, maxTurningRadius=6,
+                getLastSpeed=function() return 0 end,
+                getIsAIActive=function() return false end,
+                getIsEntered=function() return false end,
+                getAITurningRadius=function() return 6 end,
+                getCruiseControlMaxSpeed=function() return 50 end,
+                setCruiseControlMaxSpeed=function() end}
+            vehicle.rootVehicle = vehicle
+            local foot = {units={vehicle}, towLength=0, lMin=-1, lMax=1, aMin=-2, aMax=3, excluded={}}
+            local env = {getWorldTranslation=function(n) return n.x,0,n.z end,
+                localDirectionToWorld=function(n) return math.sin(n.yaw),0,math.cos(n.yaw) end,
+                g_currentMission={getNodeObject=function() return nil end}}
+            local hitch = {routeFootprint=function() return foot end,
+                routePoseClear=function(_,f,x,z)
+                    if f.excluded[tree] then return z > -6 end            -- the tree left out: clear behind
+                    if z > -2.5 then return false, "OBSTACLE LOD0(0,4)", {tree} end
+                    return true
+                end,
+                rigContacts=function() return "unit1:LOD0" end, watchDriver=function() end}
+            return env, {tractor=vehicle, farmId='1', x=0, z=-60, isReserved=function() return true end}, hitch
+        """)
+        session, reason = drive.begin(env, args, hitch)
+        self.assertIsNone(reason)
+        self.assertEqual(session.egress.dir, -1)
+        self.assertEqual(session.egress.plannedM, 3)
+        self.assertIsNone(session.egress.obstacle)                   # scenery: ignored by its own nodes
+        self.assertTrue(any("bounded departure 3.0m back" in l for l in lines))
+
     def test_blocked_forward_turn_can_depart_by_a_clear_bounded_reverse(self):
         lua = lua54.LuaRuntime(unpack_returned_tuples=True)
         drive = lua.execute(SOURCE.read_text())
@@ -1358,6 +1403,21 @@ class TowedReverseTests(unittest.TestCase):
         self.assertLess(left[0], straight[0])
         offtrack = 11.2 - math.sqrt(11.2 ** 2 - foot.towLength ** 2)
         self.assertAlmostEqual(right[1] - straight[1], min(foot.towLength, offtrack), places=5)
+
+    def test_a_scenery_node_a_departure_leaves_is_not_an_obstacle_to_it(self):
+        self.lua.execute("""
+            local env = ...
+            env.g_currentMission.environmentAreaSystem = {getWaterYAtWorldPosition=function() return nil end}
+            env.g_currentMission.getNodeObject = function() return nil end
+            env.g_currentMission.terrainRootNode = "terrain"
+            env.overlapBox = function(x,y,z,rx,ry,rz,hw,hh,hl,cb,q)
+                q[cb](q, "terrain"); q[cb](q, 77); return 2
+            end
+        """, self.env)
+        foot = self.footprint()
+        self.assertEqual(self.hitch.routePoseClear(self.env, foot, 0, 0, 0)[0], False)
+        foot.excluded[77] = True
+        self.assertEqual(self.hitch.routePoseClear(self.env, foot, 0, 0, 0)[0], True)
 
     def test_a_point_the_rig_was_held_fast_at_blocks_the_route_box_that_reaches_it(self):
         self.lua.execute("""

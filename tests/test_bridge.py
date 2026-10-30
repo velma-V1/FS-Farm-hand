@@ -407,11 +407,12 @@ class ProductionSequenceTests(unittest.TestCase):
         self.assertEqual(result.states[2], "TRAVEL_NEAR")
 
     def test_without_autodrive_giants_goto_travels_and_delivers_here(self):
-        # GIANTS GOTO travels to the wagon; Farmhand's own drive delivers the pair.
+        # Farmhand's own drive travels to the wagon (live f27757a15ce94d2a-2: GIANTS GOTO never
+        # moved the 3650 there) and delivers the pair; GIANTS GOTO travels only when it finds no route.
         for tractor_at, ops in (((0.0, 20.0), ["maneuver", "align", "attach", "farm_drive", "stop"]),
                                 ((0.0, 40.0), ["stage", "maneuver", "align", "attach", "farm_drive", "stop"]),
-                                # GOTO travel aims at the approach: no second GOTO; the maneuver lines up.
-                                ((600.0, 600.0), ["navigate", "maneuver", "align", "attach", "farm_drive", "stop"])):
+                                # Travel ends at the approach: no GOTO; the maneuver lines up.
+                                ((600.0, 600.0), ["farm_drive", "maneuver", "align", "attach", "farm_drive", "stop"])):
             with self.subTest(tractor_at=tractor_at):
                 game, world, result = self.run_ac001(tractor_at=tractor_at, autodrive=False)
                 self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
@@ -422,6 +423,12 @@ class ProductionSequenceTests(unittest.TestCase):
                 self.assertAlmostEqual(math.dist(goal, player), DELIVERY_STANDOFF_M, places=6)
                 self.assertNotIn("marker", deliver)
                 self.assertEqual(world._reservations, {})
+
+    def test_travel_to_a_far_wagon_falls_back_to_giants_goto_when_farmhand_finds_no_route(self):
+        game, world, result = self.run_ac001(tractor_at=(600.0, 600.0), autodrive=False,
+                                             faults={"farm_drive": "FAILED:NO_ROUTE"})
+        self.assertEqual(self.ops(game)[:2], ["farm_drive", "navigate"])
+        self.assertEqual(world._reservations, {})
 
     def test_goto_failures_without_autodrive_stop_and_go_no_further(self):
         # Farmhand's own drive found no route: GIANTS GOTO is tried, and its failure ends the job.
