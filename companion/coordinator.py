@@ -199,6 +199,9 @@ def _tractor_for(items, farm_id: str, name: str | None, transports):
 
 
 # A hitch that could not get to its implement at all (its place has no way in).
+# Farmhand's pay modes (= mod/FarmhandBridge.lua Bridge.PAY).
+PAY_NONE, PAY_HOURLY, PAY_PER_JOB, PAY_DAILY, PAY_GAME = 0, 1, 2, 3, 4
+
 UNREACHABLE_IMPLEMENT = frozenset({"LOCAL_PATH_HITS_WAGON", "NO_SAFE_APPROACH", "TRAVEL_ENDED_TOO_FAR", "TRAPPED",
                                    "LOCAL_PATH_BLOCKED", "LOCAL_PATH_OBSTRUCTED", "AGAINST_IMPLEMENT",
                                    # No route of Farmhand's own and GIANTS could not start it (live
@@ -577,6 +580,9 @@ class Coordinator:
         self.workers: list[Worker] = []           # GIANTS' helpers working on (handed off)
         self._harvest_rigs: dict[int, str] = {}   # field -> the rig (tractor words) its grain was transferred into
         self._bought_for: set[str] = set()         # jobs that already bought what they needed (never twice)
+        # Farmhand's pay (mode, amount) from the player's settings, or None (the game's default):
+        # read before each job (Settings.pay; companion/service.py sets the reader).
+        self.pay = lambda: None
         self._unreachable: set[str] = set()        # implements no hitch could reach this session (not tried again)
         self._after: list[list] = []              # their follow-up steps, run when Farmhand is free
         self._watcher: threading.Thread | None = None
@@ -920,9 +926,16 @@ class Coordinator:
                     self.notify(f"WORKING_{state}", job.spoken)
 
             self.world.cancel = cancel           # the link refuses steps once it is set
+            pay = self.pay()
             result = self._dispatch(job, cancel, entered, command, target, implement, work)
             job.states, job.equipment = tuple(result.states), tuple(result.equipment_ids)
             job.state, job.reason = result.status, result.reason
+            if (pay is not None and pay[0] == PAY_PER_JOB and result.status == "COMPLETE" and result.equipment_ids
+                    and getattr(type(self.world), "charge", None) is not None):
+                try:
+                    self.world.charge(pay[1])    # a completed job that worked equipment: its pay
+                except StepFailed as failure:
+                    log.info("per-job pay not charged: %s", failure.code)
             log.info("job %d result %s", job.number, json.dumps({
                 "status": result.status, "reason": result.reason,
                 "equipment": list(result.equipment_ids), "states": list(result.states)}))

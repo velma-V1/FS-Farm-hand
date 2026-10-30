@@ -1465,7 +1465,7 @@ function starters.deliver(env, spec)
         else
             log("deliver: to %s at %.3f per litre", tostring(best:getName()), score)
         end
-        mission.aiSystem:startJob(job, spec.farmId)
+        mission.aiSystem:startJob(Bridge.farmhandJob(job), spec.farmId)
         return nil
     end)
     if not ok then return nil, "DELIVER_ERROR" end
@@ -1783,7 +1783,7 @@ function starters.fieldwork(env, spec)
         if job:validate(spec.farmId) ~= true then return "FIELDWORK_INVALID" end
         Bridge.aiStops[v] = nil
         pcall(Bridge.Observe.refreshField, env, spec.field)   -- the field as it was before
-        mission.aiSystem:startJob(job, spec.farmId)
+        mission.aiSystem:startJob(Bridge.farmhandJob(job), spec.farmId)
         return nil
     end)
     if not ok then return nil, "FIELDWORK_ERROR" end
@@ -2076,6 +2076,85 @@ end
 
 function steppers.block() return "DONE", "BLOCKED_AREA" end
 function aborts.block() end
+
+-- -------------------------------------------------------------------- pay
+-- Farmhand's pay, the player's choice (the user, 2026-10-30): GIANTS' helper wage and
+-- AutoDrive's are off for Farmhand's work and Farmhand charges its own instead, through the
+-- wage money type GIANTS charges its helpers with (AIJob:updateCost: addMoney(-cost, farm,
+-- MoneyType.AI, true), AIJob.lua 111-126). Modes (the `pay` op): 0 none, 1 per hour (amount per
+-- in-game working hour), 2 per job (`charge` after each completed request), 3 per day (once
+-- each in-game day Farmhand works), 4 the game's own wages (GIANTS' and AutoDrive's, Farmhand
+-- charging nothing). Until the companion sends it: per hour at GIANTS' own helper rate
+-- (AIJob:getPricePerMs 0.0004 per ms = 1440 per hour, times EconomyManager.getCostMultiplier).
+Bridge.PAY = { HOURLY = 1, PER_JOB = 2, DAILY = 3, GAME = 4, giantsPerHour = 1440 }
+Bridge.pay = { mode = 1, amount = nil, pending = 0 }
+
+local function costMultiplier(env)
+    local ok, m = pcall(function() return env.EconomyManager.getCostMultiplier() end)
+    return ok and finite(m) and m or 1
+end
+
+-- A GIANTS helper job Farmhand starts: no GIANTS wage while Farmhand's pay applies.
+function Bridge.farmhandJob(job)
+    if job ~= nil and Bridge.pay.mode ~= Bridge.PAY.GAME then
+        job.getPricePerMs = function() return 0 end
+    end
+    return job
+end
+
+local function payAutoDrive(env)
+    -- AutoDrive's own setting (Settings.lua 536-545, 1920): driverWages index 1 is 0 %.
+    local ad = env.AutoDrive
+    if ad ~= nil and type(ad.setSettingState) == "function" then
+        pcall(ad.setSettingState, "driverWages", Bridge.pay.mode == Bridge.PAY.GAME and 3 or 1)
+    end
+end
+
+function starters.pay(env, spec)
+    local mode = spec.direction
+    if not (finite(mode) and mode >= 0 and mode <= 4 and mode % 1 == 0) or not finite(spec.area) or spec.area < 0 then
+        return nil, "INVALID_PAY"
+    end
+    Bridge.pay.mode, Bridge.pay.amount = mode, spec.area > 0 and spec.area or nil
+    payAutoDrive(env)
+    log("pay: mode %d amount %s", mode, tostring(Bridge.pay.amount))
+    return {}
+end
+function steppers.pay() return "DONE", "PAY_SET" end
+function aborts.pay() end
+
+local function charge(env, farmId, amount, why)
+    if not (finite(amount) and amount > 0) then return end
+    env.g_currentMission:addMoney(-amount, farmId, env.MoneyType.AI, true)
+    log("pay: %.0f charged (%s)", amount, why)
+end
+
+function starters.charge(env, spec)
+    if Bridge.pay.mode ~= Bridge.PAY.PER_JOB then return {} end
+    if not (finite(spec.area) and spec.area >= 0) then return nil, "INVALID_PAY" end
+    charge(env, spec.farmId, spec.area, "per job")
+    return {}
+end
+function steppers.charge() return "DONE", "CHARGED" end
+function aborts.charge() end
+
+-- Each frame Farmhand works (a command running, or a helper it handed a job to): per hour,
+-- the time worked; per day, once a day.
+function Bridge.payTick(env, dt, working, farmId)
+    local P, pay = Bridge.PAY, Bridge.pay
+    if not working then return end
+    if pay.mode == P.HOURLY then
+        local perHour = pay.amount or P.giantsPerHour * costMultiplier(env)
+        pay.pending = pay.pending + perHour * dt / 3600000
+        if pay.pending > 25 then charge(env, farmId, pay.pending, "per hour"); pay.pending = 0 end
+    elseif pay.mode == P.DAILY then
+        local ok, day = pcall(function() return env.g_currentMission.environment.currentDay end)
+        if ok and finite(day) and pay.paidDay ~= day and pay.amount ~= nil then
+            pay.paidDay = day
+            charge(env, farmId, pay.amount, "per day")
+        end
+    end
+end
 
 -- ------------------------------------------------------------------- save
 -- The game's own save of the running career: g_currentMission:saveSavegame(true), as
@@ -2402,7 +2481,7 @@ function aborts.stop() end
 Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true, load = true,
                        overload = true, alongside = true, backoff = true }
 Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true, ad_marker = true, contract = true,
-                      land = true }   -- ops that act on no vehicle
+                      land = true, pay = true, charge = true }   -- ops that act on no vehicle
 
 function Bridge.start(env, spec)
     local starter = starters[spec.op]
@@ -2659,6 +2738,8 @@ function Bridge:update(dt)
             self.active = nil
         end
     end
+    pcall(Bridge.payTick, self.env, dt, self.active ~= nil or next(Bridge.handed) ~= nil,
+          self.env.g_currentMission:getFarmId())
     -- Rigs ghosted past buildings (Hitch.ghost) that no motion drives any more: their
     -- collision with buildings restored once each stands clear of them.
     self.ghostTimer = (self.ghostTimer or 0) + dt
@@ -3268,6 +3349,7 @@ if type(FarmhandObserve) == "table" then
     FarmhandObserve.aiStop = function(v) return Bridge.aiStops[v] end
 end
 Bridge.Hitch = FarmhandHitch
+if type(FarmhandHitch) == "table" then FarmhandHitch.onJobStart = Bridge.farmhandJob end   -- its GOTO jobs too
 Bridge.Drive = FarmhandDrive
 FarmhandBridge = Bridge
 if type(addModEventListener) == "function" then addModEventListener(Bridge) end

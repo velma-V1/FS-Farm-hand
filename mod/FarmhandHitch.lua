@@ -82,7 +82,7 @@ function Hitch.startStaging(env, tractor, farmId, x, z, yaw)
         job:setValues()
         local valid = job:validate(farmId)
         if valid ~= true then return false, "GOTO_INVALID" end
-        mission.aiSystem:startJob(job, farmId)
+        mission.aiSystem:startJob(Hitch.onJobStart ~= nil and Hitch.onJobStart(job) or job, farmId)
         return true
     end)
     if not ok then return false, "STAGE_ERROR" end

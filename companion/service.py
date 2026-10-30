@@ -152,6 +152,7 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
     coordinator = Coordinator(world, Executor(world, field_entrances=field_entrances), replies,
                               farm=lambda: linked_farm(link), session=lambda: link.session,
                               goal_file=data_dir() / "goal.json", policy=Settings())
+    coordinator.pay = Settings().pay          # Farmhand's pay, the player's choice, read for each job
     if live is not None:
         live.attach(coordinator, rules.interpret,
                     model=None if ai is None else (lambda text: ai.interpret(text) if getattr(ai, "enabled", True)
@@ -301,6 +302,7 @@ def main(argv=None) -> int:
     (data / QUIT_FILE).unlink(missing_ok=True)
     (data / PID_FILE).write_text(str(os.getpid()), encoding="utf-8")
     world = FS25World(link, categories)
+    world.pay = Settings().pay                # Farmhand's pay, the player's choice
     live = None
     if args.live_test:
         from companion.livetest import FOLDER, LiveTest

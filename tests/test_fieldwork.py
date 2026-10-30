@@ -1077,6 +1077,31 @@ class UnloadAndSellTests(unittest.TestCase):
         world.mock_sell_at = (900.0, 900.0)
         return world
 
+    def test_per_job_pay_is_charged_for_a_completed_job_that_worked_equipment(self):
+        # The user, 2026-10-30: pay per job.
+        charges = []
+
+        class Paying(CoordinatedWorld):
+            def charge(self, amount):
+                charges.append(amount)
+
+        world = self.full_combine_world()
+        world.__class__ = Paying
+        c, _ = coordinated(world)
+        c.pay = lambda: (2, 500.0)                         # per job, 500
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual(c.last.state, "COMPLETE")
+        self.assertEqual(charges, [500.0])
+        c.pay = lambda: (1, 0.0)                           # per hour: charged by the game, not here
+        world2 = self.full_combine_world()
+        world2.__class__ = Paying
+        c2, _ = coordinated(world2)
+        c2.pay = c.pay
+        c2.submit({"version": 1, "command": "unload_combine"})
+        c2.wait(10)
+        self.assertEqual(charges, [500.0])
+
     def test_unload_the_combine_transfers_the_grain_and_nothing_more(self):
         world = self.full_combine_world()
         c, notices = coordinated(world)

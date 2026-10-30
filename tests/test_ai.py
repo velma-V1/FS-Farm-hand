@@ -109,6 +109,22 @@ class SettingsTests(Fixture):
         self.assertIsNone(self.settings.ai())
 
 
+    def test_farmhands_pay_defaults_to_the_hourly_giants_rate_and_keeps_the_players_choice(self):
+        # The user, 2026-10-30: pay per hour, per job, per day, or none; the game's own wages too.
+        self.assertEqual(self.settings.pay(), (1, 0.0))                       # per hour, GIANTS' rate
+        self.settings.set_pay("day", 750)
+        self.assertEqual(ai.Settings(self.settings.path).pay(), (3, 750.0))
+        for mode, code in (("none", 0), ("hour", 1), ("job", 2), ("day", 3), ("game", 4)):
+            self.settings.set_pay(mode, 10)
+            self.assertEqual(self.settings.pay()[0], code)
+        with self.assertRaises(ValueError):
+            self.settings.set_pay("week", 10)
+        with self.assertRaises(ValueError):
+            self.settings.set_pay("hour", -5)
+        self.settings.path.write_text(json.dumps({"pay": {"mode": "hour", "amount": "lots"}}))
+        self.assertEqual(self.settings.pay(), (1, 0.0))                       # unreadable: the default
+
+
 class DiscoveryTests(Fixture):
     def test_the_list_shows_what_is_installed_then_downloads_then_no_ai(self):
         _, client = self.ollama(models=["qwen3:4b", "llama3.2:latest"])

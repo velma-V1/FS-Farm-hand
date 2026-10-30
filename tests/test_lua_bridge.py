@@ -2389,3 +2389,64 @@ class SaveTests(unittest.TestCase):
         task = start(bridge, env, spec)
         self.assertEqual(tuple(bridge.step(env, task, 16)), ("DONE", "SAVED"))
         self.assertEqual(env.saved, 1)
+
+
+class PayTests(unittest.TestCase):
+    """Farmhand's pay (the user, 2026-10-30): GIANTS' helper wage and AutoDrive's off for
+    Farmhand's work, Farmhand's own charged instead with GIANTS' wage money type."""
+    ENV = r"""
+        local env = { charged = {}, ad = {} }
+        env.MoneyType = { AI = 7 }
+        env.EconomyManager = { getCostMultiplier = function() return 2 end }
+        env.g_currentMission = { environment = { currentDay = 5 },
+            addMoney = function(_, amount, farmId, moneyType) env.charged[#env.charged + 1] = { amount, farmId, moneyType } end }
+        env.AutoDrive = { setSettingState = function(name, value) env.ad[name] = value end }
+        return env
+    """
+
+    def setUp(self):
+        self.lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        self.lua.globals().print = lambda *a: None
+        self.bridge = self.lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        self.env = self.lua.execute(self.ENV)
+        self.start = self.lua.eval("""function(B, env, op, mode, amount)
+            local task, code = B.start(env, { op = op, direction = mode, area = amount, farmId = 1,
+                                             owned = function() return true end })
+            if task == nil then return nil, code end
+            task.elapsed = 0
+            return B.step(env, task, 16) end""")
+
+    def charged(self):
+        return [tuple(c.values()) for c in self.env.charged.values()]
+
+    def test_hourly_by_default_at_giants_rate_charged_with_the_wage_money_type(self):
+        for _ in range(60):
+            self.bridge.payTick(self.env, 60000, True, 1)        # an hour of Farmhand's work
+        self.bridge.payTick(self.env, 60000, False, 1)           # not working: nothing
+        total = sum(c[0] for c in self.charged())
+        self.assertAlmostEqual(total, -1440 * 2, delta=26)        # GIANTS' 1440 / h x cost multiplier
+        self.assertTrue(all(c[1:] == (1, 7) for c in self.charged()))
+
+    def test_a_chosen_mode_sets_autodrives_wage_and_zeroes_giants_on_farmhands_jobs(self):
+        self.assertEqual(self.start(self.bridge, self.env, "pay", 3, 750), ("DONE", "PAY_SET"))
+        self.assertEqual(self.env.ad["driverWages"], 1)                              # AutoDrive 0 %
+        job = self.lua.eval("function() return { getPricePerMs = function() return 0.0004 end } end")()
+        self.assertEqual(self.bridge.farmhandJob(job).getPricePerMs(), 0)
+        self.bridge.payTick(self.env, 1000, True, 1)
+        self.bridge.payTick(self.env, 1000, True, 1)
+        self.assertEqual(self.charged(), [(-750, 1, 7)])                              # once this day
+        self.env.g_currentMission.environment.currentDay = 6
+        self.bridge.payTick(self.env, 1000, True, 1)
+        self.assertEqual(len(self.charged()), 2)                                      # and the next
+        # Per job: only the companion's charge after a completed job.
+        self.start(self.bridge, self.env, "pay", 2, 300)
+        self.bridge.payTick(self.env, 3600000, True, 1)
+        self.assertEqual(len(self.charged()), 2)
+        self.assertEqual(self.start(self.bridge, self.env, "charge", 0, 300), ("DONE", "CHARGED"))
+        self.assertEqual(self.charged()[-1], (-300, 1, 7))
+        # The game's own wages: GIANTS' and AutoDrive's (100 %) back, Farmhand charges nothing.
+        self.start(self.bridge, self.env, "pay", 4, 0)
+        self.assertEqual(self.env.ad["driverWages"], 3)
+        job = self.lua.eval("function() return { getPricePerMs = function() return 0.0004 end } end")()
+        self.assertEqual(self.bridge.farmhandJob(job).getPricePerMs(), 0.0004)
+        self.assertIsNone(self.start(self.bridge, self.env, "pay", 9, 0)[0])         # no such mode

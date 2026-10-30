@@ -123,6 +123,8 @@ COMMAND_ARGS = {
     "detach": ("tractor", "wagon"),
     "pull_clear": ("tractor", "wagon"),
     "unpark": ("tractor",),
+    "pay": ("direction", "area"),                 # Farmhand's pay: mode (0 none, 1 per hour, 2 per job, 3 per day, 4 the game's own wages), amount (0: GIANTS' rate)
+    "charge": ("area",),                          # per-job pay: this amount for a completed request
     "fold": ("tractor", "direction"),            # the vehicle's own Foldable parts to one end
     "belts": ("tractor", "direction"),           # a transport's TensionBelts fastened (1) or released (-1)
     "load": ("tractor", "wagon", "direction"),   # the tractor alone onto the trailer's deck (1) or off it (-1)

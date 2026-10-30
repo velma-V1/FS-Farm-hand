@@ -167,6 +167,9 @@ class FakeGame:
         self._emit({**result, "status": "DONE", "code": self._apply(op, command)})
 
     def _apply(self, op, c):
+        if op in ("pay", "charge"):        # Farmhand's pay: recorded, no vehicle
+            self.paid = getattr(self, "paid", []) + [(op, c)]
+            return "PAY_SET" if op == "pay" else "CHARGED"
         tractor, wagon = self.vehicles[11], self.vehicles[12]
 
         def place(v, x, z, yaw=None):
@@ -419,6 +422,23 @@ class ProductionSequenceTests(unittest.TestCase):
         game, world, result = self.run_ac001(tractor_at=(600.0, 600.0), autodrive=False,
                                              faults={"farm_drive": ["FAILED:ENVELOPE_CONTACT"] * 3})
         self.assertEqual(self.ops(game)[:4], ["farm_drive"] * 3 + ["navigate"])   # then GIANTS GOTO
+
+    def test_farmhands_pay_goes_to_the_game_once_per_session_before_its_first_command(self):
+        # The user, 2026-10-30: Farmhand's own pay (per hour, per job, per day, none) instead of
+        # GIANTS' and AutoDrive's wages.
+        game = FakeGame(autodrive=False)
+        self.addCleanup(game.stop)
+        world = FS25World(game.link, CATEGORIES)
+        world.pay = lambda: (3, 750.0)              # per day, 750
+        with unittest.mock.patch.object(bridge, "ACCEPT_TIMEOUT_S", 0.3), \
+                unittest.mock.patch.dict(bridge.DONE_TIMEOUT_S, {op: 0.3 for op in bridge.DONE_TIMEOUT_S}):
+            result = Executor(world).execute(intent())
+            Executor(world).execute(intent())
+        self.assertEqual(result.status, "COMPLETE", result)
+        pays = [c for c in game.commands if c["op"] == "pay"]
+        self.assertEqual(len(pays), 1)                                     # once this session
+        self.assertEqual(game.commands[0]["op"], "pay")                    # before its first command
+        self.assertEqual((float(pays[0]["fd"]), float(pays[0]["area"])), (3.0, 750.0))
 
     def test_without_autodrive_giants_goto_travels_and_delivers_here(self):
         # Farmhand's own drive travels to the wagon (live f27757a15ce94d2a-2: GIANTS GOTO never
@@ -739,7 +759,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.session_notice(game), ("COMPLETE", 5))
 
     def ops(self, game):
-        return [c["op"] for c in game.commands]
+        # Farmhand's pay, sent before each job, is settings plumbing (its own test below).
+        return [c["op"] for c in game.commands if c["op"] not in ("pay", "charge")]
 
     def test_while_a_job_runs_presses_are_busy_and_status_and_stop_answer_at_once(self):
         game, notices = self.start(autodrive=False, faults={"align": "hold"})

@@ -88,6 +88,25 @@ class Settings:
         data["ai"] = choice
         self.save(data)
 
+    PAY_MODES = {"none": 0, "hour": 1, "job": 2, "day": 3, "game": 4}
+
+    def pay(self) -> tuple[int, float]:
+        """Farmhand's pay (the user, 2026-10-30): (mode, amount); mode as PAY_MODES, amount per
+        hour / job / day (0: per hour at GIANTS' own helper rate). Default: per hour at that rate."""
+        data = self.load().get("pay")
+        if isinstance(data, dict) and data.get("mode") in self.PAY_MODES:
+            amount = data.get("amount", 0)
+            if isinstance(amount, (int, float)) and 0 <= amount <= 100000:
+                return self.PAY_MODES[data["mode"]], float(amount)
+        return self.PAY_MODES["hour"], 0.0
+
+    def set_pay(self, mode: str, amount: float = 0.0) -> None:
+        if mode not in self.PAY_MODES or not (0 <= amount <= 100000):
+            raise ValueError("INVALID_PAY")
+        data = self.load()
+        data["pay"] = {"mode": mode, "amount": float(amount)}
+        self.save(data)
+
     HARVEST_DESTINATIONS = ("sell", "store", "keep")
 
     def harvest_destination(self) -> str | None:

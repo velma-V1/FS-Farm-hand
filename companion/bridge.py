@@ -50,7 +50,7 @@ ANY_HEADING = 10.0
 # Farmhand drives restarted after ending against something on the way.
 CONTACT_RESTARTS = 2
 CONTACT_SETTLE_S = 10.0     # waited for it to stand before a restart
-DONE_TIMEOUT_S = {"farm_drive": 14700.0, "drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "ad_marker": 15.0, "ad_connect": 15.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "ad_unload": 20.0, "ad_sell": 14700.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
+DONE_TIMEOUT_S = {"pay": 15.0, "charge": 15.0, "farm_drive": 14700.0, "drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "ad_marker": 15.0, "ad_connect": 15.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "ad_unload": 20.0, "ad_sell": 14700.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -271,6 +271,10 @@ class FS25World:
         self.cancel = None
         self._lock = threading.RLock()
         self._reservations: dict[str, tuple[str, tuple[str, ...]]] = {}
+        # Farmhand's pay (mode, amount) reader (Settings.pay; companion/service.py), sent once per
+        # game session; None: the game's default in the mod.
+        self.pay = None
+        self._paid_session = None
 
     # ------------------------------------------------------------ observation
     def _observe(self) -> Observation:
@@ -400,6 +404,14 @@ class FS25World:
                         break
                     time.sleep(0.25)
 
+    def set_pay(self, mode: int, amount: float) -> None:
+        """Farmhand's pay in the game (mod/FarmhandBridge.lua Bridge.pay): mode and amount."""
+        self._run("pay", direction=int(mode), area=float(amount))
+
+    def charge(self, amount: float) -> None:
+        """Per-job pay for a completed request (charged only in that mode, by the game)."""
+        self._run("charge", area=float(amount))
+
     def _reserved(self, tractor_id: str, owner: str, wagon_id: str | None = None) -> tuple[str, str]:
         with self._lock:
             reservation = self._reservations.get(owner)
@@ -465,6 +477,14 @@ class FS25World:
 
     # ------------------------------------------------------------- operations
     def _run(self, op: str, **args) -> str:
+        # Farmhand's pay goes to each game session once, before its first real command (never
+        # before a job that blocks with nothing sent).
+        if op not in ("pay", "charge") and self.pay is not None and self._paid_session != self.link.session:
+            self._paid_session = self.link.session
+            try:
+                self.set_pay(*self.pay())
+            except (StepFailed, StepUnverified) as failure:
+                log.info("pay not set: %s", failure.code)
         status, code = self.link.command(op, args, self.cancel)
         if status == "FAILED":
             raise StepFailed(code)
