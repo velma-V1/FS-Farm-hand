@@ -269,6 +269,43 @@ class DrivePlannerTests(unittest.TestCase):
         self.assertIsNone(session.egress.obstacle)                   # scenery: ignored by its own nodes
         self.assertTrue(any("bounded departure 3.0m back" in l for l in lines))
 
+    def test_scenery_is_left_the_way_that_clears_soonest_whatever_its_node_says(self):
+        # Live 13f374b86b594744-2: a large prop's node 20 m off the pole the 3650's nose touched;
+        # judged by the node, the departure went 6 m ahead through the pole (EGRESS_DIVERGED).
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        drive = lua.execute(SOURCE.read_text())
+        lua.globals().print = lambda *p: None
+        env, args, hitch = lua.execute("""
+            local prop = {x=0, z=-20}                 -- its node: behind the tractor
+            local vehicle = {ownerFarmId='1', rootNode={x=0,z=0,yaw=0},
+                spec_drivable={cruiseControl={speed=40}}, maxTurningRadius=6,
+                getLastSpeed=function() return 0 end,
+                getIsAIActive=function() return false end,
+                getIsEntered=function() return false end,
+                getAITurningRadius=function() return 6 end,
+                getCruiseControlMaxSpeed=function() return 50 end,
+                setCruiseControlMaxSpeed=function() end}
+            vehicle.rootVehicle = vehicle
+            local foot = {units={vehicle}, towLength=0, lMin=-1, lMax=1, aMin=-2, aMax=3, excluded={}}
+            local env = {getWorldTranslation=function(n) return n.x,0,n.z end,
+                localDirectionToWorld=function(n) return math.sin(n.yaw),0,math.cos(n.yaw) end,
+                g_currentMission={getNodeObject=function() return nil end}}
+            local hitch = {routeFootprint=function() return foot end,
+                routePoseClear=function(_,f,x,z)
+                    if f.excluded[prop] then return true end
+                    -- the pole at the nose: clear 1 m back, or 6 m on past it
+                    if z > -1 and z < 6 then return false, "OBSTACLE collisionProp(0,-20)", {prop} end
+                    return true
+                end,
+                rigContacts=function() return "unit1:collisionProp" end, watchDriver=function() end}
+            return env, {tractor=vehicle, farmId='1', x=0, z=-60, isReserved=function() return true end}, hitch
+        """)
+        session, reason = drive.begin(env, args, hitch)
+        self.assertIsNone(reason)
+        self.assertEqual((session.egress.dir, session.egress.plannedM), (-1, 1))
+        # Its side is behind the move: backing away is never "towards" it.
+        self.assertGreater(session.egress.oz, 0)
+
     def test_a_departure_is_still_driven_when_no_route_goes_on_from_it(self):
         # Live c5b7ddb950a846d9-1: NO_ROUTE before the departure moved; the 3650 was left
         # touching the tree and GIANTS' helper could not start it either.
@@ -1660,6 +1697,36 @@ class TowedReverseTests(unittest.TestCase):
         self.lua.execute("local env = ...; env.raycastClosest = nil", self.env)
         self.assertEqual(self.hitch.routePoseClear(self.env, foot, 0, 0, 0, 0)[0], False)   # terrain alone
 
+    def test_a_loose_sign_or_cone_is_driven_through_as_autodrive_does(self):
+        # Live f4fb84d66f9e4191-1, 13f374b86b594744-2: traffic cones ended the 3650's drives.
+        # AutoDrive's own rule (ADSensor:isElementBlockingVehicle): a shape with no object of
+        # its own, a dynamic rigid body with DYNAMIC_OBJECT collision, does not block.
+        self.lua.execute("""
+            local env = ...
+            env.g_currentMission.environmentAreaSystem = {getWaterYAtWorldPosition=function() return nil end}
+            env.g_currentMission.terrainRootNode = "terrain"
+            env.g_currentMission.getNodeObject = function(_, node) if node == 90 then return {} end end
+            env.ClassIds = {SHAPE = 3}
+            env.RigidBodyType = {DYNAMIC = 2, STATIC = 1}
+            env.getHasClassId = function(node, id) return id == 3 end
+            env.getRigidBodyType = function(node) return node == 77 and 1 or 2 end
+            env.CollisionFlag.DYNAMIC_OBJECT = 262144
+            env.CollisionFlag.getHasMaskFlagSet = function(node, flag) return flag == 262144 end
+            env.overlapBox = function(x,y,z,rx,ry,rz,hw,hh,hl,cb,q)
+                q[cb](q, "terrain"); for _, n in ipairs(env.hitsHere) do q[cb](q, n) end
+                return 1 + #env.hitsHere
+            end
+        """, self.env)
+        foot = self.footprint()
+        self.assertTrue(self.hitch.looseSign(self.env, 55))             # a cone
+        self.assertFalse(self.hitch.looseSign(self.env, 77))            # a static post
+        self.assertFalse(self.hitch.looseSign(self.env, 90))            # an object's own node
+        for hits, clear in (([55], True), ([77], False), ([90], False), ([55, 77], False)):
+            self.env.hitsHere = self.lua.table_from(hits)
+            self.assertEqual(self.hitch.routePoseClear(self.env, foot, 0, 0, 0)[0], clear, hits)
+        self.lua.execute("local env = ...; env.getRigidBodyType = nil", self.env)
+        self.assertFalse(self.hitch.looseSign(self.env, 55))            # unreadable: blocking
+
     def test_a_point_the_rig_was_held_fast_at_blocks_the_route_box_that_reaches_it(self):
         self.lua.execute("""
             local env = ...
@@ -1696,3 +1763,151 @@ class Lua51TowedReverseTests(TowedReverseTests):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+GHOST_RIG = """
+local F = {DEFAULT=1, STATIC_OBJECT=2, CAMERA_BLOCKING=4, PLACEMENT_BLOCKING=16, AI_BLOCKING=32, TERRAIN=256,
+           TERRAIN_DELTA=512, TREE=2048, BUILDING=4096, ROAD=8192, VEHICLE=65536, DYNAMIC_OBJECT=262144}
+local pairsOff, groups, floor = {}, {}, {}
+local tractorNode = {x=0, z=0, yaw=0}
+local trailerNode = {x=0, z=-8, yaw=0}
+local trailer = {rootNode=trailerNode, components={{node=201}}}
+local tractor = {rootNode=tractorNode, components={{node=101}, {node=102}},
+    getAttachedImplements=function() return {{object=trailer}} end}
+local env = {CollisionFlag=F,
+    getWorldTranslation=function(n) return n.x, 0, n.z end,
+    localToWorld=function(n, x, y, z) return n.x + x, y, n.z + z end,
+    getTerrainHeightAtWorldPos=function() return 0 end,
+    g_currentMission={terrainRootNode=0, getNodeObject=function(_, n) if n == 9 then return {} end end},
+    getCollisionFilterGroup=function(node) return groups[node] end,
+    setPairCollision=function(a, b, on) pairsOff[a .. ":" .. b] = (not on) or nil end,
+    raycastClosest=function(x, y, z, dx, dy, dz, length, cb, target, mask)
+        if floor.node ~= nil then target[cb](target, floor.node, x, 0, z, 1) return 1 end
+        return 0
+    end}
+return env, tractor, pairsOff, groups, floor, F
+"""
+
+
+class GhostTests(unittest.TestCase):
+    """The user (2026-10-30): around buildings the follower may be ~1 m off its line, and rigs
+    wedged on posts and a structure's legs (live 13f374b86b594744-2, 1682e794a2ee4476-1)."""
+
+    def setUp(self):
+        self.lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        self.lua.globals().print = lambda *p: None
+        self.hitch = self.lua.execute(HITCH.read_text())
+        self.drive = self.lua.execute(SOURCE.read_text())
+        self.env, self.tractor, self.pairs, self.groups, self.floor, self.F = self.lua.execute(GHOST_RIG)
+
+    def off(self):
+        return sorted(k for k, v in self.pairs.items() if v)
+
+    def test_only_obstacles_near_the_rig_are_switched_off_pair_by_pair_and_back_exactly(self):
+        F = self.F
+        self.groups[11] = F.STATIC_OBJECT + F.AI_BLOCKING + F.CAMERA_BLOCKING   # a structure's leg
+        self.groups[12] = F.BUILDING + F.AI_BLOCKING                            # a wall
+        self.groups[13] = F.STATIC_OBJECT + F.CAMERA_BLOCKING                   # a pad GIANTS' AI drives over
+        self.groups[9] = F.STATIC_OBJECT + F.AI_BLOCKING                        # an object's own node
+        nodes = self.lua.table_from([11, 12, 13, 9])
+        ok, added = self.hitch.ghost(self.env, self.tractor, "NEAR_BUILDINGS", nodes)
+        self.assertTrue(ok)
+        self.assertEqual(added, 2)
+        self.assertEqual(self.off(), sorted(f"{c}:{n}" for c in (101, 102, 201) for n in (11, 12)))
+        self.assertEqual(self.hitch.ghost(self.env, self.tractor, "AGAIN", nodes)[1], 0)   # already off
+        self.hitch.unghost(self.env, self.tractor)
+        self.assertEqual(self.off(), [])
+        self.assertIsNone(self.hitch.ghosted[self.tractor])
+
+    def test_the_ground_under_the_rig_is_never_switched_off(self):
+        # Live 6e781c7702a84a26-1: a pad's collision off, the tractor dropped through it (OVERSPEED).
+        self.groups[11] = self.F.BUILDING + self.F.AI_BLOCKING                  # a shed, floor and walls
+        self.floor.node = 11
+        ok, why = self.hitch.ghost(self.env, self.tractor, "NEAR_BUILDINGS", self.lua.table_from([11]))
+        self.assertFalse(ok)
+        self.assertEqual(why, "NOTHING_TO_GHOST")
+        self.assertEqual(self.off(), [])
+
+    def test_a_ghosted_probe_leaves_out_only_the_ghosted_scenery(self):
+        self.groups[11] = self.F.STATIC_OBJECT + self.F.AI_BLOCKING
+        foot = self.lua.eval("function() return {excluded={[5]=true}, masks={}} end")()
+        same = self.lua.eval("function(a, b) return a == b end")
+        self.assertTrue(same(self.hitch.withGhosted(self.env, foot, self.tractor), foot))   # not ghosted
+        self.hitch.ghost(self.env, self.tractor, "NEAR_BUILDINGS", self.lua.table_from([11]))
+        ghosted = self.hitch.withGhosted(self.env, foot, self.tractor)
+        self.assertTrue(ghosted.excluded[11] and ghosted.excluded[5])
+        self.assertIsNone(foot.excluded[11])                                   # the drive's own foot unchanged
+
+    def test_a_drive_ghosts_near_buildings_and_restores_only_once_clear(self):
+        said = []
+        self.lua.globals().print = lambda *p: said.append(" ".join(map(str, p)))
+        hitch, calls, near = self.lua.execute("""
+            local calls, near = {}, {nodes={}, clear=false}
+            local hitch = {GHOST={nearM=2, clearM=0.5}, ghosted={}}
+            function hitch.staticNodesNear() return near.nodes end
+            function hitch.staticNear(env, foot, x, z, yaw, extra) return not near.clear end
+            function hitch.ghost(env, t, why, nodes)
+                hitch.ghosted[t] = {}; calls[#calls+1] = "ghost " .. why .. " " .. #nodes; return true, #nodes end
+            function hitch.unghost(env, t) hitch.ghosted[t] = nil; calls[#calls+1] = "unghost"; return true end
+            return hitch, calls, near
+        """)
+        s = self.lua.eval("function(t) return {tractor=t, foot={}, elapsed=0} end")(self.tractor)
+        def step():
+            s.elapsed = s.elapsed + 600
+            self.drive.ghostWatch(self.env, s, hitch, 0, 0, 0)
+        step()
+        self.assertEqual(list(calls.values()), [])                # open ground: nothing
+        near.nodes = self.lua.table_from([11, 12])
+        step()
+        self.assertEqual(list(calls.values()), ["ghost NEAR_BUILDINGS 2"])
+        near.nodes = self.lua.table_from([])                      # 2 m off, still within 0.5 m
+        step()
+        self.assertEqual(list(calls.values()), ["ghost NEAR_BUILDINGS 2"])
+        near.clear = True
+        step()
+        self.assertEqual(list(calls.values()), ["ghost NEAR_BUILDINGS 2", "unghost"])
+        near.nodes = self.lua.table_from([14])
+        self.drive.ghostWatch(self.env, s, hitch, 0, 0, 0, "HELD_FAST")   # held fast: at once
+        self.assertEqual(list(calls.values())[-1], "ghost HELD_FAST 1")
+        self.assertTrue(any("collision with 2 scenery obstacle(s) off" in l for l in said))
+
+    def test_scenery_giants_ai_drives_through_is_passable_and_static_only_while_ghosted(self):
+        # Live d053a7e5822a4489-1: "collisionNonAIBlocking" beside the Titan trailer refused every
+        # approach. GIANTS' AI obstacles are AI_BLOCKING alone (AISystem.lua 105).
+        F = self.lua.eval("function(F) F.AI_BLOCKING = 32; F.CAMERA_BLOCKING = 4; F.PLACEMENT_BLOCKING = 16 end")
+        F(self.F)
+        groups = self.lua.table()
+        self.env.getCollisionFilterGroup = self.lua.eval("function(g) return function(n) return g[n] end end")(groups)
+        self.env.g_currentMission.getNodeObject = self.lua.eval(
+            "function(_, n) if n == 9 then return {} end end")
+        f = self.F
+        groups[1] = f.STATIC_OBJECT + f.CAMERA_BLOCKING                        # non-AI-blocking scenery
+        groups[2] = f.STATIC_OBJECT + f.CAMERA_BLOCKING + f.AI_BLOCKING        # an ordinary wall
+        groups[3] = f.STATIC_OBJECT + f.VEHICLE                                # collides with vehicles
+        groups[4] = f.CAMERA_BLOCKING                                          # marks only
+        groups[9] = f.STATIC_OBJECT                                            # an object's own node
+        expect = {1: (True, True), 2: (False, True), 3: (False, False), 4: (False, False), 9: (False, False)}
+        for node, (passable, static_only) in expect.items():
+            self.assertEqual(self.hitch.ghostPassable(self.env, node), passable, node)
+            self.assertEqual(self.hitch.ghostPassable(self.env, node, True), static_only, node)
+        self.env.getCollisionFilterGroup = None
+        self.assertFalse(self.hitch.ghostPassable(self.env, 1))              # unreadable: blocking
+
+    def test_passable_scenery_is_still_near_so_the_rig_is_ghosted_to_pass_it(self):
+        # Live d9bd29e200c2451f-1: planned through scenery GIANTS' AI drives through, but the
+        # near check skipped it too, so the tractor was not ghosted and climbed onto it.
+        self.lua.execute("""
+            local env = ...
+            env.CollisionFlag.AI_BLOCKING = 32
+            env.getCollisionFilterGroup = function(n) return env.CollisionFlag.STATIC_OBJECT end
+            env.g_currentMission.getNodeObject = function() return nil end
+            env.g_currentMission.environmentAreaSystem = {getWaterYAtWorldPosition=function() return nil end}
+            env.localDirectionToWorld = function(n) return math.sin(n.yaw), 0, math.cos(n.yaw) end
+            env.overlapBox = function(x,y,z,rx,ry,rz,hw,hh,hl,cb,q)
+                q[cb](q, 0); q[cb](q, 7); return 2          -- the terrain, then the passable node
+            end
+        """, self.env)
+        foot = self.lua.eval("""function(t) return {lMin=-1, lMax=1, aMin=-2, aMax=3, height=3, excluded={},
+            masks={obstacles=2+4096+2048, terrain=256}} end""")(self.tractor)
+        self.assertTrue(self.hitch.routePoseClear(self.env, foot, 0, 0, 0)[0])   # passable for the route
+        self.assertTrue(self.hitch.staticNear(self.env, foot, 0, 0, 0, 2.0))      # yet near: ghost to pass

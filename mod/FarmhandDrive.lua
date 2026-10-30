@@ -1336,7 +1336,7 @@ function Drive.begin(env, args, Hitch)
             return Hitch.routePoseClear(env, foot, px, pz, pyaw, curve)
         end
         local startClear, startReason, hits = Hitch.routePoseClear(env, foot, x, z, yaw)
-        local egress
+        local egress, ghostedAtStart
         local straighten = startClear == false and hits ~= nil and #hits > 0
                            and Drive.planUnbend(env, foot, Hitch, v, x, z, yaw, clear, startReason) or nil
         if straighten ~= nil then
@@ -1378,7 +1378,30 @@ function Drive.begin(env, args, Hitch)
             end
             local dir = ((ox - x) * sin(yaw) + (oz - z) * cos(yaw)) > 0 and -1 or 1
             local length, why = Drive.planEgress({ x, z, yaw }, { ox, oz }, clear, ignoring, dir)
+            if vehicle == nil then
+                -- Scenery's node is no measure of where it touches (live: a prop's origin 20 m
+                -- from the pole the 3650 touched; "6 m ahead" through it, EGRESS_DIVERGED): the
+                -- way that clears soonest, ahead or back, measured; its side behind the move.
+                local best
+                for _, d in ipairs({ -1, 1 }) do
+                    local away = { x - sin(yaw) * d * 10, z - cos(yaw) * d * 10 }
+                    local m = Drive.planEgress({ x, z, yaw }, away, clear, ignoring, d)
+                    if m ~= nil and (best == nil or m < best[1]) then best = { m, d, away } end
+                end
+                if best ~= nil then
+                    length, why, dir = best[1], nil, best[2]
+                    ox, oz = best[3][1], best[3][2]
+                end
+            end
             if length == nil then return nil, why end
+            if vehicle == nil and type(Hitch.ghost) == "function" then
+                -- Against scenery: the departure is not held by it (live 1682e794a2ee4476-1:
+                -- every straight back-off from a structure's leg stopped dead after 0.5 m).
+                if Hitch.ghost(env, v, "START_AGAINST_SCENERY", hits) then
+                    ghostedAtStart = true
+                    say("[Farmhand] drive starts against scenery: the rig's collision with buildings off")
+                end
+            end
             egress = { obstacle = vehicle, ox = ox, oz = oz, initialDistance = distance(x, z, ox, oz),
                        lastDistance = distance(x, z, ox, oz), x = x, z = z, yaw = yaw, dir = dir,
                        ignoredFoot = ignoredFoot, plannedM = length }
@@ -1433,7 +1456,8 @@ function Drive.begin(env, args, Hitch)
                     path = nil, next = 2, foot = foot, egress = egress, radius = radius,
                     sectionAttempt = 1, navHint = navHint,
                     result = nil, movedAt = 0,
-                    lastMovedX = x, lastMovedZ = z, replans = 0,
+                    lastMovedX = x, lastMovedZ = z, replans = 0, ghostedHere = ghostedAtStart,
+                    ghostUses = ghostedAtStart and 1 or nil,
                     initial = { start = planStart, x = x, z = z, yaw = yaw } }
         if straighten ~= nil then
             s.initial = nil
@@ -1456,6 +1480,39 @@ function Drive.begin(env, args, Hitch)
     return session, reason
 end
 
+-- Near buildings the rig stops colliding with the scenery obstacles near it (Hitch.ghost,
+-- pair by pair), back once it is clear of them; checked twice a second, at once when held
+-- fast. Planning keeps its clearances.
+local function ghostWatch(env, s, Hitch, x, z, yaw, why)
+    if type(Hitch.ghost) ~= "function" then return end
+    local ghosted = Hitch.ghosted[s.tractor] ~= nil
+    if why == nil then
+        if s.elapsed < (s.ghostAt or 0) then return end
+        s.ghostAt = s.elapsed + 500
+    end
+    local nodes = Hitch.staticNodesNear(env, s.foot, x, z, yaw, Hitch.GHOST.nearM)
+    if nodes == nil then return end
+    if #nodes == 0 then
+        if ghosted and s.ghostedHere and Hitch.staticNear(env, s.foot, x, z, yaw, Hitch.GHOST.clearM) == false then
+            Hitch.unghost(env, s.tractor)
+            s.ghostedHere = nil
+            say(string.format("[Farmhand] drive clear of buildings at %.1f,%.1f: collision with them restored", x, z))
+        end
+        return
+    end
+    local ok, added = Hitch.ghost(env, s.tractor, why or "NEAR_BUILDINGS", nodes)
+    if ok and (added or 0) > 0 then
+        s.ghostedHere = true
+        s.ghostUses = (s.ghostUses or 0) + 1
+        say(string.format("[Farmhand] drive %s at %.1f,%.1f: the rig's collision with %d scenery obstacle(s) off",
+                          why or "NEAR_BUILDINGS", x, z, added))
+    elseif not ok and not s.ghostRefusedLogged and why ~= nil then
+        s.ghostRefusedLogged = true
+        say(string.format("[Farmhand] drive %s at %.1f,%.1f: collision kept (%s)", why, x, z, tostring(added)))
+    end
+end
+Drive.ghostWatch = ghostWatch
+
 local function guard(env, s, Hitch, x, z, yaw, atTarget)
     if s.isReserved() ~= true or s.tractor.ownerFarmId ~= s.farmId then return "RESERVATION_LOST" end
     local conflict = Hitch.driverConflict(s.tractor)
@@ -1474,7 +1531,12 @@ local function guard(env, s, Hitch, x, z, yaw, atTarget)
         if distance(px, pz, x, z) < 6 then return "PERSON_TOO_CLOSE" end
         playerX, playerZ = px, pz
     end
+    ghostWatch(env, s, Hitch, x, z, yaw)
     local probeFoot = s.egress ~= nil and s.egress.ignoredFoot or s.foot
+    if Hitch.ghosted ~= nil and Hitch.ghosted[s.tractor] ~= nil then
+        -- Ghosted: the scenery it no longer collides with does not hold it; the rest counts.
+        probeFoot = Hitch.withGhosted(env, probeFoot, s.tractor)
+    end
     local here, hereReason = Hitch.routePoseClear(env, probeFoot, x, z, yaw)
     if here ~= true then
         -- The route box is one rigid box at the root's heading; in a bend an
@@ -1614,6 +1676,7 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
             elseif s.elapsed - r.markAt >= 8000 then
                 say(string.format("[Farmhand] drive held fast reversing at %.1f,%.1f after %.1f of %.1fm",
                                   x,z,-along,r.length))
+                ghostWatch(env, s, Hitch, x, z, yaw, "HELD_FAST")
                 r.diverged = true
             end
         end
@@ -1895,6 +1958,7 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
                 say(string.format("[Farmhand] drive held fast at %.1f,%.1f yaw %.2f under throttle; %.1f,%.1f ahead counts as blocked; units %s",
                                   x, z, yaw, held[#held-1][1], held[#held-1][2], ok and tostring(contacts) or "?"))
             end
+            ghostWatch(env, s, Hitch, x, z, yaw, "HELD_FAST")
             s.recovering = true
             Hitch.halt(env,s,dt)
             return "CONTINUE"
@@ -1997,6 +2061,7 @@ function Drive.step(env, s, dt, Hitch)
     end
     if code ~= "CONTINUE" then
         s.result = code
+        Drive.releaseGhost(env, s, Hitch)
         local summary = terrainSummary(s)
         if summary ~= nil then say(summary .. " (" .. tostring(code) .. ")") end
         halt(env, s, dt, Hitch)
@@ -2012,7 +2077,25 @@ function Drive.abort(env, s, Hitch)
         end
         s.result = s.result or "STOPPED"
         halt(env, s, 0, Hitch)
+        Drive.releaseGhost(env, s, Hitch)
     end
+end
+
+-- A drive's end: its rig's collision with buildings back if it stands clear of them; else
+-- the bridge's watcher (Hitch.releaseGhosts) restores it once it is.
+function Drive.releaseGhost(env, s, Hitch)
+    if not s.ghostedHere or type(Hitch.unghost) ~= "function" then return end
+    local ok, x, _, z = pcall(env.getWorldTranslation, s.tractor.rootNode)
+    local fx, _, fz = env.localDirectionToWorld(s.tractor.rootNode, 0, 0, 1)
+    local yaw = (math.atan2 or math.atan)(fx, fz)
+    if ok and Hitch.staticNear(env, s.foot, x, z, yaw, Hitch.GHOST.clearM) == false then
+        Hitch.unghost(env, s.tractor)
+        say(string.format("[Farmhand] drive end clear of buildings: collision with them restored (used %d times)",
+                          s.ghostUses or 0))
+    else
+        say("[Farmhand] drive end beside buildings: collision with them stays off until the rig is clear")
+    end
+    s.ghostedHere = nil
 end
 
 FarmhandDrive = Drive

@@ -600,8 +600,29 @@ end
 aborts.navigate = abortGoto
 
 -- --------------------------------------------------------------- maneuver
+-- A hitch step with buildings within its reach: the tractor's collision with them off first,
+-- as Farmhand's drive does (Hitch.ghost; the bridge's watcher restores it once clear).
+local function ghostNearBuildings(env, tractor, step)
+    local H = Bridge.Hitch
+    if type(H.ghost) ~= "function" then return end
+    pcall(function()
+        local foot = H.routeFootprint(env, tractor)
+        if foot == nil then return end
+        local x, _, z = env.getWorldTranslation(tractor.rootNode)
+        local fx, _, fz = env.localDirectionToWorld(tractor.rootNode, 0, 0, 1)
+        -- Anywhere a hitch step may reach (its work radius).
+        local nodes = H.staticNodesNear(env, foot, x, z, math.atan2(fx, fz), H.LOCAL_LIMITS.workRadiusM)
+        if nodes ~= nil and #nodes > 0 then
+            local ok, added = H.ghost(env, tractor, step, nodes)
+            log("%s near buildings: the rig's collision with %s scenery obstacle(s) off%s", step,
+                ok and tostring(added) or "no", ok and "" or (" (" .. tostring(added) .. ")"))
+        end
+    end)
+end
+
 -- Hitch.onNote prints each phase line (once per phase and at the end).
 function starters.maneuver(env, spec)
+    ghostNearBuildings(env, spec.tractor, "maneuver")
     Bridge.Hitch.onNote = function(line) log("maneuver %s", line) end
     Bridge.Hitch.onDiagnostic = function(line) log("maneuver diagnostics: %s", line) end
     -- Read-only steering samples of the local maneuver (diagnostics, 2 per second).
@@ -635,6 +656,7 @@ end
 
 -- ------------------------------------------------------------------ align
 function starters.align(env, spec)
+    ghostNearBuildings(env, spec.tractor, "align")
     local session, reason = Bridge.Hitch.newAlign(env, {
         tractor = spec.tractor, wagon = spec.wagon, tractorJoint = spec.tractorJoint,
         wagonJoint = spec.wagonJoint, farmId = spec.farmId, isReserved = spec.owned,
@@ -2636,6 +2658,16 @@ function Bridge:update(dt)
             end
             self.active = nil
         end
+    end
+    -- Rigs ghosted past buildings (Hitch.ghost) that no motion drives any more: their
+    -- collision with buildings restored once each stands clear of them.
+    self.ghostTimer = (self.ghostTimer or 0) + dt
+    if self.ghostTimer >= 1000 and next(Bridge.Hitch.ghosted or {}) ~= nil then
+        self.ghostTimer = 0
+        local active = self.active
+        pcall(Bridge.Hitch.releaseGhosts, self.env, function(tractor)
+            return active ~= nil and active.task ~= nil and active.task.spec ~= nil and active.task.spec.tractor == tractor
+        end)
     end
     self.snapshotTimer = self.snapshotTimer + dt
     if self.snapshotTimer >= Bridge.SNAPSHOT_MS and self.pipe ~= nil then

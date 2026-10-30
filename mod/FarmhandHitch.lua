@@ -685,11 +685,32 @@ local function surfaceAt(env, x, z)
     return ground, false
 end
 
+local function bitAnd(a, b, env)
+    local b32 = env.bit32
+    if b32 ~= nil and type(b32.band) == "function" then return b32.band(a, b) end
+    local out, bit = 0, 1
+    while a > 0 and b > 0 do
+        if a % 2 == 1 and b % 2 == 1 then out = out + bit end
+        a, b, bit = math.floor(a / 2), math.floor(b / 2), bit * 2
+    end
+    return out
+end
+
+local function staticMask(env)
+    local total = 0
+    for _, name in ipairs(Hitch.GHOST.staticBits) do
+        local flag = env.CollisionFlag[name]
+        assert(finite(flag) and flag > 0)
+        total = total + flag
+    end
+    return total
+end
+
 -- GIANTS overlapBox over an oriented box (centre x z, yaw, half width, half length), h0..h1
 -- metres above the terrain at its centre (or above `base`), with `mask`. Returns the query: hits (node ids
 -- that are neither `rig` nor the terrain), own and terrain counts; nil when it cannot be
 -- trusted (the shape count GIANTS returns must equal the callbacks performed, GDN overlapBox).
-local function boxQuery(env, rig, x, z, yaw, halfWidth, halfLength, h0, h1, mask, base)
+local function boxQuery(env, rig, x, z, yaw, halfWidth, halfLength, h0, h1, mask, base, everything)
     local mission = env.g_currentMission
     local ground = base or terrainAt(env, x, z)
     local q = { seen = 0, own = 0, terrain = 0, hits = {} }
@@ -703,6 +724,8 @@ local function boxQuery(env, rig, x, z, yaw, halfWidth, halfLength, h0, h1, mask
             if (object ~= nil and (rig[object] or (object.rootVehicle ~= nil and rig[object.rootVehicle])))
                     or rig[nodeId] then           -- a scenery node a bounded departure leaves (Drive.begin)
                 q.own = q.own + 1
+            elseif not everything and (Hitch.looseSign(env, nodeId) or Hitch.ghostPassable(env, nodeId)) then
+                q.own = q.own + 1                 -- driven through, as AutoDrive / GIANTS' AI do
             else
                 q.hits[#q.hits + 1] = nodeId
             end
@@ -753,6 +776,47 @@ end
 -- motion; this observes the clearance the rig actually kept, mounted implement included.
 Hitch.ENVELOPE = { checkMs = 100, contactM = 0.15, nearM = 0.5, clearanceM = 0.3 }
 
+-- A loose sign or cone: a shape with no vehicle or object of its own, a dynamic rigid body
+-- with DYNAMIC_OBJECT collision. AutoDrive keeps driving through exactly these ("probably a
+-- traffic sign", ADSensor:isElementBlockingVehicle, VirtualSensors.lua 391-410); so does
+-- Farmhand (live f4fb84d66f9e4191-1, 13f374b86b594744-2: traffic cones ended its drives).
+-- Unreadable: blocking.
+function Hitch.looseSign(env, nodeId)
+    local ok, loose = pcall(function()
+        if env.g_currentMission:getNodeObject(nodeId) ~= nil then return false end
+        return env.getHasClassId(nodeId, env.ClassIds.SHAPE)
+            and env.getRigidBodyType(nodeId) == env.RigidBodyType.DYNAMIC
+            and env.CollisionFlag.getHasMaskFlagSet(nodeId, env.CollisionFlag.DYNAMIC_OBJECT)
+    end)
+    return ok and loose == true
+end
+
+-- Scenery GIANTS' own AI drives through (AISystem.lua 105: its obstacles are AI_BLOCKING
+-- alone) whose only real collision is static (STATIC_OBJECT, BUILDING, TREE): what a ghosted
+-- rig (Hitch.ghost) no longer touches. Live d053a7e5822a4489-1: "collisionNonAIBlocking" beside
+-- the Titan trailer refused every approach and the bounded steps. Bits that only mark (camera,
+-- placement, tipping, rain, navigation, AI_DRIVABLE) are not collision. Unreadable: blocking.
+local MARKING_BITS = { "CAMERA_BLOCKING", "GROUND_TIP_BLOCKING", "PLACEMENT_BLOCKING", "PRECIPITATION_BLOCKING",
+                       "AI_DRIVABLE", "TRAFFIC_VEHICLE_BLOCKING", "ANIMAL_NAV_MESH_BLOCKING", "ANIMAL_POSITIONING" }
+-- staticOnly: its only real collision is static, AI_BLOCKING or not (what a ghosted rig no
+-- longer touches at all).
+function Hitch.ghostPassable(env, nodeId, staticOnly)
+    local ok, passable = pcall(function()
+        if env.g_currentMission:getNodeObject(nodeId) ~= nil then return false end
+        local F = env.CollisionFlag
+        local group = env.getCollisionFilterGroup(nodeId)
+        if not finite(group) or group <= 0 then return false end
+        if not staticOnly and bitAnd(group, F.AI_BLOCKING, env) ~= 0 then return false end
+        local rest = group - (staticOnly and bitAnd(group, F.AI_BLOCKING, env) or 0)
+        for _, name in ipairs(MARKING_BITS) do
+            if finite(F[name]) and F[name] > 0 then rest = rest - bitAnd(rest, F[name], env) end
+        end
+        local static = staticMask(env)
+        return rest > 0 and bitAnd(rest, static, env) == rest
+    end)
+    return ok and passable == true
+end
+
 local function unitEnvelope(env, excluded, v, margin, mask, clearance)
     local E, size = Hitch.ENVELOPE, v.size
     local w, l, h = size.width, size.length, size.height
@@ -769,12 +833,16 @@ local function unitEnvelope(env, excluded, v, margin, mask, clearance)
     local x, y, z = env.localToWorld(v.rootNode, wo, ho + clearance + half, lo)
     assert(finite(x) and finite(y) and finite(z))
     local mission = env.g_currentMission
+    -- Ghosted (Hitch.ghost): the scenery it no longer collides with is no contact.
+    local ghosted = Hitch.ghosted ~= nil and Hitch.ghosted[v.rootVehicle or v] or nil
     local q = { seen = 0, hits = {} }
     function q.onEnvelopeOverlap(_, nodeId)
         q.seen = q.seen + 1
         if nodeId ~= mission.terrainRootNode then
             local object = mission:getNodeObject(nodeId)
-            if not (object ~= nil and (excluded[object] or (object.rootVehicle ~= nil and excluded[object.rootVehicle]))) then
+            if not (object ~= nil and (excluded[object] or (object.rootVehicle ~= nil and excluded[object.rootVehicle])))
+                    and not Hitch.looseSign(env, nodeId)
+                    and not (ghosted ~= nil and ghosted.pairs[nodeId]) then
                 q.hits[#q.hits + 1] = nodeId
             end
         end
@@ -822,6 +890,149 @@ end
 -- of its units within contactM, the rig itself and what its tension belts hold excluded, as
 -- "unitN:hits floor^clearance groundOnly|standing", or "-" (live b8e4fcf886464f0a-1: the
 -- loaded GMC crept 3 min at full lock with nothing in AutoDrive's sensors).
+-- ------------------------------------------------- ghosting past buildings
+-- The user (2026-10-30): around buildings the follower may be up to ~1 m off its planned
+-- line where everything is tight; rigs wedged on posts and structure legs (live
+-- 13f374b86b594744-2, 1682e794a2ee4476-1). While a Farmhand-driven rig is near buildings, or
+-- held fast, its units stop colliding with the scenery obstacles near it, pair by pair:
+-- GIANTS' setPairCollision(componentNode, node, false), as AttacherJoints (1866, 2052) and
+-- MountableObject (159, 188) switch a vehicle's parts off one other node. Only obstacles: a
+-- static node GIANTS' AI avoids (AI_BLOCKING). Never the ground the rig drives on: a node a ray
+-- down from a unit meets (a shed's or a dock's floor), nor scenery GIANTS' AI drives over (live
+-- 6e781c7702a84a26-1: a pad's collision off, the tractor dropped through it, OVERSPEED). Terrain,
+-- roads, vehicles, people, loads and triggers are untouched. Planning still keeps its
+-- clearances. Restored once the rig is clear of scenery.
+Hitch.GHOST = { staticBits = { "STATIC_OBJECT", "BUILDING", "TREE" }, nearM = 2.0, clearM = 0.5 }
+Hitch.ghosted = {}            -- tractor -> { components = {node, ...}, pairs = {[node] = true}, why }
+
+-- The static nodes within `extra` metres of the rig's route box at x, z, yaw (every one, the
+-- passable ones too), or nil when unreadable.
+function Hitch.staticNodesNear(env, foot, x, z, yaw, extra)
+    if foot == nil or not (finite(x) and finite(z) and finite(yaw)) then return nil end
+    local ok, hits = pcall(function()
+        local side, ahead = (foot.lMin + foot.lMax) / 2, (foot.aMin + foot.aMax) / 2
+        local cx = x + math.sin(yaw) * ahead + math.cos(yaw) * side
+        local cz = z + math.cos(yaw) * ahead - math.sin(yaw) * side
+        local halfW = (foot.lMax - foot.lMin) / 2 + extra
+        local halfL = (foot.aMax - foot.aMin) / 2 + extra
+        local q = boxQuery(env, foot.excluded, cx, cz, yaw, halfW, halfL, 0.3, foot.height + 0.5, staticMask(env),
+                           (surfaceAt(env, cx, cz)), true)
+        return q and q.hits or nil
+    end)
+    if not ok then return nil end
+    return hits
+end
+
+-- Static scenery within `extra` metres of the rig's route box: true, false, or nil.
+function Hitch.staticNear(env, foot, x, z, yaw, extra)
+    local hits = Hitch.staticNodesNear(env, foot, x, z, yaw, extra)
+    if hits == nil then return nil end
+    return #hits > 0
+end
+
+-- The nodes under the rig's units (a ray down at each root and size corner): its floor.
+local function floorNodes(env, units)
+    local under, mask = {}, staticMask(env)
+    for _, unit in ipairs(units) do
+        local points = { { 0, 0 } }
+        local size = unit.size
+        if size ~= nil and finite(size.width) and finite(size.length) then
+            for _, sx in ipairs({ -0.4, 0.4 }) do
+                for _, sz in ipairs({ -0.4, 0.4 }) do
+                    points[#points + 1] = { size.width * sx + (size.widthOffset or 0), size.length * sz + (size.lengthOffset or 0) }
+                end
+            end
+        end
+        for _, pt in ipairs(points) do
+            local x, y, z = env.localToWorld(unit.rootNode, pt[1], 0, pt[2])
+            local hit = {}
+            function hit.onFarmhandFloor(_, node) hit.node = node end
+            env.raycastClosest(x, y + 1, z, 0, -1, 0, 3, "onFarmhandFloor", hit, mask)
+            if hit.node ~= nil then under[hit.node] = true end
+        end
+    end
+    return under
+end
+
+-- Whether `node` is an obstacle to ghost: a static node with no object of its own that GIANTS'
+-- AI avoids (AI_BLOCKING in its collision group).
+local function ghostable(env, node)
+    if env.g_currentMission:getNodeObject(node) ~= nil then return false end
+    local group = env.getCollisionFilterGroup(node)
+    return finite(group) and bitAnd(group, env.CollisionFlag.AI_BLOCKING, env) ~= 0
+end
+
+-- Ghost the rig against `nodes` (scenery near it): true once at least one pair is off, false
+-- and why otherwise (none ghostable, all under it, an unreadable call).
+function Hitch.ghost(env, tractor, why, nodes)
+    local ok, result, reason = pcall(function()
+        local g = Hitch.ghosted[tractor]
+        if g == nil then
+            local components = {}
+            for _, unit in ipairs((rigUnits(tractor))) do
+                for _, component in ipairs(unit.components or {}) do components[#components + 1] = component.node end
+            end
+            assert(#components > 0)
+            g = { components = components, pairs = {}, why = why, units = (rigUnits(tractor)) }
+        end
+        local under = floorNodes(env, g.units)
+        local added = 0
+        for _, node in ipairs(nodes or {}) do
+            if not g.pairs[node] and not under[node] and ghostable(env, node) then
+                for _, component in ipairs(g.components) do env.setPairCollision(component, node, false) end
+                g.pairs[node] = true
+                added = added + 1
+            end
+        end
+        if next(g.pairs) == nil then return false, "NOTHING_TO_GHOST" end
+        Hitch.ghosted[tractor] = g
+        return true, added
+    end)
+    if not ok then return false, "GHOST_UNREADABLE" end
+    return result, reason
+end
+
+-- Restore every pair Hitch.ghost switched off for the rig.
+function Hitch.unghost(env, tractor)
+    local g = Hitch.ghosted[tractor]
+    if g == nil then return true end
+    for node in pairs(g.pairs) do
+        for _, component in ipairs(g.components) do pcall(env.setPairCollision, component, node, true) end
+    end
+    Hitch.ghosted[tractor] = nil
+    return true
+end
+
+-- A copy of `foot` that no longer counts the scenery nodes the rig is ghosted against (they
+-- do not hold it); everything else, vehicles first, still counts.
+function Hitch.withGhosted(env, foot, tractor)
+    local g = Hitch.ghosted[tractor]
+    if g == nil then return foot end
+    local copy, excluded = {}, {}
+    for k, v in pairs(foot) do copy[k] = v end
+    for k, v in pairs(foot.excluded or {}) do excluded[k] = v end
+    for node in pairs(g.pairs) do excluded[node] = true end
+    copy.excluded = excluded
+    return copy
+end
+
+-- Ghosted rigs no drive holds any more, restored once each stands clear of scenery
+-- (Hitch.GHOST.clearM). `busy(tractor)`: true while a Farmhand motion still drives it.
+function Hitch.releaseGhosts(env, busy)
+    for tractor in pairs(Hitch.ghosted) do
+        if not busy(tractor) then
+            local ok, foot = pcall(Hitch.routeFootprint, env, tractor)
+            local x, _, z = world(env, tractor.rootNode)
+            local fx, _, fz = env.localDirectionToWorld(tractor.rootNode, 0, 0, 1)
+            local yaw = (math.atan2 or math.atan)(fx, fz)
+            if ok and foot ~= nil and Hitch.staticNear(env, foot, x, z, yaw, Hitch.GHOST.clearM) == false then
+                Hitch.unghost(env, tractor)
+                print(string.format("[Farmhand] collision with buildings restored for the rig at %.1f,%.1f (clear of them)", x, z))
+            end
+        end
+    end
+end
+
 function Hitch.rigContacts(env, vehicle)
     local E = Hitch.ENVELOPE
     local units, excluded = rigUnits(vehicle)
