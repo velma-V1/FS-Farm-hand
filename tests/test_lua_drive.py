@@ -171,6 +171,45 @@ class DrivePlannerTests(unittest.TestCase):
         self.assertIsNone(session.path)
         self.assertGreater(len(session.corridor), 2)
 
+    def test_a_drive_asked_for_a_heading_plans_and_arrives_at_it(self):
+        # Live a0dca0862a424319-1: travel near the Titan trailer arrived 43 degrees off the
+        # approach; the bounded steps refused and GIANTS could not stage it.
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        drive = lua.execute(SOURCE.read_text())
+        lua.globals().print = lambda *p: None
+        def begin(yaw, area=0):
+            env, args, hitch = lua.execute("""
+                local yaw, area = ...
+                local node = {x=0, z=0, yaw=0}
+                local vehicle = {ownerFarmId='1', rootNode=node,
+                    spec_drivable={cruiseControl={speed=40}}, maxTurningRadius=6,
+                    getLastSpeed=function() return 0 end,
+                    getIsAIActive=function() return false end,
+                    getIsEntered=function() return false end,
+                    getAITurningRadius=function() return 6 end,
+                    getCruiseControlMaxSpeed=function() return 50 end,
+                    setCruiseControlMaxSpeed=function() end}
+                vehicle.rootVehicle = vehicle
+                local env = {getWorldTranslation=function(n) return n.x,0,n.z end,
+                    localDirectionToWorld=function(n) return math.sin(n.yaw),0,math.cos(n.yaw) end}
+                local hitch = {routeFootprint=function() return {units={vehicle},towLength=0} end,
+                    routePoseClear=function() return true end, watchDriver=function() end}
+                return env, {tractor=vehicle, farmId='1', x=30, z=40, area=area, yaw=yaw,
+                             isReserved=function() return true end}, hitch
+            """, yaw, area)
+            return drive.begin(env, args, hitch)
+        session, reason = begin(math.pi / 2)
+        self.assertIsNone(reason)
+        self.assertAlmostEqual(session.goalYaw, math.pi / 2)
+        end = session.path[len(session.path)]
+        self.assertLess(abs((end[3] - math.pi / 2 + math.pi) % (2 * math.pi) - math.pi), math.pi / 12)
+        self.assertLess(math.dist((end[1], end[2]), (30, 40)), 3)
+        self.assertIsNone(begin(10.0)[0].goalYaw)                 # beyond +-2 pi: any heading
+        # A heading the rig stands at the point without is not arrival; at it, it is.
+        session = begin(math.pi / 2)[0]
+        self.assertFalse(drive.arrived(session, 30, 40, 0.0))
+        self.assertTrue(drive.arrived(session, 30, 40, math.pi / 2 + 0.2))
+
     def test_departure_from_a_rear_obstacle_requires_a_clear_forward_corridor(self):
         lua = lua54.LuaRuntime(unpack_returned_tuples=True)
         drive = lua.execute(SOURCE.read_text())

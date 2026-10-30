@@ -48,6 +48,28 @@ class TailgateTests(unittest.TestCase):
         self.assertEqual(world.items[deck.id].attached_to, truck.id)
         self.assertIsNone(world.items[generic.id].attached_to)
 
+    def test_of_two_trailers_one_name_fits_the_named_truck_takes_the_nearer(self):
+        # Live 4c41d6e784cc445e-1: four trailers of one name; the first by ID was chosen while
+        # the 3650 stood on another's joint (AGAINST_IMPLEMENT). IDs vary: never the ID order.
+        for far_id, near_id in (("d-001", "d-999"), ("d-999", "d-001")):
+            with self.subTest(near=near_id):
+                truck, deck = rig()
+                far = replace(deck, id=far_id, position=(300.0, 200.0),
+                              input_joints=(InputJoint(2, deck.input_joints[0].joint_type, (300.0, 206.0), True,
+                                                       frozenset()),))
+                near = replace(deck, id=near_id)
+                # Its body nearer the truck than the one hitched, its joint farther (live
+                # c06633894f8c4c51-1: by the roots another trailer than the one stood on).
+                body = replace(deck, id="d-500", position=(30.0, 15.0),
+                               input_joints=(InputJoint(2, deck.input_joints[0].joint_type, (90.0, 60.0), True,
+                                                        frozenset()),))
+                world = MockWorld([far, body, truck, near], PLAYERS, ())
+                result = Executor(world).execute(hitch("deckover"))
+                self.assertEqual((result.status, result.reason), ("COMPLETE", "HITCH_OBSERVED"), result)
+                self.assertEqual(world.items[near_id].attached_to, truck.id)
+                self.assertIsNone(world.items[far_id].attached_to)
+                self.assertIsNone(world.items["d-500"].attached_to)
+
     def test_the_tailgate_is_lowered_and_verified_before_the_gooseneck_comes_under(self):
         calls = []
 

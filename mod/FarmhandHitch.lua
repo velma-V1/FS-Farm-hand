@@ -1194,12 +1194,20 @@ end
 -- Every other vehicle within the work radius plus watchExtraM of the wagon's joint
 -- (GIANTS' vehicle list as FarmhandObserve reads it, FH Collectors.lua:323-324;
 -- a vehicle attached to the pair has it as rootVehicle), and the player (as
--- FarmhandObserve playerPosition). Errors if any position is unreadable.
+-- FarmhandObserve playerPosition). Errors if any position is unreadable. A player seated
+-- in a vehicle (its getIsEntered, AutoDriveUtilFuncs.lua:777, or GIANTS'
+-- Player:getIsInVehicle) is no person on foot: nil (live
+-- 71e0ec3bab26413c-1: seated in the 3650 itself, every maneuver was LOCAL_PATH_PERSON;
+-- the player is an observer).
 local function surroundings(env, s)
     local mission = env.g_currentMission
     local vehicles = (mission.vehicleSystem and mission.vehicleSystem.vehicles) or mission.vehicles
     assert(type(vehicles) == "table")
     local others, reach = {}, Hitch.LOCAL_LIMITS.workRadiusM + Hitch.LOCAL.watchExtraM
+    local seated = false
+    for _, v in pairs(vehicles) do
+        if type(v.getIsEntered) == "function" and v:getIsEntered() == true then seated = true end
+    end
     for _, v in pairs(vehicles) do
         local root = v.rootVehicle or v
         if v ~= s.tractor and v ~= s.wagon and root ~= s.tractor and root ~= s.wagon then
@@ -1211,6 +1219,13 @@ local function surroundings(env, s)
         end
     end
     local player = env.g_localPlayer
+    -- GIANTS' own Player:getIsInVehicle (Player.lua 479; PlayerStateDriving / Passenger 74-87).
+    local inVehicle = type(player.getIsInVehicle) == "function" and player:getIsInVehicle()
+    if inVehicle == true then seated = true end
+    -- Diagnostics (the bridge logs them): what said the player was seated or not.
+    s.seatedRead = string.format("player getIsInVehicle %s (%s), a vehicle entered %s",
+                                 tostring(inVehicle), type(player.getIsInVehicle), tostring(seated))
+    if seated then return others, nil end
     local px, _, pz
     if type(player.getPosition) == "function" then px, _, pz = player:getPosition()
     else px, _, pz = world(env, player.rootNode) end
@@ -1295,6 +1310,10 @@ function Hitch.newManeuver(env, args)
     if not ok then return nil, "UNKNOWN_OBSERVATION" end
     -- Refused geometry: the half-built session only carries the numbers for the log.
     if refused ~= nil then
+        if reason == "LOCAL_PATH_PERSON" and Hitch.onDiagnostic ~= nil then
+            Hitch.onDiagnostic(string.format("%s; player at (%.1f, %.1f) in the wagon frame", tostring(refused.seatedRead),
+                                             refused.player and refused.player.x or 0, refused.player and refused.player.y or 0))
+        end
         Hitch.note(refused, "REFUSED " .. tostring(reason) .. (refused.staticHits and (" " .. refused.staticHits) or ""),
                    0, 0)
     end

@@ -111,7 +111,7 @@ class FieldWorkTests(unittest.TestCase):
             refusal = "COULD_NOT_PREPARE"
             driven = None
 
-            def farm_drive(self, vehicle_id, target, owner, area=0.0):
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
                 self.driven = target
                 for unit, behind in (("t-1", 0.0), ("i-1", 4.0)):
                     self.items[unit] = replace(self.items[unit], position=(target[0], target[1] - behind))

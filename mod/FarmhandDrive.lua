@@ -564,7 +564,8 @@ Drive.AHEAD_BUDGET_S = 0.004    -- per frame for the next section, searched whil
 Drive.MAX_APPROACH_M = 100      -- = companion/standalone.py MAX_APPROACH_M
 
 -- Where a section attempt aims on the corridor: its index, point, the corridor
--- points it is guided by and the heading it must arrive with (none at the end).
+-- points it is guided by and the heading it must arrive with (at the end, the
+-- drive's own goal heading or none: corridor.goalYaw).
 local function sectionGoal(corridor, reached, attempt)
     local gridStep = #corridor > 2 and distance(corridor[2][1],corridor[2][2],
                                                 corridor[3][1],corridor[3][2]) or 10
@@ -576,7 +577,7 @@ local function sectionGoal(corridor, reached, attempt)
     local waypoint = corridor[i]
     local guide = {}
     for n = reached,i do guide[#guide+1] = corridor[n] end
-    local goalYaw
+    local goalYaw = corridor.goalYaw
     if i < #corridor then
         goalYaw = (math.atan2 or math.atan)(waypoint[1]-corridor[i-1][1],
                                             waypoint[2]-corridor[i-1][2])
@@ -1077,6 +1078,7 @@ end
 -- the drive's target.
 local function corridorFrom(s, start, clear, avoided)
     local route = guidedRoute(start, destination(s), clear, s.radius, avoided, s.navHint)
+    if route ~= nil then route.goalYaw = s.goalYaw end
     if route ~= nil and s.goals ~= nil then
         local last = route[#route]
         if distance(last[1], last[2], s.targetX, s.targetZ) > 0.01 then
@@ -1236,7 +1238,7 @@ local function initialPlan(env, s, Hitch)
     local start, target = s.initial.start, { s.targetX, s.targetZ }
     local path, why, corridor, reached, sectionAttempt, retreat, backOut
     if distance(start[1],start[2],target[1],target[2]) <= 200 then
-        path, why = Drive.plan(start,target,s.radius,clear,nil,nil,true)
+        path, why = Drive.plan(start,target,s.radius,clear,nil,s.goalYaw,true)
     end
     if path == nil and s.egress == nil then
         retreat = Drive.planRetreat(start,s.radius,clear)
@@ -1426,6 +1428,8 @@ function Drive.begin(env, args, Hitch)
                     cruiseBefore = savedCruise, travelLimit = travelLimit,
                     targetX = targetX, targetZ = targetZ, goals = goals,
                     placeX = args.x, placeZ = args.z,
+                    -- yaw: the heading to arrive at (a staging pose); beyond +-2 pi none.
+                    goalYaw = goals == nil and finite(args.yaw) and abs(args.yaw) <= 2 * pi and args.yaw or nil,
                     path = nil, next = 2, foot = foot, egress = egress, radius = radius,
                     sectionAttempt = 1, navHint = navHint,
                     result = nil, movedAt = 0,
@@ -1542,10 +1546,16 @@ local function halt(env, s, dt, Hitch)
     end
 end
 
+-- At the target: within 3 m, and at its heading (within 20 degrees) when one was asked.
+function Drive.arrived(s, x, z, yaw)
+    return distance(x, z, s.targetX, s.targetZ) < 3
+        and (s.goalYaw == nil or abs((yaw - s.goalYaw + pi) % (2 * pi) - pi) < pi / 9)
+end
+
 -- One frame of Farmhand's own route follower, under the existing measured-speed
 -- governor, takeover watch, brake and vehicle-control restoration. Any end latches.
 local function frame(env, s, dt, Hitch, x, z, yaw)
-    local atTarget = distance(x, z, s.targetX, s.targetZ) < 3
+    local atTarget = Drive.arrived(s, x, z, yaw)
     local denied = guard(env, s, Hitch, x, z, yaw, atTarget)
     if denied == "OBSTACLE_AHEAD" then s.recovering = true
     elseif denied ~= nil then return denied end
@@ -1622,7 +1632,7 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
             local path
             if distance(x,z,s.targetX,s.targetZ) <= 200 then
                 path = Drive.plan(start,{s.targetX,s.targetZ},s.radius,
-                                  clear,nil,nil,true)
+                                  clear,nil,s.goalYaw,true)
             end
             if path == nil then
                 s.corridor = corridorFrom(s,start,clear,s.avoided)
@@ -1834,7 +1844,7 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
             local path
             if distance(x,z,s.targetX,s.targetZ) <= 200 then
                 path = Drive.plan(start,{s.targetX,s.targetZ},s.radius,
-                                  clear,nil,nil,true)
+                                  clear,nil,s.goalYaw,true)
             end
             if path == nil then
                 s.corridor = corridorFrom(s,start,clear)

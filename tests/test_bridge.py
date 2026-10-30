@@ -142,6 +142,8 @@ class FakeGame:
         op, cid, session = command["op"], int(command["id"]), command["session"]
         self.commands.append(command)
         fault = self.faults.get(op)
+        if isinstance(fault, list):               # one fault per call, then none
+            fault = fault.pop(0) if fault else None
         if fault == "unread":                     # never consumed: the file stays
             files.files["command.xml"] = "x"
             return
@@ -197,6 +199,8 @@ class FakeGame:
                 x += 50
             yaw = math.atan2(x - tractor["x"], z - tractor["z"]) if (x, z) != (tractor["x"], tractor["z"]) \
                 else tractor["heading"]
+            if abs(float(c["yaw"])) <= 2 * math.pi:      # arriving at the asked heading
+                yaw = float(c["yaw"])
             place(tractor, x, z, yaw)
             tractor["heading"] = yaw
             # Farmhand steers the vehicle root; GIANTS' AI root (live: the node its agent
@@ -406,6 +410,16 @@ class ProductionSequenceTests(unittest.TestCase):
         self.assertEqual(game.commands[0]["marker"], "4")           # the marker near the wagon
         self.assertEqual(result.states[2], "TRAVEL_NEAR")
 
+    def test_a_drive_ended_against_something_on_the_way_restarts_from_there(self):
+        # Live f4fb84d66f9e4191-1: the 3650 touched a traffic cone on the road, ENVELOPE_CONTACT.
+        game, world, result = self.run_ac001(tractor_at=(600.0, 600.0), autodrive=False,
+                                             faults={"farm_drive": ["FAILED:ENVELOPE_CONTACT"] * 2})
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
+        self.assertEqual(self.ops(game)[:3], ["farm_drive"] * 3)
+        game, world, result = self.run_ac001(tractor_at=(600.0, 600.0), autodrive=False,
+                                             faults={"farm_drive": ["FAILED:ENVELOPE_CONTACT"] * 3})
+        self.assertEqual(self.ops(game)[:4], ["farm_drive"] * 3 + ["navigate"])   # then GIANTS GOTO
+
     def test_without_autodrive_giants_goto_travels_and_delivers_here(self):
         # Farmhand's own drive travels to the wagon (live f27757a15ce94d2a-2: GIANTS GOTO never
         # moved the 3650 there) and delivers the pair; GIANTS GOTO travels only when it finds no route.
@@ -417,6 +431,10 @@ class ProductionSequenceTests(unittest.TestCase):
                 game, world, result = self.run_ac001(tractor_at=tractor_at, autodrive=False)
                 self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
                 self.assertEqual(self.ops(game), ops)
+                if ops[0] == "farm_drive":
+                    # onto an approach at its heading (live a0dca0862a424319-1); delivery: any heading
+                    self.assertLessEqual(abs(float(game.commands[0]["yaw"])), math.pi)
+                    self.assertGreater(abs(float(game.commands[-2]["yaw"])), 2 * math.pi)
                 deliver = game.commands[-2]
                 player = (game.player["x"], game.player["z"])
                 goal = (float(deliver["x"]), float(deliver["z"]))
@@ -995,11 +1013,16 @@ class ServiceTests(unittest.TestCase):
             ((6.0, 3.0, 0.0), {}, "COMPLETE_HITCH", local),                # beside the axis
             ((5.0, 1.5, 15.0), {}, "COMPLETE_HITCH", reverse),             # inside the envelope
             ((8.5, -1.9, -28.0), {}, "COMPLETE_HITCH", reverse),           # edge of the envelope
-            ((20.0, -18.0, 90.0), {}, "FAILED_TRAVEL_ENDED_TOO_FAR", ["stage"] * 7 + ["stop"]),  # beyond 25 m: one drive, then no aim moves it
+            # Beyond 25 m, no aim GIANTS takes moving it (live a0dca0862a424319-1): Farmhand's
+            # own drive onto the next aim at its heading, then the bounded steps.
+            ((20.0, -18.0, 90.0), {}, "COMPLETE_HITCH", ["stage", "stage", "farm_drive", "maneuver", "align", "attach", "stop"]),
+            # Beyond 25 m: one drive, then no aim moves it, GIANTS' nor Farmhand's own (no route).
+            ((20.0, -18.0, 90.0), {"farm_drive": "FAILED:NO_ROUTE"}, "FAILED_TRAVEL_ENDED_TOO_FAR",
+             ["stage"] + ["stage", "farm_drive"] * 6 + ["stop"]),
             # The game refuses the geometry before moving, or the maneuver's end is not
             # in the envelope when observed: never reversed.
-            ((5.52, -17.97, 162.9), {"maneuver": "FAILED:LOCAL_PATH_HITS_WAGON"},
-             "FAILED_LOCAL_PATH_HITS_WAGON", ["stage", "maneuver"] + ["stage"] * 6 + ["stop"]),
+            ((5.52, -17.97, 162.9), {"maneuver": "FAILED:LOCAL_PATH_HITS_WAGON", "farm_drive": "FAILED:NO_ROUTE"},
+             "FAILED_LOCAL_PATH_HITS_WAGON", ["stage", "maneuver"] + ["stage", "farm_drive"] * 6 + ["stop"]),
             ((3.44, -12.40, 85.9), {"maneuver_end": (6.0, 3.0, 0.0)},
              "FAILED_ALIGN_LATERAL_OUT_OF_RANGE", ["stage", "maneuver", "stop"]),
             ((3.44, -12.40, 85.9), {"maneuver": "FAILED:DIVERGED"}, "FAILED_DIVERGED",
@@ -1020,6 +1043,16 @@ class ServiceTests(unittest.TestCase):
                     self.assertTrue(any("LOCAL_MANEUVER end:" in line and "-> ALIGN_REVERSE" in line
                                         for line in logs.output))
                 self.assertEqual(game.link_world._reservations, {})              # stopped, then released
+
+    def test_after_giants_cannot_start_the_other_aims_are_tried_by_farmhands_own_drive(self):
+        # Live f530ca8d474e459d-1: GIANTS blocked at its start, Farmhand's drive found no route
+        # to the first aim, and the other aims were never tried: UNPARK_BLOCKED.
+        game, notices = self.start(autodrive=False, tractor_at=(0.0, 40.0),
+                                   faults={"stage": "FAILED:STAGE_BLOCKED_AT_START",
+                                           "farm_drive": ["FAILED:NO_ROUTE"]})
+        game.say(1, "hitch the forage wagon")
+        self.wait_for(lambda: notices[-1:] == ["COMPLETE_HITCH"])
+        self.assertEqual(self.ops(game), ["stage", "farm_drive", "farm_drive", "maneuver", "align", "attach", "stop"])
 
     def test_a_tractor_starting_inside_the_work_radius_never_uses_goto(self):
         game, notices = self.start(autodrive=False, tractor_at=(0.0, 20.0))

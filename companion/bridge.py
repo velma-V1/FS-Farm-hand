@@ -45,6 +45,11 @@ HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 # Bounds on waiting for an operation's terminal result: the game's own bound plus
 # a margin (mod/FarmhandBridge.lua, mod/FarmhandHitch.lua).
 ALIGN_MAX_DISTANCE_M = 10.0      # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
+# farm_drive's yaw for "any heading" (= mod/FarmhandDrive.lua: beyond +-2 pi is none).
+ANY_HEADING = 10.0
+# Farmhand drives restarted after ending against something on the way.
+CONTACT_RESTARTS = 2
+CONTACT_SETTLE_S = 10.0     # waited for it to stand before a restart
 DONE_TIMEOUT_S = {"farm_drive": 14700.0, "drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "ad_marker": 15.0, "ad_connect": 15.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "ad_unload": 20.0, "ad_sell": 14700.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
@@ -363,15 +368,37 @@ class FS25World:
             log.info("reserved rig %s for %s", ids, owner)
             return True
 
-    def farm_drive(self, vehicle_id: str, target: tuple[float, float], owner: str, area: float = 0.0) -> None:
+    def farm_drive(self, vehicle_id: str, target: tuple[float, float], owner: str, area: float = 0.0,
+                   yaw: float | None = None) -> None:
         """Drive the reserved existing rig by Farmhand's game-side route follower: to
-        the point, or (``area`` > 0) to any clear approach point that near it."""
+        the point, or (``area`` > 0) to any clear approach point that near it; with
+        ``yaw``, arriving at that heading (GIANTS' yaw: +z is 0)."""
         with self._lock:
             reservation = self._reservations.get(owner)
         if reservation is None or reservation[1][0] != vehicle_id:
             raise StepFailed("NOT_RESERVED")
-        self._run("farm_drive", tractor=int(vehicle_id), x=float(target[0]), z=float(target[1]),
-                  area=float(area))
+        # Ended against something on the way (live f4fb84d66f9e4191-1: a traffic cone on the road),
+        # the drive starts again from there: its start departs from what it touches and plans
+        # around it. At most CONTACT_RESTARTS times; any other end is the drive's own.
+        for restart in range(CONTACT_RESTARTS + 1):
+            try:
+                self._run("farm_drive", tractor=int(vehicle_id), x=float(target[0]), z=float(target[1]),
+                          area=float(area), yaw=ANY_HEADING if yaw is None else math.remainder(float(yaw), math.tau))
+                return
+            except StepFailed as failure:
+                if failure.code != "ENVELOPE_CONTACT" or restart == CONTACT_RESTARTS:
+                    raise
+                log.info("farm_drive ended against something on the way; restarting from there (%d)", restart + 1)
+                # Once it stands (live 13f374b86b594744-2: restarted while still rolling, NOT_STOPPED).
+                deadline = time.monotonic() + CONTACT_SETTLE_S
+                while time.monotonic() < deadline:
+                    try:
+                        vehicle = next((i for i in self.snapshot() if i.id == vehicle_id), None)
+                    except StepUnverified:
+                        vehicle = None
+                    if vehicle is not None and vehicle.stopped:
+                        break
+                    time.sleep(0.25)
 
     def _reserved(self, tractor_id: str, owner: str, wagon_id: str | None = None) -> tuple[str, str]:
         with self._lock:

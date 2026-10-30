@@ -143,7 +143,7 @@ function starters.farm_drive(env, spec)
     local denied = idle(env, spec.tractor, spec.farmId)
     if denied ~= nil then return nil, denied end
     local session, reason = Bridge.Drive.begin(env, {
-        tractor = spec.tractor, x = spec.x, z = spec.z, area = spec.area,
+        tractor = spec.tractor, x = spec.x, z = spec.z, area = spec.area, yaw = spec.yaw,
         farmId = spec.farmId, isReserved = spec.owned,
     }, Bridge.Hitch)
     if session == nil then Bridge.Hitch.disarm(spec.tractor); return nil, reason end
@@ -603,6 +603,7 @@ aborts.navigate = abortGoto
 -- Hitch.onNote prints each phase line (once per phase and at the end).
 function starters.maneuver(env, spec)
     Bridge.Hitch.onNote = function(line) log("maneuver %s", line) end
+    Bridge.Hitch.onDiagnostic = function(line) log("maneuver diagnostics: %s", line) end
     -- Read-only steering samples of the local maneuver (diagnostics, 2 per second).
     Bridge.Hitch.onSteer = function(line) log("maneuver %s", line) end
     local session, reason = Bridge.Hitch.newManeuver(env, {

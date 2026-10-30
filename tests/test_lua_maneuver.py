@@ -821,6 +821,22 @@ class LuaManeuverTests(unittest.TestCase):
         self.assertEqual(self.run_to_end(w, session, hook=walk_up), ("PERSON_TOO_CLOSE", 30))
         self.assert_braked_last(w)
 
+    def test_a_player_seated_in_the_tractor_is_no_person_on_foot(self):
+        # Live 71e0ec3bab26413c-1: the player seated in the 3650 (an observer) was taken for a
+        # person standing at it; every maneuver was LOCAL_PATH_PERSON.
+        w = self.world(**CASE_A)
+        w.player.x, w.player.z = w.joint.x, w.joint.z
+        w.entered = True
+        session, why = self.start(w)
+        self.assertIsNone(why)
+        self.assertIsNotNone(session)
+        # As GIANTS' Player says it (live bdd2ee5e7f4f42bd-1: the vehicle did not read entered).
+        w = self.world(**CASE_A)
+        w.player.x, w.player.z = w.joint.x, w.joint.z
+        w.env.g_localPlayer.getIsInVehicle = self.lua.eval("function() return true end")
+        session, why = self.start(w)
+        self.assertIsNone(why)
+
     def test_a_zero_turn_never_becomes_a_full_circle(self):
         for noise in (1e-13, -1e-13, 1e-15):
             with self.subTest(noise=noise):

@@ -47,7 +47,7 @@ class World:
                       for i, item in self.items.items()}
         return True
 
-    def farm_drive(self, vehicle_id, target, owner, area=0.0):
+    def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
         self.calls.append(("drive", vehicle_id, target, area))
         origin = self.items[vehicle_id].position
         if area:   # the game's chosen approach point: here 20 m short of the centre

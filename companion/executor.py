@@ -2086,6 +2086,18 @@ class Executor:
         raise StepFailed("STUCK_ON_OBSTACLE")
 
 
+    def _farm_staged(self, tractor_id: str, pose: Pose, owner: str) -> bool:
+        """STAGE onto an approach by Farmhand's own drive, at its heading, where there is one:
+        True once it arrived; False (nothing driven, or no route) for GIANTS' stage."""
+        if not self._farm_drives():
+            return False
+        try:
+            self.world.farm_drive(tractor_id, (pose.x, pose.z), owner, 0.0, pose.yaw)
+        except StepFailed as failure:
+            log.info("STAGE aim %s by Farmhand's own drive: %s; GIANTS stages", pose, failure.code)
+            return False
+        return True
+
     def _farm_drives(self) -> bool:
         """The world has Farmhand's own drive (the game link; not every test world)."""
         return getattr(type(self.world), "farm_drive", None) is not None
@@ -2361,6 +2373,19 @@ class Executor:
                         and item.attached_to is None and item.stopped and item.id not in self._skip
                         and named(item, command.get("tractor_name") if item.category == "tractor"
                                   else command.get("implement_name"))]
+                named_tractors = [i for i in free if i.category == "tractor"]
+                if command.get("tractor_name") and len(named_tractors) == 1:
+                    # The named tractor to the nearest of the implements the words fit (live
+                    # 4c41d6e784cc445e-1: four trailers of one name, the first by ID chosen while
+                    # the 3650 stood on another's joint); ties by opaque ID.
+                    # Nearest by the joints (live c06633894f8c4c51-1: by the roots another
+                    # trailer than the one the 3650 stood on), else by the roots.
+                    named_tractor = named_tractors[0]
+
+                    def nearness(i):
+                        gap = joint_separation(named_tractor, i) if i.category != "tractor" else None
+                        return gap if gap is not None else math.dist(named_tractor.position, i.position)
+                    free.sort(key=lambda i: (i.category != "tractor", nearness(i), i.id))
                 for item in items:
                     if item not in free and (item.category == "tractor" or of_kind(item, self._kind)):
                         log.info("candidate %s %s rejected: %s", item.id, item.category,
@@ -2569,6 +2594,15 @@ class Executor:
                             aim["next"] += 1
                             before = self._hitch_state(ids, farm_id, owner, plan)[0].position
                             enter(step)
+                            if aim.get("giants_blocked") and step == "STAGE":
+                                # GIANTS' agent cannot start here; the other aims by Farmhand's own
+                                # drive alone (live f530ca8d474e459d-1: the first had no route, the
+                                # rest were never tried).
+                                if self._farm_staged(ids[0], pose, owner):
+                                    aim["drives"] += 1
+                                    return "ended"
+                                aim["unmoved"] += 1
+                                continue
                             stalled = blocked = False
                             try:
                                 if step == "TRAVEL_NEAR":
@@ -2578,6 +2612,9 @@ class Executor:
                             except StepFailed as failure:
                                 if failure.code.endswith("GOTO_INVALID"):
                                     log.info("%s aim %s refused by GIANTS (%s)", step, pose, failure.code)
+                                    if step == "STAGE" and self._farm_staged(ids[0], pose, owner):
+                                        aim["drives"] += 1
+                                        return "ended"
                                     continue
                                 if failure.code in START_BLOCKED_CODES:
                                     blocked = True
@@ -2591,10 +2628,19 @@ class Executor:
                                     # like any other; the fresh observation decides.
                                     stalled = True
                             self._hitch_state(ids, farm_id, owner, plan)
+                            if not self._goto_moved(ids[0], before) and step == "STAGE" \
+                                    and self._farm_staged(ids[0], pose, owner):
+                                # GIANTS did not move it (live a0dca0862a424319-1, every aim by the
+                                # Titan trailer): Farmhand's own drive onto the aim at its heading.
+                                aim["drives"] += 1
+                                return "ended"
                             if not self._goto_moved(ids[0], before):
                                 log.info("%s aim %s: the tractor did not move%s", step, pose,
                                          " (blocked at its start)" if blocked else " (stalled)" if stalled else "")
                                 aim["unmoved"] += 1
+                                if blocked and step == "STAGE" and self._farm_drives() and more():
+                                    aim["giants_blocked"] = True
+                                    continue
                                 if blocked:
                                     break
                                 if aim["stuck"]:
@@ -2627,13 +2673,15 @@ class Executor:
                 self._tailgate_down(tractor, plan.tractor_joint, owner)
                 if isinstance(travel, Pose) and self._farm_drives():
                     # Near the implement by Farmhand's own drive (live f27757a15ce94d2a-2: GIANTS
-                    # GOTO ended at once at every aim, the 3650 unmoved 340 m from the trailer);
-                    # GIANTS GOTO below only if that finds no route.
+                    # GOTO ended at once at every aim, the 3650 unmoved 340 m from the trailer),
+                    # onto the nearest approach at its heading (live a0dca0862a424319-1: arrived
+                    # near it facing 43 degrees off, the bounded steps refused and GIANTS could
+                    # not stage it); GIANTS GOTO below only if that finds no route.
                     tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
                     near = min(aims, key=lambda a: math.dist(tractor.position, (a.x, a.z)))
                     enter("TRAVEL_NEAR")
                     try:
-                        self.world.farm_drive(ids[0], (near.x, near.z), owner, 0.0)
+                        self.world.farm_drive(ids[0], (near.x, near.z), owner, 0.0, near.yaw)
                     except StepFailed as failure:
                         log.info("TRAVEL_NEAR by Farmhand's own drive: %s; GIANTS GOTO is tried", failure.code)
                     else:
@@ -2795,6 +2843,8 @@ class Executor:
                         stopped = self._at_rest(ids)
                         if any(identifier not in stopped or not stopped[identifier].stopped
                                or stopped[identifier].reserved_by != owner for identifier in ids):
+                            log.info("after STOP: %s", {i: (stopped[i].stopped, stopped[i].reserved_by)
+                                                        for i in ids if i in stopped})
                             raise ObservationMismatch("STOP_NOT_OBSERVED")
                         if any(stopped[identifier].busy for identifier in ids):
                             # STOP said STOPPED, but an AI job or AutoDrive still controls a
@@ -2827,7 +2877,9 @@ class Executor:
                 except _CleanupFailed as error:
                     status, reason = "UNVERIFIED", str(error)
                 except Exception as error:
-                    log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
+                    # What ended the job is said too (live 67d76c8d3a614461-1: only the cleanup was).
+                    log.info("cleanup not confirmed: %s %s (after %s %s)", type(error).__name__, error,
+                             status, reason)
                     status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
         self.active = ()
         log.info("result %s %s states %s", status, reason, ",".join(states))

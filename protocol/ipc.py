@@ -108,7 +108,7 @@ class FrameReader:
 # The only operations mod/FarmhandBridge.lua executes, with their required
 # arguments; nothing else can be encoded. XML attribute names match the mod.
 COMMAND_ARGS = {
-    "farm_drive": ("tractor", "x", "z", "area"),   # area > 0: any clear approach point that near (x, z)
+    "farm_drive": ("tractor", "x", "z", "area", "yaw"),   # area > 0: any clear approach point that near (x, z); yaw beyond +-2 pi: any heading
     "drive": ("tractor", "marker"),
     "stage": ("tractor", "x", "z", "yaw"),
     "navigate": ("tractor", "x", "z", "yaw"),

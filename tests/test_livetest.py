@@ -1055,12 +1055,15 @@ class EndToEndTests(CompanionCase):
         self.assertEqual(self.out[-1]["code"], "NOT_UNDERSTOOD")
 
     def test_a_failed_test_exits_nonzero_with_its_reason(self):
-        game = self.wire(faults={"stage_end": (3.44, -12.40, 85.9), "maneuver": "FAILED:LOCAL_PATH_HITS_WAGON"})
+        game = self.wire(faults={"stage_end": (3.44, -12.40, 85.9), "maneuver": "FAILED:LOCAL_PATH_HITS_WAGON",
+                                 "farm_drive": "FAILED:NO_ROUTE"})
         self.assertEqual(client.command_hitch(poll=0.05), client.EXIT["FAILED"])
         self.assertEqual(self.out[-1]["reason"], "LOCAL_PATH_HITS_WAGON")
         # Refused unmoved; the fake game's STAGE ends where the first did, so no further
-        # aim moves the tractor and the maneuver is not repeated; never reversed.
-        self.assertEqual([c["op"] for c in game.commands], ["stage", "maneuver"] + ["stage"] * 6 + ["stop"])
+        # aim moves the tractor (nor Farmhand's own drive: no route) and the maneuver is
+        # not repeated; never reversed.
+        self.assertEqual([c["op"] for c in game.commands],
+                         ["stage", "maneuver"] + ["stage", "farm_drive"] * 6 + ["stop"])
 
     def test_without_a_runner_the_client_says_so(self):
         with unittest.mock.patch.object(client, "HOST", self.tmp / "nowhere"):
