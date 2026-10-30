@@ -29,6 +29,7 @@ import uuid
 
 from adapters.fs25 import Observation, observation_from_snapshot
 from adapters.world import StepFailed, StepUnverified
+from companion.drive_goal import DRIVEN
 from companion.hitch import STAGING_DISTANCE_M, load_ad_graph
 from protocol.ipc import MAX_NOTICES, PIPE_PATH, FrameError, FrameReader, encode_command, encode_session
 from protocol.model import Contract, Destination, Equipment, FarmInfo, Field, HitchPlan, Pose, Position, StoreItem
@@ -345,7 +346,7 @@ class FS25World:
                 return False
             rig = [observed[i] for i in ids]
             farm = rig[0].farm_id
-            if rig[0].category != "tractor" or rig[0].belted_to is not None:
+            if rig[0].category not in DRIVEN or rig[0].belted_to is not None:
                 return False
             if any(i.farm_id != farm or i.reserved_by is not None or not i.available
                    or i.busy or i.occupied or not i.stopped for i in rig):

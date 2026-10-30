@@ -10,7 +10,7 @@ import math
 import threading
 import time
 
-from companion.drive_goal import GoalError, resolve_drive_goal
+from companion.drive_goal import DRIVEN, GoalError, driven_by_words, resolve_drive_goal
 from protocol.model import Result
 
 ARRIVE_M = 3.0   # a place's point; for a field, any rig unit this close to its edge
@@ -118,14 +118,14 @@ class StandaloneMove:
             enter("FIND")
             items = tuple(self.world.snapshot())
             vehicle_id = command.get("vehicle_id")     # resolved by the executor from the player's words
-            named = [i for i in items if i.category == "tractor" and (
-                i.id == vehicle_id if vehicle_id is not None else command.get("tractor_name") and all(
-                    w in (i.name or "").casefold() for w in command["tractor_name"].casefold().split()))]
+            named = [i for i in items if (i.id == vehicle_id and i.category in DRIVEN if vehicle_id is not None
+                                          else driven_by_words(i, command.get("tractor_name")))]
             if len(named) != 1:
                 raise GoalError("VEHICLE_AMBIGUOUS" if named else "VEHICLE_UNAVAILABLE")
+            vehicle_id = named[0].id
             # The rig first (its units never block its own target), then the target.
             from companion.executor import valid_position
-            name, cargo = command.get("tractor_name"), command.get("cargo_name")
+            name, cargo = None, command.get("cargo_name")
             rig = resolve_drive_goal(items, farm_id, name, cargo, (0.0, 0.0), vehicle_id)
             avoid = tuple(i.position for i in items if i.id not in rig.rig_ids and valid_position(i.position))
             target, outline, area = self._target(command, named[0], avoid)

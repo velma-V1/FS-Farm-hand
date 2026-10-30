@@ -1847,16 +1847,23 @@ class DetachTests(unittest.TestCase):
                 self.assertEqual(world.items["t-1"].attached_to, None)
                 self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
 
-    def test_a_pull_clear_that_fails_or_is_not_observed_is_never_complete(self):
+    def test_a_pull_clear_stopped_short_keeps_the_detach_and_one_not_observed_is_never_complete(self):
+        # Live dfd431a3308b4da4-1: stopped 0.35 m short by a combine parked ahead; the detach
+        # stands, the tractor at rest (Farmhand's own drive departs from the implement later).
         class Stalled(MockWorld):
             def pull_clear(self, *args):
                 raise StepFailed("STALLED")
+
+        class Contact(MockWorld):
+            def pull_clear(self, *args):
+                raise StepFailed("ENVELOPE_CONTACT")
 
         class Silent(MockWorld):
             def pull_clear(self, *args):
                 return None                                     # reported clear, never moved
 
-        for cls, outcome in ((Stalled, ("FAILED", "STALLED")), (Silent, ("UNVERIFIED", "PULL_CLEAR_NOT_OBSERVED"))):
+        for cls, outcome in ((Stalled, ("COMPLETE", "DETACHED_NOT_CLEAR")), (Contact, ("FAILED", "ENVELOPE_CONTACT")),
+                             (Silent, ("UNVERIFIED", "PULL_CLEAR_NOT_OBSERVED"))):
             with self.subTest(world=cls.__name__):
                 world = cls(list(hitched_pair("t-1", "w-1", (130.0, 260.0))), PLAYERS, ())
                 result = Executor(world).execute(detach())

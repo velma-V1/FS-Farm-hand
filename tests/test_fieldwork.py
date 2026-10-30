@@ -100,6 +100,39 @@ class FieldWorkTests(unittest.TestCase):
                     self.assertEqual((result.status, result.reason), ("FAILED", "NOT_REACHABLE"), result)
                     self.assertNotIn("TO_FIELD", result.states)
 
+    def test_a_field_the_helper_will_not_drive_to_is_reached_by_farmhands_own_drive(self):
+        # Live 9211b19abaa24cce-3: the combine at the barn, GIANTS' helper ended COULD_NOT_PREPARE
+        # at once (never ready to drive). Farmhand drives the pair a few metres onto the field and
+        # the helper starts there; NOT_REACHABLE is answered the same way, without AutoDrive.
+        from protocol.model import Destination
+        outline = ((150.0, 250.0), (250.0, 250.0), (250.0, 350.0), (150.0, 350.0))
+
+        class Driving(MockWorld):
+            refusal = "COULD_NOT_PREPARE"
+            driven = None
+
+            def farm_drive(self, vehicle_id, target, owner, area=0.0):
+                self.driven = target
+                for unit, behind in (("t-1", 0.0), ("i-1", 4.0)):
+                    self.items[unit] = replace(self.items[unit], position=(target[0], target[1] - behind))
+
+            def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0, seed=0, hand=False):
+                if math.dist(self.items[tractor_id].position, (200.0, 300.0)) > 150.0:
+                    return self.refusal
+                return super().fieldwork(tractor_id, field_id, pose, owner, area_m2, seed, hand)
+
+        for refusal in ("COULD_NOT_PREPARE", "NOT_REACHABLE"):
+            with self.subTest(refusal=refusal):
+                world = Driving(rig("cultivator", at=(600.0, 900.0)), PLAYERS, fields=(field(7, 0.4),), farm=FARM)
+                world.refusal = refusal
+                world.mock_field_places = (Destination("field-7", (200.0, 300.0), "Field 7", outline),)
+                result = Executor(world).execute(work("cultivate"))
+                self.assertEqual((result.status, result.reason), ("COMPLETE", "FIELD_WORK_OBSERVED"), result)
+                self.assertIn("TO_FIELD", result.states)
+                self.assertTrue(150.0 < world.driven[0] < 250.0 and 250.0 < world.driven[1] < 350.0)   # inside
+                # 8 m in from the edge point nearest the rig (here the field's corner).
+                self.assertAlmostEqual(math.dist(world.driven, (250.0, 350.0)), 8.0, places=6)
+
     def test_a_job_that_ended_without_covering_the_field_is_not_complete(self):
         class Partial(MockWorld):
             def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0):
@@ -891,8 +924,13 @@ class HarvestTests(unittest.TestCase):
         result = Executor(world).execute(work("harvest"))
         self.assertEqual((result.status, result.reason), ("BLOCKED", "CROP_NOT_READY"))
         self.assertEqual(field_steps(tuple(rig("plow")), "harvest", 7, "farm-a"), (None, "NO_HARVESTER_WITH_HEADER"))
+        # Then back where it was taken from, its header on (the user: never left in the field).
         self.assertEqual(field_steps(tuple(self.combine()), "harvest", 7, "farm-a")[0],
-                         [{"task": "field_work", "field": 7, "operation": "harvest", "implement": "cutter"}])
+                         [{"task": "field_work", "field": 7, "operation": "harvest", "implement": "cutter"},
+                          {"task": "move_pair", "implement": "cutter", "target": {"type": "origin"}}])
+        from companion.executor import movable
+        combine, header = (next(i for i in self.combine() if i.category == c) for c in ("harvester", "implement"))
+        self.assertTrue(movable(combine, header))
 
     def test_harvest_the_words_and_the_combine_is_not_a_tractor(self):
         from adapters.fs25 import _category

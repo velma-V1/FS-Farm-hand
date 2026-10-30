@@ -432,14 +432,16 @@ def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: st
     intent fragments, or (None, why). ``crop`` (sowing only): the player's crop."""
     crop = crop if operation == "sow" else None
     if operation == "harvest":
-        # A combine with its header on, free: harvested where it stands ready; it is not
-        # unhitched or brought back (the player decides where it goes).
+        # A combine with its header on, free: harvested where it stands ready, then brought
+        # back where it was taken from with its header on (the user 2026-10-23: never left
+        # in the field; live ab2795521e884f2d-4 said "bringing the equipment back" and left it).
         observed = {i.id: i for i in items}
         if not any(i.category == "harvester" and usable(i, farm_id) and observed.get(i.attached_to) is not None
                    and of_kind(observed[i.attached_to], "cutter") for i in items):
             return None, "NO_HARVESTER_WITH_HEADER"
         return [{"task": "field_work", "field": field, "operation": "harvest", "implement": "cutter",
-                 **({"area_m2": area_m2} if area_m2 else {})}], None
+                 **({"area_m2": area_m2} if area_m2 else {})},
+                {"task": "move_pair", "implement": "cutter", "target": {"type": "origin"}}], None
     kind, note = implement_kind(items, operation, farm_id, crop)
     if kind is None:
         return None, note

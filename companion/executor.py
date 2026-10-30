@@ -38,6 +38,10 @@ DELIVERY_STANDOFF_M = 10.0
 PLACE_STANDOFF_M = 15.0
 YARD_M = 150.0                    # buildings matching the words this close together are one place
 TRACTOR_ARRIVAL_TOLERANCE_M = 3.0
+# GIANTS' field-work helper ended without driving to the field (its planner, or never ready
+# to drive): Farmhand's own drive takes the pair this far inside the field's edge.
+HELPER_DID_NOT_DRIVE = ("NOT_REACHABLE", "COULD_NOT_PREPARE")
+FIELD_INSIDE_M = 8.0
 # A loaded transport (cargo belted on its trailer) GIANTS GOTO does not start (live
 # d14230aa9fb24d30-3) goes by AutoDrive to a marker; with none to be had the player drives it
 # there (assisted); it has arrived within this of the destination's point.
@@ -134,6 +138,10 @@ GOTO_MOVED_M = 1.0
 # the detach stands (DETACHED_NOT_CLEAR). Every other failure moved or may have.
 PULL_CLEAR_REFUSALS = frozenset({"PULL_CLEAR_BLOCKED", "PULL_CLEAR_PERSON", "PULL_CLEAR_NOT_BEHIND",
                                  "LOCAL_AREA_UNKNOWN", "NOT_STOPPED"})
+# Stopped short by something ahead after it moved (live dfd431a3308b4da4-1: 4.15 of 4.5 m, a
+# parked combine ahead): the detach stands just as well; the tractor, verified at rest, leaves
+# later by Farmhand's own drive, which departs from a parked implement behind it (planEgress).
+PULL_CLEAR_SHORT = frozenset({"STALLED"})
 # The observed joint separation after CLEAR may be this much under PULL_CLEAR_M
 # (one snapshot after the brake; the mod stops the instant it reaches it).
 PULL_CLEAR_TOLERANCE_M = 0.25
@@ -371,8 +379,9 @@ def _pose_of(tractor: Equipment) -> Pose:
 
 
 def movable(tractor: Equipment, wagon: Equipment) -> bool:
-    """move_pair: a tractor with its implement; towing needs no PTO power."""
-    return (tractor.category == "tractor" and wagon.category in IMPLEMENT_CATEGORIES
+    """move_pair: a tractor with its implement, or a combine with its header (brought
+    back from the field it harvested); towing needs no PTO power."""
+    return (tractor.category in ("tractor", "harvester") and wagon.category in IMPLEMENT_CATEGORIES
             and {"move", "stop"} <= tractor.capabilities)
 
 
@@ -881,7 +890,7 @@ class Executor:
         _, _, tractor, wagon = min(pairs, key=lambda p: (p[0], p[1]))
         if origins is not None:
             route = origins[wagon.id]
-            if any(item.belted_to == wagon.id for item in items) \
+            if any(item.belted_to == wagon.id for item in items) and not self._farm_drives() \
                     and math.dist(tractor.position, route_position(route)) > ARRIVED_BY_HAND_M:
                 return None, None, "LOADED_NO_DRIVER"          # "bring it back": the player drives it there
             return (tractor, wagon), route, None
@@ -891,7 +900,7 @@ class Executor:
         # Where it starts from, for "bring it back" (kept if Farmhand took it from elsewhere),
         # recorded before a loaded rig is left for the player to drive.
         self._origins.setdefault(wagon.id, _pose_of(tractor))
-        if any(item.belted_to == wagon.id for item in items):
+        if any(item.belted_to == wagon.id for item in items) and not self._farm_drives():
             # Cargo belted on the towed trailer. GIANTS GOTO does not start such a rig (live
             # d14230aa9fb24d30-3: its agent BLOCKED from the first frame). AutoDrive counts belted
             # cargo as the rig's own: its sensors skip what checkIsConnected calls connected
@@ -911,6 +920,39 @@ class Executor:
                          wagon.id, math.dist(tractor.position, route_position(route)), route, stalled)
                 return None, None, "LOADED_NO_DRIVER"
         return (tractor, wagon), route, None
+
+    def _to_field(self, tractor, field, ids, owner, enter) -> bool:
+        """GIANTS' helper did not start its own drive to the field (NOT_REACHABLE: its
+        planner; COULD_NOT_PREPARE: never ready to drive, live 9211b19abaa24cce-3, the combine
+        from the barn to field 90): Farmhand's own drive takes the pair a few metres inside
+        the field, where the helper starts without a drive of its own (within 3 m of its
+        start, AIJobFieldWork:getStartTaskIndex). Else AutoDrive. True when it got there."""
+        if not self._farm_drives():
+            return self._to_field_by_autodrive(tractor, field, ids, owner, enter)
+        from companion.standalone import _edge_point, _inside
+        place = next((p for p in self.world.field_places() if p.id == f"field-{field.id}"), None)
+        outline = tuple(place.outline) if place is not None else ()
+        if len(outline) >= 3 and _inside(outline, tractor.position):
+            return False                               # on it already: the helper's own refusal stands
+        target = field.center
+        if len(outline) >= 3:
+            edge = _edge_point(outline, tractor.position)[0]
+            span = math.dist(edge, field.center)
+            for inward in (FIELD_INSIDE_M, FIELD_INSIDE_M / 2):
+                point = (edge[0] + (field.center[0] - edge[0]) * inward / span,
+                         edge[1] + (field.center[1] - edge[1]) * inward / span) if span > inward else field.center
+                if _inside(outline, point):
+                    target = point
+                    break
+        try:
+            enter("TO_FIELD")
+            log.info("field %s: GIANTS' helper did not drive there; Farmhand's own drive to %s", field.id, target)
+            self.world.farm_drive(tractor.id, tuple(target), owner, 0.0)
+        except (StepFailed, StepUnverified) as failure:
+            log.info("TO_FIELD by Farmhand's drive: %s", failure.code)
+            return self._to_field_by_autodrive(tractor, field, ids, owner, enter)
+        self._settled_transport(ids)
+        return True
 
     def _to_field_by_autodrive(self, tractor, field, ids, owner, enter) -> bool:
         """After GIANTS' helper ended NOT_REACHABLE with the pair unmoved far from the field:
@@ -2044,15 +2086,30 @@ class Executor:
         raise StepFailed("STUCK_ON_OBSTACLE")
 
 
+    def _farm_drives(self) -> bool:
+        """The world has Farmhand's own drive (the game link; not every test world)."""
+        return getattr(type(self.world), "farm_drive", None) is not None
+
     def _move(self, tractor_id, route, owner, deliver=False, partner_id=None):
-        """One travel step by the route's provider: AutoDrive to a marker, or GIANTS
-        GOTO to a pose."""
+        """One travel step; returns the route its arrival is checked against. A delivery
+        (the pair to the player, a place, back where it came from) is Farmhand's own drive
+        of the reserved rig, checked at its root (AGENTS.md 7: a provider failure is not
+        the destination's); only if that ends unreached the route's provider is tried:
+        AutoDrive to a marker, or GIANTS GOTO to a pose."""
+        if deliver and self._farm_drives():
+            target = tuple(route_position(route))
+            try:
+                self.world.farm_drive(tractor_id, target, owner, 0.0)
+                return Destination("farmhand", target)
+            except StepFailed as failure:
+                log.info("Farmhand's own drive to %s ended %s; the route's provider is tried", target, failure.code)
         if isinstance(route, Pose):
             self._navigate(tractor_id, route, owner, partner_id)
         elif deliver:
             self.world.deliver(tractor_id, route.id, owner)
         else:
             self.world.travel(tractor_id, route.id, owner)
+        return route
 
     @staticmethod
     def _at(tractor, route) -> bool:
@@ -2342,7 +2399,8 @@ class Executor:
                     physical_attempted = True
                     enter("DELIVER")
                     try:
-                        self._move(tractor.id, delivery, owner, deliver=True, partner_id=ids[1])
+                        # The route its arrival is checked against, here and at the end (_move).
+                        delivery = self._move(tractor.id, delivery, owner, deliver=True, partner_id=ids[1])
                     except StepFailed as failure:
                         if failure.code in AD_STALLS and any(i.belted_to == wagon.id for i in self.world.snapshot()):
                             # AutoDrive did not move the loaded rig: the player drives it there.
@@ -2383,10 +2441,10 @@ class Executor:
                         if failure.code != "FIELDWORK_STUCK" or detour == MAX_DETOURS:
                             raise
                         self._block_ahead(tractor.id, detour)
-                if ended == "NOT_REACHABLE" and self._to_field_by_autodrive(tractor, field, ids, owner, enter):
-                    # GIANTS' helper could not plan the drive from far away (live
-                    # 5c8eeb68ccea4304-2: the 3650 1 km off at field 69, NOT_REACHABLE at once):
-                    # AutoDrive took the pair to the field's edge; the helper starts from there.
+                if ended in HELPER_DID_NOT_DRIVE and self._to_field(tractor, field, ids, owner, enter):
+                    # GIANTS' helper did not drive to the field (live 5c8eeb68ccea4304-2: the 3650
+                    # 1 km off at field 69, NOT_REACHABLE at once; 9211b19abaa24cce-3: the combine,
+                    # COULD_NOT_PREPARE): Farmhand took the pair onto it; the helper starts there.
                     tractor = self._pair(ids, farm_id, owner, attached=True)[0]
                     start = Pose(tractor.position[0], tractor.position[1], tractor.heading or 0.0)
                     enter("FIELD_WORK")
@@ -2462,9 +2520,10 @@ class Executor:
                         self.world.pull_clear(ids[0], ids[1], owner)
                     except StepFailed as failure:
                         if failure.code != "ALREADY_CLEAR":
-                            if failure.code not in PULL_CLEAR_REFUSALS:
+                            if failure.code not in PULL_CLEAR_REFUSALS | PULL_CLEAR_SHORT:
                                 raise
-                            log.info("PULL_CLEAR refused unmoved (%s)", failure.code)
+                            log.info("PULL_CLEAR %s (%s)", "stopped short" if failure.code in PULL_CLEAR_SHORT
+                                     else "refused unmoved", failure.code)
                             reason = "DETACHED_NOT_CLEAR"
                     enter("VERIFY")
                     tractor, implement = self._pair(ids, farm_id, owner, attached=False)
@@ -2677,7 +2736,7 @@ class Executor:
                     status, reason = "COMPLETE", "HITCH_OBSERVED"     # hitched where the wagon stood
                 else:
                     enter("DELIVER")
-                    self._move(tractor.id, delivery, owner, deliver=True, partner_id=ids[1])
+                    delivery = self._move(tractor.id, delivery, owner, deliver=True, partner_id=ids[1])
                     self._arrival(ids, farm_id, owner, delivery)
             if not (hitch_only or detaching or working):
                 status, reason = "COMPLETE", "ALREADY_THERE" if already_there else "DELIVERY_OBSERVED"

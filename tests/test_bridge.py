@@ -191,6 +191,20 @@ class FakeGame:
             if wagon["attacher_vehicle_id"] == 11:
                 place(wagon, x, z - 8)
             return "AD_ENDED"
+        if op == "farm_drive":     # Farmhand's own drive of the rig; the attached wagon behind
+            x, z = float(c["x"]), float(c["z"])
+            if self.faults.get("farm_drive_elsewhere"):
+                x += 50
+            yaw = math.atan2(x - tractor["x"], z - tractor["z"]) if (x, z) != (tractor["x"], tractor["z"]) \
+                else tractor["heading"]
+            place(tractor, x, z, yaw)
+            tractor["heading"] = yaw
+            # Farmhand steers the vehicle root; GIANTS' AI root (live: the node its agent
+            # steers) stands metres from it, so a delivery is checked at the root.
+            tractor["ai_root"] = {"x": x + 3.5 * math.sin(yaw), "z": z + 3.5 * math.cos(yaw), "yaw": yaw}
+            if wagon["attacher_vehicle_id"] == 11:
+                place(wagon, x - 7 * math.sin(yaw), z - 7 * math.cos(yaw))
+            return "ARRIVED"
         if op == "navigate":       # GIANTS GOTO; an attached wagon follows behind
             x, z, yaw = float(c["x"]), float(c["z"]), float(c["yaw"])
             if self.faults.get("navigate_elsewhere"):
@@ -372,9 +386,10 @@ class ProductionSequenceTests(unittest.TestCase):
         self.assertEqual(result.equipment_ids, ("11", "12"))
         self.assertEqual(result.states, ("FIND", "RESERVE", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH", "VERIFY",
                                          "DELIVER", "STOP", "RELEASE"))
-        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "drive", "stop"])
+        # Delivered by Farmhand's own drive to marker 3, the one near the player ("here").
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "farm_drive", "stop"])
         drive = game.commands[4]
-        self.assertEqual(drive["marker"], "3")                      # "here": marker 3 near the player
+        self.assertEqual((float(drive["x"]), float(drive["z"])), tuple(map(float, game.markers[3][1:])))
         self.assertEqual((game.commands[1]["tj"], game.commands[1]["wj"]), ("1", "1"))
         self.assertEqual(world._reservations, {})                   # released only at the very end
 
@@ -382,20 +397,21 @@ class ProductionSequenceTests(unittest.TestCase):
         # No category map, no AutoDrive: the tractor is recognised from GIANTS data.
         game, world, result = self.run_ac001(categories=None, autodrive=False)
         self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
-        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "navigate", "stop"])
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "farm_drive", "stop"])
 
     def test_far_tractor_uses_autodrive_first(self):
         game, _, result = self.run_ac001(tractor_at=(600.0, 600.0))
         self.assertEqual(result.status, "COMPLETE", result)
-        self.assertEqual(self.ops(game), ["drive", "stage", "maneuver", "align", "attach", "drive", "stop"])
+        self.assertEqual(self.ops(game), ["drive", "stage", "maneuver", "align", "attach", "farm_drive", "stop"])
         self.assertEqual(game.commands[0]["marker"], "4")           # the marker near the wagon
         self.assertEqual(result.states[2], "TRAVEL_NEAR")
 
     def test_without_autodrive_giants_goto_travels_and_delivers_here(self):
-        for tractor_at, ops in (((0.0, 20.0), ["maneuver", "align", "attach", "navigate", "stop"]),
-                                ((0.0, 40.0), ["stage", "maneuver", "align", "attach", "navigate", "stop"]),
+        # GIANTS GOTO travels to the wagon; Farmhand's own drive delivers the pair.
+        for tractor_at, ops in (((0.0, 20.0), ["maneuver", "align", "attach", "farm_drive", "stop"]),
+                                ((0.0, 40.0), ["stage", "maneuver", "align", "attach", "farm_drive", "stop"]),
                                 # GOTO travel aims at the approach: no second GOTO; the maneuver lines up.
-                                ((600.0, 600.0), ["navigate", "maneuver", "align", "attach", "navigate", "stop"])):
+                                ((600.0, 600.0), ["navigate", "maneuver", "align", "attach", "farm_drive", "stop"])):
             with self.subTest(tractor_at=tractor_at):
                 game, world, result = self.run_ac001(tractor_at=tractor_at, autodrive=False)
                 self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
@@ -408,15 +424,25 @@ class ProductionSequenceTests(unittest.TestCase):
                 self.assertEqual(world._reservations, {})
 
     def test_goto_failures_without_autodrive_stop_and_go_no_further(self):
+        # Farmhand's own drive found no route: GIANTS GOTO is tried, and its failure ends the job.
         cases = [({"navigate": "FAILED:NAVIGATE_STALLED"}, "FAILED", "NAVIGATE_STALLED"),
                  ({"navigate": "UNVERIFIED:UNKNOWN_OBSERVATION"}, "UNVERIFIED", "UNKNOWN_OBSERVATION"),
                  ({"navigate_elsewhere": True}, "UNVERIFIED", "DELIVERY_NOT_OBSERVED")]
         for faults, status, reason in cases:
             with self.subTest(faults=faults):
-                game, world, result = self.run_ac001(faults=faults, autodrive=False)
+                game, world, result = self.run_ac001(faults={**faults, "farm_drive": "FAILED:NO_ROUTE"},
+                                                     autodrive=False)
                 self.assertEqual((result.status, result.reason), (status, reason), result)
-                self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "navigate", "stop"])
+                self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "farm_drive", "navigate",
+                                                  "stop"])
                 self.assertEqual(world._reservations, {})
+
+    def test_farmhands_own_drive_delivers_and_its_arrival_is_checked(self):
+        game, world, result = self.run_ac001(faults={"farm_drive_elsewhere": True}, autodrive=False)
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "DELIVERY_NOT_OBSERVED"))
+        game, world, result = self.run_ac001(faults={"farm_drive": "UNVERIFIED:UNKNOWN_OBSERVATION"}, autodrive=False)
+        self.assertEqual((result.status, result.reason), ("UNVERIFIED", "UNKNOWN_OBSERVATION"))
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "farm_drive", "stop"])
 
     def test_explicit_marker_without_autodrive_blocks_before_any_command(self):
         game, _, result = self.run_ac001({"type": "autodrive_marker", "marker_name": "Yard"}, autodrive=False)
@@ -465,7 +491,7 @@ class ProductionSequenceTests(unittest.TestCase):
             # the staging pose straight ahead of the drawbar next, then the plain reverse
             # attaches (live 9c1beb5ad65c4255-1: the store's crowded spawn yard).
             ({"maneuver": "FAILED:LOCAL_PATH_LEAVES_AREA"}, NEAR, "COMPLETE", "DELIVERY_OBSERVED",
-             ["maneuver", "stage", "align", "attach", "drive", "stop"]),
+             ["maneuver", "stage", "align", "attach", "farm_drive", "stop"]),
             ({"maneuver": "FAILED:TURN_RADIUS_UNKNOWN"}, NEAR, "FAILED", "TURN_RADIUS_UNKNOWN", ["maneuver", "stop"]),
             ({"maneuver": "FAILED:STALLED"}, NEAR, "FAILED", "STALLED", ["maneuver", "stop"]),
             ({"maneuver": "FAILED:DIVERGED"}, NEAR, "FAILED", "DIVERGED", ["maneuver", "stop"]),
@@ -495,12 +521,13 @@ class ProductionSequenceTests(unittest.TestCase):
             self.assertIn(part, end)
 
     def test_delivery_and_arrival(self):
-        # AutoDrive "ended" elsewhere: not arrival.
-        game, world, result = self.run_ac001(faults={"drive_elsewhere": True})
+        # AutoDrive, tried when Farmhand's own drive found no route, "ended" elsewhere: not arrival.
+        unrouted = {"farm_drive": "FAILED:NO_ROUTE"}
+        game, world, result = self.run_ac001(faults={**unrouted, "drive_elsewhere": True})
         self.assertEqual((result.status, result.reason), ("UNVERIFIED", "DELIVERY_NOT_OBSERVED"))
-        game, world, result = self.run_ac001(faults={"drive": "FAILED:TIMEOUT"})
+        game, world, result = self.run_ac001(faults={**unrouted, "drive": "FAILED:TIMEOUT"})
         self.assertEqual((result.status, result.reason), ("FAILED", "TIMEOUT"))
-        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "drive", "stop"])
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "farm_drive", "drive", "stop"])
 
     def test_unconfirmed_stop_keeps_the_reservation(self):
         game, world, result = self.run_ac001(faults={"align": "FAILED:STALLED", "stop": "FAILED:NOT_STOPPED"})
@@ -683,7 +710,7 @@ class ServiceTests(unittest.TestCase):
         self.wait_for(lambda: len(notices) >= 2)
         self.assertEqual(notices, ["ACCEPTED", "COMPLETE"])
         self.assertEqual(self.progress, ["WORKING_STAGE", "WORKING_LOCAL_MANEUVER", "WORKING_DELIVER"])
-        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "navigate", "stop"])
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "farm_drive", "stop"])
         self.assertEqual(self.session_notice(game), ("COMPLETE", 5))
 
     def ops(self, game):
@@ -718,7 +745,7 @@ class ServiceTests(unittest.TestCase):
         game.say(2, "come here")
         self.wait_for(lambda: notices[-1:] == ["COMPLETE_MOVE"])
         self.assertEqual(notices[2:], ["ACCEPTED_MOVE", "COMPLETE_MOVE"])
-        self.assertEqual([c["op"] for c in game.commands[before:]], ["navigate", "stop"])
+        self.assertEqual([c["op"] for c in game.commands[before:]], ["farm_drive", "stop"])
         goal = game.commands[before]
         self.assertAlmostEqual(math.dist((float(goal["x"]), float(goal["z"])), (-40.0, 120.0)),
                                DELIVERY_STANDOFF_M, places=4)
@@ -938,7 +965,7 @@ class ServiceTests(unittest.TestCase):
         game.vehicles[11]["entered"] = True
         game.say(1, "bring me a tractor and forage wagon")
         self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
-        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "navigate", "stop"])
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "farm_drive", "stop"])
 
     def test_live_case_2_stage_end_is_judged_by_the_joints_not_the_pose(self):
         # Tractor 379 / wagon 400 (STAGE_ENDED 2-4 m off), tractor 170 / wagon 173 at
@@ -1056,7 +1083,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(game.commands, [])
         game.say(4, "please bring me a tractor and forage wagon")
         self.wait_for(lambda: notices[-1:] == ["COMPLETE"])
-        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "navigate", "stop"])
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "farm_drive", "stop"])
 
     def test_failures_are_reported_with_their_reason(self):
         game, notices = self.start(autodrive=False)
@@ -1066,6 +1093,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(notices, ["ACCEPTED", "BLOCKED_NO_ELIGIBLE_PAIR"])
         self.assertEqual(game.commands, [])
         game.vehicles[12] = record(12, "wagon", 0.0, -4.0)
+        game.faults["farm_drive"] = "FAILED:NO_ROUTE"   # no route of Farmhand's own: GIANTS GOTO tried
         game.faults["navigate"] = "FAILED:NAVIGATE_STALLED"
         game.press(2)
         self.wait_for(lambda: len(notices) >= 4)
@@ -1101,7 +1129,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(notices[4:], ["ACCEPTED", "COMPLETE"])
         # The tractor still stands where STAGE left it, inside the reverse's envelope.
         self.assertEqual([c["op"] for c in game.commands[before:]],
-                         ["stop", "align", "attach", "navigate", "stop"])
+                         ["stop", "align", "attach", "farm_drive", "stop"])
         self.assertEqual(world_reservations(), {})
 
     def test_reloaded_game_restarting_request_ids_is_served_with_fresh_work(self):

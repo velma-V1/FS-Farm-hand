@@ -249,7 +249,9 @@ local function globalPlan(start, target, probe, margin, step, offsetX, offsetZ, 
                             break
                         end
                     end
-                    local pass, why = clear and probe(x,z,yaw,0)
+                    -- Both results ("and" would keep only the first: every block logged unreadable).
+                    local pass, why
+                    if clear then pass, why = probe(x,z,yaw,0) end
                     if clear and pass ~= true then
                         rejected[why or "unreadable"] = (rejected[why or "unreadable"] or 0) + 1
                     end

@@ -41,6 +41,24 @@ def _usable(item: Equipment, farm_id: str) -> bool:
             and not item.occupied and item.reserved_by is None and item.stopped)
 
 
+# What drives itself and can lead a rig: tractors (trucks and cars among them) and
+# combines (a harvester with its header).
+DRIVEN = ("tractor", "harvester")
+# The player's word for a kind of self-propelled machine, not a name.
+KIND_WORDS = {"combine": "harvester", "harvester": "harvester", "combine harvester": "harvester"}
+
+
+def driven_by_words(item: Equipment, words: str | None) -> bool:
+    """The vehicle the player's words name: a kind word ("the combine") by its category,
+    else every word in its name."""
+    if item.category not in DRIVEN or not words:
+        return False
+    kind = KIND_WORDS.get(" ".join(words.casefold().split()))
+    if kind is not None:
+        return item.category == kind
+    return all(w in (item.name or "").casefold() for w in words.casefold().split())
+
+
 def resolve_drive_goal(items: tuple[Equipment, ...], farm_id: str, vehicle_name: str | None,
                        cargo_name: str | None, target: Position, vehicle_id: str | None = None) -> DriveGoal:
     """Select exactly one owned idle vehicle and preserve its observed rig.
@@ -51,7 +69,7 @@ def resolve_drive_goal(items: tuple[Equipment, ...], farm_id: str, vehicle_name:
     """
     if (len(target) != 2 or not all(type(x) in (int, float) and math.isfinite(x) for x in target)):
         raise GoalError("DESTINATION_INVALID")
-    candidates = [item for item in items if item.category == "tractor"
+    candidates = [item for item in items if item.category in DRIVEN
                   and (item.id == vehicle_id if vehicle_id is not None else _named(item, vehicle_name))
                   and _usable(item, farm_id) and item.belted_to is None]
     if not candidates:

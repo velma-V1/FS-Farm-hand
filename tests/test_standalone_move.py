@@ -187,5 +187,19 @@ class StandaloneMoveTests(unittest.TestCase):
         self.assertNotEqual(result.reason, "DELIVERY_OBSERVED")             # the GMC tows no planter
         self.assertFalse(any(c[0] == "drive" for c in world.calls))
 
+    def test_the_combine_by_its_kind_word_moves_with_its_header(self):
+        # Live ab2795521e884f2d-4: the combine was left on the field it harvested; the player
+        # must be able to send it ("take the combine to ...") like any driven vehicle.
+        combine = unit("616", "MF 8570", "harvester", attached="598", position=(-700.0, 215.0))
+        header = replace(unit("598", "MF 8570 Header", "implement", attached="616", position=(-694.0, 215.0)),
+                         kinds=frozenset({"cutter"}))
+        for words in ("combine", "mf 8570"):
+            world = World((combine, header))
+            result = StandaloneMove(world).execute({"request_id": words, "farm_id": "1", "task": "move_pair",
+                                                    "tractor_name": words,
+                                                    "target": {"type": "field_entrance", "field": 5}})
+            self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), words)
+            self.assertEqual(result.equipment_ids, ("616", "598"))
+
 if __name__ == "__main__":
     unittest.main()
