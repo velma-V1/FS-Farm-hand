@@ -3333,10 +3333,19 @@ local function middleOf(env, v)
     return x, z
 end
 
+-- The sweep before the motion leaves out the combine and what hangs on it (s.sweepRig): the rig
+-- drives beside it by design, and the size boxes are bigger than the bodies (the user, 2026-10-31,
+-- live at field 2: "it is the box around the equipment it is not colliding with the harvester";
+-- ALONGSIDE_PATH_BLOCKED on mf8570_main_component1 every time). Real contact with it during the
+-- motion still stops the rig (Hitch.envelope keeps only the rig itself out).
 local function alongsideVolume(env, s, a0, a1)
     local D = Hitch.ALONGSIDE
-    return clearVolume(env, s, a0, a1, D.lateralMarginM, D.stepM, D.floorClearanceM, s.rigBox.height + D.topMarginM,
-                       s.masks.obstacles)
+    local rig = s.rig
+    s.rig = s.sweepRig or rig
+    local bad, names = clearVolume(env, s, a0, a1, D.lateralMarginM, D.stepM, D.floorClearanceM,
+                                   s.rigBox.height + D.topMarginM, s.masks.obstacles)
+    s.rig = rig
+    return bad, names
 end
 
 -- `args`: tractor, combine, farmId, isReserved; pass: on along the line until the rig is past
@@ -3367,11 +3376,18 @@ function Hitch.newAlongside(env, args)
         if px == nil then return "PIPE_NOT_OUT" end
         local fx, _, fz = env.localDirectionToWorld(combine.rootNode, 0, 0, 1)
         assert(finite(fx) and finite(fz))
+        -- Along the combine either way: a trailer facing against it passes under the pipe from
+        -- its front (live 7b52570db6ee40d0-1: the lane behind it blocked by a dropped seeder).
+        local tfx, _, tfz = env.localDirectionToWorld(tractor.rootNode, 0, 0, 1)
+        if finite(tfx) and finite(tfz) and tfx * fx + tfz * fz < 0 then fx, fz = -fx, -fz end
         local n = math.sqrt(fx * fx + fz * fz)
         s.ox, s.oz, s.dirX, s.dirZ = px, pz, fx / n, fz / n
         s.yaw = atan2(s.dirX, s.dirZ)
         s.last = { wx = s.ox, wz = s.oz }
         s.rig = { [tractor] = true, [s.trailer] = true }
+        s.sweepRig = { [tractor] = true, [s.trailer] = true }
+        local okC, cUnits = pcall(rigUnits, combine)
+        for _, unit in ipairs(okC and cUnits or { combine }) do s.sweepRig[unit] = true end
         local node = tractor:getAISteeringNode()
         local sx, _, sz = world(env, node)
         s.startAlong, s.startLateral = inFrame(s, sx, sz)

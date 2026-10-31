@@ -110,6 +110,21 @@ class LuaAlongsideTests(unittest.TestCase):
         self.assertNotEqual(w.tractor.forceIsActive, True)
         self.assertEqual(self.hitch.alongsideStep(w.env, session, 50), "UNDER_PIPE")    # latched: brakes only
 
+    def test_a_trailer_facing_against_the_combine_passes_under_the_pipe_from_its_front(self):
+        # Live 7b52570db6ee40d0-1: the lane behind the combine blocked by a dropped seeder; from its
+        # front, facing against it, the trailer's middle still ends under the pipe.
+        import math
+        w = self.world(cyaw=math.pi)
+        x0, z0 = w.steer.x, w.steer.z
+        session, why, refused = self.start(w)
+        self.assertIsNotNone(session, (why, refused and self.hitch.describeAlongside(refused)))
+        self.assertAlmostEqual(session.travelM, 12.0, places=6)
+        code, _ = self.runner(w, session, 3000, None)
+        self.assertEqual(code, "UNDER_PIPE", self.hitch.describeAlongside(session))
+        along, lateral = self.W.travel(w, x0, z0)
+        self.assertLess(along, 12.2)
+        self.assertAlmostEqual(lateral, 0.0, places=6)
+
     def test_a_trailer_left_swung_by_giants_starts_and_must_end_under_the_pipe(self):
         # Live 6c66894767044432-1: GIANTS ended with the trailer 19-21 deg off; it may start.
         # The stub's trailer stays swung (a real one is pulled in behind): its middle on the
@@ -164,8 +179,11 @@ class LuaAlongsideTests(unittest.TestCase):
         w = self.world()
         w.box(4.0, 5.0, -1.0, 1.0, 0, 2.0, None, "bale")                 # in the way
         self.assert_refused(w, "ALONGSIDE_PATH_BLOCKED")
-        w = self.world(side=2.2)                                          # the combine's body in the swept volume
-        self.assert_refused(w, "ALONGSIDE_PATH_BLOCKED")
+        # The combine's own box in the swept volume does not refuse (the user, 2026-10-31, live at
+        # field 2: "it is the box around the equipment it is not colliding with the harvester");
+        # real contact during the motion still stops it.
+        session, why, refused = self.start(self.world(side=2.2))
+        self.assertIsNotNone(session, (why, self.hitch.describeAlongside(refused)))
         w = self.world()
         w.vehicle(6.0, -5.0)                                              # another vehicle beside the way
         self.assert_refused(w, "ALONGSIDE_BLOCKED")

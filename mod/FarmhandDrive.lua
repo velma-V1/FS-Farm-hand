@@ -1522,8 +1522,12 @@ local function guard(env, s, Hitch, x, z, yaw, atTarget)
     local seat = s.tractor:getIsEntered()
     if seat ~= true and seat ~= false then return "UNKNOWN_OBSERVATION" end
     local playerX, playerZ
-    if seat == false then
-        local player = env.g_localPlayer
+    -- A player seated in any vehicle is no person on foot (GIANTS' Player:getIsInVehicle, as
+    -- Hitch's surroundings; live 46b3e43ac1da4902-1: the player in the combine, the trailer's
+    -- approach beside it ended PERSON_TOO_CLOSE).
+    local player = env.g_localPlayer
+    local inVehicle = player ~= nil and type(player.getIsInVehicle) == "function" and player:getIsInVehicle() == true
+    if seat == false and not inVehicle then
         local px, _, pz
         if type(player.getPosition) == "function" then px, _, pz = player:getPosition()
         else px, _, pz = env.getWorldTranslation(player.rootNode) end

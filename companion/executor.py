@@ -113,6 +113,9 @@ REAPPROACH_CODES = frozenset({"LOCAL_PATH_HITS_WAGON", "LOCAL_PATH_LEAVES_AREA",
                               "LOCAL_PATH_BLOCKED", "LOCAL_NO_PATH", "LOCAL_START_AT_WAGON",
                               "OUTSIDE_LOCAL_AREA"})
 
+# A towing rig staged by Farmhand's own drive comes this far straight onto its aim.
+STRAIGHT_LEAD_M = 12.0
+
 # GOTO drives to approaches per hitch (TRAVEL_NEAR and STAGE together); aims
 # GIANTS refuses outright (GOTO_INVALID) move nothing and do not count.
 MAX_APPROACH_DRIVES = 3
@@ -1489,7 +1492,11 @@ class Executor:
     NOT_CARGO = frozenset({"DIESEL", "DEF", "AIR", "ELECTRICCHARGE", "METHANE", "UNKNOWN"})
     # GIANTS GOTO puts the trailer's middle this far behind the pipe point, on its line, then
     # ALONGSIDE drives it under (live 3dc00834639340f7-1: GIANTS took no spot right under it).
-    OVERLOAD_RUN_UPS_M = (18.0, 22.0)          # live 6c66894767044432-1: 12 m was not_reachable, 18 m reached
+    # live 6c66894767044432-1: 12 m was not_reachable, 18 m reached; at most 21 m, so the drive's 3 m
+    # arrival tolerance stays inside ALONGSIDE's 25 m (live 87f20d07d3184240-1: 22 m, ALONGSIDE_TOO_FAR).
+    # One run-up, once from behind and once from the front, nothing more (the user, 2026-10-31:
+    # "driving the equipment around in circles ... lined up 5 or 6 times"): then it says why.
+    OVERLOAD_RUN_UPS_M = (18.0,)
 
     def _grain(self, vehicle):
         return sum(u.level or 0.0 for u in vehicle.fill_units
@@ -1551,33 +1558,76 @@ class Executor:
             combine = next(i for i in self.world.snapshot() if i.id == combine.id)
             if not (combine.pipe and combine.pipe[0]):
                 raise ObservationMismatch("PIPE_NOT_OBSERVED")
-            # The trailer's middle (its size box centre) relative to the tractor's AI root, along the tractor.
-            tx, tz = math.sin(tractor.heading), math.cos(tractor.heading)
-            fx, fz = math.sin(trailer.heading), math.cos(trailer.heading)
-            middle = (trailer.position[0] + fx * trailer.size[3], trailer.position[1] + fz * trailer.size[3])
-            behind = (middle[0] - tractor.ai_root.x) * tx + (middle[1] - tractor.ai_root.z) * tz
-            cx, cz = math.sin(combine.heading or 0.0), math.cos(combine.heading or 0.0)
             done = None
-            for run_up in self.OVERLOAD_RUN_UPS_M:
-                # GIANTS GOTO to the pipe's line, the trailer's middle run_up behind the pipe point
-                # (GIANTS will not take a spot right under it); then ALONGSIDE straight forward.
-                ahead = -run_up - behind
-                aim = Pose(combine.pipe[1] + cx * ahead, combine.pipe[2] + cz * ahead, combine.heading or 0.0)
-                enter("APPROACH")
-                moved = True
+            # Already standing at the combine (the user, 2026-10-31: "the tractor and trailer are in
+            # the correct place at the moment for unloading"): from where it stands first, GIANTS'
+            # own discharge if the trailer is under the pipe (NOT_OVERLOADING after 15 s if not),
+            # else ALONGSIDE from there; only then the approaches.
+            try:
+                enter("OVERLOAD")
+                done = self.world.overload(combine.id, trailer.id, combine_owner)
+            except StepFailed as failure:
+                log.info("OVERLOAD where the rig stands: %s", failure.code)
+                if failure.code != "NOT_OVERLOADING":
+                    raise
+                # Let go idle, the combine folds its pipe (live 78d50d7a616a49db-3: PIPE_NOT_OUT next).
+                self.world.pipe(combine.id, True, combine_owner)
+                combine = next(i for i in self.world.snapshot() if i.id == combine.id)
+            if done is None:
                 try:
-                    self._navigate(tractor.id, aim, owner, free=False)
-                    self._settled_transport(rig_ids)
                     enter("ALONGSIDE")
                     self.world.alongside(tractor.id, combine.id, owner, combine_owner)
+                    moved = True
                     self._settled_transport(rig_ids)
                     enter("OVERLOAD")
                     done = self.world.overload(combine.id, trailer.id, combine_owner)
-                    break
                 except StepFailed as failure:
-                    log.info("OVERLOAD run-up %.0f m, aim %s: %s", run_up, aim, failure.code)
-                    if not (failure.code.startswith(("ALONGSIDE_", "NAVIGATE_")) or failure.code == "NOT_OVERLOADING"):
+                    log.info("ALONGSIDE from where the rig stands: %s", failure.code)
+                    if not (failure.code.startswith("ALONGSIDE_") or failure.code == "NOT_OVERLOADING"):
                         raise
+                    if failure.code == "NOT_OVERLOADING":
+                        self.world.pipe(combine.id, True, combine_owner)
+            # The combine stays where it is: with no way under its pipe there the player is told
+            # (moving the combine around and trying again was the circling the user saw).
+            for _ in range(0 if done is not None else 1):
+                # The trailer's middle (its size box centre) relative to the tractor's AI root, along the tractor.
+                tx, tz = math.sin(tractor.heading), math.cos(tractor.heading)
+                fx, fz = math.sin(trailer.heading), math.cos(trailer.heading)
+                middle = (trailer.position[0] + fx * trailer.size[3], trailer.position[1] + fz * trailer.size[3])
+                behind = (middle[0] - tractor.ai_root.x) * tx + (middle[1] - tractor.ai_root.z) * tz
+                cx, cz = math.sin(combine.heading or 0.0), math.cos(combine.heading or 0.0)
+                done = None
+                # From behind the combine first, then from its front facing against it (live 7b52570db6ee40d0-1:
+                # the lane behind blocked by a dropped seeder, ALONGSIDE_PATH_BLOCKED both times).
+                for run_up, way in [(r, 1) for r in self.OVERLOAD_RUN_UPS_M] + [(r, -1) for r in self.OVERLOAD_RUN_UPS_M]:
+                    # GIANTS GOTO to the pipe's line, the trailer's middle run_up before the pipe point
+                    # (GIANTS will not take a spot right under it); then ALONGSIDE straight forward.
+                    ahead = way * (-run_up - behind)
+                    aim = Pose(combine.pipe[1] + cx * ahead, combine.pipe[2] + cz * ahead,
+                               (combine.heading or 0.0) + (0.0 if way > 0 else math.pi))
+                    enter("APPROACH")
+                    moved = True
+                    try:
+                        # Farmhand's own drive onto the run-up at its heading first (live
+                        # ae9262cb2492470b-1: GIANTS GOTO ended there turned 178 degrees, the trailer bent 140,
+                        # ALONGSIDE_NOT_LINED_UP twice); GIANTS GOTO if it finds no route.
+                        if not self._farm_staged(tractor.id, aim, owner):
+                            self._navigate(tractor.id, aim, owner, free=False)
+                        self._settled_transport(rig_ids)
+                        enter("ALONGSIDE")
+                        self.world.alongside(tractor.id, combine.id, owner, combine_owner)
+                        self._settled_transport(rig_ids)
+                        enter("OVERLOAD")
+                        done = self.world.overload(combine.id, trailer.id, combine_owner)
+                        break
+                    except StepFailed as failure:
+                        log.info("OVERLOAD run-up %.0f m, aim %s: %s", run_up, aim, failure.code)
+                        if not (failure.code.startswith(("ALONGSIDE_", "NAVIGATE_")) or failure.code == "NOT_OVERLOADING"):
+                            raise
+                        if failure.code == "NOT_OVERLOADING":
+                            self.world.pipe(combine.id, True, combine_owner)
+                if done is not None:
+                    break
             if done is None:
                 raise StepFailed("NOT_UNDER_THE_PIPE")
             # On past the combine, the pipe still out (live 15dbb6c7eb994721-1: GIANTS would not
@@ -2091,12 +2141,41 @@ class Executor:
         True once it arrived; False (nothing driven, or no route) for GIANTS' stage."""
         if not self._farm_drives():
             return False
+        # The aim is a pose of GIANTS' AI root (what GOTO steers); Farmhand's drive steers the
+        # vehicle's root, metres from it along its heading (live ae9262cb2492470b-1: the trailer
+        # 25.8 m from the pipe, over ALONGSIDE's 25 m). The same offset, at the aim's heading.
+        target = (pose.x, pose.z)
+        tractor = next((i for i in self.world.snapshot() if i.id == tractor_id), None)
+        if tractor is not None and tractor.ai_root is not None and tractor.heading is not None and math.isfinite(tractor.heading):
+            hx, hz = math.sin(tractor.heading), math.cos(tractor.heading)
+            ahead = (tractor.ai_root.x - tractor.position[0]) * hx + (tractor.ai_root.z - tractor.position[1]) * hz
+            if math.isfinite(ahead) and abs(ahead) < 10:
+                target = (pose.x - math.sin(pose.yaw) * ahead, pose.z - math.cos(pose.yaw) * ahead)
+        # Towing, the last STRAIGHT_LEAD_M come straight along the aim's heading, so what it tows
+        # falls in line behind it (live b46c3abddb2b4cee-1: at the run-up the tractor at its heading, the
+        # trailer bent 50-69 degrees, ALONGSIDE_RIG_NOT_STRAIGHT). Without room for that run-in,
+        # the aim directly.
+        towing = any(i.attached_to == tractor_id for i in self.world.snapshot())
+        if towing:
+            lead = (target[0] - math.sin(pose.yaw) * STRAIGHT_LEAD_M, target[1] - math.cos(pose.yaw) * STRAIGHT_LEAD_M)
+            try:
+                self.world.farm_drive(tractor_id, lead, owner, 0.0, pose.yaw)
+            except StepFailed as failure:
+                log.info("STAGE aim %s: no straight run-in (%s); the aim directly", pose, failure.code)
+                self._standing(tractor_id)
         try:
-            self.world.farm_drive(tractor_id, (pose.x, pose.z), owner, 0.0, pose.yaw)
+            self.world.farm_drive(tractor_id, target, owner, 0.0, pose.yaw)
         except StepFailed as failure:
             log.info("STAGE aim %s by Farmhand's own drive: %s; GIANTS stages", pose, failure.code)
+            self._standing(tractor_id)
             return False
         return True
+
+    def _standing(self, vehicle_id: str) -> None:
+        """Until a drive that just ended stands, before the next try (live 46b3e43ac1da4902-1: the
+        retry and GIANTS' stage both refused NOT_STOPPED while it rolled to a stop)."""
+        if hasattr(self.world, "await_stopped"):
+            self.world.await_stopped(vehicle_id)
 
     def _farm_drives(self) -> bool:
         """The world has Farmhand's own drive (the game link; not every test world)."""

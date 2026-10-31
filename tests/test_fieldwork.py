@@ -1077,6 +1077,154 @@ class UnloadAndSellTests(unittest.TestCase):
         world.mock_sell_at = (900.0, 900.0)
         return world
 
+    def test_the_trailer_is_driven_onto_the_pipes_run_up_at_the_combines_heading(self):
+        # Live ae9262cb2492470b-1: GIANTS GOTO ended at the run-up turned 178 degrees, the trailer
+        # bent 140 (ALONGSIDE_NOT_LINED_UP twice). Farmhand's own drive, at its heading, first.
+        from protocol.model import Pose
+        calls = []
+
+        aims, targets = [], []
+
+        class Goto(CoordinatedWorld):
+            def navigate(self, tractor_id, pose, owner):
+                aims.append(pose)
+                return super().navigate(tractor_id, pose, owner)
+
+        class Driving(CoordinatedWorld):
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                calls.append((vehicle_id, yaw))
+                targets.append(target)
+                # Arrives with its root at the target, so its AI root (3 m ahead) at the aim.
+                pose = Pose(target[0] + math.sin(yaw) * 3.0, target[1] + math.cos(yaw) * 3.0, yaw)
+                return super().navigate(vehicle_id, pose, owner)
+
+        def rigged(cls):
+            world = self.full_combine_world()
+            world.__class__ = cls
+            t = world.items["t-5"]
+            # GIANTS' AI root 3 m ahead of the vehicle's root (live: metres apart).
+            world.items["t-5"] = replace(t, ai_root=Pose(t.position[0] + math.sin(t.heading) * 3.0,
+                                                         t.position[1] + math.cos(t.heading) * 3.0, t.heading))
+            return world
+        world = rigged(Goto)                     # where GIANTS GOTO is aimed (its AI root)
+        c, _ = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        world = rigged(Driving)
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "COMBINE_UNLOADED"), (c.last, notices))
+        heading = world.items["c-1"].heading or 0.0
+        self.assertIn(("t-5", heading), calls)
+        # The drive's target is the run-up aim moved back by the root's 3 m (live ae9262cb2492470b-1:
+        # aimed with the root, the trailer stopped 25.8 m from the pipe, over ALONGSIDE's 25 m).
+        aim = aims[0]
+        self.assertAlmostEqual(math.dist(targets[1], (aim.x, aim.z)), 3.0, places=6)
+        # Towing, it comes the last 12 m straight along the heading first (live b46c3abddb2b4cee-1:
+        # the trailer bent 50-69 degrees at the run-up, ALONGSIDE_RIG_NOT_STRAIGHT).
+        self.assertAlmostEqual(math.dist(targets[0], targets[1]), 12.0, places=6)
+        dx, dz = targets[1][0] - targets[0][0], targets[1][1] - targets[0][1]
+        self.assertAlmostEqual(math.atan2(dx, dz), heading, places=6)
+
+    def test_with_the_lane_behind_the_combine_blocked_the_trailer_comes_from_its_front(self):
+        # Live 7b52570db6ee40d0-1: a dropped seeder in the lane behind the combine,
+        # ALONGSIDE_PATH_BLOCKED at both run-ups; from its front, facing against it.
+        aims = []
+
+        class Lane(CoordinatedWorld):
+            def navigate(self, tractor_id, pose, owner):
+                aims.append(pose)
+                return super().navigate(tractor_id, pose, owner)
+
+            def alongside(self, tractor_id, combine_id, owner, combine_owner, *args, **kwargs):
+                if len(aims) <= len(Executor.OVERLOAD_RUN_UPS_M):
+                    raise StepFailed("ALONGSIDE_PATH_BLOCKED")
+                return super().alongside(tractor_id, combine_id, owner, combine_owner, *args, **kwargs)
+
+        world = self.full_combine_world()
+        world.__class__ = Lane
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "COMBINE_UNLOADED"), (c.last, notices))
+        heading = world.items["c-1"].heading or 0.0
+        n = len(Executor.OVERLOAD_RUN_UPS_M)
+        self.assertTrue(all(abs(a.yaw - heading) < 1e-9 for a in aims[:n]))            # behind it first
+        self.assertAlmostEqual(aims[n].yaw, heading + math.pi)                        # then from its front
+
+    def test_with_no_way_under_the_pipe_it_tries_twice_and_says_why_moving_nothing_else(self):
+        # The user, 2026-10-31: "farmhand is just out here driving the equipment around in circles
+        # it has lined up 5 or 6 times". Once from behind, once from the front; the combine is
+        # never driven around; then the player is told.
+        events = []
+
+        class Pocket(CoordinatedWorld):
+            def reposition(self, vehicle_id, owner):
+                events.append(("reposition", vehicle_id))
+
+            def alongside(self, tractor_id, combine_id, owner, combine_owner, *args, **kwargs):
+                events.append(("alongside",))
+                raise StepFailed("ALONGSIDE_PATH_BLOCKED")
+
+        world = self.full_combine_world()
+        world.__class__ = Pocket
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("FAILED", "NOT_UNDER_THE_PIPE"), (c.last, notices))
+        # From where the rig stands (nothing moves when refused), then once behind and once in front.
+        self.assertEqual(events, [("alongside",)] * 3)
+
+    def test_a_pipe_folded_after_the_dry_try_where_the_rig_stood_goes_out_again(self):
+        # Live 78d50d7a616a49db-3: nothing under the pipe where the rig stood (NOT_OVERLOADING);
+        # let go idle the combine folded its pipe and ALONGSIDE refused PIPE_NOT_OUT.
+        class Folding(CoordinatedWorld):
+            def overload(self, combine_id, trailer_id, owner):
+                try:
+                    return super().overload(combine_id, trailer_id, owner)
+                except StepFailed:
+                    c = self.items[combine_id]
+                    self.items[combine_id] = replace(c, pipe=(False,) + tuple(c.pipe[1:]))
+                    raise
+
+            def alongside(self, tractor_id, combine_id, owner, combine_owner, *args, **kwargs):
+                if not self.items[combine_id].pipe[0]:
+                    raise StepFailed("PIPE_NOT_OUT")
+                return super().alongside(tractor_id, combine_id, owner, combine_owner, *args, **kwargs)
+
+        world = self.full_combine_world()
+        world.__class__ = Folding
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "COMBINE_UNLOADED"), (c.last, notices))
+
+    def test_a_rig_already_under_the_pipe_unloads_where_it_stands(self):
+        # The user, 2026-10-31: "the tractor and trailer are in the correct place at the moment
+        # for unloading": GIANTS' own discharge from there, nothing driven.
+        from protocol.model import Pose
+        from simulator.world import MOCK_PIPE_REACH_M
+        world = self.full_combine_world()
+        combine = world.items["c-1"]
+        t, w = world.items["t-5"], world.items["w-5"]
+        # The trailer's middle right under where the pipe reaches (to the combine's left), the
+        # tractor ahead of it, both along the combine.
+        pipe = Pose(*combine.position, combine.heading or 0.0).to_world(-MOCK_PIPE_REACH_M, 0.0)
+        heading = combine.heading or 0.0
+        tractor_at = Pose(*pipe, heading).to_world(0.0, 7.0 - w.size[3])
+        world.items["t-5"] = replace(t, position=tractor_at, heading=heading, ai_root=Pose(*tractor_at, heading))
+        world.items["w-5"] = replace(w, position=Pose(*tractor_at, heading).to_world(0.0, -7.0), heading=heading)
+        drives = []
+        world.farm_drive = lambda *a, **k: drives.append(a)
+        world.navigate = lambda *a, **k: drives.append(a)
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "COMBINE_UNLOADED"), (c.last, notices))
+        self.assertEqual(drives, [])
+        self.assertEqual(world.items["c-1"].fill_units[1].level, 0.0)
+
     def test_per_job_pay_is_charged_for_a_completed_job_that_worked_equipment(self):
         # The user, 2026-10-30: pay per job.
         charges = []
@@ -1307,6 +1455,32 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "COMBINE_UNLOADED"), (c.last, notices))
         self.assertEqual(world.items["w-5"].attached_to, "t-5")
         self.assertIsNone(world.items["w-far"].attached_to)
+
+    def test_a_trailer_that_cannot_be_lined_up_is_passed_for_the_next_one(self):
+        # Live ad2bdc29c456469f-1: the Titan trailer on a loading pad, the bounded steps STALLED
+        # there; the next trailer is taken, as a person would.
+        class Stalls(CoordinatedWorld):
+            def align(self, tractor_id, wagon_id, *args, **kwargs):
+                if wagon_id == "w-far":
+                    raise StepFailed("STALLED")
+                return super().align(tractor_id, wagon_id, *args, **kwargs)
+
+        world = self.full_combine_world()
+        world.__class__ = Stalls
+        t, w = world.items["t-5"], world.items["w-5"]
+        world.items["t-5"] = replace(t, attached_to=None, name="3650",
+                                     output_joints=(OutputJoint(2, "trailer", 0.0, -2.0, True),))
+        far, near = (100.0, -200.0), (200.0, 70.0)
+        world.items["w-far"] = replace(w, id="w-far", attached_to=None, name="Titan Trailer", position=far, heading=0.0,
+                                       fill_units=(FillUnit(1, None, 0.0, 30000.0, frozenset({"WHEAT"})),),
+                                       input_joints=(InputJoint(1, "trailer", (far[0], far[1] + 3.0), True),))
+        world.items["w-5"] = replace(w, attached_to=None, name="EDK 650", position=near, heading=0.0,
+                                     input_joints=(InputJoint(1, "trailer", (near[0], near[1] + 3.0), True),))
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "COMBINE_UNLOADED"), (c.last, notices))
+        self.assertEqual(world.items["w-5"].attached_to, "t-5")
 
     def test_a_trailer_bought_after_three_out_of_reach_is_its_own_request(self):
         # Live 5aafb45731a844eb-1: the third trailer tried and the bought one shared a request

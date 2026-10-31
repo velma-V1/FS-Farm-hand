@@ -2145,8 +2145,13 @@ class PipeOverloadTests(unittest.TestCase):
                 if who is None:
                     self.lua.eval("function(B, env, task) B.abort(env, task, 'STOPPED') end")(self.bridge, self.env, task)
                 else:
+                    # Sitting in it is no takeover (the user, 2026-10-31: "im sitting in the combine
+                    # but that should not stop farmhand"); driving it is.
                     getattr(self.env, who).entered = True
+                    self.assertEqual(tuple(self.step(self.bridge, self.env, task, 16))[:1], (None,))
+                    self.lua.eval("function(B, v) B.Hitch.takeovers[v] = true end")(self.bridge, getattr(self.env, who))
                     self.assertEqual(tuple(self.step(self.bridge, self.env, task, 16)), ("FAILED", "DRIVER_TOOK_OVER"))
+                    self.lua.eval("function(B, v) B.Hitch.takeovers[v] = nil end")(self.bridge, getattr(self.env, who))
                 self.assertEqual(self.env.c.spec_pipe.targetState, 1)
                 self.assertNotEqual(self.env.c.forceIsActive, True)
 
@@ -2177,6 +2182,31 @@ class PipeOverloadTests(unittest.TestCase):
         c.level = 9000                                         # nothing flows: not under the pipe
         task, _ = self.start(self.bridge, self.env, "overload", 0)
         self.assertEqual(tuple(self.step(self.bridge, self.env, task, 16000)), ("FAILED", "NOT_OVERLOADING"))
+
+    def test_the_trailers_cover_is_opened_for_the_overload_and_closed_again(self):
+        # Live 2026-10-31 (save 1, the user): "the cover is still on the trailer so it cant
+        # overload". As GIANTS' own AI loading: Cover:aiPrepareLoading opens the fill unit's
+        # cover, aiFinishLoading closes it; the idle time counts only once it stands open.
+        c, t = self.env.c, self.env.t
+        self.lua.execute("""local t = ...
+            t.spec_cover = { hasCovers = true, state = 0, runningAnimations = {} }
+            t.coverStates = {}
+            function t:getCoverByFillUnitIndex(i) return i == 1 and { index = 1 } or nil end
+            function t:setCoverState(s) self.spec_cover.state = s; self.coverStates[#self.coverStates + 1] = s
+                self.spec_cover.runningAnimations = { {} } end""", t)
+        c.spec_pipe.currentState = 2
+        task, _ = self.start(self.bridge, self.env, "overload", 0)
+        self.assertEqual(t.spec_cover.state, 1)                              # opened before anything flows
+        self.assertEqual(tuple(self.step(self.bridge, self.env, task, 16000))[:1], (None,))   # still opening
+        t.spec_cover.runningAnimations = self.lua.table()
+        c.level, t.levels[1] = 0, 9000
+        self.assertEqual(tuple(self.step(self.bridge, self.env, task, 1000)), ("DONE", "EMPTIED"))
+        self.assertEqual(list(t.coverStates.values()), [1, 0])               # and closed again
+        t.spec_cover.state = 1                                               # already open: left as it is
+        c.level = 9000
+        task, _ = self.start(self.bridge, self.env, "overload", 0)
+        self.lua.eval("function(B, env, task) B.abort(env, task, 'STOPPED') end")(self.bridge, self.env, task)
+        self.assertEqual(list(t.coverStates.values()), [1, 0])
 
 
 class GiantsDeliverTests(unittest.TestCase):

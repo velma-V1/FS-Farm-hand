@@ -1831,6 +1831,39 @@ end
 
 function aborts.pipe() end           -- GIANTS finishes the pipe move it started; nothing drives
 
+-- The trailer's cover opened for the discharge the way GIANTS' own AI loading does it
+-- (Cover:aiPrepareLoading: getCoverByFillUnitIndex(i) -> setCoverState(cover.index)) and put
+-- back afterwards (Cover:aiFinishLoading: setCoverState(0) when it was closed). Live 2026-10-31
+-- (save 1, the user): "the cover is still on the trailer so it cant overload". The state it had,
+-- or nil (no cover, or already open).
+function Bridge.openCover(trailer)
+    local spec = trailer.spec_cover
+    if spec == nil or spec.hasCovers ~= true or type(trailer.getCoverByFillUnitIndex) ~= "function" then return nil end
+    for i in ipairs(trailer:getFillUnits()) do
+        local cover = trailer:getCoverByFillUnitIndex(i)
+        if cover ~= nil then
+            if spec.state == cover.index then return nil end
+            local before = spec.state
+            trailer:setCoverState(cover.index)
+            return before
+        end
+    end
+    return nil
+end
+
+local function restoreCover(task)
+    local trailer = task.spec.wagon
+    if task.coverBefore ~= nil and trailer.spec_cover ~= nil then
+        pcall(function() trailer:setCoverState(task.coverBefore) end)
+        task.coverBefore = nil
+    end
+end
+
+local function coverMoving(trailer)
+    local spec = trailer.spec_cover
+    return spec ~= nil and type(spec.runningAnimations) == "table" and #spec.runningAnimations > 0
+end
+
 function starters.overload(env, spec)
     if spec.owned() ~= true or spec.tractor.ownerFarmId ~= spec.farmId then return nil, "RESERVATION_LOST" end
     local v = spec.tractor
@@ -1841,20 +1874,31 @@ function starters.overload(env, spec)
     if level == nil then return nil, "NO_DISCHARGE_NODE" end
     Bridge.MotorState = env.MotorState
     keepPowered(v)
-    log("overload %s into %s from %.0f l", tostring(env.NetworkUtil.getObjectId(v)),
-        tostring(env.NetworkUtil.getObjectId(spec.wagon)), level)
-    return { start = level, last = level, lastAt = 0, flowed = false }
+    -- A seated player only watches (the user, 2026-10-31: "im sitting in the combine but that
+    -- should not stop farmhand"); their own controls take over (Hitch.driverConflict).
+    Bridge.Hitch.watchDriver(env, v)
+    Bridge.Hitch.watchDriver(env, spec.wagon.rootVehicle or spec.wagon)
+    local coverBefore = Bridge.openCover(spec.wagon)
+    log("overload %s into %s from %.0f l%s", tostring(env.NetworkUtil.getObjectId(v)),
+        tostring(env.NetworkUtil.getObjectId(spec.wagon)), level, coverBefore ~= nil and " (its cover opened)" or "")
+    return { start = level, last = level, lastAt = 0, flowed = false, coverBefore = coverBefore }
 end
 
-function steppers.overload(_env, task)
+function steppers.overload(env, task)
+    local status, code = Bridge.stepOverload(env, task)
+    if status ~= nil then restoreCover(task) end
+    return status, code
+end
+
+function Bridge.stepOverload(_env, task)
     if task.spec.owned() ~= true then return "FAILED", "RESERVATION_LOST" end
     local v, trailer = task.spec.tractor, task.spec.wagon
-    -- The player in the combine or in the tractor under its pipe: theirs now (aborts fold the pipe).
+    -- The player driving the combine or the tractor under its pipe: theirs now (aborts fold the
+    -- pipe). Sitting in either is no takeover.
     local rig = trailer.rootVehicle or trailer
-    if (v.getIsEntered ~= nil and v:getIsEntered() == true) or (rig.getIsEntered ~= nil and rig:getIsEntered() == true) then
-        return "FAILED", "DRIVER_TOOK_OVER"
-    end
+    if Bridge.Hitch.takeovers[v] or Bridge.Hitch.takeovers[rig] then return "FAILED", "DRIVER_TOOK_OVER" end
     keepPowered(v)
+    if coverMoving(trailer) then task.lastAt = task.elapsed end      -- the cover still opening
     local level = dischargeFill(v)
     if level == nil then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
     if level < task.last - 1 then task.last, task.lastAt, task.flowed = level, task.elapsed, true end
@@ -1880,6 +1924,7 @@ function aborts.overload(_env, task)
     local v = task.spec.tractor
     v.forceIsActive = false
     pcall(function() v:setPipeState(1) end)
+    restoreCover(task)
 end
 
 -- ------------------------------------------------------------------ belts

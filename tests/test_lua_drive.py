@@ -1444,6 +1444,23 @@ class FrameBudgetTests(unittest.TestCase):
         starts = [l for l in self.lines if "drive starting corridor section" in l]
         self.assertEqual(len(starts), 1, self.lines[-5:])
 
+    def test_a_player_seated_in_another_vehicle_is_no_person_on_foot(self):
+        # Live 46b3e43ac1da4902-1: the player in the combine, the trailer's approach beside it
+        # ended PERSON_TOO_CLOSE. GIANTS' Player:getIsInVehicle, as Hitch's surroundings.
+        codes = {}
+        for seated in (True, False):
+            lua, drive = self.runtime()
+            env, args, hitch, _ = lua.execute(self.WORLD, None)
+            env.g_localPlayer = lua.eval("""function(seated) return {
+                getPosition=function() return 1,0,1 end,
+                getIsInVehicle=function() return seated end} end""")(seated)
+            session, reason = drive.begin(env, args, hitch)
+            self.assertIsNone(reason)
+            codes[seated] = drive.step(env, session, 16, hitch)
+        self.assertNotEqual(codes[True], "PERSON_TOO_CLOSE")
+        self.assertEqual(codes[False], "PERSON_TOO_CLOSE")
+
+
     def test_stop_while_a_search_continues_ends_it(self):
         lua, drive = self.runtime()
         env, args, hitch, _ = lua.execute(self.WORLD, 0.004)

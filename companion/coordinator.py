@@ -1515,10 +1515,13 @@ class Coordinator:
             return sum((u.capacity or 0.0) - (u.level or 0.0) for u in t.fill_units
                        if (crop in u.supported if crop else any(f not in self.executor.NOT_CARGO for f in u.supported))
                        and (not u.level or u.fill_type == crop))
+        # The nearest usable trailer first (the user, 2026-10-30: "every trailer fits under the pipe
+        # on the harvester but one trailer is plenty"); the room it has only breaks ties.
+        near = combine.position if combine is not None else (0.0, 0.0)
         trailers = sorted((t for t in items if usable(t, farm) and t.attached_to is None and "trailer" in t.kinds
                            and t.fill_units and not transport.is_transport(t) and room(t) > 0 and _words(t.name)
                            and t.id not in self._unreachable),
-                          key=lambda t: (-room(t), t.id))
+                          key=lambda t: (math.dist(t.position, near), -room(t), t.id))
         free = [t for t in items if t.category == "tractor" and usable(t, farm) and t.stopped and t.attached_to is None
                 and {"move", "attach", "stop"} <= t.capabilities and _words(t.name)]
         if free:
