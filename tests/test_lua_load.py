@@ -541,6 +541,27 @@ class LuaLoadTests(unittest.TestCase):
                     self.assertIn("first=post", described)
                 self.assertGreater(session.envelopeChecks, 10)
 
+    def test_a_parked_vehicle_beside_it_is_contact_only_when_pushed(self):
+        # Live 2026-10-31: the MT635 parked beside the GMC met the Series 9's size box near the
+        # ground and stopped every load; the user: "its still just the other tractor sitting
+        # there". Its box is no contact; that vehicle moved by the rig is.
+        for push, expected in ((0.0, "LOADED"), (0.2, "ENVELOPE_CONTACT")):
+            with self.subTest(push=push):
+                w = self.world(plow=PLOW)
+                x0, z0 = w.steer.x, w.steer.z
+                session, why, _ = self.start(w)
+                self.assertIsNotNone(session, why)
+                parked = []
+
+                def hook(i, w=w, x0=x0, z0=z0, push=push):
+                    if i == 20:
+                        a, _ = self.W.travel(w, x0, z0)
+                        parked.append(w.vehicle(a - 3.75, 2.2, 1.5, 2.5))
+                    if i == 30 and push:
+                        parked[0].rootNode.x = parked[0].rootNode.x + push
+                code, _ = self.drive(w, session, hook=hook)
+                self.assertEqual(code, expected, self.hitch.describeEnvelope(session))
+
     def test_the_ground_under_a_pitched_unit_is_not_contact_but_something_standing_is(self):
         # Live bc5716eb69e74af4-1: at 14 degrees on the ramps the Series 9's size-box floor was
         # 0.32 m under the yard's paving (a static mesh), "contact" with the paving only. The
@@ -622,10 +643,10 @@ class LuaBackOffTests(unittest.TestCase):
         w = self.world()
         w.box(-9.0, -7.0, -1.0, 1.0, 0, 2.0, None, "wall")          # behind it
         self.assertEqual(tuple(self.back(w))[1], "BACKOFF_PATH_BLOCKED")
-        w = self.world()
-        w.vehicle(-8.0, 4.0)                                         # another vehicle beside the way back
-        self.assertEqual(tuple(self.back(w))[1], "BACKOFF_BLOCKED")
         self.assertEqual(self.drives(w), [])
+        w = self.world()
+        w.vehicle(-8.0, 4.0)                                         # a parked vehicle beside the way back
+        self.assertIsNotNone(tuple(self.back(w))[0])                 # does not block it (the user, 2026-10-31)
 
     def test_stops_braked_if_the_transport_moves(self):
         w = self.world()

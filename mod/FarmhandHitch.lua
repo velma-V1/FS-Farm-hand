@@ -346,6 +346,7 @@ end
 -- The shares since live 1b18d8f457ce42fe-1 (0.85 / 0.9 / 0.97 until then): LOAD's run-in hunted
 -- +-0.5 km/h about its target (0.25 s readings 1.58-2.79) and touched 3.03 just after the soft start.
 Hitch.SPEED = { windowMs = 250, commandShare = 0.65, coastShare = 0.8, brakeShare = 0.9,
+                overHoldMs = 300, overHardShare = 1.2,
                 traceMs = 500, traceMax = 240,
                 -- Downhill in the direction of travel (live c696741383fe4388-1: UNLOAD rolling off
                 -- the ramps' foot backwards went 2.88 -> 3.04 km/h while only coasting): it brakes
@@ -422,8 +423,18 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
     -- c8668155205849e2-1 it read 2.56, 0.88, 1.50, 3.22 km/h 0.12 s apart while the root
     -- travelled 0.04-0.07 m in each (1.2-2.2 km/h).
     local mode = "drive"
+    -- Over the limit for overHoldMs, or past it by overHardShare at once: OVERSPEED. A single
+    -- 250 ms reading just over it brakes instead (live 2026-10-31: LOAD ended at 3.01 km/h of 3.0,
+    -- one sample up from 1.35 as the tractor met the ramps).
     if v ~= nil and v > cap then
+        s.overSince = s.overSince or (s.elapsed or 0)
+    else
+        s.overSince = nil
+    end
+    if v ~= nil and v > cap and (v > cap * S.overHardShare or (s.elapsed or 0) - s.overSince >= S.overHoldMs) then
         mode = "over"
+    elseif v ~= nil and v > cap then
+        mode = "brake"
     elseif v ~= nil and (v > cap * S.brakeShare or (s.commandKmh ~= nil and v > command + 1)
             or (downhill and v > command)) then
         mode = "brake"
@@ -774,7 +785,7 @@ end
 -- transport and the terrain (else ENVELOPE_CONTACT, braked), `nearM` wider is recorded
 -- (how often and what came that close). The swept-volume checks before and ahead plan the
 -- motion; this observes the clearance the rig actually kept, mounted implement included.
-Hitch.ENVELOPE = { checkMs = 100, contactM = 0.15, nearM = 0.5, clearanceM = 0.3 }
+Hitch.ENVELOPE = { checkMs = 100, contactM = 0.15, nearM = 0.5, clearanceM = 0.3, pushedM = 0.05 }
 
 -- A loose sign or cone: a shape with no vehicle or object of its own, a dynamic rigid body
 -- with DYNAMIC_OBJECT collision. AutoDrive keeps driving through exactly these ("probably a
@@ -1109,6 +1120,29 @@ function Hitch.envelope(env, s)
         end
         local hits = unitEnvelope(env, excluded, unit, E.contactM, s.masks.obstacles)
         if hits == nil then return "UNKNOWN_OBSERVATION" end
+        if s.pushedOnly and #hits > 0 then
+            -- LOAD / UNLOAD / BACKOFF: another vehicle's size box is no contact (the user, 2026-10-31:
+            -- the MT635 parked beside the GMC "is not in the way", its box met the Series 9's duals
+            -- near the ground only); that vehicle pushed more than pushedM is.
+            local kept = {}
+            for _, nodeId in ipairs(hits) do
+                local object = env.g_currentMission:getNodeObject(nodeId)
+                local vehicle = object ~= nil and (object.rootVehicle or object) or nil
+                if vehicle ~= nil and vehicle.rootNode ~= nil then
+                    local vx, _, vz = world(env, vehicle.rootNode)
+                    s.pushWatch = s.pushWatch or {}
+                    local first = s.pushWatch[vehicle]
+                    if first == nil then
+                        s.pushWatch[vehicle] = { vx, vz }
+                    elseif math.sqrt((vx - first[1]) ^ 2 + (vz - first[2]) ^ 2) > E.pushedM then
+                        kept[#kept + 1] = nodeId
+                    end
+                else
+                    kept[#kept + 1] = nodeId
+                end
+            end
+            hits = kept
+        end
         if #hits > 0 then
             -- Diagnostics: the same box from 0.5 m higher; clear there, the contact is near the
             -- ground only (a surface, a kerb), else something standing (a wall, a vehicle).
@@ -2694,6 +2728,7 @@ Hitch.LOAD = {
     divergeM = 0.3,           -- while moving: farther off the axis is DIVERGED (the ramps)
     lookaheadM = 3,
     lateralMarginM = 0.5, floorClearanceM = 0.3, topMarginM = 0.3, stepM = 0.5,
+    overhangM = 1.0,          -- the rig's width on the axis: at most the deck's half width plus this
     aheadEndM = 0.5,          -- the swept volume ends this far past where the tractor stops
     minLookaheadM = 2, reactionS = 1, decelMs2 = 1,
     rampsDownTime = 1,        -- Foldable fold time of ramps down (FS25_UGR1124 brandtTrailer.xml 283-337)
@@ -2795,8 +2830,11 @@ local function loadVolume(env, s, a0, a1)
     local function part(b0, b1, l0, l1)
         if b1 - b0 <= 1e-6 then return nil end
         s.lMin, s.lMax = l0, l1
+        -- Static obstacles only: other vehicles' size boxes overstate them (live 2026-10-31, the
+        -- MT635 3 m off the line refused every time; the user: "farmhand has room"); a vehicle
+        -- really in the way is met by the envelope watch at 3 km/h, braked on contact.
         local hit, names = clearVolume(env, s, b0, b1, D.lateralMarginM, D.stepM, D.floorClearanceM,
-                                       s.rigBox.height + s.deck.height + D.topMarginM, s.masks.obstacles)
+                                       s.rigBox.height + s.deck.height + D.topMarginM, s.masks.static or s.masks.obstacles)
         s.lMin, s.lMax = lMin, lMax
         return hit, names
     end
@@ -2818,7 +2856,7 @@ function Hitch.newLoad(env, args)
             or type(args.isReserved) ~= "function" then
         return nil, "INVALID_LIMITS"
     end
-    local s = { tractor = args.tractor, wagon = args.trailer, trailer = args.trailer, farmId = args.farmId,
+    local s = { tractor = args.tractor, wagon = args.trailer, trailer = args.trailer, farmId = args.farmId, pushedOnly = true,
                 isReserved = args.isReserved, maxSpeedKmh = speed, timeoutMs = timeout, sign = sign, elapsed = 0,
                 sinceProgress = 0, best = 0, result = nil, others = {} }
     local ok, reason = pcall(function()
@@ -2929,8 +2967,16 @@ function Hitch.newLoad(env, args)
         for _, unit in ipairs(units) do
             s.halfWidth = math.max(s.halfWidth, unit.size.width / 2 + math.abs(unit.size.widthOffset or 0))
         end
-        s.lMin = math.min(rigBox.lMin, -s.halfWidth)
-        s.lMax = math.max(rigBox.lMax, s.halfWidth)
+        -- GIANTS' size box overstates some bodies (live 2026-10-31: the Series 9 5.46 m wide on a
+        -- 2.67 m deck, LOAD_PATH_BLOCKED by a tractor parked close beside; the user: "close, not in
+        -- the way"): at most the deck's half width plus D.overhangM. Real contact during the motion
+        -- still stops it (the envelope watch).
+        s.halfWidth = math.min(s.halfWidth, (deck.lMax - deck.lMin) / 2 + D.overhangM)
+        -- The run-in corridor: from the tractor's own lateral place onto the axis, at that capped
+        -- width (live 2026-10-31: the size box's 5.46 m reached the MT635 parked 3 m off the line).
+        local lateral = s.startLateral or 0
+        s.lMin = math.min(-s.halfWidth, lateral - s.halfWidth)
+        s.lMax = math.max(s.halfWidth, lateral + s.halfWidth)
         if not s.runIn then s.lMin, s.lMax = rigBox.lMin, rigBox.lMax end
         local okMasks, masks = pcall(collisionMasks, env)
         if not okMasks then return "LOAD_QUERY_UNKNOWN" end
@@ -2953,8 +2999,11 @@ function Hitch.newLoad(env, args)
         local okAround, others, player = pcall(loadSurroundings, env, s)
         if not okAround then return "LOCAL_AREA_UNKNOWN" end
         s.others, s.player = others, player
+        -- Other parked vehicles do not block loading or unloading (the user, 2026-10-31: "can you
+        -- not just disable the blockers while loading and unloading?"): a person still does, and
+        -- real contact during the motion stops it (the envelope watch).
         local conflict = pullConflict(s, { { s.startAlong, 0 }, { s.startAlong + sign * s.travelM, 0 } },
-                                      Hitch.LOCAL.vehicleClearanceM, Hitch.LOCAL.playerClearanceM)
+                                      0, Hitch.LOCAL.playerClearanceM)
         if conflict == "OTHER_VEHICLE_NEAR" then return "LOAD_BLOCKED" end
         if conflict == "PERSON_TOO_CLOSE" then return "LOAD_PERSON" end
         -- The transport stays where it is: every unit's root watched.
@@ -3015,7 +3064,7 @@ local function loadDrive(env, s, dt)
     end
     local others, player = loadSurroundings(env, s)
     s.others, s.player = others, player
-    local bad = pullConflict(s, { { along, 0 } }, Hitch.LOCAL.vehicleStopM, Hitch.LOCAL.playerStopM)
+    local bad = pullConflict(s, { { along, 0 } }, 0, Hitch.LOCAL.playerStopM)   -- parked vehicles: as at its start
     if bad ~= nil then return bad end
     if progress >= s.travelM then return s.sign > 0 and "LOADED" or "UNLOADED" end
     -- Past the leading end: the stopping distance, never past the planned volume's end.
@@ -3106,15 +3155,17 @@ Hitch.BACKOFF = {
 
 local function backoffVolume(env, s, a0, a1)
     local D = Hitch.BACKOFF
+    -- Static obstacles only, as LOAD (live 2026-10-31: BACKOFF_PATH_BLOCKED behind the Series 9 sent it
+    -- round by GIANTS' GOTO); a vehicle really behind it is met by the envelope watch at 3 km/h.
     return clearVolume(env, s, a0, a1, D.lateralMarginM, D.stepM, D.floorClearanceM, s.rigBox.height + D.topMarginM,
-                       s.masks.obstacles)
+                       s.masks.static or s.masks.obstacles)
 end
 
 -- `args`: tractor, trailer (the transport it waits behind), farmId, isReserved. A session, or
 -- nil, a reason and the half-built session (for the log).
 function Hitch.newBackOff(env, args)
     local D = Hitch.BACKOFF
-    local s = { tractor = args.tractor, wagon = args.trailer, trailer = args.trailer, farmId = args.farmId,
+    local s = { tractor = args.tractor, wagon = args.trailer, trailer = args.trailer, farmId = args.farmId, pushedOnly = true,
                 isReserved = args.isReserved, maxSpeedKmh = D.maxSpeedKmh, timeoutMs = D.timeoutMs, sign = -1,
                 travelM = D.travelM, elapsed = 0, sinceProgress = 0, best = 0, result = nil, others = {} }
     if type(args.isReserved) ~= "function" then return nil, "INVALID_LIMITS" end
@@ -3177,8 +3228,7 @@ function Hitch.newBackOff(env, args)
         local okAround, others, player = pcall(loadSurroundings, env, s)
         if not okAround then return "LOCAL_AREA_UNKNOWN" end
         s.others, s.player = others, player
-        local conflict = pullConflict(s, { { 0, 0 }, { -s.travelM, 0 } }, Hitch.LOCAL.vehicleClearanceM,
-                                      Hitch.LOCAL.playerClearanceM)
+        local conflict = pullConflict(s, { { 0, 0 }, { -s.travelM, 0 } }, 0, Hitch.LOCAL.playerClearanceM)
         if conflict == "OTHER_VEHICLE_NEAR" then return "BACKOFF_BLOCKED" end
         if conflict == "PERSON_TOO_CLOSE" then return "BACKOFF_PERSON" end
         s.watched = {}

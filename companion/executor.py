@@ -1943,6 +1943,17 @@ class Executor:
         if transport.can_run_in(tractor, trailer):
             log.info("APPROACH: LOAD can start where it stands")
             return
+        # Behind the ramps inside LOAD's own straight start window (no extra margin): LOAD from
+        # there, no staging (live 2026-10-31: the Series 9 17 m straight behind the deck was
+        # sent round by GIANTS' GOTO, stalled, blocked; the user: "follow directions").
+        ends, trailer_ends = transport._ends(tractor), transport._ends(trailer)
+        if ends is not None and trailer_ends is not None and tractor.heading is not None and trailer.heading is not None:
+            a, l = transport.to_frame(trailer, tractor.position)
+            if (a + ends[1] < trailer_ends[0] - transport.RAMP_M and abs(l) <= transport.LATERAL_START_M
+                    and _angle(tractor.heading, trailer.heading) <= transport.HEADING_START_RAD):
+                log.info("APPROACH: behind the ramps on the deck's line (%.2f m, %.1f deg); LOAD from here",
+                         l, math.degrees(_angle(tractor.heading, trailer.heading)))
+                return
         if transport.close_behind(tractor, trailer):
             # Right behind the ramps, outside the run-in: straight back first (live
             # 6601d036cf7b4334-1-h2: GIANTS did not start it at the ramps' foot and UNPARK, taking

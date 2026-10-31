@@ -356,6 +356,28 @@ class TractorTransportTests(unittest.TestCase):
         self.assertEqual(calls[0], "backoff")
         self.assertNotIn("unpark", calls)
 
+    def test_a_tractor_far_behind_inside_loads_straight_window_loads_without_any_goto(self):
+        # Live 2026-10-31: the Series 9 17 m behind the deck, 0.34 m off, 4.5 deg turned (inside
+        # LOAD's own straight window) was sent round by GIANTS' GOTO and never loaded.
+        calls = []
+
+        class Recording(MockWorld):
+            def navigate(self, tractor_id, pose, owner):
+                calls.append("navigate")
+                super().navigate(tractor_id, pose, owner)
+
+            def backoff(self, tractor_id, trailer_id, owner):
+                calls.append("backoff")
+                return super().backoff(tractor_id, trailer_id, owner)
+
+        world, tractor, deck, _ = transport_world(cls=Recording, tractor_ahead=-17.0, tractor_side=-0.34)
+        turned = deck.heading + math.radians(4.5)
+        world.items[tractor.id] = replace(world.items[tractor.id], heading=turned,
+                                          ai_root=Pose(*tractor.position, turned))
+        result = Executor(world).execute(load())
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+        self.assertEqual(calls, [])
+
     def test_a_tractor_lined_up_behind_or_up_the_ramps_loads_without_any_goto(self):
         # Live 51899b1bbe434794-1: a STOP left the Series 9 straight with its front over the
         # trailer's rear; the approach still sent GIANTS GOTO, BACKOFF and UNPARK, and failed.
