@@ -93,6 +93,11 @@ class Settings:
         data["ai"] = choice
         self.save(data)
 
+    def teleport_recovery(self) -> bool:
+        """Whether a rig Farmhand cannot move may be teleported to open ground nearby (AGENTS.md
+        19, "allow teleport recovery"; the user turned it on 2026-10-30). Default on."""
+        return self.load().get("teleport_recovery", True) is not False
+
     PAY_MODES = {"none": 0, "hour": 1, "job": 2, "day": 3, "game": 4}
 
     def pay(self) -> tuple[int, float]:
@@ -449,3 +454,127 @@ class AI:
             if not server.ready():
                 return False, "NOT_RUNNING"
         return validate(interpreter)
+
+
+# ---------------------------------------------------------------- settings screen
+# Farmhand's settings screen (the user, 2026-10-30): reached from the command window by typing
+# "settings", or by the settings key. A tree of short lists, each shown in GIANTS' own option
+# dialog by the mod (protocol.ipc encode_menu, at most MAX_MENU lines); a pick goes back to the
+# companion, which applies it to settings.json and shows the next list. Pure: ``open(key)`` gives
+# (title, labels); ``choose(key, index)`` applies a pick and gives the next list's key, or None to
+# close. ``on_change`` runs after a setting changed, so the running world and coordinator use it
+# from the next job on.
+
+PAY_LABELS = (("hour", "per hour"), ("job", "per job"), ("day", "per day"), ("none", "nothing"),
+              ("game", "the game's own wages (GIANTS and AutoDrive)"))
+# Preset amounts per mode; 0 per hour is GIANTS' own helper rate.
+PAY_AMOUNTS = {"hour": (0, 500, 1000, 2000, 3000, 5000), "job": (100, 250, 500, 1000, 2500),
+               "day": (500, 1000, 2500, 5000, 10000)}
+DESTINATIONS = (("sell", "sell it"), ("store", "store it on the farm"), ("keep", "keep it in the trailer"))
+
+
+def _money(amount: float) -> str:
+    return f"{amount:,.0f}"
+
+
+class SettingsMenu:
+    def __init__(self, settings: Settings, ai_menu=None, on_change=None):
+        self.settings = settings
+        self.ai_menu = ai_menu           # opens the AI model list (companion/service.py show_menu)
+        self.on_change = on_change or (lambda: None)
+        self._pay_mode = None            # the mode picked, before its amount
+
+    # ------------------------------------------------------------ lists
+    def pay_text(self) -> str:
+        mode, amount = self.settings.pay()
+        name = {code: name for name, code in Settings.PAY_MODES.items()}[mode]
+        if name in ("none", "game"):
+            return dict(PAY_LABELS)[name]
+        if name == "hour" and amount == 0:
+            return "per hour at GIANTS' rate"
+        return f"{_money(amount)} {dict(PAY_LABELS)[name]}"
+
+    def open(self, key: str) -> tuple[str, list[str]]:
+        s = self.settings
+        if key == "main":
+            data = s.load()
+            buy = "buys only when told" if not data.get("buy_when_needed", False) else "buys what a job needs"
+            return "Farmhand settings", [
+                f"Pay: {self.pay_text()}",
+                f"Teleport a stuck rig: {'on' if s.teleport_recovery() else 'off'}",
+                f"Buying: {buy}",
+                f"Harvest: {dict(DESTINATIONS).get(s.harvest_destination() or 'keep')}",
+                f"Preferred equipment: {len(data.get('preferences', []))} saved",
+                "AI model",
+                "Close",
+            ]
+        if key == "pay":
+            return "Farmhand's pay", [label for _, label in PAY_LABELS] + ["Back"]
+        if key == "pay_amount":
+            amounts = PAY_AMOUNTS[self._pay_mode]
+            labels = [("GIANTS' helper rate" if a == 0 else _money(a)) for a in amounts]
+            return f"Pay {dict(PAY_LABELS)[self._pay_mode]}", labels + ["Back"]
+        if key == "harvest":
+            return "What happens to the harvest", [label for _, label in DESTINATIONS] + ["Back"]
+        if key == "preferences":
+            items = self.settings.load().get("preferences", [])
+            labels = [str(p.get("text", "?"))[:60] for p in items][:MAX_MENU - 2]
+            return "Preferred equipment", labels + ["Clear all", "Back"]
+        raise KeyError(key)
+
+    # ------------------------------------------------------------ picks
+    def choose(self, key: str, index: int) -> str | None:
+        """Apply pick ``index`` (1-based) of list ``key``; the next list's key, or None."""
+        title, labels = self.open(key)
+        if not 1 <= index <= len(labels):
+            return key
+        label = labels[index - 1]
+        if label in ("Back",):
+            return "main"
+        if key == "main":
+            return self._main(index)
+        if key == "pay":
+            mode = PAY_LABELS[index - 1][0]
+            if mode in ("none", "game"):
+                self.settings.set_pay(mode, 0)
+                self.on_change()
+                return "main"
+            self._pay_mode = mode
+            return "pay_amount"
+        if key == "pay_amount":
+            self.settings.set_pay(self._pay_mode, float(PAY_AMOUNTS[self._pay_mode][index - 1]))
+            self.on_change()
+            return "main"
+        if key == "harvest":
+            self.settings.set_harvest_destination(DESTINATIONS[index - 1][0])
+            self.on_change()
+            return "main"
+        if key == "preferences":
+            if label == "Clear all":
+                data = self.settings.load()
+                data["preferences"] = []
+                self.settings.save(data)
+                self.on_change()
+            return "preferences" if label != "Clear all" else "main"
+        return None
+
+    def _main(self, index: int) -> str | None:
+        if index == 2:                                    # teleport recovery on / off
+            data = self.settings.load()
+            data["teleport_recovery"] = not self.settings.teleport_recovery()
+            self.settings.save(data)
+            self.on_change()
+            return "main"
+        if index == 3:                                    # buying only when told / what a job needs
+            data = self.settings.load()
+            data["buy_when_needed"] = not data.get("buy_when_needed", False)
+            self.settings.save(data)
+            self.on_change()
+            return "main"
+        if index == 6:                                    # the AI model list (its own menu)
+            if self.ai_menu is not None:
+                self.ai_menu()
+            return None
+        if index == 7:
+            return None
+        return {1: "pay", 4: "harvest", 5: "preferences"}[index]

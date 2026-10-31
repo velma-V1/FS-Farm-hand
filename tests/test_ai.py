@@ -144,6 +144,9 @@ class SettingsTests(Fixture):
             self.settings.set_pay("hour", -5)
         self.settings.path.write_text(json.dumps({"pay": {"mode": "hour", "amount": "lots"}}))
         self.assertEqual(self.settings.pay(), (1, 0.0))                       # unreadable: the default
+        self.assertTrue(self.settings.teleport_recovery())                    # on unless turned off
+        self.settings.path.write_text(json.dumps({"teleport_recovery": False}))
+        self.assertFalse(self.settings.teleport_recovery())
 
 
 class DiscoveryTests(Fixture):

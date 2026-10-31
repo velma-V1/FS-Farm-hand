@@ -1192,6 +1192,34 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertEqual(world.items["w-5"].attached_to, "t-5")
         self.assertEqual(world.items["w-5"].fill_units[0].level, 9000.0)
 
+    def test_with_no_trailer_it_can_use_farmhand_says_so_and_buys_nothing_untold(self):
+        # The user, 2026-10-30: "the only time farmhand should buy anything is under instructions".
+        from protocol.model import StoreItem
+
+        class Walled(CoordinatedWorld):
+            def stage(self, tractor_id, wagon_id, pose, owner):
+                raise StepFailed("NAVIGATE_GOTO_INVALID")
+
+            def navigate(self, tractor_id, pose, owner):
+                raise StepFailed("NAVIGATE_GOTO_INVALID")
+
+        world = self.full_combine_world()
+        world.__class__ = Walled
+        t, w = world.items["t-5"], world.items["w-5"]
+        world.items["t-5"] = replace(t, attached_to=None, name="MT600 Series",
+                                     output_joints=(OutputJoint(2, "trailer", 0.0, -2.0, True),))
+        world.items["w-5"] = replace(w, attached_to=None, name="EDK 650", position=(100.0, -200.0), heading=0.0,
+                                     input_joints=(InputJoint(1, "trailer", (100.0, -197.0), True),))
+        world.store_items = (StoreItem(37, "Tipper 12", "T", ("TRAILERS",), 6000.0, False, None, None, None,
+                                       capacity=12000.0, fill_types=("WHEAT",)),)
+        money = world.farm().money
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertNotEqual(c.last.state, "COMPLETE")
+        self.assertFalse(any(i.id.startswith("new-") for i in world.items.values()))   # nothing bought
+        self.assertEqual(world.farm().money, money)
+
     def test_with_the_only_trailer_unreachable_a_grain_trailer_is_bought_once_and_used(self):
         # Live 51bff50a47804f8e-1: GIANTS refused every aim on the EDK 650's drawbar side; the
         # 3650 ended behind it (LOCAL_PATH_HITS_WAGON). The job's own requirement is bought, the
@@ -1236,6 +1264,7 @@ class UnloadAndSellTests(unittest.TestCase):
                              StoreItem(37, "Mod Tipper", "M", ("TRAILERS",), 1000.0, True, None, None, None,
                                        capacity=20000.0, fill_types=("WHEAT",)))       # a mod: never for a job
         c, notices = coordinated(world)
+        c.buy_when_needed = True                  # buying allowed for this test
         c.submit({"version": 1, "command": "unload_combine"})
         c.wait(10)
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "COMBINE_UNLOADED"), (c.last, notices))
@@ -1311,6 +1340,7 @@ class UnloadAndSellTests(unittest.TestCase):
         world.store_items = (StoreItem(33, "Tipper 8", "Z", ("TRAILERS",), 6000.0, False, None, None, None,
                                        capacity=30000.0, fill_types=("WHEAT",)),)
         c, notices = coordinated(world)
+        c.buy_when_needed = True                  # buying allowed for this test
         c.submit({"version": 1, "command": "unload_combine"})
         c.wait(10)
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "COMBINE_UNLOADED"), (c.last, notices))
@@ -1335,6 +1365,7 @@ class UnloadAndSellTests(unittest.TestCase):
         world.store_items = (StoreItem(33, "Tipper 8", "Z", ("TRAILERS",), 6000.0, False, None, None, None,
                                        capacity=9500.0, fill_types=("WHEAT",)),)
         c, notices = coordinated(world)
+        c.buy_when_needed = True                  # buying allowed for this test
         c.submit({"version": 1, "command": "unload_combine"})
         c.wait(10)
         self.assertEqual((c.last.state, c.last.reason), ("UNVERIFIED", "BOUGHT_ITEM_UNSUITABLE"), c.last)

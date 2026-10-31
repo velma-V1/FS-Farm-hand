@@ -3447,7 +3447,7 @@ function Bridge:openMenu()
     local bridge = self
     local ok = pcall(function()
         if env.g_gui ~= nil and env.g_gui:getIsDialogVisible() then
-            bridge:notify("Farmhand: press Left Alt + N to choose the AI model", false)
+            bridge:notify("Farmhand: close this window, then press Left Alt + N for Farmhand's settings", false)
             return
         end
         env.OptionDialog.show(function(item)

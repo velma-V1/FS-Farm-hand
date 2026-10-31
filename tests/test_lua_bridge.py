@@ -779,7 +779,7 @@ class LuaBridgeTests(unittest.TestCase):
         self.write("session.xml", encode_session("s1", 1, [(1, "MENU")]))
         self.W.run(self.w, 1000)
         self.assertFalse(hasattr(self.w, "option") and self.w.option is not None)
-        self.assertIn("4:Farmhand: press Left Alt + N to choose the AI model", self.notices())
+        self.assertIn("4:Farmhand: close this window, then press Left Alt + N for Farmhand's settings", self.notices())
         self.bridge.openSettings(self.bridge)
         self.assertEqual([r.get("action") for r in self.requests()], ["settings"])
 

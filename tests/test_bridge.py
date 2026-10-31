@@ -8,6 +8,7 @@ it proves the companion's sequencing, gating and verification, not FS25.
 import copy
 import json
 import math
+import os
 from pathlib import Path, PureWindowsPath
 import sys
 import threading
@@ -950,6 +951,36 @@ class ServiceTests(unittest.TestCase):
     def menu(self, game):
         attrs = ET.fromstring(game.link.files.files["menu.xml"].split("\n", 1)[1]).attrib
         return int(attrs["id"]), [attrs[f"o{n}"] for n in range(1, int(attrs["count"]) + 1)]
+
+    def test_the_settings_screen_opens_from_the_command_window_and_a_pick_applies_at_once(self):
+        # The user, 2026-10-30: a settings section reached from Farmhand's command window.
+        import tempfile as tmp
+        from companion import ai
+        folder = Path(tmp.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(folder, ignore_errors=True))
+        with unittest.mock.patch.dict(os.environ, {"LOCALAPPDATA": str(folder)}):
+            game, notices = self.start(autodrive=False)
+            game.say(1, "settings")                                     # typed in the command window
+            self.wait_for(lambda: "MENU" in notices)
+            menu_id, lines = self.menu(game)
+            self.assertEqual(lines[0], "Pay: per hour at GIANTS' rate")
+            self.assertEqual(lines[1], "Teleport a stuck rig: on")
+            game.pick(2, menu_id, 2)                                    # teleport recovery: off
+            self.wait_for(lambda: notices.count("MENU") == 2)
+            self.assertFalse(ai.Settings().teleport_recovery())
+            self.wait_for(lambda: game.link_world.teleport_recovery is False)  # the running world too
+            menu_id, lines = self.menu(game)
+            self.assertEqual(lines[1], "Teleport a stuck rig: off")
+            game.pick(3, menu_id, 1)                                    # Pay
+            self.wait_for(lambda: notices.count("MENU") == 3)
+            menu_id, lines = self.menu(game)
+            game.pick(4, menu_id, lines.index("per day") + 1)
+            self.wait_for(lambda: notices.count("MENU") == 4)
+            menu_id, lines = self.menu(game)
+            game.pick(5, menu_id, lines.index("1,000") + 1)
+            self.wait_for(lambda: notices.count("MENU") == 5)
+            self.assertEqual(ai.Settings().pay(), (3, 1000.0))
+            self.assertEqual(self.menu(game)[1][0], "Pay: 1,000 per day")
 
     def test_the_ai_menu_is_offered_once_then_on_request_and_a_pick_is_validated(self):
         import tempfile as tmp

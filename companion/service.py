@@ -31,7 +31,7 @@ import time
 from adapters.world import StepUnverified
 from companion.bridge import (MOD_DIR, SNAPSHOT_TIMEOUT_S, FS25World, game_profile_dir,
                               start_local_link)
-from companion.ai import AI, Settings, data_dir
+from companion.ai import AI, Settings, SettingsMenu, data_dir
 from companion.coordinator import FETCH_HERE, Coordinator
 from companion.executor import Executor
 from companion.language import RuleInterpreter, refuses
@@ -170,6 +170,7 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
             with menu_lock:
                 labels = [c.label for c in ai.open_menu()]
                 menu["id"] += 1
+                menu["kind"] = "ai"
                 link.files.write(MENU_FILE, encode_menu(menu["id"], "Farmhand AI model", labels))
         except (OSError, ValueError):
             log.exception("menu not written")
@@ -187,6 +188,30 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
 
     if ai is not None and hasattr(ai, "show_menu"):
         ai.show_menu = show_menu
+
+    # Farmhand's settings screen (companion/ai.py SettingsMenu; the user, 2026-10-30): typed
+    # "settings" in the command window, or the settings key. Each change applies from the next job.
+    def apply_settings():
+        saved = Settings()
+        world.teleport_recovery = saved.teleport_recovery()
+        coordinator.buy_when_needed = saved.load().get("buy_when_needed", False) is True
+        world._paid_session = None            # the pay goes to the game again before the next command
+
+    settings_menu = SettingsMenu(Settings(), ai_menu=show_menu, on_change=apply_settings)
+    apply_settings()
+
+    def show_settings(key="main"):
+        try:
+            with menu_lock:
+                title, labels = settings_menu.open(key)
+                menu["id"] += 1
+                menu["kind"], menu["key"] = "settings", key
+                link.files.write(MENU_FILE, encode_menu(menu["id"], title, labels))
+        except (OSError, ValueError, KeyError):
+            log.exception("settings menu not written")
+            replies("AI_UNAVAILABLE")
+            return
+        replies("MENU")
     foreign_since = None
     while not link.closed.is_set() and not should_stop():
         request = link.next_request(timeout=1.0)
@@ -195,7 +220,12 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
                 if "menu" in request:
                     with menu_lock:
                         current = request["menu"] == menu["id"]
-                    if current and request["choice"] > 0 and hasattr(ai, "choose"):
+                        kind, key = menu.get("kind"), menu.get("key")
+                    if current and request["choice"] > 0 and kind == "settings":
+                        following = settings_menu.choose(key, request["choice"])
+                        if following is not None:
+                            show_settings(following)
+                    elif current and request["choice"] > 0 and hasattr(ai, "choose"):
                         ai.choose(request["choice"])
                     continue
                 if "live" in request:              # only ever queued by companion/livetest.py
@@ -209,7 +239,7 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
                     continue
                 action = request.get("action")
                 if action == "settings":
-                    show_menu()
+                    show_settings()
                     continue
                 if action == "talk_start":
                     voice.talk_start()
@@ -222,7 +252,7 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
                 if proposal is not None and proposal.get("command") == "stop":
                     generation[0] += 1          # answers still being thought about are void
                 if proposal is not None and proposal.get("command") == "settings":
-                    show_menu()
+                    show_settings()
                     continue
                 if proposal is not None and proposal.get("command") == "report":
                     try:
@@ -302,6 +332,7 @@ def main(argv=None) -> int:
     (data / QUIT_FILE).unlink(missing_ok=True)
     (data / PID_FILE).write_text(str(os.getpid()), encoding="utf-8")
     world = FS25World(link, categories)
+    world.teleport_recovery = Settings().teleport_recovery()
     world.pay = Settings().pay                # Farmhand's pay, the player's choice
     live = None
     if args.live_test:

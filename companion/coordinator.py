@@ -580,6 +580,9 @@ class Coordinator:
         self.workers: list[Worker] = []           # GIANTS' helpers working on (handed off)
         self._harvest_rigs: dict[int, str] = {}   # field -> the rig (tractor words) its grain was transferred into
         self._bought_for: set[str] = set()         # jobs that already bought what they needed (never twice)
+        # Buying a trailer a job needs without being told (the user, 2026-10-30: "the only time
+        # farmhand should buy anything is under instructions"): off.
+        self.buy_when_needed = False
         # Farmhand's pay (mode, amount) from the player's settings, or None (the game's default):
         # read before each job (Settings.pay; companion/service.py sets the reader).
         self.pay = lambda: None
@@ -1542,7 +1545,8 @@ class Coordinator:
             if hitched.status == "COMPLETE" or hitched.reason not in UNREACHABLE_IMPLEMENT:
                 return hitched
             self._unreachable.add(trailer.id)          # not tried again this session
-        if job.owner in self._bought_for:
+        # Farmhand buys only when told to (the user, 2026-10-30): no trailer it can use, it says so.
+        if job.owner in self._bought_for or not self.buy_when_needed:
             return hitched or Result("BLOCKED", "NO_TRAILER_FOR_THE_GRAIN")
         self._bought_for.add(job.owner)
         before = {i.id for i in self.world.snapshot()}
