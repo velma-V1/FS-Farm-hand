@@ -2450,3 +2450,118 @@ class PayTests(unittest.TestCase):
         job = self.lua.eval("function() return { getPricePerMs = function() return 0.0004 end } end")()
         self.assertEqual(self.bridge.farmhandJob(job).getPricePerMs(), 0.0004)
         self.assertIsNone(self.start(self.bridge, self.env, "pay", 9, 0)[0])         # no such mode
+
+
+class TeleportRigTests(unittest.TestCase):
+    """Teleport recovery with belted cargo (the user, 2026-10-30; live: TELEPORT_CARGO for the GMC
+    with the Series 9 strapped on its deckover): GIANTS' own teleport sequence, the cargo moved at
+    its offset on the deck, the belts released before and fastened after."""
+    RIG = r"""
+        local events = {}
+        local function node(x, y, z, yaw) return { x = x, y = y, z = z, yaw = yaw } end
+        local function vehicle(name, n)
+            local v = { name = name, rootNode = n, physics = true }
+            function v:removeFromPhysics() self.physics = false; events[#events+1] = "out " .. self.name end
+            function v:addToPhysics() self.physics = true; events[#events+1] = "in " .. self.name end
+            function v:setAbsolutePosition(x, y, z, rx, ry, rz)
+                self.rootNode.x, self.rootNode.y, self.rootNode.z, self.rootNode.yaw = x, y, z, ry
+            end
+            return v
+        end
+        local truck = vehicle("truck", node(0, 0, 0, 0))
+        local deck = vehicle("deck", node(0, 1, -8, 0))
+        local cargo = vehicle("cargo", node(0, 2.2, -8, 0))
+        local attached = { { object = deck, jointDescIndex = 1 } }
+        function truck:getAttachedImplements() return attached end
+        function deck:getAttachedImplements() return {} end
+        function cargo:getAttachedImplements() return {} end
+        function deck:getActiveInputAttacherJointDescIndex() return 2 end
+        function deck:getAttacherVehicle() return #attached > 0 and truck or nil end
+        function truck:detachImplementByObject(o) attached = {}; events[#events+1] = "detach " .. o.name end
+        function truck:attachImplement(o, input, joint) attached = { { object = o, jointDescIndex = joint } }
+            events[#events+1] = "attach " .. o.name .. " " .. input .. " " .. joint end
+        deck.spec_tensionBelts = { objectsToJoint = { { object = cargo } } }
+        function deck:setAllTensionBeltsActive(active) events[#events+1] = (active and "fasten" or "release") end
+        local function rot(n, x, z) return x * math.cos(n.yaw) + z * math.sin(n.yaw), -x * math.sin(n.yaw) + z * math.cos(n.yaw) end
+        local env = { g_currentMission = { terrainRootNode = 0 },
+            getWorldTranslation = function(n) return n.x, n.y, n.z end,
+            getWorldRotation = function(n) return 0, n.yaw, 0 end,
+            worldToLocal = function(n, x, y, z) local dx, dz = x - n.x, z - n.z
+                return dx * math.cos(n.yaw) - dz * math.sin(n.yaw), y - n.y, dx * math.sin(n.yaw) + dz * math.cos(n.yaw) end,
+            localToWorld = function(n, x, y, z) local a, b = rot(n, x, z); return n.x + a, n.y + y, n.z + b end,
+            worldRotationToLocal = function(n, rx, ry, rz) return 0, ry - n.yaw, 0 end,
+            localRotationToWorld = function(n, rx, ry, rz) return 0, ry + n.yaw, 0 end,
+            getTerrainHeightAtWorldPos = function() return 10 end }
+        return env, truck, deck, cargo, events
+    """
+
+    def test_the_cargo_goes_along_at_its_place_on_the_deck_and_is_strapped_again(self):
+        import math
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        lua.globals().print = lambda *a: None
+        bridge = lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        env, truck, deck, cargo, events = lua.execute(self.RIG)
+        moved, units, belted = bridge.teleportRig(env, truck, 100.0, 50.0, math.pi / 2)
+        self.assertEqual(moved, 3)
+        self.assertEqual(len(units), 3)
+        self.assertEqual((truck.rootNode.x, truck.rootNode.z), (100.0, 50.0))
+        # 8 m behind the truck at its new heading (east): x 92; the cargo 1.2 m above the deck.
+        self.assertAlmostEqual(deck.rootNode.x, 92.0, places=6)
+        self.assertAlmostEqual(cargo.rootNode.x, 92.0, places=6)
+        self.assertAlmostEqual(cargo.rootNode.y - deck.rootNode.y, 1.2, places=6)
+        ev = list(events.values())
+        self.assertEqual(ev[0], "release")                       # belts off before anything moves
+        self.assertEqual(ev[-1], "fasten")                       # and on again after
+        self.assertLess(ev.index("detach deck"), ev.index("out truck"))
+        self.assertGreater(ev.index("attach deck 2 1"), ev.index("in cargo"))
+        self.assertTrue(truck.physics and deck.physics and cargo.physics)
+        # Live 506d0f085bd64e9b-1: fastened in the same frame, the belts held nothing and the
+        # Series 9 came off the deck; the stepper checks each object is held again.
+        self.assertTrue(bridge.beltsHold(belted))
+        deck.spec_tensionBelts.objectsToJoint = lua.table()
+        self.assertFalse(bridge.beltsHold(belted))
+
+    def test_a_teleported_rig_lands_with_a_lane_for_giants_helper_to_start(self):
+        # Live 5e0f5dc02a834ae2-1: set down 4 m off inside the yard pocket, GIANTS' helper "blocked
+        # by an object" at once; the landing box is the rig's own grown by a lane ahead and beside.
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        lua.globals().print = lambda *a: None
+        bridge = lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        foot = lua.eval("{lMin = -1.2, lMax = 1.2, aMin = -14, aMax = 3, height = 3, excluded = {}}")
+        big = bridge.grown(foot, bridge.TELEPORT_ROOM)
+        self.assertGreaterEqual(big.aMax - foot.aMax, 12)                 # a lane ahead
+        self.assertGreaterEqual(foot.lMin - big.lMin, 2.5)                # and beside
+        self.assertEqual((foot.aMax, foot.lMin), (3, -1.2))               # the rig's own box unchanged
+        source = (ROOT / "mod/FarmhandBridge.lua").read_text()
+        start = source.index("function starters.teleport")
+        self.assertIn("Bridge.grown(own, Bridge.TELEPORT_ROOM)", source[start:source.index("function steppers.teleport")])
+
+    def test_a_rig_teleported_onto_a_road_lane_lands_on_it_at_the_lanes_heading(self):
+        # Live 3de53846739b4945-1: aimed at AutoDrive's waypoint, set down 28 m off the road and
+        # crosswise; AutoDrive drove in from the grass and jammed. On the lane, or along it.
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        lua.globals().print = lambda *a: None
+        bridge = lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        hitch = lua.eval("{TELEPORT = {clearM = 1.0}}")
+        bridge.Hitch = hitch
+        lua.eval("""function(h, blocked)
+            h.routePoseClear = function(env, foot, x, z, yaw) return not blocked(x, z) end
+            h.staticNear = function() return false end
+        end""")(hitch, lambda x, z: False)
+        x, z, yaw = bridge.laneSpot(lua.table(), lua.table(), -795.3, 99.9, 3.13)
+        self.assertEqual((x, z, yaw), (-795.3, 99.9, 3.13))                    # on the waypoint itself
+        lua.eval("""function(h, blocked)
+            h.routePoseClear = function(env, foot, x, z, yaw) return not blocked(x, z) end
+        end""")(hitch, lambda x, z: abs(z - 99.9) < 1.0)                       # the waypoint taken
+        x, z, yaw = bridge.laneSpot(lua.table(), lua.table(), -795.3, 99.9, 3.13)
+        self.assertAlmostEqual(abs(z - 99.9), 3.0, places=1)                    # 3 m along the lane
+        self.assertAlmostEqual(yaw, 3.13)
+        lua.eval("""function(h, blocked)
+            h.routePoseClear = function(env, foot, x, z, yaw) return not blocked(x, z) end
+        end""")(hitch, lambda x, z: x > -796.0)                                  # roadside objects east
+        x, z, yaw = bridge.laneSpot(lua.table(), lua.table(), -795.3, 99.9, 3.13)
+        self.assertAlmostEqual(z, 99.9, places=1)                               # at the waypoint,
+        self.assertLessEqual(x, -796.0)                                         # a metre or two across
+        self.assertGreaterEqual(x, -797.4)
+        lua.eval("""function(h) h.routePoseClear = function() return false end end""")(hitch)
+        self.assertIsNone(bridge.laneSpot(lua.table(), lua.table(), -795.3, 99.9, 3.13))

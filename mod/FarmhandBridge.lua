@@ -826,6 +826,272 @@ local function closedDoorNear(env, v)
     return nil
 end
 
+-- --------------------------------------------------------------- reposition
+-- A vehicle (a standing combine) driven by Farmhand's own drive to the nearest open ground
+-- where it and a lane each side and a run-up behind are clear (Hitch.openSpot on its route box
+-- grown by REPOSITION), so a trailer can come under its pipe (live ec7e8bafc78e4129-1: in the
+-- yard pocket a dropped seeder blocked the lane behind, the barn the front).
+Bridge.REPOSITION = { sideM = 6, behindM = 18, aheadM = 4 }
+-- Any other vehicle (moved out of the way: the user, 2026-10-30) needs only room around it.
+Bridge.CLEAR_AWAY = { sideM = 1.5, behindM = 2, aheadM = 2 }
+Bridge.REPOSITION_REACH_M = 80        -- how far out a spot GIANTS' navigation reaches is looked for
+-- Where a teleported rig lands, room for GIANTS' helper to start: a lane ahead and beside (live
+-- 5e0f5dc02a834ae2-1: set down 4 m off inside the yard pocket, "AI worker is blocked by an
+-- object" at once, its collision check looks ahead of the rig).
+Bridge.TELEPORT_ROOM = { sideM = 3, behindM = 1, aheadM = 15 }
+-- A teleport asked to land no nearer than spec.area (the companion goes farther out each time
+-- GIANTS still cannot start: the user, 2026-10-31, up to about 150 m) looks 50 m beyond that.
+Bridge.TELEPORT_BEYOND_M, Bridge.TELEPORT_MAX_M = 50, 150
+-- The route box ``foot`` grown by ``room`` (sideM each side, behindM, aheadM).
+function Bridge.grown(foot, room)
+    local big = {}
+    for k, val in pairs(foot) do big[k] = val end
+    big.lMin, big.lMax = foot.lMin - room.sideM, foot.lMax + room.sideM
+    big.aMin, big.aMax = foot.aMin - room.behindM, foot.aMax + room.aheadM
+    return big
+end
+function starters.reposition(env, spec)
+    local v = spec.tractor
+    local denied = idle(env, v, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    local H = Bridge.Hitch
+    local foot = H.routeFootprint(env, v)
+    if foot == nil then return nil, "RIG_GEOMETRY_UNKNOWN" end
+    local big = Bridge.grown(foot, v.spec_pipe ~= nil and Bridge.REPOSITION or Bridge.CLEAR_AWAY)
+    local x, _, z = env.getWorldTranslation(v.rootNode)
+    local fx, _, fz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
+    -- At least the rig's own length away: driven to, not set down beside it. First where GIANTS'
+    -- own navigation can start from (live 21a5e70740024850-3: every "open ground" inside the farm
+    -- yard left GIANTS' GOTO blocked at its start), up to Bridge.REPOSITION_REACH_M out; else any.
+    local length, yaw = foot.aMax - foot.aMin, math.atan2(fx, fz)
+    local ai = env.g_currentMission.aiSystem
+    local navigable = nil
+    if ai ~= nil and type(ai.getIsPositionReachable) == "function" and ai.navigationMap ~= nil then
+        navigable = function(px, pz)
+            local ok, reachable = pcall(ai.getIsPositionReachable, ai, px, 0, pz)
+            return ok and reachable == true
+        end
+    end
+    local tx, tz, tyaw
+    if navigable ~= nil then
+        tx, tz, tyaw = H.openSpot(env, big, x, z, yaw, length, navigable, Bridge.REPOSITION_REACH_M)
+    end
+    if tx == nil then tx, tz, tyaw = H.openSpot(env, big, x, z, yaw, length) end
+    if tx == nil then return nil, "NO_OPEN_SPOT" end
+    log("reposition: the %s from %.1f,%.1f to open ground at %.1f,%.1f yaw %.2f", tostring(v.getName and v:getName() or "vehicle"),
+        x, z, tx, tz, tyaw)
+    -- At its heading only for a combine (a trailer comes along its pipe line); anything moved out
+    -- of the way arrives at any heading (live 21a5e70740024850-1: the 3650 2 m from its spot, 24
+    -- degrees off that heading, corrected until OBSTACLE_AHEAD).
+    return starters.farm_drive(env, { tractor = v, x = tx, z = tz, area = 0,
+                                      yaw = v.spec_pipe ~= nil and tyaw or 10, farmId = spec.farmId,
+                                      owned = spec.owned })
+end
+steppers.reposition = function(env, task, dt) return steppers.farm_drive(env, task, dt) end
+aborts.reposition = function(env, task) return aborts.farm_drive(env, task) end
+
+-- --------------------------------------------------------------- teleport
+-- Teleport recovery (AGENTS.md 19: an explicit mode, never silent): the rig, everything
+-- attached, to the nearest open spot (Hitch.openSpot) by GIANTS' own FSBaseMission:teleportVehicle
+-- (FSBaseMission.lua 2422-2479: attached implements detached, moved with their offsets and
+-- re-attached). Refused with cargo on it (belted or mounted objects stay behind).
+-- GIANTS' own teleport (FSBaseMission:teleportVehicle 2422-2479), with what the rig carries on its
+-- belts too (live: the GMC's deckover with the Series 9 strapped on, TELEPORT_CARGO every time):
+-- each unit's offset from the tractor recorded, the belts released (TensionBelts
+-- setAllTensionBeltsActive), the implements detached, everything out of physics, placed at the
+-- same offsets from the tractor's new pose (setAbsolutePosition), back in physics, the implements
+-- attached again on their joints and the belts fastened again. How many units moved, the units
+-- moved, and each belted unit with the cargo it held ({unit, objects}): fastened in the same frame
+-- the cargo is back in physics the belts may find nothing (live 506d0f085bd64e9b-1: the Series 9
+-- left unstrapped, then off the deck), so steppers.teleport fastens them again once it stands and
+-- checks each object is held (Bridge.beltsHold).
+function Bridge.teleportRig(env, v, tx, tz, tyaw)
+    local mission = env.g_currentMission
+    local entries, combos, belted, detach, seen = {}, {}, {}, {}, {}
+    local function add(u)
+        if seen[u] then return end
+        seen[u] = true
+        local x, y, z = env.getWorldTranslation(u.rootNode)
+        local rx, ry, rz = env.getWorldRotation(u.rootNode)
+        entries[#entries + 1] = { vehicle = u, offset = { env.worldToLocal(v.rootNode, x, y, z) },
+                                  rotation = { env.worldRotationToLocal(v.rootNode, rx, ry, rz) } }
+        for _, implement in ipairs(type(u.getAttachedImplements) == "function" and u:getAttachedImplements() or {}) do
+            local object = implement.object
+            if object ~= nil and not (object.getIsAdditionalAttachment ~= nil and object:getIsAdditionalAttachment()) then
+                add(object)
+                detach[#detach + 1] = object
+                combos[#combos + 1] = { vehicle = u, object = object, jointDescIndex = implement.jointDescIndex,
+                                        inputIndex = object:getActiveInputAttacherJointDescIndex() }
+            end
+        end
+        local belts = u.spec_tensionBelts
+        if belts ~= nil and next(belts.objectsToJoint or {}) ~= nil then
+            local held = { unit = u, objects = {} }
+            belted[#belted + 1] = held
+            for _, data in pairs(belts.objectsToJoint) do
+                local object = data.object
+                if object ~= nil and object.rootNode ~= nil and type(object.setAbsolutePosition) == "function" then
+                    held.objects[#held.objects + 1] = object
+                    add(object.rootVehicle or object)
+                end
+            end
+        end
+    end
+    add(v)
+    mission.isTeleporting = true
+    for _, b in ipairs(belted) do b.unit:setAllTensionBeltsActive(false, true) end
+    for _, object in ipairs(detach) do
+        local attacher = object:getAttacherVehicle()
+        if attacher ~= nil then attacher:detachImplementByObject(object, true) end
+    end
+    for _, e in ipairs(entries) do e.vehicle:removeFromPhysics() end
+    for i, e in ipairs(entries) do
+        if i == 1 then
+            local y = env.getTerrainHeightAtWorldPos(mission.terrainRootNode, tx, 300, tz) + 0.5
+            e.vehicle:setAbsolutePosition(tx, y, tz, 0, tyaw, 0)
+        else
+            local x, y, z = env.localToWorld(v.rootNode, e.offset[1], e.offset[2], e.offset[3])
+            local rx, ry, rz = env.localRotationToWorld(v.rootNode, e.rotation[1], e.rotation[2], e.rotation[3])
+            e.vehicle:setAbsolutePosition(x, y, z, rx, ry, rz)
+        end
+    end
+    for _, e in ipairs(entries) do e.vehicle:addToPhysics() end
+    for _, c in ipairs(combos) do c.vehicle:attachImplement(c.object, c.inputIndex, c.jointDescIndex, true) end
+    for _, b in ipairs(belted) do b.unit:setAllTensionBeltsActive(true, true) end
+    mission.isTeleporting = false
+    local units = {}
+    for i, e in ipairs(entries) do units[i] = e.vehicle end
+    return #entries, units, belted
+end
+
+-- Whether every object a belted unit held before the teleport is held again.
+function Bridge.beltsHold(belted)
+    for _, b in ipairs(belted) do
+        local joints = b.unit.spec_tensionBelts ~= nil and b.unit.spec_tensionBelts.objectsToJoint or {}
+        for _, object in ipairs(b.objects) do
+            local held = false
+            for _, data in pairs(joints) do
+                if data.object == object then held = true end
+            end
+            if not held then return false end
+        end
+    end
+    return true
+end
+Bridge.TELEPORT_SETTLE_MS, Bridge.TELEPORT_FASTEN_MS, Bridge.TELEPORT_BELTS_MS = 1000, 1000, 8000
+
+-- A named spot on a road lane (AutoDrive's waypoint, at the lane's heading): the rig set down on
+-- it, or a few metres along the lane, with only its own box clear (the road is the lane; live
+-- 3de53846739b4945-1: the room rule for GIANTS' helper put it 28 m off the road, crosswise, and
+-- AutoDrive drove in from the grass and jammed at the yard edge). x, z, yaw, or nil.
+Bridge.LANE_SLIDE_M = { 0, 3, -3, 6, -6, 9, -9, 12, -12 }
+-- Across the lane too, toward the road's middle or its edge (live 386189c90cff4142-1: the loaded
+-- GMC's box on the lane's centre touched roadside objects 2.5 m to its side).
+Bridge.LANE_SHIFT_M = { 0, -1, 1, -2, 2 }
+function Bridge.laneSpot(env, foot, x, z, yaw)
+    local H = Bridge.Hitch
+    local sx, sz = math.sin(yaw), math.cos(yaw)
+    local why = {}
+    for _, d in ipairs(Bridge.LANE_SLIDE_M) do
+        for _, w in ipairs(Bridge.LANE_SHIFT_M) do
+            local px, pz = x + sx * d + sz * w, z + sz * d - sx * w
+            local clear, reason = H.routePoseClear(env, foot, px, pz, yaw, 0)
+            local near = nil
+            if clear == true then near = H.staticNear(env, foot, px, pz, yaw, H.TELEPORT.clearM) end
+            if clear == true and near == false then return px, pz, yaw end
+            if w == 0 then
+                why[#why + 1] = string.format("%+d:%s", d, clear ~= true and tostring(reason) or "scenery within 1 m")
+            end
+        end
+    end
+    log("teleport onto the lane at %.1f,%.1f yaw %.2f: no clear spot (%s)", x, z, yaw, table.concat(why, "; "))
+    return nil
+end
+
+function starters.teleport(env, spec)
+    local v = spec.tractor
+    local denied = idle(env, v, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    local H = Bridge.Hitch
+    local units = {}
+    local function add(u)
+        units[#units + 1] = u
+        for _, implement in ipairs(type(u.getAttachedImplements) == "function" and u:getAttachedImplements() or {}) do
+            add(implement.object)
+        end
+    end
+    add(v)
+    -- Seated is no refusal (the player is an observer; GIANTS' teleportVehicle is made for the
+    -- vehicle the player drives, FSBaseMission.lua 2595; live 8570c6316cb9406f-2: TELEPORT_SEATED);
+    -- belted cargo goes along (Bridge.teleportRig).
+    local own = H.routeFootprint(env, v)
+    if own == nil then return nil, "RIG_GEOMETRY_UNKNOWN" end
+    local foot = Bridge.grown(own, Bridge.TELEPORT_ROOM)
+    local x, _, z = env.getWorldTranslation(v.rootNode)
+    local fx, _, fz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
+    local yaw = math.atan2(fx, fz)
+    -- Near (spec.x, spec.z) at spec.yaw when the companion names a spot (a loaded rig onto
+    -- AutoDrive's road: live 2026-10-31, AutoDrive would not drive it the 51 m out of the yard);
+    -- x beyond 50000: near the rig itself (= companion/bridge.py TELEPORT_HERE, 90000).
+    local cx, cz = x, z
+    local tx, tz, tyaw
+    if tonumber(spec.x) ~= nil and math.abs(spec.x) < 50000 and tonumber(spec.z) ~= nil then
+        cx, cz = spec.x, spec.z
+        if tonumber(spec.yaw) ~= nil and math.abs(spec.yaw) <= 2 * math.pi then yaw = spec.yaw end
+        tx, tz, tyaw = Bridge.laneSpot(env, own, cx, cz, yaw)
+    end
+    -- Where GIANTS' own navigation can start from, if there is such a spot within reach (a rig set
+    -- down in a pocket GIANTS cannot leave helps nothing); else any open spot.
+    local ai = env.g_currentMission.aiSystem
+    local minM = math.max(0, tonumber(spec.area) or 0)
+    local reach = math.min(Bridge.TELEPORT_MAX_M, math.max(Bridge.REPOSITION_REACH_M, minM + Bridge.TELEPORT_BEYOND_M))
+    if tx == nil and ai ~= nil and type(ai.getIsPositionReachable) == "function" and ai.navigationMap ~= nil then
+        tx, tz, tyaw = H.openSpot(env, foot, cx, cz, yaw, minM, function(px, pz)
+            local ok, reachable = pcall(ai.getIsPositionReachable, ai, px, 0, pz)
+            return ok and reachable == true
+        end, reach)
+    end
+    if tx == nil then tx, tz, tyaw = H.openSpot(env, foot, cx, cz, yaw, minM, nil, reach) end
+    if tx == nil then return nil, "NO_OPEN_SPOT" end
+    if H.ghosted ~= nil and H.ghosted[v] ~= nil then H.unghost(env, v) end
+    local moved, units, belted = Bridge.teleportRig(env, v, tx, tz, tyaw)
+    log("teleport recovery: the rig from %.1f,%.1f to %.1f,%.1f yaw %.2f (%d unit(s) with its cargo)", x, z, tx, tz, tyaw, moved)
+    return { tx = tx, tz = tz, waited = 0, units = units, belted = belted }
+end
+
+-- Done once the tractor is where it was set, every unit stands (live 506d0f085bd64e9b-1: GOTO
+-- straight after, NOT_STOPPED) and every belt holds its cargo again, fastened again each
+-- TELEPORT_FASTEN_MS while it does not; cargo still loose is a failure, never driven on.
+function steppers.teleport(env, task, dt)
+    task.waited = task.waited + dt
+    local x, _, z = env.getWorldTranslation(task.spec.tractor.rootNode)
+    if math.sqrt((x - task.tx) ^ 2 + (z - task.tz) ^ 2) > 1.5 then
+        if task.waited > 5000 then return "FAILED", "TELEPORT_NOT_OBSERVED" end
+        return nil
+    end
+    for _, u in ipairs(task.units or {}) do
+        if not stopped(u) then task.still = nil end
+    end
+    task.still = task.still or task.waited
+    if task.waited - task.still < Bridge.TELEPORT_SETTLE_MS then
+        if task.waited > Bridge.TELEPORT_BELTS_MS then return "FAILED", "NOT_STOPPED" end
+        return nil
+    end
+    if Bridge.beltsHold(task.belted or {}) then return "DONE", "TELEPORTED" end
+    if task.waited > Bridge.TELEPORT_BELTS_MS then return "FAILED", "CARGO_NOT_BELTED" end
+    if task.fastened == nil or task.waited - task.fastened >= Bridge.TELEPORT_FASTEN_MS then
+        task.fastened = task.waited
+        for _, b in ipairs(task.belted) do
+            b.unit:setAllTensionBeltsActive(false, true)
+            b.unit:setAllTensionBeltsActive(true, true)
+        end
+        log("teleport recovery: fastening the belts again")
+    end
+    return nil
+end
+
+function aborts.teleport() end
+
 function starters.unpark(env, spec)
     local denied = idle(env, spec.tractor, spec.farmId)
     if denied ~= nil then return nil, denied end
@@ -2766,6 +3032,7 @@ end
 
 Bridge.NOTICES = {
     CONNECTED = "Farmhand: companion connected",
+    TELEPORTED = "Farmhand: the rig could not move, so it was teleported to open ground nearby",
     ACCEPTED = "Farmhand: fetching a tractor and the implement",
     BUSY = "Farmhand: already working on a request",
     COMPLETE = "Farmhand: tractor and implement delivered",

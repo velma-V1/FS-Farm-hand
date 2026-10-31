@@ -1911,3 +1911,28 @@ class GhostTests(unittest.TestCase):
             masks={obstacles=2+4096+2048, terrain=256}} end""")(self.tractor)
         self.assertTrue(self.hitch.routePoseClear(self.env, foot, 0, 0, 0)[0])   # passable for the route
         self.assertTrue(self.hitch.staticNear(self.env, foot, 0, 0, 0, 2.0))      # yet near: ghost to pass
+
+    def test_teleport_recovery_finds_the_nearest_open_spot_off_any_deck(self):
+        # The user, 2026-10-30: the rig and everything attached to an open area close by.
+        clear = self.lua.eval("""function(hitch, blockedWithin, deck)
+            hitch.routePoseClear = function(env, foot, x, z) return math.sqrt(x*x + z*z) >= blockedWithin end
+            hitch.staticNear = function() return false end
+        end""")
+        clear(self.hitch, 9.0)
+        x, z, yaw = self.hitch.openSpot(self.env, self.lua.table(), 0.0, 0.0, 0.3)
+        self.assertGreaterEqual(math.hypot(x, z), 9.0)
+        self.assertLess(math.hypot(x, z), 11.0)                 # the nearest ring that is open
+        self.assertAlmostEqual(yaw, 0.3)                         # its own heading first
+        # Only where a further test holds (Drive: GIANTS' navigation reaches it), farther out if so asked.
+        accept = self.lua.eval("function(x, z) return x < -55 end")
+        x, z, yaw = self.hitch.openSpot(self.env, self.lua.table(), 0.0, 0.0, 0.3, 20, accept, 80)
+        self.assertLess(x, -55)
+        self.assertIsNone(self.hitch.openSpot(self.env, self.lua.table(), 0.0, 0.0, 0.3, 20, accept))   # not within 50 m
+        clear(self.hitch, 1000.0)
+        self.assertIsNone(self.hitch.openSpot(self.env, self.lua.table(), 0.0, 0.0, 0.0))   # none within 50 m
+        # On a bridge deck it is never placed (GIANTS places it at the terrain under the deck).
+        clear(self.hitch, 0.0)
+        self.env.raycastClosest = self.lua.eval("""function(x, y, z, dx, dy, dz, length, cb, target, mask)
+            target[cb](target, 5, x, 6.0, z, 1) return 1 end""")
+        self.env.CollisionFlag.ROAD = 8192
+        self.assertIsNone(self.hitch.openSpot(self.env, self.lua.table(), 0.0, 0.0, 0.0))

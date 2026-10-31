@@ -123,6 +123,8 @@ COMMAND_ARGS = {
     "detach": ("tractor", "wagon"),
     "pull_clear": ("tractor", "wagon"),
     "unpark": ("tractor",),
+    "teleport": ("tractor", "area", "x", "z", "yaw"),   # teleport recovery near (x, z) (the rig itself when x is beyond 50000), no nearer than area m, the search 50 m beyond it; yaw beyond +-2 pi: the rig's own
+    "reposition": ("tractor",),                  # a vehicle to open ground nearby (a standing combine: lanes beside and behind it)
     "pay": ("direction", "area"),                 # Farmhand's pay: mode (0 none, 1 per hour, 2 per job, 3 per day, 4 the game's own wages), amount (0: GIANTS' rate)
     "charge": ("area",),                          # per-job pay: this amount for a completed request
     "fold": ("tractor", "direction"),            # the vehicle's own Foldable parts to one end

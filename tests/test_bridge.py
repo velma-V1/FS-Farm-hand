@@ -196,6 +196,12 @@ class FakeGame:
             if wagon["attacher_vehicle_id"] == 11:
                 place(wagon, x, z - 8)
             return "AD_ENDED"
+        if op == "teleport":       # teleport recovery: the rig to open ground 12 m aside
+            self.teleports = getattr(self, "teleports", 0) + 1
+            place(tractor, tractor["x"] + 12.0, tractor["z"])
+            if wagon["attacher_vehicle_id"] == 11:
+                place(wagon, wagon["x"] + 12.0, wagon["z"])
+            return "TELEPORTED"
         if op == "farm_drive":     # Farmhand's own drive of the rig; the attached wagon behind
             x, z = float(c["x"]), float(c["z"])
             if self.faults.get("farm_drive_elsewhere"):
@@ -375,10 +381,11 @@ NEAR = (0.0, 20.0)      # the tractor's joint starts inside the local work radiu
 
 class ProductionSequenceTests(unittest.TestCase):
     def run_ac001(self, target="player_at_acceptance", field_entrances=None, categories=CATEGORIES,
-                  **game_args):
+                  teleport=True, **game_args):
         game = FakeGame(**game_args)
         self.addCleanup(game.stop)
         world = FS25World(game.link, categories)
+        world.teleport_recovery = teleport
         with unittest.mock.patch.object(bridge, "ACCEPT_TIMEOUT_S", 0.3), \
                 unittest.mock.patch.dict(bridge.DONE_TIMEOUT_S, {op: 0.3 for op in bridge.DONE_TIMEOUT_S}):
             result = Executor(world, field_entrances=field_entrances).execute(intent(target))
@@ -422,6 +429,26 @@ class ProductionSequenceTests(unittest.TestCase):
         game, world, result = self.run_ac001(tractor_at=(600.0, 600.0), autodrive=False,
                                              faults={"farm_drive": ["FAILED:ENVELOPE_CONTACT"] * 3})
         self.assertEqual(self.ops(game)[:4], ["farm_drive"] * 3 + ["navigate"])   # then GIANTS GOTO
+
+    def test_a_rig_farmhand_cannot_move_is_teleported_clear_once_and_driven_again(self):
+        # The user, 2026-10-30: if Farmhand still cannot move it, teleport the rig and everything
+        # attached to open ground nearby (AGENTS.md 19: allow teleport recovery, a setting).
+        stuck = {"farm_drive": ["FAILED:EGRESS_LIMIT"]}
+        game, world, result = self.run_ac001(tractor_at=(600.0, 600.0), autodrive=False, faults=stuck)
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
+        self.assertEqual(self.ops(game)[:3], ["farm_drive", "teleport", "farm_drive"])
+        # Once per job: stuck again after it, the drive's own fallback as before.
+        game, world, result = self.run_ac001(tractor_at=(600.0, 600.0), autodrive=False,
+                                             faults={"farm_drive": ["FAILED:EGRESS_LIMIT"] * 2})
+        self.assertEqual(self.ops(game)[:4], ["farm_drive", "teleport", "farm_drive", "navigate"])
+        # Turned off: never.
+        game, world, result = self.run_ac001(tractor_at=(600.0, 600.0), autodrive=False, faults=dict(stuck),
+                                             teleport=False)
+        self.assertNotIn("teleport", self.ops(game))
+        # A drive that found no route is not "stuck": no teleport.
+        game, world, result = self.run_ac001(tractor_at=(600.0, 600.0), autodrive=False,
+                                             faults={"farm_drive": ["FAILED:NO_ROUTE"]})
+        self.assertNotIn("teleport", self.ops(game))
 
     def test_farmhands_pay_goes_to_the_game_once_per_session_before_its_first_command(self):
         # The user, 2026-10-30: Farmhand's own pay (per hour, per job, per day, none) instead of

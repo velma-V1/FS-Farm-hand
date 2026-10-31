@@ -77,6 +77,351 @@ class StandaloneMoveTests(unittest.TestCase):
         self.assertEqual(result.status, "COMPLETE")
         self.assertEqual(world.calls[1][0], "drive")
 
+    def test_with_no_route_of_its_own_giants_goto_is_tried_before_the_job_ends(self):
+        # Live 6d9dfa2f4a6e453c-1: "take the gmc to field 90", the field across the river,
+        # Farmhand's drive NO_ROUTE and the job ended; GIANTS GOTO plans on its own map.
+        from adapters.world import StepFailed
+
+        class NoRoute(World):
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                self.calls.append(("drive", vehicle_id, target, area))
+                raise StepFailed("NO_ROUTE")
+
+            def navigate(self, vehicle_id, pose, owner):
+                self.calls.append(("navigate", vehicle_id, (pose.x, pose.z)))
+                delta = (pose.x - self.items[vehicle_id].position[0], pose.z - self.items[vehicle_id].position[1])
+                self.items = {i: replace(item, position=(item.position[0] + delta[0], item.position[1] + delta[1]))
+                              for i, item in self.items.items()}
+
+        world = NoRoute((unit("611", "GMC Sierra", "tractor", position=(-696.0, 139.0)),))
+        result = Executor(world).execute({"version": 1, "request_id": "gmc-barn", "farm_id": "1",
+                                          "task": "move_pair", "tractor_name": "gmc",
+                                          "target": {"type": "place", "name": "farm barn"}})
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual([c[0] for c in world.calls[1:3]], ["drive", "navigate"])
+        # Anything else Farmhand's drive refuses still ends the job (never a blind GOTO).
+        class Seated(NoRoute):
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                raise StepFailed("PERSON_TOO_CLOSE")
+        world = Seated((unit("611", "GMC Sierra", "tractor", position=(-696.0, 139.0)),))
+        result = Executor(world).execute({"version": 1, "request_id": "gmc-barn", "farm_id": "1",
+                                          "task": "move_pair", "tractor_name": "gmc",
+                                          "target": {"type": "place", "name": "farm barn"}})
+        self.assertEqual(result.status, "FAILED")
+        self.assertNotIn("navigate", [c[0] for c in world.calls])
+
+    def test_giants_goto_blocked_at_its_start_goes_again_from_open_ground(self):
+        # Live 7069876416d14b6d-1: GIANTS GOTO from beside the 3650 was blocked at its start; the
+        # rig is driven onto open ground first (Farmhand's own drive), then GOTO again.
+        from adapters.world import StepFailed
+
+        class Cramped(World):
+            opened = False
+
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                self.calls.append(("drive",))
+                raise StepFailed("NO_ROUTE")
+
+            def reposition(self, vehicle_id, owner):
+                self.calls.append(("reposition", vehicle_id))
+                self.opened = True
+
+            def navigate(self, vehicle_id, pose, owner):
+                self.calls.append(("navigate",))
+                if not self.opened:
+                    raise StepFailed("NAVIGATE_BLOCKED_AT_START")
+                delta = (pose.x - self.items[vehicle_id].position[0], pose.z - self.items[vehicle_id].position[1])
+                self.items = {i: replace(item, position=(item.position[0] + delta[0], item.position[1] + delta[1]))
+                              for i, item in self.items.items()}
+
+        world = Cramped((unit("611", "GMC Sierra", "tractor", position=(-696.0, 139.0)),))
+        result = Executor(world).execute({"version": 1, "request_id": "gmc-barn", "farm_id": "1",
+                                          "task": "move_pair", "tractor_name": "gmc",
+                                          "target": {"type": "place", "name": "farm barn"}})
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual([c[0] for c in world.calls[1:5]], ["drive", "navigate", "reposition", "navigate"])
+
+    def test_a_rig_boxed_in_by_a_parked_tractor_has_it_moved_out_of_the_way_then_goes(self):
+        # Live 140a6b52320b4587-1: the GMC rig against the 3650 and its trailer; no route, GIANTS
+        # blocked at its start, no way onto open ground. The user, 2026-10-30: "if its a tractor have
+        # farmhand get in it and move it somewhere out of the way then resume the original task".
+        from adapters.world import StepFailed
+
+        class Boxed(World):
+            def reserve_rig(self, ids, owner):
+                self.calls.append(("reserve", ids, owner))
+                self.items = {i: replace(item, reserved_by=owner) if i in ids else item
+                              for i, item in self.items.items()}
+                return True
+
+            def release(self, owner):
+                self.calls.append(("release", owner))
+                self.items = {i: replace(item, reserved_by=None) if item.reserved_by == owner else item
+                              for i, item in self.items.items()}
+
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                self.calls.append(("drive", vehicle_id))
+                if math.dist(self.items["615"].position, self.items["611"].position) < 12.0:
+                    raise StepFailed("NO_ROUTE")
+                return super().farm_drive(vehicle_id, target, owner, area, yaw)
+
+            def navigate(self, vehicle_id, pose, owner):
+                self.calls.append(("navigate", vehicle_id))
+                raise StepFailed("NAVIGATE_BLOCKED_AT_START")
+
+            def reposition(self, vehicle_id, owner):
+                self.calls.append(("reposition", vehicle_id))
+                if vehicle_id == "611":
+                    raise StepFailed("NO_ROUTE")          # the boxed rig itself cannot get out
+                for i in ("615", "633"):                    # the 3650 and its trailer, out of the way
+                    x, z = self.items[i].position
+                    self.items[i] = replace(self.items[i], position=(x + 40.0, z))
+
+        world = Boxed((unit("611", "GMC Sierra", "tractor", position=(-696.0, 139.0)),
+                       # As the game reports it: the tractor's attached_to names the trailer it tows.
+                       unit("615", "3650", "tractor", position=(-690.0, 135.0), attached="633"),
+                       unit("633", "Z 18051", "implement", position=(-690.0, 128.0), attached="615"),
+                       unit("700", "Far Tractor", "tractor", position=(-500.0, 300.0))))
+        result = Executor(world).execute({"version": 1, "request_id": "gmc-barn", "farm_id": "1",
+                                          "task": "move_pair", "tractor_name": "gmc",
+                                          "target": {"type": "place", "name": "farm barn"}})
+        self.assertEqual(result.status, "COMPLETE", result)
+        moved = [c for c in world.calls if c[0] == "reposition"]
+        self.assertEqual(moved, [("reposition", "611"), ("reposition", "615")])   # only the blocker, not the far one
+        self.assertIn(("reserve", ("615", "633"), "gmc-barn-clear0"), world.calls)   # with its trailer
+        self.assertIn(("release", "gmc-barn-clear0"), world.calls)
+        self.assertEqual(world.items["611"].reserved_by, None)
+        # Moved off but short of its spot (live 21a5e70740024850-1: OBSTACLE_AHEAD 2 m from it):
+        # judged by where it is, the way may be open and the move resumes.
+        class Short(Boxed):
+            def reposition(self, vehicle_id, owner):
+                super().reposition(vehicle_id, owner)
+                if vehicle_id != "611":
+                    raise StepFailed("OBSTACLE_AHEAD")
+        world = Short((unit("611", "GMC Sierra", "tractor", position=(-696.0, 139.0)),
+                       unit("615", "3650", "tractor", position=(-690.0, 135.0), attached="633"),
+                       unit("633", "Z 18051", "implement", position=(-690.0, 128.0), attached="615")))
+        result = Executor(world).execute({"version": 1, "request_id": "gmc-barn", "farm_id": "1",
+                                          "task": "move_pair", "tractor_name": "gmc",
+                                          "target": {"type": "place", "name": "farm barn"}})
+        self.assertEqual(result.status, "COMPLETE", result)
+
+    def test_a_long_trip_goes_to_giants_navigation_first_and_farmhand_drives_what_is_left(self):
+        # The user, 2026-10-30: use the pieces already made; Farmhand's own search took minutes to
+        # find no route across the river before GIANTS was even asked.
+        class Far(World):
+            short = 0.0
+
+            def navigate(self, vehicle_id, pose, owner):
+                self.calls.append(("navigate", vehicle_id))
+                x, z = self.items[vehicle_id].position
+                k = 1.0 - self.short / math.dist((x, z), (pose.x, pose.z))
+                self.items = {i: replace(item, position=(x + (pose.x - x) * k, z + (pose.z - z) * k))
+                              for i, item in self.items.items()}
+
+        world = Far((unit("611", "GMC Sierra", "tractor", position=(-100.0, 500.0)),))
+        result = Executor(world).execute({"version": 1, "request_id": "gmc-barn", "farm_id": "1",
+                                          "task": "move_pair", "tractor_name": "gmc",
+                                          "target": {"type": "place", "name": "farm barn"}})
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual([c[0] for c in world.calls[1:]], ["navigate", "stop", "release"])   # no own drive
+        world = Far((unit("611", "GMC Sierra", "tractor", position=(-100.0, 500.0)),))
+        world.short = 60.0                                    # GIANTS ends 60 m short
+        result = Executor(world).execute({"version": 1, "request_id": "gmc-barn", "farm_id": "1",
+                                          "task": "move_pair", "tractor_name": "gmc",
+                                          "target": {"type": "place", "name": "farm barn"}})
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual([c[0] for c in world.calls[1:3]], ["navigate", "drive"])           # the rest, its own
+
+    def test_with_no_way_out_by_driving_the_teleport_recovery_frees_the_rig_when_allowed(self):
+        # The user, 2026-10-30: "if farmhand still can not move it, it should teleport it and any
+        # attached items to an open area close by".
+        from adapters.world import StepFailed
+
+        class Pocket(World):
+            teleport_recovery = True
+            freed = False
+
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                self.calls.append(("drive",))
+                if not self.freed:
+                    raise StepFailed("NO_ROUTE")
+                return super().farm_drive(vehicle_id, target, owner, area, yaw)
+
+            def navigate(self, vehicle_id, pose, owner):
+                raise StepFailed("NAVIGATE_BLOCKED_AT_START")
+
+            def reposition(self, vehicle_id, owner):
+                raise StepFailed("NO_ROUTE")
+
+            def teleport(self, vehicle_id, owner, min_m=0.0, at=None):
+                self.calls.append(("teleport", vehicle_id))
+                self.freed = True
+
+        world = Pocket((unit("611", "GMC Sierra", "tractor", position=(-696.0, 139.0)),))
+        result = Executor(world).execute({"version": 1, "request_id": "gmc-barn", "farm_id": "1",
+                                          "task": "move_pair", "tractor_name": "gmc",
+                                          "target": {"type": "place", "name": "farm barn"}})
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertIn(("teleport", "611"), world.calls)
+        # A long trip (live bae54215f79642a0: GIANTS blocked at the start, no way onto open
+        # ground, then minutes of Farmhand's own search across the river): straight to the
+        # recovery, never Farmhand's own drive over the whole trip first.
+        world = Pocket((unit("611", "GMC Sierra", "tractor", position=(-100.0, 500.0)),))
+        Executor(world).execute({"version": 1, "request_id": "gmc-far", "farm_id": "1", "task": "move_pair",
+                                 "tractor_name": "gmc", "target": {"type": "place", "name": "farm barn"}})
+        names = [c[0] for c in world.calls]
+        self.assertIn("teleport", names)
+        self.assertNotIn("drive", names[:names.index("teleport")])
+        world = Pocket((unit("611", "GMC Sierra", "tractor", position=(-696.0, 139.0)),))
+        world.teleport_recovery = False                       # turned off in Settings: never
+        result = Executor(world).execute({"version": 1, "request_id": "gmc-barn", "farm_id": "1",
+                                          "task": "move_pair", "tractor_name": "gmc",
+                                          "target": {"type": "place", "name": "farm barn"}})
+        self.assertEqual(result.status, "FAILED")
+        self.assertNotIn("teleport", [c[0] for c in world.calls])
+
+    def test_teleport_recovery_goes_farther_out_while_giants_still_cannot_start(self):
+        # Live f08f97a7aef54634-1: set down 4 m off inside the same yard pocket, GIANTS blocked
+        # again; the user, 2026-10-31: farther out each time, about 25 m then up to about 150 m.
+        from adapters.world import StepFailed
+
+        class DeepPocket(World):
+            teleport_recovery = True
+            out = None
+
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                raise StepFailed("NO_ROUTE")
+
+            def navigate(self, vehicle_id, pose, owner):
+                if self.out is None or self.out < 60:
+                    raise StepFailed("NAVIGATE_BLOCKED_AT_START")
+                self.items = {i: replace(item, position=(pose.x, pose.z)) for i, item in self.items.items()}
+
+            def reposition(self, vehicle_id, owner):
+                raise StepFailed("NO_ROUTE")
+
+            def teleport(self, vehicle_id, owner, min_m=0.0, at=None):
+                self.calls.append(("teleport", min_m))
+                self.out = min_m
+
+        world = DeepPocket((unit("611", "GMC Sierra", "tractor", position=(-100.0, 500.0)),))
+        result = Executor(world).execute({"version": 1, "request_id": "gmc-far", "farm_id": "1", "task": "move_pair",
+                                          "tractor_name": "gmc", "target": {"type": "place", "name": "farm barn"}})
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual([c[1] for c in world.calls if c[0] == "teleport"], [0.0, 25.0, 60.0])
+        world = DeepPocket((unit("611", "GMC Sierra", "tractor", position=(-100.0, 500.0)),))
+        world.navigate = lambda *a: (_ for _ in ()).throw(StepFailed("NAVIGATE_BLOCKED_AT_START"))
+        result = Executor(world).execute({"version": 1, "request_id": "gmc-far", "farm_id": "1", "task": "move_pair",
+                                          "tractor_name": "gmc", "target": {"type": "place", "name": "farm barn"}})
+        self.assertEqual(result.status, "FAILED")                              # never past the last step
+        self.assertEqual(len([c for c in world.calls if c[0] == "teleport"]), 4)
+
+    def test_a_rig_with_belted_cargo_goes_by_autodrive_to_the_fields_marker(self):
+        # GIANTS' helper is blocked from its first frame by a vehicle belted on its own trailer
+        # (live d14230aa9fb24d30-3; live abe8eb41ca6f4b5f-1: "take the gmc to field 90" blocked
+        # from every spot, four teleports no help); AutoDrive counts that cargo as the rig's own.
+        from adapters.world import StepFailed
+
+        class Loaded(World):
+            markers = ()
+
+            def destinations(self):
+                return self.markers
+
+            def ad_marker(self, field=None, place=None):
+                self.calls.append(("ad_marker", field))
+                self.markers = (Destination("77", (-629.0, 205.0), "Field 5"),)
+
+            def travel(self, vehicle_id, marker, owner):
+                self.calls.append(("travel", marker))
+                self.items = {i: replace(item, position=(-629.0, 205.0)) for i, item in self.items.items()}
+
+            def navigate(self, vehicle_id, pose, owner):
+                raise StepFailed("NAVIGATE_BLOCKED_AT_START")
+
+        def rig(position):
+            truck = replace(unit("611", "GMC Sierra", "tractor", attached="620", position=position),
+                            capabilities=frozenset({"move", "stop", "autodrive"}))
+            deck = unit("620", "1124 Deckover", "implement", attached="611", belted=("622",), position=position)
+            return truck, deck, unit("622", "Series 9", "tractor", belted_to="620", position=position)
+
+        world = Loaded(rig((-100.0, 600.0)))
+        result = StandaloneMove(world).execute({"request_id": "g", "farm_id": "1", "task": "move_pair",
+                                                "tractor_name": "gmc", "target": {"type": "field_entrance", "field": 5}})
+        self.assertEqual(result.status, "COMPLETE", result)
+        names = [c[0] for c in world.calls]
+        self.assertEqual(names[names.index("ad_marker"):names.index("travel") + 1], ["ad_marker", "travel"])
+        self.assertIn(("travel", "77"), world.calls)
+        self.assertNotIn("teleport", names)
+        # AutoDrive's field marker on the road beside the field (live d30f1350225a420b-1, 15 m off
+        # its edge): Farmhand's own drive for the rest, to the nearest point of the real edge.
+        world = Loaded(rig((-100.0, 600.0)))
+        world.travel = lambda vehicle_id, marker, owner: setattr(world, "items", {
+            i: replace(item, position=(-629.0, 185.0)) for i, item in world.items.items()})
+        result = StandaloneMove(world).execute({"request_id": "g", "farm_id": "1", "task": "move_pair",
+                                                "tractor_name": "gmc", "target": {"type": "field_entrance", "field": 5}})
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual([c[2] for c in world.calls if c[0] == "drive"][-1], (-629.0, 200.0))
+        # Without belted cargo it stays with GIANTS' navigation first.
+        world = Loaded((replace(unit("611", "GMC Sierra", "tractor", position=(-100.0, 600.0)),
+                                capabilities=frozenset({"move", "stop", "autodrive"})),))
+        StandaloneMove(world).execute({"request_id": "g", "farm_id": "1", "task": "move_pair",
+                                       "tractor_name": "gmc", "target": {"type": "field_entrance", "field": 5}})
+        self.assertNotIn("travel", [c[0] for c in world.calls])
+
+    def test_a_loaded_rig_off_autodrives_network_is_taken_onto_a_routed_waypoint_first(self):
+        # Live 2026-10-31 (save 1): the loaded GMC 51 m off AutoDrive's network in the yard,
+        # AutoDrive ended at once unmoved; its route starts at a waypoint on the west road.
+        from adapters.world import StepFailed
+        from companion.hitch import ADGraph
+
+        graph = ADGraph(points={1: (-60.0, 600.0), 2: (-60.0, 640.0), 3: (-629.0, 205.0)},
+                        out={1: (2,), 2: (3,), 3: ()})
+
+        class OffNetwork(World):
+            teleport_recovery = True
+            drive_fails = False
+
+            def destinations(self):
+                return (Destination("77", (-629.0, 205.0), "Field 5"),)
+
+            def ad_graph(self):
+                return graph
+
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                self.calls.append(("drive", target))
+                if self.drive_fails and target[0] == -60.0:          # out of the yard: no way
+                    raise StepFailed("NO_ROUTE")
+                return super().farm_drive(vehicle_id, target, owner, area, yaw)
+
+            def teleport(self, vehicle_id, owner, min_m=0.0, at=None):
+                self.calls.append(("teleport", (at.x, at.z)))
+                self.items = {i: replace(item, position=(at.x, at.z)) for i, item in self.items.items()}
+
+            def travel(self, vehicle_id, marker, owner):
+                self.calls.append(("travel", marker))
+                self.items = {i: replace(item, position=(-629.0, 205.0)) for i, item in self.items.items()}
+
+        def rig():
+            truck = replace(unit("611", "GMC Sierra", "tractor", attached="620", position=(-110.0, 600.0)),
+                            capabilities=frozenset({"move", "stop", "autodrive"}))
+            deck = unit("620", "1124 Deckover", "implement", attached="611", belted=("622",), position=(-110.0, 600.0))
+            return truck, deck, unit("622", "Series 9", "tractor", belted_to="620", position=(-110.0, 600.0))
+
+        command = {"request_id": "g", "farm_id": "1", "task": "move_pair", "tractor_name": "gmc",
+                   "target": {"type": "field_entrance", "field": 5}}
+        world = OffNetwork(rig())
+        self.assertEqual(StandaloneMove(world).execute(command).status, "COMPLETE")
+        moves = [c for c in world.calls if c[0] in ("drive", "teleport", "travel") and len(c) == 2]
+        self.assertEqual(moves[:2], [("drive", (-60.0, 600.0)), ("travel", "77")])   # its own short hop, then AutoDrive
+        world = OffNetwork(rig())
+        world.drive_fails = True                     # no way by driving: onto the waypoint by teleport
+        self.assertEqual(StandaloneMove(world).execute(command).status, "COMPLETE")
+        moves = [c[0] for c in world.calls if c[0] in ("drive", "teleport", "travel")]
+        self.assertEqual(moves[moves.index("teleport"):moves.index("teleport") + 2], ["teleport", "travel"])
+        self.assertIn(("teleport", (-60.0, 600.0)), world.calls)
+
     def test_bare_named_vehicle_goes_to_a_building_usable_spot(self):
         world = World((unit("611", "GMC Sierra", "tractor", position=(-696.0, 139.0)),))
         result = StandaloneMove(world).execute({"request_id": "a", "farm_id": "1", "task": "move_pair",

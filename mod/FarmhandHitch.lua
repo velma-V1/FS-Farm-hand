@@ -1016,6 +1016,37 @@ function Hitch.withGhosted(env, foot, tractor)
     return copy
 end
 
+-- Teleport recovery (the user, 2026-10-30: "if farmhand still can not move it, teleport it and
+-- any attached items to an open area close by"; AGENTS.md 19, allow teleport recovery): the
+-- nearest pose within Hitch.TELEPORT.maxM where the whole rig's route box is clear and 1 m from
+-- scenery, on the ground (never a bridge deck: GIANTS places it at the terrain), at the rig's
+-- own heading first. x, z, yaw, or nil.
+Hitch.TELEPORT = { minM = 4, maxM = 50, stepM = 2, angles = 16, clearM = 1.0 }
+-- minM: no nearer than this (a spot to drive to is at least a rig length off: live
+-- 4f0491d8288840c6-1, 4 m beside the 20 m GMC rig at its own heading, unreachable).
+-- accept(px, pz): an optional further test of a spot (Drive: one GIANTS' navigation reaches);
+-- maxM: how far out to look (Hitch.TELEPORT.maxM by default).
+function Hitch.openSpot(env, foot, x, z, yaw, minM, accept, maxM)
+    local T = Hitch.TELEPORT
+    local headings = { yaw, yaw + math.pi / 2, yaw - math.pi / 2, yaw + math.pi }
+    for r = math.max(T.minM, minM or 0), maxM or T.maxM, T.stepM do
+        for a = 0, T.angles - 1 do
+            local angle = yaw + a * 2 * math.pi / T.angles
+            local px, pz = x + math.sin(angle) * r, z + math.cos(angle) * r
+            local _, deck = surfaceAt(env, px, pz)
+            if not deck and (accept == nil or accept(px, pz)) then
+                for _, h in ipairs(headings) do
+                    if Hitch.routePoseClear(env, foot, px, pz, h, 0) == true
+                            and Hitch.staticNear(env, foot, px, pz, h, T.clearM) == false then
+                        return px, pz, h
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
 -- Ghosted rigs no drive holds any more, restored once each stands clear of scenery
 -- (Hitch.GHOST.clearM). `busy(tractor)`: true while a Farmhand motion still drives it.
 function Hitch.releaseGhosts(env, busy)

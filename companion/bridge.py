@@ -47,10 +47,16 @@ HEARTBEAT_S = 1.0             # game drops the session after 10 s without a beat
 ALIGN_MAX_DISTANCE_M = 10.0      # = mod/FarmhandHitch.lua Hitch.LIMITS.maxDistanceM
 # farm_drive's yaw for "any heading" (= mod/FarmhandDrive.lua: beyond +-2 pi is none).
 ANY_HEADING = 10.0
+TELEPORT_HERE = 90000.0            # teleport x/z: near the rig itself (= mod/FarmhandBridge.lua, beyond any map)
 # Farmhand drives restarted after ending against something on the way.
 CONTACT_RESTARTS = 2
+# A Farmhand drive that ends with the rig unable to move: teleport recovery (the user,
+# 2026-10-30; AGENTS.md 19, "allow teleport recovery", a setting), once per job, then the
+# drive again from the open spot.
+STUCK_CODES = frozenset({"EGRESS_LIMIT", "EGRESS_DIVERGED", "EGRESS_BLOCKED", "EGRESS_NOT_CLEAR",
+                         "EGRESS_NOT_AHEAD", "EGRESS_NOT_BEHIND", "START_NOT_CLEAR"})
 CONTACT_SETTLE_S = 10.0     # waited for it to stand before a restart
-DONE_TIMEOUT_S = {"pay": 15.0, "charge": 15.0, "farm_drive": 14700.0, "drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "ad_marker": 15.0, "ad_connect": 15.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "ad_unload": 20.0, "ad_sell": 14700.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
+DONE_TIMEOUT_S = {"pay": 15.0, "charge": 15.0, "teleport": 20.0, "reposition": 14700.0, "farm_drive": 14700.0, "drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "ad_marker": 15.0, "ad_connect": 15.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "ad_unload": 20.0, "ad_sell": 14700.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -271,6 +277,10 @@ class FS25World:
         self.cancel = None
         self._lock = threading.RLock()
         self._reservations: dict[str, tuple[str, tuple[str, ...]]] = {}
+        # Teleport recovery allowed (Settings.teleport_recovery; companion/service.py sets it),
+        # and the jobs that used theirs.
+        self.teleport_recovery = True
+        self._teleported: set[str] = set()
         # Farmhand's pay (mode, amount) reader (Settings.pay; companion/service.py), sent once per
         # game session; None: the game's default in the mod.
         self.pay = None
@@ -381,6 +391,48 @@ class FS25World:
             reservation = self._reservations.get(owner)
         if reservation is None or reservation[1][0] != vehicle_id:
             raise StepFailed("NOT_RESERVED")
+        try:
+            self._farm_drive(vehicle_id, target, owner, area, yaw)
+        except StepFailed as failure:
+            if failure.code not in STUCK_CODES or not self.teleport_recovery or owner in self._teleported:
+                raise
+            self._teleported.add(owner)
+            log.info("farm_drive could not move the rig (%s): teleport recovery to open ground nearby", failure.code)
+            self.await_stopped(vehicle_id)        # live 0d44db5189854c18-1: refused NOT_STOPPED while rolling
+            self.teleport(vehicle_id, owner)
+            self._farm_drive(vehicle_id, target, owner, area, yaw)
+
+    def set_pay(self, mode: int, amount: float) -> None:
+        """Farmhand's pay in the game (mod/FarmhandBridge.lua Bridge.pay): mode and amount."""
+        self._run("pay", direction=int(mode), area=float(amount))
+
+    def charge(self, amount: float) -> None:
+        """Per-job pay for a completed request (charged only in that mode, by the game)."""
+        self._run("charge", area=float(amount))
+
+    def reposition(self, vehicle_id: str, owner: str) -> None:
+        """The reserved vehicle (a standing combine) to the nearest open ground with lanes beside and
+        behind it, by Farmhand's own drive."""
+        with self._lock:
+            reservation = self._reservations.get(owner)
+        if reservation is None or vehicle_id not in reservation[1]:
+            raise StepFailed("NOT_RESERVED")
+        self._run("reposition", tractor=int(vehicle_id))
+
+    def teleport(self, vehicle_id: str, owner: str, min_m: float = 0.0, at: Pose | None = None) -> None:
+        """Teleport recovery: the reserved rig and everything attached to the nearest open spot,
+        no nearer than ``min_m``; near ``at`` at its heading when given (a loaded rig onto
+        AutoDrive's road), else near where the rig stands."""
+        with self._lock:
+            reservation = self._reservations.get(owner)
+        if reservation is None or reservation[1][0] != vehicle_id:
+            raise StepFailed("NOT_RESERVED")
+        x, z, yaw = (at.x, at.z, math.remainder(float(at.yaw), math.tau)) if at is not None else \
+            (TELEPORT_HERE, TELEPORT_HERE, ANY_HEADING)
+        self._run("teleport", tractor=int(vehicle_id), area=float(min_m), x=float(x), z=float(z), yaw=float(yaw))
+        self.link.notice("TELEPORTED")          # never silent (AGENTS.md 19)
+
+    def _farm_drive(self, vehicle_id, target, owner, area, yaw):
         # Ended against something on the way (live f4fb84d66f9e4191-1: a traffic cone on the road),
         # the drive starts again from there: its start departs from what it touches and plans
         # around it. At most CONTACT_RESTARTS times; any other end is the drive's own.
@@ -394,23 +446,19 @@ class FS25World:
                     raise
                 log.info("farm_drive ended against something on the way; restarting from there (%d)", restart + 1)
                 # Once it stands (live 13f374b86b594744-2: restarted while still rolling, NOT_STOPPED).
-                deadline = time.monotonic() + CONTACT_SETTLE_S
-                while time.monotonic() < deadline:
-                    try:
-                        vehicle = next((i for i in self.snapshot() if i.id == vehicle_id), None)
-                    except StepUnverified:
-                        vehicle = None
-                    if vehicle is not None and vehicle.stopped:
-                        break
-                    time.sleep(0.25)
+                self.await_stopped(vehicle_id)
 
-    def set_pay(self, mode: int, amount: float) -> None:
-        """Farmhand's pay in the game (mod/FarmhandBridge.lua Bridge.pay): mode and amount."""
-        self._run("pay", direction=int(mode), area=float(amount))
-
-    def charge(self, amount: float) -> None:
-        """Per-job pay for a completed request (charged only in that mode, by the game)."""
-        self._run("charge", area=float(amount))
+    def await_stopped(self, vehicle_id: str) -> None:
+        """Until the vehicle is observed standing, at most CONTACT_SETTLE_S."""
+        deadline = time.monotonic() + CONTACT_SETTLE_S
+        while time.monotonic() < deadline:
+            try:
+                vehicle = next((i for i in self.snapshot() if i.id == vehicle_id), None)
+            except StepUnverified:
+                vehicle = None
+            if vehicle is not None and vehicle.stopped:
+                return
+            time.sleep(0.25)
 
     def _reserved(self, tractor_id: str, owner: str, wagon_id: str | None = None) -> tuple[str, str]:
         with self._lock:
