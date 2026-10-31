@@ -1,13 +1,13 @@
 """Optional local language model behind the deterministic rules (companion/language.py).
 
-    python -m companion.model --install recommended   download and verify the runtime and a model once
+    python -m companion.model --list        the llama.cpp runtime and GGUF models found on this PC
     python -m companion.model "come here"   interpret one sentence (diagnostics)
 
-Runtime: llama.cpp `llama-server`, CPU-only build, on 127.0.0.1, started by the
-companion with no window at below-normal priority, so it never takes VRAM or the
-game's CPU time first. Models: the user picks one of two (MANAGED; Apache-2.0),
-each pinned by URL and sha256 (adapters/EVIDENCE.md, "Local language model"). A
-model the user already has in Ollama is used through companion/ai.py instead.
+Farmhand downloads no model and no runtime (the user, 2026-10-31): it finds the
+llama.cpp `llama-server` and the GGUF models the user installed (LlamaCpp) and only
+reads them. The server runs on 127.0.0.1 with no window at below-normal priority and
+CPU only, so it never takes VRAM or the game's CPU time first. A model the user has
+in Ollama is used through companion/ai.py instead.
 
 The model only rewrites a sentence into MODEL_SCHEMA (a flat schema llama.cpp can
 enforce while decoding): the command it means and the same request in the wording
@@ -21,19 +21,18 @@ only; no network beyond 127.0.0.1 at runtime.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import Path
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
-import zipfile
 
 from jsonschema import Draft202012Validator
 
@@ -42,43 +41,11 @@ from companion.language import RuleInterpreter
 
 log = logging.getLogger("farmhand")
 
-# Pinned artifacts (verified 2026-10-17 against the GitHub release digest and the
-# Hugging Face LFS sha256 of the pinned revision).
-RUNTIME = {
-    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11714/llama-b11714-bin-win-cpu-x64.zip",
-    "sha256": "f78eded047061a3f86372db426797400a2f1bb0ec37868d5927dd820eb3386c0",
-    "size": 19662606,
-    "file": "llama-b11714-bin-win-cpu-x64.zip",
-}
-# The two Farmhand-installable models, qualified 2026-10-17 on a labelled set of
-# wording the rules miss (adapters/EVIDENCE.md): about equal accuracy, the
-# lightweight one about twice as fast and half the memory.
-MANAGED = {
-    "lightweight": {
-        "title": "Lightweight (Qwen3 1.7B)",
-        "url": ("https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/"
-                "d7f544eead698dbd1f15126ef60b45a1e1933222/Qwen3-1.7B-Q4_K_M.gguf"),
-        "sha256": "b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897",
-        "size": 1107409472,
-        "file": "Qwen3-1.7B-Q4_K_M.gguf",
-        "ram_gb": 2,
-    },
-    "recommended": {
-        "title": "Recommended (Qwen3 4B)",
-        "url": ("https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/"
-                "a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"),
-        "sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
-        "size": 2497281120,
-        "file": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-        "ram_gb": 4,
-    },
-}
-MODEL = MANAGED["recommended"]
 PORT = 39231
 THREADS = 4                       # of the 7800X3D's 8 cores; FS25 keeps the rest
 CONTEXT = 2048
 TIMEOUT_S = 10.0                  # per sentence; the rules already answered STOP
-START_TIMEOUT_S = 180.0           # loading 2.5 GB from disk
+START_TIMEOUT_S = 180.0           # loading a few GB from disk
 BELOW_NORMAL_PRIORITY_CLASS, CREATE_NO_WINDOW = 0x00004000, 0x08000000
 # 127.0.0.1 only, never through a proxy (urllib also reads the Windows registry's).
 LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({})).open
@@ -260,18 +227,78 @@ class ModelInterpreter:
         return proposal
 
 
-# ------------------------------------------------------------------- runtime
+# ----------------------------------------------------------------- discovery
+# Where llama.cpp and the common front-ends keep what the user installed: llama-server on PATH
+# (winget's ggml.llamacpp puts it there), llama.cpp's own cache for `-hf` downloads (LLAMA_CACHE,
+# else %LOCALAPPDATA%/llama.cpp or ~/.cache/llama.cpp), LM Studio's models folder, and the folder
+# earlier Farmhand versions downloaded into (the user's files now; read, never changed).
+RUNTIME_NAMES = ("llama-server.exe", "llama-server")
+SEARCH_DEPTH = 4                  # publisher/repo/file under a models folder, and a little more
+# An earlier Farmhand's saved choice ({"provider": "farmhand", "model": key}) and the file it meant.
+LEGACY_FILES = {"lightweight": "Qwen3-1.7B-Q4_K_M.gguf", "recommended": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"}
 
-def install_dir() -> Path:
+
+def legacy_dir() -> Path:
     base = os.environ.get("LOCALAPPDATA") or str(Path.home())
     return Path(base) / "FS25Farmhand" / "model"
 
 
-def server_command(folder: Path, port: int = PORT, model_file: str = MODEL["file"]) -> list[str]:
-    """CPU only (-ngl 0 and no device: -ngl defaults to auto), one slot, local only.
-    The managed runtime is the CPU build on purpose: it never takes VRAM from FS25;
-    a GPU is used through the user's own Ollama, by Ollama's own rules."""
-    return [str(folder / "llama" / "llama-server.exe"), "-m", str(folder / model_file),
+def model_dirs() -> list[Path]:
+    home, local = Path.home(), os.environ.get("LOCALAPPDATA")
+    dirs = [Path(os.environ["LLAMA_CACHE"])] if os.environ.get("LLAMA_CACHE") else []
+    if local:
+        dirs.append(Path(local) / "llama.cpp")
+    return dirs + [home / ".cache" / "llama.cpp", home / ".lmstudio" / "models",
+                   home / ".cache" / "lm-studio" / "models", legacy_dir()]
+
+
+def _ggufs(root: Path, depth: int):
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.is_dir() and depth > 0:
+                yield from _ggufs(Path(entry.path), depth - 1)
+            elif entry.is_file() and entry.name.lower().endswith(".gguf") and "mmproj" not in entry.name.lower():
+                yield Path(entry.path)               # a vision projector is no language model
+        except OSError:
+            continue
+
+
+class LlamaCpp:
+    """The user's own llama.cpp: its llama-server and their GGUF models, found, never installed."""
+
+    def __init__(self, which=shutil.which, dirs: list[Path] | None = None, legacy: Path | None = None):
+        self.which, self.dirs, self.legacy = which, dirs, legacy
+
+    def runtime(self) -> Path | None:
+        for name in RUNTIME_NAMES:
+            found = self.which(name)
+            if found:
+                return Path(found)
+        folder = (self.legacy or legacy_dir()) / "llama"
+        return next((folder / n for n in RUNTIME_NAMES if (folder / n).is_file()), None)
+
+    def models(self) -> list[Path]:
+        found, seen = [], set()
+        for root in (self.dirs if self.dirs is not None else model_dirs()):
+            for path in _ggufs(root, SEARCH_DEPTH):
+                key = os.path.normcase(str(path.resolve()))
+                if key not in seen:
+                    seen.add(key)
+                    found.append(path)
+        return sorted(found, key=lambda p: p.name.casefold())
+
+
+# ------------------------------------------------------------------- runtime
+
+def server_command(runtime: Path, model: Path, port: int = PORT) -> list[str]:
+    """CPU only (-ngl 0 and no device: -ngl defaults to auto), one slot, local only:
+    it never takes VRAM from FS25, whatever build the user installed; a GPU is used
+    through the user's own Ollama, by Ollama's own rules."""
+    return [str(runtime), "-m", str(model),
             "-ngl", "0", "--device", "none", "-t", str(THREADS), "-c", str(CONTEXT), "-np", "1",
             "--host", "127.0.0.1", "--port", str(port), "--no-webui"]
 
@@ -323,18 +350,17 @@ def close_job(job) -> None:
 
 
 class ModelServer:
-    """Starts llama-server if it is installed; ready() once /health answers from
-    the process it started (never from something else on the port)."""
+    """Starts the user's llama-server on their model if both are there; ready() once
+    /health answers from the process it started (never from something else on the port)."""
 
-    def __init__(self, folder: Path | None = None, port: int = PORT, opener=LOCAL,
-                 popen=subprocess.Popen, choice: str = "recommended"):
-        self.folder, self.port, self.opener, self.popen = folder or install_dir(), port, opener, popen
-        self.model_file = MANAGED[choice]["file"]
+    def __init__(self, runtime: Path | None, model: Path, port: int = PORT, opener=LOCAL,
+                 popen=subprocess.Popen):
+        self.runtime, self.model, self.port, self.opener, self.popen = runtime, Path(model), port, opener, popen
         self._ready = threading.Event()
         self.process = self.job = None
 
     def installed(self) -> bool:
-        return (self.folder / "llama" / "llama-server.exe").is_file() and (self.folder / self.model_file).is_file()
+        return self.runtime is not None and Path(self.runtime).is_file() and self.model.is_file()
 
     def _answers(self) -> bool:
         try:
@@ -345,13 +371,13 @@ class ModelServer:
 
     def start(self) -> bool:
         if not self.installed():
-            log.info("local model not installed (%s): plain commands only", self.folder)
+            log.info("llama.cpp or the model is not there (%s, %s): plain commands only", self.runtime, self.model)
             return False
         if self._answers():
             log.warning("port %d already answers; the local model stays off", self.port)
             return False
         flags = BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        self.process = self.popen(server_command(self.folder, self.port, self.model_file), stdout=subprocess.DEVNULL,
+        self.process = self.popen(server_command(self.runtime, self.model, self.port), stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL, creationflags=flags)
         if sys.platform == "win32":
             try:
@@ -389,72 +415,22 @@ class ModelServer:
             self.job = None
 
 
-# ------------------------------------------------------------------ install
-
-def download(artifact: dict, target: Path, opener=urllib.request.urlopen) -> None:
-    """Fetch to a temporary name, verify size and sha256, then rename into place."""
-    if target.is_file() and _sha256(target) == artifact["sha256"]:
-        return
-    partial = target.with_name(target.name + ".part")
-    digest, size = hashlib.sha256(), 0
-    with opener(artifact["url"], timeout=60) as response, open(partial, "wb") as out:
-        while chunk := response.read(1 << 20):
-            digest.update(chunk)
-            size += len(chunk)
-            out.write(chunk)
-    if size != artifact["size"] or digest.hexdigest() != artifact["sha256"]:
-        partial.unlink()
-        raise ValueError(f"{artifact['file']}: download does not match its pinned sha256")
-    os.replace(partial, target)
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as source:
-        while chunk := source.read(1 << 20):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def extract(archive: Path, folder: Path) -> None:
-    """Unzip with no entry outside ``folder`` (no absolute paths, no "..")."""
-    with zipfile.ZipFile(archive) as zf:
-        for name in zf.namelist():
-            parts = PurePosixPath(name.replace("\\", "/")).parts
-            if not parts or name.startswith(("/", "\\")) or ".." in parts or ":" in parts[0]:
-                raise ValueError(f"unsafe archive entry {name!r}")
-        zf.extractall(folder)
-
-
-def installed_choices(folder: Path | None = None) -> list[str]:
-    folder = folder or install_dir()
-    if not (folder / "llama" / "llama-server.exe").is_file():
-        return []
-    return [key for key, m in MANAGED.items() if (folder / m["file"]).is_file()]
-
-
-def install(folder: Path | None = None, opener=urllib.request.urlopen, choice: str = "recommended") -> Path:
-    folder = folder or install_dir()
-    folder.mkdir(parents=True, exist_ok=True)
-    if not (folder / "llama" / "llama-server.exe").is_file():   # never over a running server
-        archive = folder / RUNTIME["file"]
-        download(RUNTIME, archive, opener)
-        extract(archive, folder / "llama")
-    download(MANAGED[choice], folder / MANAGED[choice]["file"], opener)
-    return folder
-
-
 def main(argv=None) -> int:
     import argparse
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--install", choices=sorted(MANAGED))
+    parser.add_argument("--list", action="store_true")
     parser.add_argument("text", nargs="?")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    if args.install:
-        print(f"Local language model installed in {install(None, choice=args.install)}")
+    llama = LlamaCpp()
+    runtime, models = llama.runtime(), llama.models()
+    if args.list:
+        print(f"llama-server: {runtime or 'not found'}")
+        print("\n".join(str(m) for m in models) or "no GGUF models found")
         return 0
-    server = ModelServer(choice=(installed_choices() or ["recommended"])[0])
+    if not models:
+        return 1
+    server = ModelServer(runtime, models[0])
     if not server.start():
         return 1
     deadline = time.monotonic() + START_TIMEOUT_S

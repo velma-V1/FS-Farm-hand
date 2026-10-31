@@ -966,7 +966,7 @@ class ServiceTests(unittest.TestCase):
         game, notices = self.start(autodrive=False, voice={"ai": brain})
         self.wait_for(lambda: "AI_MODEL_MISSING" in notices)
         self.assertNotIn("MENU", notices)                          # a choice exists: reported, not re-asked
-        self.assertEqual(settings.ai(), {"provider": "farmhand", "model": "recommended"})
+        self.assertEqual(settings.load()["ai"], {"provider": "farmhand", "model": "recommended"})   # never rewritten
 
     def test_without_ai_unknown_words_are_answered_at_once(self):
         import tempfile as tmp

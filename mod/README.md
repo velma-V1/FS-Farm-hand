@@ -122,9 +122,9 @@ says it is unavailable.
    (a test package, not a release), extract it anywhere and double-click
    `Setup.cmd`. It installs the mod and the companion, starts the companion now
    and at every logon, and says so in a window. At the first FS25 connection
-   Farmhand offers its AI menu (Left Alt + N later): pick your Ollama model if you
-   have one, or a Farmhand download, or "Continue without AI"; try both "without AI"
-   and a model during the session.
+   Farmhand offers its AI menu (Left Alt + N later): pick one of your own Ollama or
+   llama.cpp models, or "Continue without AI" (Farmhand downloads no model; with none
+   installed the menu says so); try both "without AI" and a model during the session.
 2. **Fetch, without AutoDrive.** Disable AutoDrive (if installed) and load a
    single-player save with the Farmhand mod. Own one tractor with nothing attached
    (no front weight either) and one forage wagon. Expect "Farmhand: companion

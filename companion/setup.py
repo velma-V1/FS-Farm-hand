@@ -8,9 +8,10 @@ pinned packages already inside), so the user installs nothing else. Install:
 finds the FS25 profile, asks a running companion to quit (the quit flag), copies
 the mod into the game's mods folder and the companion into
 %LOCALAPPDATA%\\FS25Farmhand, registers the windowless start at logon, starts it,
-and checks that it came up. The user's settings and downloaded models are kept
-across updates. Uninstall removes the logon start, the mod and the companion, and
-asks before deleting downloaded models.
+and checks that it came up. The user's settings and models are kept across
+updates. Uninstall removes the logon start, the mod and the companion, and asks
+before deleting the settings and the speech model; it never deletes an AI model
+(USER_DIRS: an earlier Farmhand's downloads are the user's models now).
 """
 from __future__ import annotations
 
@@ -31,8 +32,9 @@ MOD_NAME = "FS25_Farmhand"
 PID_FILE, QUIT_FILE = "companion.pid", "quit"
 QUIT_WAIT_S, START_WAIT_S = 45.0, 20.0
 # Replaced on install and removed on uninstall; everything else in the data folder
-# (settings.json, downloaded models) is the user's and stays on update.
+# (settings.json, models) is the user's and stays on update.
 PROGRAM_DIRS = ("runtime", "app")
+USER_DIRS = ("model",)            # AI models and llama.cpp: never deleted (the user, 2026-10-31)
 
 
 class Dialogs:
@@ -208,9 +210,11 @@ def uninstall(profile: Path | None, data: Path, ui: Dialogs) -> int:
     for name in PROGRAM_DIRS:
         shutil.rmtree(data / name, ignore_errors=True)
     (data / QUIT_FILE).unlink(missing_ok=True)
-    if data.exists() and any(data.iterdir()) and ui.ask(
-            "Also delete Farmhand's settings and downloaded AI and speech models?"):
-        shutil.rmtree(data, ignore_errors=True)
+    rest = [p for p in data.iterdir() if p.name not in USER_DIRS] if data.exists() else []
+    if rest and ui.ask("Also delete Farmhand's settings and its speech recognition model?\n\n"
+                       "AI models are yours and are never deleted."):
+        for path in rest:
+            shutil.rmtree(path, ignore_errors=True) if path.is_dir() else path.unlink(missing_ok=True)
     ui.info("Farmhand was removed.")
     return 0
 

@@ -1,7 +1,5 @@
 """The optional local model layer, against a fake llama-server (no model, no network)."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import hashlib
-import io
 import json
 from pathlib import Path
 import sys
@@ -9,7 +7,6 @@ import tempfile
 import threading
 import time
 import unittest
-import zipfile
 
 from companion import model
 from companion.coordinator import COMMAND_VALIDATOR
@@ -153,8 +150,8 @@ class ModelInterpreterTests(unittest.TestCase):
 
 class RuntimeTests(unittest.TestCase):
     def test_server_runs_cpu_only_local_and_small(self):
-        command = model.server_command(Path("C:/fh/model"), 39231)
-        self.assertTrue(command[0].endswith("llama-server.exe"))
+        command = model.server_command(Path("C:/tools/llama-server.exe"), Path("D:/models/x.gguf"), 39231)
+        self.assertEqual(command[:3], [str(Path("C:/tools/llama-server.exe")), "-m", str(Path("D:/models/x.gguf"))])
         pairs = dict(zip(command[1::2], command[2::2]))
         self.assertEqual(pairs["-ngl"], "0")                 # default is auto: GPU unless told otherwise
         self.assertEqual(pairs["--device"], "none")
@@ -177,58 +174,65 @@ class RuntimeTests(unittest.TestCase):
     def test_an_occupied_port_keeps_the_model_off(self):
         started = []
         with tempfile.TemporaryDirectory() as folder:
-            (Path(folder) / "llama").mkdir()
-            (Path(folder) / "llama" / "llama-server.exe").write_bytes(b"")
-            (Path(folder) / model.MODEL["file"]).write_bytes(b"")
+            runtime, gguf = Path(folder) / "llama-server.exe", Path(folder) / "m.gguf"
+            runtime.write_bytes(b"")
+            gguf.write_bytes(b"")
             ok = type("R", (), {"status": 200, "__enter__": lambda s: s, "__exit__": lambda s, *a: None})()
-            server = model.ModelServer(Path(folder), opener=lambda *a, **k: ok,
+            server = model.ModelServer(runtime, gguf, opener=lambda *a, **k: ok,
                                        popen=lambda *a, **k: started.append(a))
             self.assertFalse(server.start())
             self.assertEqual(started, [])
 
-    def test_not_installed_means_rules_only(self):
+    def test_no_llama_cpp_or_no_model_means_rules_only(self):
         with tempfile.TemporaryDirectory() as folder:
             started = []
-            server = model.ModelServer(Path(folder), popen=lambda *a, **k: started.append(a))
-            self.assertFalse(server.start())
+            for runtime in (None, Path(folder) / "llama-server.exe"):
+                server = model.ModelServer(runtime, Path(folder) / "m.gguf", popen=lambda *a, **k: started.append(a))
+                self.assertFalse(server.start())
+                self.assertFalse(server.ready())
             self.assertEqual(started, [])
-            self.assertFalse(server.ready())
 
-    def test_download_is_verified_before_use(self):
-        data = b"model bytes" * 100
-        artifact = {"url": "x", "file": "m.gguf", "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-        opener = lambda url, timeout: io.BytesIO(data)
-        with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / "m.gguf"
-            model.download(artifact, target, opener)
-            self.assertEqual(target.read_bytes(), data)
-            model.download(artifact, target, lambda *a, **k: self.fail("downloaded twice"))
-            bad = {**artifact, "sha256": "0" * 64}
-            other = Path(folder) / "n.gguf"
-            with self.assertRaises(ValueError):
-                model.download(bad, other, opener)
-            self.assertFalse(other.exists() or other.with_name("n.gguf.part").exists())
 
-    def test_archive_entries_cannot_escape(self):
-        with tempfile.TemporaryDirectory() as folder:
-            for name in ("../evil.exe", "/abs.exe", "C:/x.exe", "a/../../b.exe"):
-                with self.subTest(name=name):
-                    archive = Path(folder) / "a.zip"
-                    with zipfile.ZipFile(archive, "w") as zf:
-                        zf.writestr(name, b"x")
-                    with self.assertRaises(ValueError):
-                        model.extract(archive, Path(folder) / "out")
-            archive = Path(folder) / "ok.zip"
-            with zipfile.ZipFile(archive, "w") as zf:
-                zf.writestr("llama-server.exe", b"x")
-            model.extract(archive, Path(folder) / "out")
-            self.assertTrue((Path(folder) / "out" / "llama-server.exe").is_file())
+class LlamaCppDiscoveryTests(unittest.TestCase):
+    """Farmhand downloads no model and no runtime (the user, 2026-10-31): it finds the user's own
+    llama-server and GGUF models, in the folders llama.cpp and LM Studio use and in an earlier
+    Farmhand's download folder, and only reads them."""
 
-    def test_pinned_artifacts_are_the_verified_ones(self):
-        self.assertEqual(model.RUNTIME["sha256"], "f78eded047061a3f86372db426797400a2f1bb0ec37868d5927dd820eb3386c0")
-        self.assertEqual(model.MODEL["sha256"], "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597")
-        self.assertIn("/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/", model.MODEL["url"])
-        self.assertTrue(model.RUNTIME["url"].startswith("https://github.com/ggml-org/llama.cpp/releases/download/b11714/"))
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.root, ignore_errors=True))
+
+    def put(self, *parts):
+        path = self.root.joinpath(*parts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"gguf")
+        return path
+
+    def test_models_are_found_in_every_folder_and_nothing_is_changed(self):
+        lm = self.put("lmstudio", "lmstudio-community", "Qwen3-4B-GGUF", "Qwen3-4B-Q4_K_M.gguf")
+        self.put("lmstudio", "lmstudio-community", "Qwen3-4B-GGUF", "mmproj-Qwen3-4B-f16.gguf")   # no language model
+        cache = self.put("cache", "bartowski_Phi-4-mini-Q4_K_M.gguf")
+        legacy = self.put("legacy", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")
+        self.put("cache", "notes.txt")
+        before = sorted((p, p.stat().st_mtime_ns) for p in self.root.rglob("*"))
+        llama = model.LlamaCpp(which=lambda name: None, legacy=self.root / "legacy",
+                               dirs=[self.root / "missing", self.root / "cache", self.root / "lmstudio",
+                                     self.root / "legacy", self.root / "legacy"])
+        self.assertEqual(llama.models(), [cache, legacy, lm])        # by name, each once
+        self.assertEqual(sorted((p, p.stat().st_mtime_ns) for p in self.root.rglob("*")), before)
+
+    def test_the_runtime_is_the_users_on_path_else_an_earlier_farmhand_download(self):
+        legacy_server = self.put("legacy", "llama", "llama-server.exe")
+        on_path = model.LlamaCpp(which=lambda name: "C:/llama/llama-server.exe" if name == "llama-server.exe" else None,
+                                 legacy=self.root / "legacy")
+        self.assertEqual(on_path.runtime(), Path("C:/llama/llama-server.exe"))
+        self.assertEqual(model.LlamaCpp(which=lambda name: None, legacy=self.root / "legacy").runtime(), legacy_server)
+        self.assertIsNone(model.LlamaCpp(which=lambda name: None, legacy=self.root / "none").runtime())
+
+    def test_farmhand_carries_no_model_url_or_downloader(self):
+        source = (Path(__file__).resolve().parents[1] / "companion" / "model.py").read_text()
+        for gone in ("https://", "sha256", "def download", "def install(", "MANAGED", "recommended (", "zipfile"):
+            self.assertNotIn(gone, source)
 
 
 if __name__ == "__main__":

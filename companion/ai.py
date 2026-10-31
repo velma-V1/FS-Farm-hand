@@ -2,15 +2,16 @@
 
 Farmhand never picks a model for the user. The player opens the AI menu in game
 (the settings key or "choose AI model"; also offered once at first connection),
-sees the models already on this PC (their own Ollama, and any model Farmhand
-installed), the two Farmhand downloads when they are not there yet, and
-"Continue without AI". The chosen model gets a short bounded validation; only a
+sees the models already on this PC (their own Ollama, and their own llama.cpp with
+its GGUF models), and "Continue without AI". Farmhand downloads, installs,
+recommends, changes and deletes no model (the user, 2026-10-31); with none found the
+menu says that Ollama or llama.cpp and a compatible model must be installed. The chosen model gets a short bounded validation; only a
 model that passes is saved, and a failing one is reported and the menu is shown
 again. A saved model that later disappears or stops answering is reported, never
 replaced: words outside the deterministic rules are then simply not understood.
 
 Ollama runs the model with its own normal CPU/GPU behaviour; Farmhand only sends
-schema-constrained requests to 127.0.0.1. The managed path is companion/model.py.
+schema-constrained requests to 127.0.0.1. llama.cpp is companion/model.py.
 """
 from __future__ import annotations
 
@@ -57,7 +58,7 @@ def data_dir() -> Path:
 # ---------------------------------------------------------------- settings
 
 class Settings:
-    """settings.json beside the managed models: {"ai": {"provider", "model"}} or
+    """settings.json: {"ai": {"provider", "model"}} (a model name for Ollama, a GGUF path for llama.cpp) or
     {"ai": {"provider": "none"}}; no entry means the user has not chosen yet. Also the
     player's saved "harvest_destination" (sell, store, keep)."""
 
@@ -79,7 +80,11 @@ class Settings:
 
     def ai(self) -> dict | None:
         choice = self.load().get("ai")
-        if isinstance(choice, dict) and choice.get("provider") in ("ollama", "farmhand", "none"):
+        if isinstance(choice, dict) and choice.get("provider") == "farmhand":
+            # An earlier Farmhand's download: the same file, now the user's own llama.cpp model.
+            name = managed.LEGACY_FILES.get(choice.get("model"))
+            return {"provider": "llamacpp", "model": str(self.path.parent / "model" / name)} if name else None
+        if isinstance(choice, dict) and choice.get("provider") in ("ollama", "llamacpp", "none"):
             return choice
         return None
 
@@ -127,8 +132,8 @@ class Settings:
 
 @dataclass(frozen=True)
 class Choice:
-    provider: str            # "ollama", "farmhand", "install", "none"
-    model: str               # Ollama model name, or a managed key
+    provider: str            # "ollama", "llamacpp", "none", "voice", or "missing" (nothing found)
+    model: str               # Ollama model name, or a GGUF path
     label: str               # one menu line, at most 60 characters
 
 
@@ -223,24 +228,34 @@ def _speech_installed(folder: Path | None) -> bool:
     return all((target / name).is_file() for name in voice.WHISPER_FILES)
 
 
-def discover(ollama: Ollama | None = None, folder: Path | None = None) -> list[Choice]:
-    """Every model the user could pick, then the two downloads not yet installed,
-    then no AI; and the speech model for push-to-talk while it is missing. Labels
-    show only what is cheap and reliable to know."""
+NONE_FOUND = "No AI found: install Ollama or llama.cpp and a model"
+
+
+def _size(path: Path):
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
+def discover(ollama: Ollama | None = None, folder: Path | None = None,
+             llama: managed.LlamaCpp | None = None) -> list[Choice]:
+    """Every model the user installed (Ollama's, then llama.cpp's GGUF models when its
+    llama-server is there), or the line saying none was found; then no AI; and the
+    speech model for push-to-talk while it is missing. Labels show only what is cheap
+    and reliable to know."""
     choices = []
-    room = MAX_MENU - len(managed.MANAGED) - 2           # the managed lines, no AI, speech
+    room = MAX_MENU - 2                                    # no AI, speech
     for m in (ollama or Ollama()).models()[:room]:
         details = m.get("details") if isinstance(m.get("details"), dict) else {}
         extra = " ".join(str(details[k]) for k in ("parameter_size", "quantization_level") if details.get(k))
         choices.append(Choice("ollama", m["name"], f"{m['name']} (Ollama, {_gb(m.get('size'))} {extra})"[:60]))
-    installed = managed.installed_choices(folder)
-    for key in installed:
-        item = managed.MANAGED[key]
-        choices.append(Choice("farmhand", key, f"{item['title']} (Farmhand, {_gb(item['size'])})"[:60]))
-    for key, item in managed.MANAGED.items():
-        if key not in installed:
-            choices.append(Choice("install", key, f"Install {item['title']}: {_gb(item['size'])}, "
-                                                  f"~{item['ram_gb']} GB RAM"[:60]))
+    llama = llama or managed.LlamaCpp()
+    if llama.runtime() is not None:
+        for path in llama.models()[:room - len(choices)]:
+            choices.append(Choice("llamacpp", str(path), f"{path.stem} (llama.cpp, {_gb(_size(path))})"[:60]))
+    if not choices:
+        choices.append(Choice("missing", "", NONE_FOUND))
     choices.append(Choice("none", "", "Continue without AI"))
     if not _speech_installed(folder):
         choices.append(Choice("voice", "", "Install speech recognition for push-to-talk: 0.15 GB"))
@@ -278,16 +293,17 @@ class AI:
     its request loop). ``notify`` shows a token in game."""
 
     def __init__(self, settings: Settings, notify, show_menu=lambda: None, ollama: Ollama | None = None,
-                 folder: Path | None = None, server_factory=managed.ModelServer, installer=managed.install,
-                 speech_installer=None):
+                 folder: Path | None = None, server_factory=managed.ModelServer,
+                 llama: managed.LlamaCpp | None = None, speech_installer=None):
         self.settings, self.notify, self.show_menu = settings, notify, show_menu
         self.speech_installer = speech_installer
         self.ollama, self.folder = ollama or Ollama(), folder
-        self.server_factory, self.installer = server_factory, installer
+        self.llama = llama or managed.LlamaCpp()
+        self.server_factory = server_factory
         self._lock = threading.Lock()
         self.server = None
         self.interpreter = None
-        self.busy = False                          # validating or installing
+        self.busy = False                          # validating, or installing speech
         self.menu: list[Choice] = []
         self.startup_problem = None                # shown once the game is linked
         self._abandon = False                      # "Continue without AI" during a pick
@@ -307,14 +323,14 @@ class AI:
             self._publish(interpreter, server)
 
     def _build(self, choice: dict):
-        """An interpreter (and its managed server) for ``choice``, not yet in use.
-        A managed candidate gets the next port while another managed model runs."""
+        """An interpreter (and its llama-server) for ``choice``, not yet in use.
+        A llama.cpp candidate gets the next port while another llama.cpp model runs."""
         if choice["provider"] == "ollama":
             return self.ollama.interpreter(choice["model"]), None
         with self._lock:
             busy_port = self.server.port if self.server is not None else None
         port = managed.PORT + 1 if busy_port == managed.PORT else managed.PORT
-        server = self.server_factory(self.folder, choice=choice["model"], port=port)
+        server = self.server_factory(self.llama.runtime(), Path(choice["model"]), port=port)
         if not server.start():
             return None, None
         return managed.ModelInterpreter(url=f"http://127.0.0.1:{port}", ready=server.ready), server
@@ -359,16 +375,19 @@ class AI:
 
     # -- the menu
     def open_menu(self) -> list[Choice]:
-        self.menu = discover(self.ollama, self.folder)
+        self.menu = discover(self.ollama, self.folder, self.llama)
         return self.menu
 
     def choose(self, index: int) -> None:
         """The player picked menu line ``index`` (1-based); runs in the background.
-        "Continue without AI" always applies at once, also over a running download
-        or validation, whose result is then discarded."""
+        "Continue without AI" always applies at once, also over a running validation,
+        whose result is then discarded."""
         if not 1 <= index <= len(self.menu):
             return
         choice = self.menu[index - 1]
+        if choice.provider == "missing":
+            self.notify("AI_NONE_INSTALLED")
+            return
         if choice.provider == "none":
             self._abandon = True
             self.stop()
@@ -395,15 +414,6 @@ class AI:
                     return
                 self.notify("VOICE_READY")
                 return
-            if choice.provider == "install":
-                self.notify("AI_INSTALLING")
-                try:
-                    self.installer(self.folder, choice=choice.model)
-                except Exception:
-                    log.exception("model install failed")
-                    self.notify("AI_INSTALL_FAILED")
-                    return
-                choice = Choice("farmhand", choice.model, choice.label)
             if self._abandon:
                 return
             self.notify("AI_VALIDATING")
@@ -432,7 +442,7 @@ class AI:
             return False, "NOT_RUNNING"
         if isinstance(interpreter, OllamaInterpreter) and not self.ollama.load(interpreter.name):
             return False, "MODEL_DID_NOT_LOAD"
-        if server is not None:                     # managed: wait for the model to load
+        if server is not None:                     # llama.cpp: wait for the model to load
             deadline = time.monotonic() + managed.START_TIMEOUT_S
             while not server.ready() and time.monotonic() < deadline and server.process.poll() is None:
                 time.sleep(0.5)

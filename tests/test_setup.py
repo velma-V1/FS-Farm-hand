@@ -104,8 +104,20 @@ class SetupTests(unittest.TestCase):
         (self.data / "settings.json").write_text("{}")
         self.assertEqual(setup.uninstall(self.profile, self.data, self.ui), 0)   # quiet: yes to both
         self.assertFalse((self.profile / "mods" / "FS25_Farmhand").exists())
-        self.assertFalse(self.data.exists())
+        self.assertEqual([p.name for p in self.data.iterdir()], [])
         self.assertEqual(self.registered[-1], None)
+
+    def test_uninstall_never_deletes_an_ai_model(self):
+        """The user, 2026-10-31: Farmhand never modifies or deletes the user's models (an earlier
+        Farmhand's downloads are theirs now)."""
+        self.install()
+        gguf = self.data / "model" / "Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+        gguf.parent.mkdir(parents=True)
+        gguf.write_bytes(b"gguf")
+        (self.data / "settings.json").write_text("{}")
+        self.assertEqual(setup.uninstall(self.profile, self.data, self.ui), 0)
+        self.assertEqual(gguf.read_bytes(), b"gguf")
+        self.assertFalse((self.data / "settings.json").exists())
 
     def test_quoted_paths_are_refused(self):
         with self.assertRaises(ValueError):

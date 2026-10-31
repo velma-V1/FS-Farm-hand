@@ -80,9 +80,10 @@ ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snap
   worker thread, answers STOP/STATUS immediately (STOP cancels before the next step
   and pre-empts the running bridge op); `companion/service.py` is the windowless
   process wiring it together. Optional layers, both off unless installed:
-  `companion/ai.py` (the user's model choice: Ollama or a managed download, validated,
-  saved in `%LOCALAPPDATA%/FS25Farmhand/settings.json`; never auto-picked),
-  `companion/model.py` (CPU-only managed llama-server, schema-constrained, behind the rules)
+  `companion/ai.py` (the user's model choice among their own Ollama or llama.cpp models,
+  validated, saved in `%LOCALAPPDATA%/FS25Farmhand/settings.json`; never auto-picked,
+  never downloaded), `companion/model.py` (finds the user's llama-server and GGUF models;
+  CPU-only, schema-constrained, behind the rules)
   and `companion/voice.py` (push-to-talk → faster-whisper → the text path).
 - `mod/` — FS25 Lua mod `FS25_Farmhand` (load order in `modDesc.xml`):
   `FarmhandObserve` (read-only snapshots), `FarmhandHitch` (GIANTS GOTO staging,

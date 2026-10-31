@@ -87,7 +87,19 @@ class Fixture(unittest.TestCase):
         self.addCleanup(fake.close)
         return fake, ai.Ollama(fake.url, timeout=2)
 
+    def llama(self, runtime=False, models=()):
+        """The user's llama.cpp as found on this PC: a llama-server or not, and GGUF files."""
+        for name in models:
+            (self.folder / "gguf").mkdir(exist_ok=True)
+            (self.folder / "gguf" / name).write_bytes(b"gguf")
+        server = self.folder / "llama-server.exe"
+        if runtime:
+            server.write_bytes(b"")
+        return model.LlamaCpp(which=lambda name: str(server) if runtime and name == "llama-server.exe" else None,
+                              dirs=[self.folder / "gguf"], legacy=self.folder / "model")
+
     def make_ai(self, client, **kwargs):
+        kwargs.setdefault("llama", self.llama())
         return ai.AI(self.settings, self.notices.append, show_menu=lambda: self.menus.append(1), ollama=client,
                      folder=self.folder, **kwargs)
 
@@ -108,6 +120,15 @@ class SettingsTests(Fixture):
         self.settings.path.write_text(json.dumps({"ai": {"provider": "cloud"}}))
         self.assertIsNone(self.settings.ai())
 
+    def test_an_earlier_farmhand_download_is_kept_as_the_users_own_llama_cpp_model(self):
+        # Migration (the user, 2026-10-31): Farmhand no longer downloads models; a saved choice of
+        # one it downloaded before is the same file, now found as the user's llama.cpp model.
+        self.settings.set_ai({"provider": "farmhand", "model": "recommended"})
+        self.assertEqual(self.settings.ai(), {"provider": "llamacpp", "model": str(
+            self.folder / "model" / "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")})
+        self.settings.set_ai({"provider": "farmhand", "model": "something-else"})
+        self.assertIsNone(self.settings.ai())                                 # ask again, never guess
+
 
     def test_farmhands_pay_defaults_to_the_hourly_giants_rate_and_keeps_the_players_choice(self):
         # The user, 2026-10-30: pay per hour, per job, per day, or none; the game's own wages too.
@@ -126,24 +147,33 @@ class SettingsTests(Fixture):
 
 
 class DiscoveryTests(Fixture):
-    def test_the_list_shows_what_is_installed_then_downloads_then_no_ai(self):
+    def test_the_list_shows_only_what_the_user_installed_then_no_ai(self):
         _, client = self.ollama(models=["qwen3:4b", "llama3.2:latest"])
-        (self.folder / "llama").mkdir()
-        (self.folder / "llama" / "llama-server.exe").write_bytes(b"")
-        (self.folder / model.MANAGED["lightweight"]["file"]).write_bytes(b"")
-        choices = ai.discover(client, self.folder)
+        llama = self.llama(runtime=True, models=("Qwen3-4B-Q4_K_M.gguf", "mmproj-Qwen3-4B-f16.gguf"))
+        choices = ai.discover(client, self.folder, llama)
         self.assertEqual([(c.provider, c.model) for c in choices],
-                         [("ollama", "qwen3:4b"), ("ollama", "llama3.2:latest"), ("farmhand", "lightweight"),
-                          ("install", "recommended"), ("none", ""), ("voice", "")])
+                         [("ollama", "qwen3:4b"), ("ollama", "llama3.2:latest"),
+                          ("llamacpp", str(self.folder / "gguf" / "Qwen3-4B-Q4_K_M.gguf")), ("none", ""), ("voice", "")])
         self.assertTrue(all(len(c.label) <= 60 for c in choices))
         self.assertIn("Q4_K_M", choices[0].label)
-        self.assertIn("2.5 GB", choices[3].label)
+        self.assertEqual(choices[2].label, "Qwen3-4B-Q4_K_M (llama.cpp, 0.0 GB)")
+        self.assertFalse(any(word in c.label.lower() for c in choices[:-1] for word in ("install", "recommended")))
 
-    def test_without_ollama_or_models_the_choice_is_download_or_no_ai(self):
-        choices = ai.discover(ai.Ollama("http://127.0.0.1:9", timeout=0.3), self.folder)
-        self.assertEqual([(c.provider, c.model) for c in choices],
-                         [("install", "lightweight"), ("install", "recommended"), ("none", ""), ("voice", "")])
-        self.assertEqual(choices[2].label, "Continue without AI")
+    def test_gguf_models_need_the_users_llama_server(self):
+        _, client = self.ollama(models=[])
+        choices = ai.discover(client, self.folder, self.llama(runtime=False, models=("a.gguf",)))
+        self.assertEqual([c.provider for c in choices][:2], ["missing", "none"])
+
+    def test_with_nothing_installed_the_list_says_what_to_install_and_picking_it_tells_again(self):
+        brain = self.make_ai(ai.Ollama("http://127.0.0.1:9", timeout=0.3))
+        choices = brain.open_menu()
+        self.assertEqual([(c.provider, c.label) for c in choices][:2],
+                         [("missing", "No AI found: install Ollama or llama.cpp and a model"),
+                          ("none", "Continue without AI")])
+        brain.choose(1)
+        self.assertEqual(self.notices, ["AI_NONE_INSTALLED"])
+        self.assertIsNone(self.settings.ai())
+        self.assertFalse(brain.busy)
 
     def test_speech_recognition_is_offered_only_while_missing_and_installs_from_the_menu(self):
         from companion import voice
@@ -158,7 +188,7 @@ class DiscoveryTests(Fixture):
         for name in voice.WHISPER_FILES:
             (self.folder / "whisper-base.en").mkdir(exist_ok=True)
             (self.folder / "whisper-base.en" / name).write_bytes(b"")
-        self.assertNotIn("voice", [c.provider for c in ai.discover(client, self.folder)])
+        self.assertNotIn("voice", [c.provider for c in ai.discover(client, self.folder, self.llama())])
 
 
 class OllamaTests(Fixture):
@@ -260,13 +290,14 @@ class ChoiceTests(Fixture):
         self.assertEqual(self.settings.ai(), {"provider": "ollama", "model": "good:1b"})   # unchanged
         self.assertTrue(brain.enabled)                                                   # the working one stays
 
-    def test_installing_a_farmhand_model_then_validating_it(self):
+    def test_a_users_llama_cpp_model_is_validated_on_their_own_server_then_saved(self):
         _, client = self.ollama(models=[])
-        installs = []
+        started = []
 
         class Server:
-            def __init__(self, folder, choice, port):
-                self.choice, self.port, self.process = choice, port, type("P", (), {"poll": lambda s: None})()
+            def __init__(self, runtime, gguf, port):
+                started.append((runtime, gguf, port))
+                self.port, self.process = port, type("P", (), {"poll": lambda s: None})()
 
             def start(self):
                 return True
@@ -277,29 +308,17 @@ class ChoiceTests(Fixture):
             def stop(self):
                 pass
 
-        brain = self.make_ai(client, server_factory=Server,
-                             installer=lambda folder, choice: installs.append(choice))
+        llama = self.llama(runtime=True, models=("Phi-4-mini-Q4_K_M.gguf",))
+        brain = self.make_ai(client, server_factory=Server, llama=llama)
         brain.open_menu()
-        lightweight = next(n for n, c in enumerate(brain.menu, 1) if c.provider == "install" and c.model == "lightweight")
+        gguf = self.folder / "gguf" / "Phi-4-mini-Q4_K_M.gguf"
         with unittest.mock.patch.object(ai, "validate", lambda interpreter: (True, "7_OF_7")):
-            brain.choose(lightweight)
+            brain.choose(1)
             self.wait(lambda: self.notices[-1:] == ["AI_READY"])
-        self.assertEqual(installs, ["lightweight"])
-        self.assertEqual(self.notices, ["AI_INSTALLING", "AI_VALIDATING", "AI_READY"])
-        self.assertEqual(self.settings.ai(), {"provider": "farmhand", "model": "lightweight"})
-
-    def test_a_failed_download_changes_nothing(self):
-        _, client = self.ollama(models=[])
-
-        def broken(folder, choice):
-            raise OSError("offline")
-
-        brain = self.make_ai(client, installer=broken)
-        brain.open_menu()
-        brain.choose(1)
-        self.wait(lambda: self.notices[-1:] == ["AI_INSTALL_FAILED"])
-        self.assertIsNone(self.settings.ai())
-        self.assertFalse(brain.enabled)
+        self.assertEqual(started, [(self.folder / "llama-server.exe", gguf, model.PORT)])
+        self.assertEqual(self.notices, ["AI_VALIDATING", "AI_READY"])
+        self.assertEqual(self.settings.ai(), {"provider": "llamacpp", "model": str(gguf)})
+        self.assertEqual(gguf.read_bytes(), b"gguf")                          # never changed
 
     def test_a_saved_model_that_disappears_is_reported_not_replaced(self):
         fake, client = self.ollama(models=["qwen3:4b", "other:1b"], answers=GOOD)
@@ -348,37 +367,47 @@ class ChoiceTests(Fixture):
         self.assertEqual(self.notices[-1], "AI_INCOMPATIBLE")      # it said fetch for the joke
         self.assertEqual(self.settings.ai(), {"provider": "ollama", "model": "good:1b"})
 
-    def test_continue_without_ai_during_a_download_wins_and_busy_picks_are_reported(self):
-        _, client = self.ollama(models=[])
+    def test_continue_without_ai_during_a_validation_wins_and_busy_picks_are_reported(self):
+        _, client = self.ollama(models=["slow:1b", "other:1b"])
         release = threading.Event()
-        brain = self.make_ai(client, installer=lambda folder, choice: release.wait(5))
+
+        class Slow:
+            missing = unreachable = False
+
+            def interpret(self, text):
+                release.wait(5)
+                return None
+
+        client.interpreter = lambda name: Slow()
+        client.load = lambda name, timeout=0: True
+        brain = self.make_ai(client)
         brain.open_menu()
-        brain.choose(1)                                           # Install Lightweight (slow)
-        self.wait(lambda: "AI_INSTALLING" in self.notices)
+        brain.choose(1)                                           # slow:1b, validating
+        self.wait(lambda: "AI_VALIDATING" in self.notices)
         brain.choose(2)                                           # another pick while busy
         self.assertIn("AI_BUSY", self.notices)
         brain.choose([c.provider for c in brain.menu].index("none") + 1)
         release.set()
-        self.wait(lambda: not brain.busy)
+        self.wait(lambda: not brain.busy, timeout=60)
         self.assertEqual(self.settings.ai(), {"provider": "none"})
         self.assertNotIn("AI_READY", self.notices)
         self.assertFalse(brain.enabled)
 
     def test_the_menu_never_has_more_than_nine_lines(self):
         _, client = self.ollama(models=[f"m{n}:1b" for n in range(15)])
-        choices = ai.discover(client, self.folder)
+        choices = ai.discover(client, self.folder, self.llama(runtime=True, models=[f"g{n}.gguf" for n in range(5)]))
         self.assertLessEqual(len(choices), 9)
         self.assertIn("none", [c.provider for c in choices])
         from protocol.ipc import encode_menu
         encode_menu(1, "Farmhand AI model", [c.label for c in choices])       # never raises
 
     def test_a_saved_model_missing_at_start_is_kept_for_reporting(self):
-        self.settings.set_ai({"provider": "farmhand", "model": "recommended"})
-        brain = self.make_ai(ai.Ollama("http://127.0.0.1:9", timeout=0.3))
+        self.settings.set_ai({"provider": "llamacpp", "model": str(self.folder / "gone.gguf")})
+        brain = self.make_ai(ai.Ollama("http://127.0.0.1:9", timeout=0.3), llama=self.llama(runtime=True))
         brain.start()
         self.assertEqual(brain.startup_problem, "AI_MODEL_MISSING")
         self.assertEqual(self.notices, [])                        # the game is not linked yet
-        self.assertEqual(self.settings.ai(), {"provider": "farmhand", "model": "recommended"})
+        self.assertEqual(self.settings.ai(), {"provider": "llamacpp", "model": str(self.folder / "gone.gguf")})
 
     def test_stale_or_out_of_range_picks_do_nothing(self):
         _, client = self.ollama()

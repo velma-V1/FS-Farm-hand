@@ -331,20 +331,23 @@ Executable mapping (`python scripts/check.py`):
   replies; without voice set up it is VOICE_UNAVAILABLE and typing works. Lua:
   the hold key is registered as GIANTS' CROUCH and sends only the edges.
 - `tests/test_ai.py` (fake Ollama): no choice until the user makes one, remembered,
-  a broken settings file asks again; the list shows Ollama models, installed
-  Farmhand models, the downloads not yet installed and "Continue without AI"
-  (labels at most 60 characters), and only downloads or no AI without Ollama;
+  a broken settings file asks again; an earlier Farmhand download saved as the choice is
+  the same file as the user's own llama.cpp model (an unknown key asks again); the list shows
+  only what the user installed: Ollama models, then GGUF models when the user's
+  llama-server is found, and "Continue without AI" (labels at most 60 characters, no
+  install or recommended line); with nothing installed it says "No AI found: install
+  Ollama or llama.cpp and a model", and picking that line tells it again (AI_NONE_INSTALLED);
   requests carry the schema, temperature 0, `think: false` and nothing about GPU
   layers, an older Ollama rejecting `think` still works, a vanished model is
   reported and malformed output is not understood; validation passes 6/6, fails at
   4/6, on an unsupported sentence turned into movement, when too slow and when the
   model is missing; picking no AI saves it and switches AI off; a validated pick is
   saved and used; a failing pick is never saved, the list returns and the earlier
-  working model stays; a download is installed then validated; a failed download
-  changes nothing; a saved model that disappears is reported and never replaced by
+  working model stays; a user's llama.cpp model is validated on their own
+  llama-server and saved by its path, the file unchanged; a saved model that disappears is reported and never replaced by
   another; stale or out-of-range picks do nothing; a candidate model is never used
   before it passed (the working one answers meanwhile); "Continue without AI"
-  during a download wins and another pick while busy is reported; the menu never
+  during a validation wins and another pick while busy is reported; the menu never
   exceeds nine lines; a saved model missing at start is kept and shown at the
   first link. Service: a model answer that arrives after a STOP (or a new
   session) is void. Setup: a pid file left by a crash does not block it (Windows),
@@ -357,10 +360,10 @@ Executable mapping (`python scripts/check.py`):
   out-of-range send nothing, never over another dialog, the key asks for it.
 - `tests/test_setup.py`: Setup installs the mod and the companion and registers the
   windowless logon start; an update replaces the program and keeps settings and
-  downloaded models (and leaves no stale files); a missing FS25 profile or an
+  models (and leaves no stale files); a missing FS25 profile or an
   incomplete package changes nothing; a running companion is asked to quit first,
   and one that does not quit stops the install; uninstall removes everything it
-  installed; quoted paths are refused. `WindowsInstallTests` (CI job "package"):
+  installed and never deletes an AI model (`model/`: the user's files); quoted paths are refused. `WindowsInstallTests` (CI job "package"):
   the built package installs into a temporary profile, the companion starts (pid
   file, log), the logon entry points at the installed runtime, a second install
   updates over the running companion, and uninstall stops it and removes the mod
@@ -376,9 +379,11 @@ Executable mapping (`python scripts/check.py`):
   extra-field, too-long, empty, HTML and error replies, a slow or unreachable server and
   an unready one are all "not understood"; rules answer first and STOP never
   reaches the model; the server command is CPU-only (-ngl 0, no device), local,
-  one slot, at most 4 threads; not installed means rules only; downloads are
-  verified (size, sha256) before use and never left half-written; archive entries
-  cannot escape the install folder; the pinned artifacts are the verified ones.
+  one slot, at most 4 threads, on the user's own llama-server and model; no llama.cpp or
+  no model means rules only; `LlamaCppDiscoveryTests`: GGUF models are found in llama.cpp's
+  cache, LM Studio's folder and an earlier Farmhand's download folder, each once, vision
+  projectors left out, nothing changed; the runtime is llama-server on PATH, else an
+  earlier Farmhand's; the module carries no model URL, hash, downloader or installer.
 - `test_schema_rejects_bad_intent`: malformed intent yields BLOCKED before action.
 - `tests/test_ipc.py`: untrusted frame decoding (chunking, oversized lines, NaN,
   duplicate keys, nesting that exhausts the decoder followed by valid frames,

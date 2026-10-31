@@ -18,15 +18,15 @@ command on 4 CPU threads, with the domain prompt below; nothing on silence or no
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from pathlib import Path
 import subprocess
 import sys
 import threading
+import urllib.request
 import wave
-
-from companion.model import download
 
 log = logging.getLogger("farmhand")
 
@@ -48,6 +48,31 @@ WHISPER_FILES = {
 DOMAIN_PROMPT = ("Farmhand, bring me a tractor and forage wagon. Come here. Stop. What are you doing? "
                  "Take this back to the barn.")
 HOTWORDS = "tractor forage wagon Farmhand barn"
+
+def download(artifact: dict, target: Path, opener=urllib.request.urlopen) -> None:
+    """Fetch to a temporary name, verify size and sha256, then rename into place."""
+    if target.is_file() and _sha256(target) == artifact["sha256"]:
+        return
+    partial = target.with_name(target.name + ".part")
+    digest, size = hashlib.sha256(), 0
+    with opener(artifact["url"], timeout=60) as response, open(partial, "wb") as out:
+        while chunk := response.read(1 << 20):
+            digest.update(chunk)
+            size += len(chunk)
+            out.write(chunk)
+    if size != artifact["size"] or digest.hexdigest() != artifact["sha256"]:
+        partial.unlink()
+        raise ValueError(f"{artifact['file']}: download does not match its pinned sha256")
+    os.replace(partial, target)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        while chunk := source.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
 
 
 def whisper_dir() -> Path:
