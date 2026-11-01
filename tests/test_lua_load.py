@@ -12,6 +12,7 @@ Live motive: the user's tractor transport (2026-10-21): the Deutz-Fahr Series 9 
 1124 Deckover behind the GMC 3500HD.
 """
 from pathlib import Path
+import math
 import unittest
 
 from lupa import lua51, lua54
@@ -177,6 +178,17 @@ class LuaLoadTests(unittest.TestCase):
         self.assertEqual(self.hitch.loadStep(w.env, session, 50), "LOADED")         # latched: brakes only
         self.assertFalse(self.drives(w)[-1]["allowed"])
         self.assertEqual(set(w.returns.values()), {True})
+
+    def test_small_turn_at_ramp_start_is_admitted_but_divergence_still_stops_it(self):
+        # Live ec2b536d0b334136-1: GIANTS stopped 5.6 degrees off the deck line,
+        # already at the ramps. The full LOAD collision and divergence guards still apply.
+        w = self.world(turn=math.radians(5.6), side=0.9)
+        session, why, refused = self.start(w)
+        self.assertIsNotNone(session, self.hitch.describeLoad(refused) + " " + str(why))
+        # The kinematic stub cannot steer onto the axis; it must still stop when
+        # lateral drift reaches the existing guarded limit.
+        code, _ = self.drive(w, session)
+        self.assertEqual(code, "DIVERGED", self.hitch.describeLoad(session))
 
     def test_from_the_run_in_it_steers_onto_the_axis_and_must_be_lined_up_at_the_ramps(self):
         # Live 2f6986868b5245f1-2: GIANTS left the rig 1.6 m off and 12 deg turned, 10 m back.

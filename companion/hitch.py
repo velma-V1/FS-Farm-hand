@@ -264,7 +264,7 @@ def align_problem(error: JointError | None) -> str | None:
 # ``l`` to its local +x side.
 RAMP_M = 3.0                     # = mod/FarmhandHitch.lua Hitch.LOAD.rampM
 LATERAL_START_M = 0.5            # = Hitch.LOAD.lateralStartM
-HEADING_START_RAD = math.radians(5.0)   # = Hitch.LOAD.headingStartDeg
+HEADING_START_RAD = math.radians(7.0)   # = Hitch.LOAD.headingStartDeg
 # The tractor's front this far behind the trailer's rear (inside LOAD's 0..RAMP_M window),
 # in the order GIANTS' GOTO is asked for them.
 FRONT_GAPS_M = (1.5, 2.25, 0.75)

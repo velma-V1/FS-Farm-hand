@@ -2724,7 +2724,7 @@ Hitch.LOAD_LIMITS = { maxSpeedKmh = 3, timeoutMs = 90000, rampM = 3 }
 Hitch.LOAD = {
     rampM = 3,                -- the ramps on the ground: the tractor's leading end at most this behind the trailer
     lateralStartM = 0.5,      -- the steering node this close to the trailer's axis at the start
-    headingStartDeg = 5,      -- and the tractor turned at most this far off the trailer's heading
+    headingStartDeg = 7,      -- small steering offset at the ramps; swept path and divergence still guard contact
     divergeM = 0.3,           -- while moving: farther off the axis is DIVERGED (the ramps)
     lookaheadM = 3,
     lateralMarginM = 0.5, floorClearanceM = 0.3, topMarginM = 0.3, stepM = 0.5,
