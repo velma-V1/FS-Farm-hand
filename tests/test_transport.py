@@ -211,6 +211,17 @@ class TractorTransportTests(unittest.TestCase):
     ramps down and verified, GIANTS GOTO right behind them, LOAD, belts verified holding the
     tractor, ramps up and verified; UNLOAD the reverse. Mock-only fold, belt and LOAD state."""
 
+    def test_named_trucks_trailer_means_its_attached_deck(self):
+        world, tractor, deck, truck = transport_world()
+        # A pickup bed can also fold and carry belts. Its trailer remains the deck
+        # attached behind it when the player says "the GMC trailer".
+        world.items[truck.id] = replace(truck, fold=0.0, folding=False,
+                                        belts_fastened=False, belt_markers=deck.belt_markers)
+        result = Executor(world).execute(load(tractor_name="series 9", implement_name="gmc"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+        self.assertEqual(result.equipment_ids, (tractor.id, deck.id))
+        self.assertEqual(world.items[tractor.id].belted_to, deck.id)
+
     def test_load_lowers_the_ramps_lines_up_drives_up_belts_and_raises_the_ramps(self):
         from companion import hitch as transport
         world, tractor, deck, truck = transport_world()

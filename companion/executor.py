@@ -1184,10 +1184,19 @@ class Executor:
             enter("FIND")
             items = sorted(self.world.snapshot(), key=lambda i: i.id)
             observed = {i.id: i for i in items}
+            trailer_name = command.get("implement_name")
             trailers = [i for i in items if usable(i, farm_id) and i.stopped and transport.is_transport(i)
-                        and named_trailer(i, command.get("implement_name"))
+                        and (named_trailer(i, trailer_name) or
+                             (trailer_name and i.attached_to in observed
+                              and named(observed[i.attached_to], trailer_name)))
                         and (i.attached_to is None or (observed.get(i.attached_to) is not None
                                                        and observed[i.attached_to].stopped))]
+            # "the GMC trailer" denotes the transport hitched to the GMC. The truck's
+            # own foldable, belted bed may itself qualify as a transport.
+            hitched_to_named = [i for i in trailers if trailer_name and i.attached_to in observed
+                                and named(observed[i.attached_to], trailer_name)]
+            if hitched_to_named:
+                trailers = hitched_to_named
             if not trailers:
                 return Result("BLOCKED", "NO_TRANSPORT", states=tuple(states))
             pairs = []
