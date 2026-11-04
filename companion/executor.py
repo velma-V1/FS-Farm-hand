@@ -2820,12 +2820,9 @@ class Executor:
                 extra = {**({"seed": seed} if seed else {}),
                          **({"hand": True} if command.get("hand_off") and not area else {})}
                 cleared = False
-                # Loose implements on the field go to the farm yard before GIANTS' helper starts.
-                place = next((p for p in self.world.field_places() if p.id == f"field-{field.id}"), None) \
-                    if hasattr(self.world, "field_places") else None
-                if place is not None and getattr(type(self.world), "teleport", None) is not None:
-                    from companion.standalone import StandaloneMove
-                    StandaloneMove(self.world).clear_field(tuple(place.outline or ()), ids, farm_id, owner)
+                # Wait for an observed blockage before moving other equipment.
+                # A nearby implement may not obstruct the helper at all; the
+                # old preflight field scan teleported unrelated parked cargo.
                 for detour in range(MAX_DETOURS + 1):
                     try:
                         ended = self.world.fieldwork(tractor.id, field.id, start, owner, area or 0.0, **extra)

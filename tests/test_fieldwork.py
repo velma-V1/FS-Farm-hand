@@ -72,6 +72,23 @@ class FieldWorkTests(unittest.TestCase):
                 self.assertEqual(result.states, ("FIND", "RESERVE", "FIELD_WORK", "VERIFY", "STOP", "RELEASE"))
                 self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
 
+    def test_fieldwork_does_not_preemptively_teleport_nearby_equipment(self):
+        # Live 2026-11-04: the field-2 scan moved a parked canola trailer even
+        # though the helper had not reported that trailer as an obstruction.
+        from protocol.model import Destination
+        world = self.world("sprayer", 500.0)
+        world.items["i-9"] = Equipment("i-9", "implement", "farm-a", (200.0, 300.0),
+                                         kinds=frozenset({"trailer"}), heading=0.0)
+        outline = ((150.0, 250.0), (250.0, 350.0), (250.0, 350.0), (250.0, 250.0))
+        world.mock_field_places = (Destination("field-7", (200.0, 300.0), "Field 7", outline),)
+        world.teleport_recovery = True
+        teleports = []
+        world.teleport = lambda *args, **kwargs: teleports.append(args)
+        result = Executor(world).execute(work("fertilize"))
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual(teleports, [])
+
+
     def test_a_field_the_helper_cannot_reach_from_afar_is_reached_by_autodrive_first(self):
         # Live 5c8eeb68ccea4304-2: the 3650 + spreader 1 km from field 10, GIANTS' helper ended
         # NOT_REACHABLE at once. AutoDrive takes the pair to the field's marker (made its own
@@ -228,7 +245,9 @@ class PlanTests(unittest.TestCase):
                                  {"task": "move_pair", "implement": "sowing_machine", "target": {"type": "origin"}},
                                  {"task": "detach_pair", "implement": "sowing_machine"}])
         hitched = self.items("cultivator", "sowing_machine", hitched=1)
-        self.assertEqual(field_steps(hitched, "sow", 7, "farm-a")[0][0]["task"], "field_work")   # already on
+        self.assertEqual(field_steps(hitched, "sow", 7, "farm-a", area_m2=100)[0],
+                         [{"task": "field_work", "field": 7, "operation": "sow", "implement": "sowing_machine",
+                           "area_m2": 100}])
         # No plow on the farm: the cultivator does it, and says so.
         steps, note = field_steps(items, "plow", 7, "farm-a")
         self.assertEqual((steps[1]["operation"], steps[1]["implement"], note),
