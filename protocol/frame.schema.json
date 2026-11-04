@@ -63,6 +63,8 @@
         "brand": {"oneOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
         "seeds": {"oneOf": [{"type": "null"}, {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/token"}}]},
         "ai_stop": {"oneOf": [{"$ref": "#/$defs/token"}, {"type": "null"}]},
+        "ai_blocked": {"type": ["boolean", "null"]},
+        "work_width": {"type": ["number", "null"], "minimum": 0},
         "pipe": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false,
                  "required": ["out", "x", "z"],
                  "properties": {"out": {"type": "boolean"}, "x": {"type": "number"}, "z": {"type": "number"}}}]},

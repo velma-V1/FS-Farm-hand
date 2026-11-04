@@ -181,6 +181,7 @@ APP_FILES = (
     "companion/service.py",
     "companion/setup.py",
     "companion/standalone.py",
+    "companion/route_memory.py",
     "companion/voice.py",
     "protocol/command.schema.json",
     "protocol/frame.schema.json",

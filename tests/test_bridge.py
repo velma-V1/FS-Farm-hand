@@ -260,6 +260,13 @@ def intent(target="player_at_acceptance"):
 
 
 class CommandFramingTests(unittest.TestCase):
+    def test_farm_drive_accepts_a_bounded_numeric_route_guide(self):
+        args = {"tractor": 11, "x": 20, "z": 30, "area": 0, "yaw": 10, "via": "0,0;0,12;4,25"}
+        attrs = ET.fromstring(encode_command("s", 1, "farm_drive", args).split("\n", 1)[1]).attrib
+        self.assertEqual(attrs["via"], args["via"])
+        with self.assertRaises(ValueError):
+            encode_command("s", 1, "farm_drive", {**args, "via": '0,0\"/><bad'})
+
     def test_commands_are_strict_and_session_bound(self):
         text = encode_command("abc123", 7, "stage", {"tractor": 11, "x": 1.5, "z": -2, "yaw": 0.25})
         attrs = ET.fromstring(text.split("\n", 1)[1]).attrib
@@ -567,7 +574,8 @@ class ProductionSequenceTests(unittest.TestCase):
              ["maneuver", "stage", "align", "attach", "farm_drive", "stop"]),
             ({"maneuver": "FAILED:TURN_RADIUS_UNKNOWN"}, NEAR, "FAILED", "TURN_RADIUS_UNKNOWN", ["maneuver", "stop"]),
             ({"maneuver": "FAILED:STALLED"}, NEAR, "FAILED", "STALLED", ["maneuver", "stop"]),
-            ({"maneuver": "FAILED:DIVERGED"}, NEAR, "FAILED", "DIVERGED", ["maneuver", "stop"]),
+            # Planned again from where it stands twice (MANEUVER_RETRIES), then the end.
+            ({"maneuver": "FAILED:DIVERGED"}, NEAR, "FAILED", "DIVERGED", ["maneuver"] * 3 + ["stop"]),
             ({"maneuver": "FAILED:TIMEOUT"}, NEAR, "FAILED", "TIMEOUT", ["maneuver", "stop"]),
             ({"maneuver": "FAILED:ENVELOPE_EXCEEDED"}, NEAR, "FAILED", "ENVELOPE_EXCEEDED", ["maneuver", "stop"]),
             ({"maneuver": "FAILED:KEEP_OUT"}, NEAR, "FAILED", "KEEP_OUT", ["maneuver", "stop"]),
@@ -790,18 +798,20 @@ class ServiceTests(unittest.TestCase):
         # Farmhand's pay, sent before each job, is settings plumbing (its own test below).
         return [c["op"] for c in game.commands if c["op"] not in ("pay", "charge")]
 
-    def test_while_a_job_runs_presses_are_busy_and_status_and_stop_answer_at_once(self):
+    def test_while_a_job_runs_presses_are_queued_and_status_and_stop_answer_at_once(self):
+        # A press while busy waits its turn (the user, 2026-10-31: "farmhand needs a queue");
+        # STOP empties the waiting list, so nothing starts after it.
         game, notices = self.start(autodrive=False, faults={"align": "hold"})
         game.press(1)
         self.wait_for(lambda: game.held is not None)            # reversing to the wagon
         game.press(2)
-        self.wait_for(lambda: notices[-1:] == ["BUSY"])
+        self.wait_for(lambda: notices[-1:] == ["QUEUED"])
         game.say(3, "Farmhand, what are you doing?")
         # The held reverse moves nothing: said so (an accepted command is not motion).
         self.wait_for(lambda: notices[-1:] == ["STATUS_WAITING_ALIGN_REVERSE"])
         game.say(4, "STOP!")
         self.wait_for(lambda: notices[-1:] == ["CANCELLED"])
-        self.assertEqual(notices, ["ACCEPTED", "BUSY", "STATUS_WAITING_ALIGN_REVERSE", "STOPPING", "CANCELLED"])
+        self.assertEqual(notices, ["ACCEPTED", "QUEUED", "STATUS_WAITING_ALIGN_REVERSE", "STOPPING", "CANCELLED"])
         ops = self.ops(game)
         self.assertEqual(ops[:3], ["stage", "maneuver", "align"])
         self.assertNotIn("attach", ops)                          # nothing after the stop
@@ -1083,6 +1093,17 @@ class ServiceTests(unittest.TestCase):
         # where it stood costs no drive and is not followed by the same maneuver.
         reverse = ["stage", "align", "attach", "stop"]
         local = ["stage", "maneuver", "align", "attach", "stop"]
+
+        def refused_then_each_aim_once(ops):
+            # Refused unmoved: every other aim staged once (Farmhand's own drive only onto the
+            # ones 15 m away or more), the maneuver never repeated, never reversed.
+            self.assertEqual(ops[:2], ["stage", "maneuver"])
+            self.assertEqual(ops[-1], "stop")
+            self.assertEqual(ops.count("maneuver"), 1)
+            self.assertNotIn("align", ops)
+            self.assertEqual(ops.count("stage"), 11)
+            self.assertTrue(set(ops[2:-1]) <= {"stage", "farm_drive"})
+
         cases = [
             # (ahead, lateral, heading deg) of the tractor joint from the wagon's joint
             ((3.44, -12.40, 85.9), {}, "COMPLETE_HITCH", local),           # live 8ffafcc A
@@ -1097,15 +1118,15 @@ class ServiceTests(unittest.TestCase):
             ((20.0, -18.0, 90.0), {}, "COMPLETE_HITCH", ["stage", "stage", "farm_drive", "maneuver", "align", "attach", "stop"]),
             # Beyond 25 m: one drive, then no aim moves it, GIANTS' nor Farmhand's own (no route).
             ((20.0, -18.0, 90.0), {"farm_drive": "FAILED:NO_ROUTE"}, "FAILED_TRAVEL_ENDED_TOO_FAR",
-             ["stage"] + ["stage", "farm_drive"] * 6 + ["stop"]),
+             ["stage"] + ["stage", "farm_drive"] * 10 + ["stop"]),
             # The game refuses the geometry before moving, or the maneuver's end is not
             # in the envelope when observed: never reversed.
             ((5.52, -17.97, 162.9), {"maneuver": "FAILED:LOCAL_PATH_HITS_WAGON", "farm_drive": "FAILED:NO_ROUTE"},
-             "FAILED_LOCAL_PATH_HITS_WAGON", ["stage", "maneuver"] + ["stage", "farm_drive"] * 6 + ["stop"]),
+             "FAILED_LOCAL_PATH_HITS_WAGON", refused_then_each_aim_once),
             ((3.44, -12.40, 85.9), {"maneuver_end": (6.0, 3.0, 0.0)},
              "FAILED_ALIGN_LATERAL_OUT_OF_RANGE", ["stage", "maneuver", "stop"]),
             ((3.44, -12.40, 85.9), {"maneuver": "FAILED:DIVERGED"}, "FAILED_DIVERGED",
-             ["stage", "maneuver", "stop"]),
+             ["stage"] + ["maneuver"] * 3 + ["stop"]),
         ]
         for end, faults, outcome, ops in cases:
             with self.subTest(end=end, faults=faults):
@@ -1113,12 +1134,15 @@ class ServiceTests(unittest.TestCase):
                 with self.assertLogs("farmhand", level="INFO") as logs:
                     game.say(1, "hitch the forage wagong")
                     self.wait_for(lambda: notices[-1:] == [outcome])
-                self.assertEqual(self.ops(game), ops)
+                if callable(ops):
+                    ops(self.ops(game))
+                else:
+                    self.assertEqual(self.ops(game), ops)
                 stage_end = next(line for line in logs.output if "STAGE end:" in line)
                 for part in ("tractor joint", "wagon joint", "gap", "ahead", "lateral",
                              "heading %.1f deg" % end[2]):
                     self.assertIn(part, stage_end)
-                if "maneuver" in ops and outcome.startswith("COMPLETE"):
+                if outcome.startswith("COMPLETE") and "maneuver" in ops:
                     self.assertTrue(any("LOCAL_MANEUVER end:" in line and "-> ALIGN_REVERSE" in line
                                         for line in logs.output))
                 self.assertEqual(game.link_world._reservations, {})              # stopped, then released
@@ -1132,6 +1156,20 @@ class ServiceTests(unittest.TestCase):
         game.say(1, "hitch the forage wagon")
         self.wait_for(lambda: notices[-1:] == ["COMPLETE_HITCH"])
         self.assertEqual(self.ops(game), ["stage", "farm_drive", "farm_drive", "maneuver", "align", "attach", "stop"])
+
+    def test_a_maneuver_stopped_off_its_curve_is_planned_again_from_where_it_stands(self):
+        # Live ac799523dcfc4f75-1: DIVERGED 0.74 m off after 2 m, and the job ended.
+        for faults, ops in (({"maneuver": ["FAILED:DIVERGED"]},
+                             ["stage", "maneuver", "maneuver", "align", "attach", "stop"]),
+                            ({"maneuver": ["FAILED:OVERSPEED", "FAILED:DIVERGED"]},
+                             ["stage", "maneuver", "maneuver", "maneuver", "align", "attach", "stop"]),
+                            ({"maneuver": "FAILED:DIVERGED"},          # every time: twice more, then the end
+                             ["stage", "maneuver", "maneuver", "maneuver", "stop"])):
+            with self.subTest(faults=faults):
+                game, notices = self.start(autodrive=False, faults={"stage_end": (3.44, -12.40, 85.9), **faults})
+                game.say(1, "hitch the forage wagon")
+                self.wait_for(lambda: notices[-1:] and notices[-1].split("_")[0] in ("COMPLETE", "FAILED"))
+                self.assertEqual(self.ops(game), ops)
 
     def test_a_tractor_starting_inside_the_work_radius_never_uses_goto(self):
         game, notices = self.start(autodrive=False, tractor_at=(0.0, 20.0))

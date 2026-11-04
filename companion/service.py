@@ -274,6 +274,11 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
             continue
         session, last_frame = link.linked_session()
         now = link.clock()
+        if session == link.session and session != menu.get("watched") and hasattr(coordinator, "_ensure_watch"):
+            # GIANTS keeps hired helpers through a save: they are watched from the first link on
+            # (the user, 2026-10-31: a resumed helper stood blocked, unwatched).
+            menu["watched"] = session
+            coordinator._ensure_watch()
         # The first time this companion is linked and no AI choice was ever made,
         # offer it once (the user may also open it any time).
         if session == link.session and not menu["prompted"] and ai is not None:

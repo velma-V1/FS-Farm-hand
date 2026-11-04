@@ -294,6 +294,7 @@ class LuaManeuverTests(unittest.TestCase):
     def setUp(self):
         self.lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
         self.hitch = self.lua.execute((ROOT / "mod/FarmhandHitch.lua").read_text())
+        self.hitch.DEFAULTS.maxSpeedKmh = 3      # tuned at 3 km/h; production 4.8: test_lua_load SpeedLimitTests
         self.W = self.lua.execute(STUBS, self.hitch)
 
     def world(self, **opts):

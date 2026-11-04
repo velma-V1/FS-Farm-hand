@@ -214,6 +214,36 @@ class LuaProbeTests(unittest.TestCase):
     def events(self, w):
         return list(w.events.values())
 
+    def test_tracked_motion_completion_reports_lateral_displacement_and_clears_session(self):
+        # A live guarded retreat reached its distance threshold, then a typo in
+        # the final displacement report left this lab session running every frame.
+        self.lua.execute("""
+            local p = FarmhandProbe
+            local root = {x=0.35, z=0.20}
+            local tractor = {rootNode=root}
+            function tractor:getIsMotorStarted() return true end
+            function tractor:getMotorState() return 4 end
+            function tractor:getMotorRpmReal() return 850 end
+            function tractor:getCruiseControlState() return 0 end
+            function tractor:getLastSpeed() return 0 end
+            function tractor:stopMotor() self.stopped = true end
+            p.env = {
+                getWorldTranslation=function(n) return n.x, 47, n.z end,
+                localDirectionToWorld=function() return 0, 0, 1 end,
+                NetworkUtil={getObjectId=function() return 628 end},
+            }
+            p.Hitch = {
+                rigContacts=function() return "-" end,
+                disarm=function() end,
+            }
+            p.motion = {mode="tracked", tractor=tractor, x=0, z=0, yaw=0,
+                expected={}, foot={}, finishCode="DONE", startedMotor=true}
+            p:completeMotionProof()
+            assert(p.motion == nil and tractor.stopped == true)
+        """)
+        self.assertTrue(any("along=0.200 lateral=0.350" in line for line in self.output))
+        self.assertTrue(any("motion proof RESULT mode=tracked DONE" in line for line in self.output))
+
     # ----------------------------------------------------------- loading
     def test_modules_are_mod_globals_and_nothing_auto_runs(self):
         same = self.lua.eval("function(a, b, c, d) return FarmhandObserve == a and FarmhandHitch == b "
@@ -239,7 +269,47 @@ class LuaProbeTests(unittest.TestCase):
         bridge.loadMap(bridge)                               # client (no g_server): stays inert
         self.assertIsNone(bridge.env)
         probe.loadMap(probe)
-        self.assertEqual(list(g.commands.values()), ["fhHitchList", "fhHitchProbe", "fhHitchStop"])
+        self.assertEqual(list(g.commands.values()), ["fhHitchList", "fhRigGeometry", "fhHitchProbe", "fhHitchStop", "fhReload"])
+
+    def test_fh_reload_rereads_the_lua_keeping_state_and_one_listener(self):
+        # The user, 2026-10-31: a refresh instead of a save reload for each change.
+        lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
+        lua.execute("listeners = {}\n"
+                    "function addModEventListener(l) listeners[#listeners + 1] = l end\n"
+                    "function addConsoleCommand() end\nfunction removeConsoleCommand() end\n"
+                    "g_currentModDirectory = 'mods/FS25_Farmhand/'\nfiles = {}\n"
+                    "function source(path) assert((loadstring or load)(files[path]))() end\n"
+                    "function copyFile(src, dst) files[dst] = files[src]; return true end\n"
+                    "function fileExists(path) return files[path] ~= nil end\n"
+                    "function deleteFile(path) files[path] = nil end\n"
+                    "function getTimeSec() return 1234 end")
+        g = lua.globals()
+        for name in PACKAGED_MODULES:
+            g.files["mods/FS25_Farmhand/" + name] = (ROOT / "mod" / name).read_text()
+            lua.execute(g.files["mods/FS25_Farmhand/" + name])
+        probe, bridge, hitch = g.FarmhandProbe, g.FarmhandBridge, g.FarmhandHitch
+        observe = g.FarmhandObserve
+        lua.execute("FarmhandObserve.catalog = { items = FarmhandObserve.array({ { id = 1 } }), done = true }\n"
+                    "FarmhandObserve.fieldCache[1] = { record = { ids = FarmhandObserve.array({ 1 }) } }")
+        probe.env = g
+        bridge.dir = "settings/FS25_Farmhand/"
+        bridge.state = "kept"
+        g.files["mods/FS25_Farmhand/FarmhandHitch.lua"] = g.files["mods/FS25_Farmhand/FarmhandHitch.lua"].replace(
+            "FarmhandHitch = Hitch", "function Hitch.reloadMarker() return Hitch.ENVELOPE.checkMs end\nFarmhandHitch = Hitch")
+        g.files["mods/FS25_Farmhand/FarmhandProbe.lua"] = g.files["mods/FS25_Farmhand/FarmhandProbe.lua"].replace(
+            "FarmhandProbe = Probe", "function Probe.reloadMarker() return 'probe-refreshed' end\nFarmhandProbe = Probe")
+        bridge.active = {"id": 1}
+        self.assertIn("running", probe.consoleReload(probe))
+        bridge.active = None
+        self.assertTrue(probe.consoleReload(probe).startswith("fhReload: reloaded FarmhandObserve.lua"))
+        self.assertTrue(lua.eval("function(h) return FarmhandHitch == h end")(hitch))     # same live table
+        self.assertEqual(hitch.reloadMarker(), 100)                                        # the new function
+        self.assertEqual(probe.reloadMarker(), "probe-refreshed")                         # probe also refreshes
+        self.assertEqual(g.FarmhandBridge.state, "kept")
+        self.assertIsNone(observe.catalog)  # old ARRAY metatables cannot be encoded by fresh functions
+        self.assertEqual(len(observe.fieldCache), 0)
+        self.assertEqual(len(g.listeners), 2)                                              # bridge, probe once
+        self.assertIsNone(g.FarmhandReloading)
 
     def test_moddesc_loads_the_dependencies_first(self):
         desc = ET.parse(ROOT / "mod/modDesc.xml").getroot()

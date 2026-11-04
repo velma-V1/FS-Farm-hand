@@ -39,9 +39,11 @@
         "unload_combine",
         "store",
         "harvest_policy",
-        "land"
+        "land",
+        "join_fields"
       ]
     },
+    "into_field": {"description": "join_fields: the field the other is joined to ('add field 4 to field 5': 5).", "type": "integer", "minimum": 1, "maximum": 100000},
     "land_action": {"description": "land: buy or sell.", "enum": ["buy", "sell"]},
     "steps": {
       "description": "sequence: the player's job commands in the order said, each run only after the one before completed ('take the gmc, hitch the deckover, load the tractor, ...').",
@@ -291,7 +293,7 @@
       "else": {"not": {"required": ["together"]}}
     },
     {
-      "if": {"properties": {"command": {"enum": ["field_work", "contract", "unload_combine", "land"]}}},
+      "if": {"properties": {"command": {"enum": ["field_work", "contract", "unload_combine", "land", "join_fields"]}}},
       "else": {"not": {"required": ["field"]}}
     },
     {
@@ -320,6 +322,11 @@
       "if": {"properties": {"command": {"const": "land"}}},
       "then": {"required": ["field", "land_action"], "properties": {"field": {"type": "integer"}}},
       "else": {"not": {"required": ["land_action"]}}
+    },
+    {
+      "if": {"properties": {"command": {"const": "join_fields"}}},
+      "then": {"required": ["field", "into_field"], "properties": {"field": {"type": "integer"}}},
+      "else": {"not": {"required": ["into_field"]}}
     }
   ]
 }

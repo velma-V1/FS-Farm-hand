@@ -41,7 +41,8 @@
         "part",
         "store",
         "stage_transport",
-        "land"
+        "land",
+        "join_fields"
       ],
       "description": "field_work: GIANTS' field-work helper works an owned field with the hitched implement that does the operation; complete only on the field's measured state; target is player_at_acceptance. deliver_tractor_and_forage_wagon: select, hitch and deliver an available pair. move_pair: move the hitched tractor and forage wagon nearest the requester. hitch_pair: select and hitch an available pair where the wagon stands, no delivery. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to nearest the requester, where it stands; target is player_at_acceptance. load_tractor: a free tractor (tractor_name) driven up onto a transport trailer's deck (implement_name), belted, ramps raised. unload_tractor: the belted tractor released and backed off the trailer, ramps raised. unload_harvester: an AutoDrive rig with a trailer that has room runs AutoDrive's combine unloader for the combines on field (handed off, kept reserved). sell: the rig with the most cargo (tractor_name if said) delivers it to the best paid sell point; complete when the cargo went and the money came. store: the rig with the most cargo (tractor_name if said) delivers it to the farm's own storage (GIANTS' Deliver helper); complete when the cargo went. stage_transport: before loading, the empty transport (truck and trailer) taken by GIANTS GOTO onto the nearest AutoDrive waypoint with a route to the haul's target, unless it already has one. overload: a standing combine with grain emptied into a tractor's trailer under its pipe (GIANTS GOTO, pipe and discharge); complete when the grain moved. part: a trailer rig left beside a combine taken on past it. land: the field's farmland parcel bought or sold (land_action) through GIANTS' own request at its price; complete when the owner changed and the money moved."
     },
@@ -153,6 +154,8 @@
       "oneOf": [{"type": "integer", "minimum": 1, "maximum": 100000}, {"const": "smallest"}]
     },
     "land_action": {"description": "land: buy or sell the field's farmland parcel.", "enum": ["buy", "sell"]},
+    "into_field": {"description": "join_fields: the field the other is joined to.", "type": "integer", "minimum": 1, "maximum": 100000},
+    "destination": {"description": "unload_harvester: where AutoDrive's combine unloader takes a full trailer: sell (the best paid sell point, the default), store (the farm's own silo) or keep (parked at the field's marker, the grain kept).", "enum": ["sell", "store", "keep"]},
     "want": {
       "description": "buy: what to buy. kind: plow (a store plow our tractors can pull), truck, trailer or tractor (by the name the player gave), grain_trailer (a tractor-drawn tipper, GIANTS' TRAILERS category); size large: the widest that fits; engine: the motor configuration with these words in its name.",
       "type": "object",
@@ -259,7 +262,7 @@
       "then": {"required": ["field"], "properties": {"field": {"type": "integer"}, "target": {"const": "player_at_acceptance"}}}
     },
     {
-      "if": {"properties": {"task": {"enum": ["field_work", "unload_harvester", "land"]}}},
+      "if": {"properties": {"task": {"enum": ["field_work", "unload_harvester", "land", "join_fields"]}}},
       "else": {"not": {"required": ["field"]}}
     },
     {
@@ -282,6 +285,15 @@
       "if": {"properties": {"task": {"const": "land"}}},
       "then": {"required": ["field", "land_action"], "properties": {"field": {"type": "integer"}, "target": {"const": "player_at_acceptance"}}},
       "else": {"not": {"required": ["land_action"]}}
+    },
+    {
+      "if": {"properties": {"task": {"const": "unload_harvester"}}},
+      "else": {"not": {"required": ["destination"]}}
+    },
+    {
+      "if": {"properties": {"task": {"const": "join_fields"}}},
+      "then": {"required": ["field", "into_field"], "properties": {"field": {"type": "integer"}, "target": {"const": "player_at_acceptance"}}},
+      "else": {"not": {"required": ["into_field"]}}
     }
   ]
 }

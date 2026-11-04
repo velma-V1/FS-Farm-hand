@@ -56,7 +56,7 @@ CONTACT_RESTARTS = 2
 STUCK_CODES = frozenset({"EGRESS_LIMIT", "EGRESS_DIVERGED", "EGRESS_BLOCKED", "EGRESS_NOT_CLEAR",
                          "EGRESS_NOT_AHEAD", "EGRESS_NOT_BEHIND", "START_NOT_CLEAR"})
 CONTACT_SETTLE_S = 10.0     # waited for it to stand before a restart
-DONE_TIMEOUT_S = {"pay": 15.0, "charge": 15.0, "teleport": 20.0, "reposition": 14700.0, "farm_drive": 14700.0, "drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "ad_marker": 15.0, "ad_connect": 15.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "ad_unload": 20.0, "ad_sell": 14700.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
+DONE_TIMEOUT_S = {"pay": 15.0, "charge": 15.0, "teleport": 20.0, "worktool": 25.0, "reposition": 14700.0, "farm_drive": 14700.0, "drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "ad_marker": 15.0, "ad_connect": 15.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "ad_unload": 20.0, "ad_sell": 14700.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -355,8 +355,9 @@ class FS25World:
             log.info("reserved tractor=%s wagon=%s for %s", ids[0], ids[1], owner)
             return True
 
-    def reserve_rig(self, ids: tuple[str, ...], owner: str) -> bool:
-        """Atomically reserve an observed root vehicle and every attached/belted unit."""
+    def reserve_rig(self, ids: tuple[str, ...], owner: str, loose: bool = False) -> bool:
+        """Atomically reserve an observed root vehicle and every attached/belted unit; ``loose``: a
+        lone implement hitched to nothing (for the teleport recovery)."""
         with self._lock:
             if not owner or not 1 <= len(ids) <= 6 or len(set(ids)) != len(ids) or owner in self._reservations:
                 return False
@@ -365,7 +366,9 @@ class FS25World:
                 return False
             rig = [observed[i] for i in ids]
             farm = rig[0].farm_id
-            if rig[0].category not in DRIVEN or rig[0].belted_to is not None:
+            if rig[0].belted_to is not None:
+                return False
+            if rig[0].category not in DRIVEN and not (loose and len(ids) == 1 and rig[0].attached_to is None):
                 return False
             if any(i.farm_id != farm or i.reserved_by is not None or not i.available
                    or i.busy or i.occupied or not i.stopped for i in rig):
@@ -383,7 +386,7 @@ class FS25World:
             return True
 
     def farm_drive(self, vehicle_id: str, target: tuple[float, float], owner: str, area: float = 0.0,
-                   yaw: float | None = None) -> None:
+                   yaw: float | None = None, via=None) -> None:
         """Drive the reserved existing rig by Farmhand's game-side route follower: to
         the point, or (``area`` > 0) to any clear approach point that near it; with
         ``yaw``, arriving at that heading (GIANTS' yaw: +z is 0)."""
@@ -392,7 +395,7 @@ class FS25World:
         if reservation is None or reservation[1][0] != vehicle_id:
             raise StepFailed("NOT_RESERVED")
         try:
-            self._farm_drive(vehicle_id, target, owner, area, yaw)
+            self._farm_drive(vehicle_id, target, owner, area, yaw, via)
         except StepFailed as failure:
             if failure.code not in STUCK_CODES or not self.teleport_recovery or owner in self._teleported:
                 raise
@@ -400,7 +403,7 @@ class FS25World:
             log.info("farm_drive could not move the rig (%s): teleport recovery to open ground nearby", failure.code)
             self.await_stopped(vehicle_id)        # live 0d44db5189854c18-1: refused NOT_STOPPED while rolling
             self.teleport(vehicle_id, owner)
-            self._farm_drive(vehicle_id, target, owner, area, yaw)
+            self._farm_drive(vehicle_id, target, owner, area, yaw, via)
 
     def set_pay(self, mode: int, amount: float) -> None:
         """Farmhand's pay in the game (mod/FarmhandBridge.lua Bridge.pay): mode and amount."""
@@ -432,14 +435,17 @@ class FS25World:
         self._run("teleport", tractor=int(vehicle_id), area=float(min_m), x=float(x), z=float(z), yaw=float(yaw))
         self.link.notice("TELEPORTED")          # never silent (AGENTS.md 19)
 
-    def _farm_drive(self, vehicle_id, target, owner, area, yaw):
+    def _farm_drive(self, vehicle_id, target, owner, area, yaw, via=None):
         # Ended against something on the way (live f4fb84d66f9e4191-1: a traffic cone on the road),
         # the drive starts again from there: its start departs from what it touches and plans
         # around it. At most CONTACT_RESTARTS times; any other end is the drive's own.
         for restart in range(CONTACT_RESTARTS + 1):
             try:
-                self._run("farm_drive", tractor=int(vehicle_id), x=float(target[0]), z=float(target[1]),
-                          area=float(area), yaw=ANY_HEADING if yaw is None else math.remainder(float(yaw), math.tau))
+                args = dict(tractor=int(vehicle_id), x=float(target[0]), z=float(target[1]),
+                            area=float(area), yaw=ANY_HEADING if yaw is None else math.remainder(float(yaw), math.tau))
+                if via:
+                    args["via"] = ";".join(f"{float(x):.3f},{float(z):.3f}" for x, z in via)
+                self._run("farm_drive", **args)
                 return
             except StepFailed as failure:
                 if failure.code != "ENVELOPE_CONTACT" or restart == CONTACT_RESTARTS:
@@ -569,11 +575,16 @@ class FS25World:
         """LAND: the field's farmland parcel bought or sold; mod/FarmhandBridge.lua starters.land."""
         return self._run("land", field=int(field), direction=1 if buy else -1)
 
-    def ad_unload(self, tractor_id: str, marker_id: str, field: int, owner: str) -> str:
+    UNLOAD_TO = {"sell": 1, "store": -1, "keep": 0}
+
+    def ad_unload(self, tractor_id: str, marker_id: str, field: int, owner: str, destination: str = "sell") -> str:
         """UNLOADER: AutoDrive's own combine unloader for the reserved rig (mod/FarmhandBridge.lua
-        starters.ad_unload); UNLOADING once AutoDrive runs it, which goes on until stopped."""
+        starters.ad_unload); UNLOADING once AutoDrive runs it, which goes on until stopped. A full
+        trailer goes where the harvest goes: sell, store (the farm's silo) or keep (parked at the
+        field's marker)."""
         self._reserved(tractor_id, owner)
-        return self._run("ad_unload", tractor=int(tractor_id), marker=int(marker_id), field=int(field))
+        return self._run("ad_unload", tractor=int(tractor_id), marker=int(marker_id), field=int(field),
+                         direction=self.UNLOAD_TO[destination])
 
     def ad_sell(self, tractor_id: str, owner: str) -> str:
         """SELL: AutoDrive delivers the reserved rig's cargo to the best paid sell point for it
@@ -679,6 +690,12 @@ class FS25World:
     def pull_clear(self, tractor_id: str, wagon_id: str, owner: str) -> None:
         self._reserved(tractor_id, owner, wagon_id)
         self._run("pull_clear", tractor=int(tractor_id), wagon=int(wagon_id))
+
+    def worktool(self, tractor_id: str, lower: bool, owner: str) -> str:
+        """The reserved tractor's plow lowered with field creation on, or raised with its field
+        limit back on (mod/FarmhandBridge.lua starters.worktool)."""
+        self._reserved(tractor_id, owner)
+        return self._run("worktool", tractor=int(tractor_id), direction=1 if lower else -1)
 
     def fold(self, vehicle_id: str, direction: int, owner: str) -> str:
         """One of the reserved pair's own folding parts to an end (GIANTS Foldable)."""

@@ -66,6 +66,11 @@ class Observation:
     land: tuple[LandParcel, ...] = ()              # every map field's farmland parcel, as a buyable
 
 
+def _work_width(value):
+    """A finite positive working width, else None."""
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value < 100 else None
+
+
 def _claimed_links(vehicles) -> dict[int, set[int]]:
     """Every attachment any vehicle reports, recorded on both ends."""
     links: dict[int, set[int]] = {}
@@ -207,6 +212,8 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
         seeds=tuple(vehicle.get("seeds") or ()),
         pipe=None if vehicle.get("pipe") is None else (vehicle["pipe"]["out"], vehicle["pipe"]["x"], vehicle["pipe"]["z"]),
         ai_stop=vehicle.get("ai_stop"),
+        ai_blocked=vehicle.get("ai_blocked") is True,
+        work_width=_work_width(vehicle.get("work_width")),
         size=None if vehicle.get("size") is None else tuple(
             vehicle["size"][k] for k in ("length", "width", "height", "length_offset")),
     )
@@ -258,7 +265,8 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = N
         land=tuple(LandParcel(f["id"], f.get("farmland"), f.get("owner"), f.get("price"), f.get("area_ha"))
                    for f in sorted(frame.get("field_places", ()), key=lambda f: f["id"])),
         farm=None if farm is None else FarmInfo(farm["money"], farm["helper_buy_seeds"],
-                                                farm["helper_buy_fertilizer"], farm["helper_buy_fuel"], farm.get("savegame_dir")),
+                                                farm["helper_buy_fertilizer"], farm["helper_buy_fuel"],
+                                                farm.get("savegame_dir"), farm.get("savegame")),
     )
 
 

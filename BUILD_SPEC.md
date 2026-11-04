@@ -1,3 +1,13 @@
+# HISTORICAL FOUNDATION SPEC — NOT CURRENT ENGINEERING AUTHORITY
+
+This file records the original AC-001 foundation and later historical completion notes. It is retained as design/history evidence.
+
+**Current product scope, standalone-navigation requirements, proof method, and engineering priorities are defined by `AGENTS.md` and `CLAUDE.md`. Where this file conflicts with them, this file loses.**
+
+Do not use the old strict scope, provider-first routing assumptions, or custom-navigation non-goals to limit current Farmhand development.
+
+---
+
 # FS25 autonomous farmhand — foundation build
 
 ## Objective

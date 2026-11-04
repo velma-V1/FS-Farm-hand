@@ -97,6 +97,8 @@ class Equipment:
     seeds: tuple[str, ...] = ()           # a seeder's crops (GIANTS fruit names), in its order
     pipe: tuple[bool, float, float] | None = None   # a combine's pipe: out, where it discharges (x, z)
     ai_stop: str | None = None            # how GIANTS ended the vehicle's last AI job (FINISHED, COULD_NOT_PREPARE, ...)
+    ai_blocked: bool = False              # its AI job's agent reports BLOCKED (waits for an obstacle)
+    work_width: float | None = None       # working width (GIANTS AI markers, left to right), metres
     stopped: bool = True
     # Hitch geometry; unknown values are None/empty and make a vehicle unhitchable.
     # Joint types are compared per joint pair (companion/hitch.py), as GIANTS does.
@@ -191,6 +193,7 @@ class FarmInfo:
     helper_buy_fertilizer: bool | None
     helper_buy_fuel: bool | None
     savegame_dir: str | None = None       # the loaded save's folder (AutoDrive's network is saved there)
+    savegame: int | None = None           # GIANTS missionInfo.savegameIndex; scopes learned farm routes
 
 
 @dataclass(frozen=True)

@@ -322,6 +322,7 @@ class LiveTest:
         record = {"version": VERSION, "test_id": job.owner, "job": job.number, "request": request["id"],
                   "proposal": proposal, "text": request.get("text"), "companion_build": BUILD, "mod_build": self.mod_build(),
                   "started": _local(at), "started_unix": at, "ended": None, "ended_unix": None,
+                  "first_verified_equipment_movement": None,
                   "status": "WORKING", "reason": None, "steps": [], "states": [], "equipment": [],
                   "final_observation": None, "companion_log": [], "configuration": self.configuration(),
                   "interpreter": interpreter}
@@ -341,13 +342,60 @@ class LiveTest:
         record["companion_log"] = list(capture.lines)
         self._write(f"test-{record['test_id']}.json", record)
 
+    def _first_equipment_movement(self, job, starting_poses: dict, started_at: float,
+                                  probe: dict | None = None) -> dict | None:
+        """Qualification only: observe real reserved equipment displacement, not a command ACK.
+
+        Poll at most once a second; no movement commands, no new coordinator state,
+        no observation-based blocking of the job. Missing/late baselines remain unknown.
+        """
+        if probe is not None:
+            probe["attempts"] = probe.get("attempts", 0) + 1
+        try:
+            with self.world._lock:
+                ids = {ident for owner, (_, members) in self.world._reservations.items()
+                       if owner == job.owner or owner.startswith(job.owner + "-")
+                       for ident in members}
+            if not ids:
+                if probe is not None:
+                    probe["no_reservation"] = probe.get("no_reservation", 0) + 1
+                return None
+            observed = (item for item in self.world.snapshot() if item.id in ids)
+            for item in observed:
+                point = tuple(item.position)
+                baseline = starting_poses.setdefault(item.id, point)
+                moved = math.hypot(point[0] - baseline[0], point[1] - baseline[1])
+                if probe is not None:
+                    probe["last_observed"] = {"id": item.id, "point": point,
+                                              "baseline": baseline, "displacement_m": round(moved, 2)}
+                if moved >= 0.5:
+                    return {"elapsed_s": round(max(0.0, self.clock() - started_at), 2),
+                            "equipment_id": item.id, "displacement_m": round(moved, 2),
+                            "source": "live FS25 equipment snapshots",
+                            "sample_interval_s": 1.0}
+        except (StepUnverified, OSError, KeyError, TypeError, ValueError) as failure:
+            if probe is not None:
+                name = getattr(failure, "code", type(failure).__name__)
+                probe["error"] = str(name)
+                probe["errors"] = probe.get("errors", 0) + 1
+            pass  # A missing or stale observation must never affect the actual job.
+        return None
+
     def _monitor(self, job, record: dict, capture: _Capture, coordinator) -> None:
         deadline = self.clock() + MONITOR_MAX_S
+        next_sample, starting_poses, movement_probe = self.clock(), {}, {}
         try:
             while job.state == "WORKING" and self.clock() < deadline:
                 if job.step is not None and (not record["steps"] or record["steps"][-1]["step"] != job.step):
                     record["steps"].append({"step": job.step, "at": _local(self.clock())})
                     self._save(record, capture)
+                if record["first_verified_equipment_movement"] is None and self.clock() >= next_sample:
+                    next_sample = self.clock() + 1.0
+                    movement = self._first_equipment_movement(
+                        job, starting_poses, record["started_unix"], movement_probe)
+                    if movement is not None:
+                        record["first_verified_equipment_movement"] = movement
+                        self._save(record, capture)
                 time.sleep(MONITOR_POLL_S)
             while coordinator.current is job and self.clock() < deadline:     # its cleanup and notice
                 time.sleep(MONITOR_POLL_S)
@@ -357,6 +405,8 @@ class LiveTest:
             else:
                 record.update(status=job.state, reason=job.reason)
             record.update(ended=_local(at), ended_unix=at, states=list(job.states), equipment=list(job.equipment))
+            if record["first_verified_equipment_movement"] is None:
+                record["movement_probe"] = movement_probe
             record["final_observation"] = self._observe(job.equipment)
         except Exception:
             log.exception("live test monitor failed")

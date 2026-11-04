@@ -113,8 +113,30 @@ REAPPROACH_CODES = frozenset({"LOCAL_PATH_HITS_WAGON", "LOCAL_PATH_LEAVES_AREA",
                               "LOCAL_PATH_BLOCKED", "LOCAL_NO_PATH", "LOCAL_START_AT_WAGON",
                               "OUTSIDE_LOCAL_AREA"})
 
+# A maneuver that moved and then stopped braked off its curve (DIVERGED) or over its speed
+# (OVERSPEED, live: a wheel off a pad's edge) is planned again from where it stands, at most
+# MANEUVER_RETRIES times per hitch (live ac799523dcfc4f75-1: turning round from facing away,
+# 0.74 m off after 2 m, and the job ended).
+MANEUVER_RETRY_CODES = frozenset({"DIVERGED", "OVERSPEED"})
+# Joining fields: strip lanes this share of the plow's width apart (the passes overlap).
+STRIP_OVERLAP = 0.9
+# A loaded transport going farther than this to an AutoDrive marker goes by AutoDrive.
+LOADED_AUTODRIVE_M = 300.0
+# A strip lane's end is reached by a drive ending this near it.
+LANE_ARRIVAL_M = 3.0
+# A strip lane is plowed only from its start lined up: a straight run-up this long, then within these.
+LANE_RUN_UP_M = 15.0
+# Live 2026-10-31: the user placed the tractor for the strip 0.92 m off the lane line, 5.4 m past its start.
+LANE_LATERAL_M, LANE_HEADING_RAD, LANE_PAST_START_M = 1.5, math.radians(5.0), 10.0
+# Beside the strip this near its line: onto it this far ahead, then plowed from there.
+LANE_NEAR_M, LANE_JOIN_AHEAD_M = 15.0, 20.0
+# Standing this near an end of a one-lane strip, this little turned towards the far end: plowed from there.
+LANE_START_NEAR_M, LANE_START_TURN_RAD = 25.0, math.radians(30.0)
+# Farmhand's own drive stages only onto an aim at least this far away.
+OWN_STAGE_MIN_M = 15.0
 # A towing rig staged by Farmhand's own drive comes this far straight onto its aim.
 STRAIGHT_LEAD_M = 12.0
+MANEUVER_RETRIES = 2
 
 # GOTO drives to approaches per hitch (TRAVEL_NEAR and STAGE together); aims
 # GIANTS refuses outright (GOTO_INVALID) move nothing and do not count.
@@ -475,7 +497,12 @@ def crop_problem(operation: Operation, field: Field) -> str | None:
         return "NO_WINDROW_ON_FIELD" if operation.done(c) >= 1.0 else None
     if operation.name == "harvest":
         return None if c.share(*CROP_READY) >= CROP_SHARE_BLOCKS else "CROP_NOT_READY"
-    if c.share(*CROP_READY) >= CROP_SHARE_BLOCKS:
+    # Only crop still standing blocks: stubble GIANTS counts as cut (getIsCut) keeps the ground
+    # state HARVEST_READY (live 2026-10-31, save 1 field 3: all of it cut, "plow field 3"
+    # refused CROP_READY_TO_HARVEST while "harvest field 2" said it was done).
+    grown = sum(n for name, n in c.fruit or () if name != "NONE")
+    standing = 1.0 - (c.cut / grown if grown else 0.0)
+    if c.share(*CROP_READY) * standing >= CROP_SHARE_BLOCKS:
         return "CROP_READY_TO_HARVEST"
     if operation.name in ("plow", "cultivate") and c.share(*SOWN) >= CROP_SHARE_BLOCKS:
         return "CROP_GROWING"
@@ -699,6 +726,7 @@ class Executor:
     def __init__(self, world: World, field_entrances=None):
         self.world = world
         self.field_entrances = validated_field_entrances(field_entrances)
+        self.teleport_fallback = False         # the coordinator rescues this hitch by teleport
         self._lock = Lock()
         self._results: dict[str, tuple[dict, Result]] = {}
         self._kind = "forage_wagon"
@@ -1025,8 +1053,11 @@ class Executor:
         pairs = []
         for tractor in items:
             implement = observed.get(tractor.attached_to)
+            # Never a pair strapped on a transport's deck (live 2026-10-31, save 1: "plow field 3"
+            # took the Series 9 and its Titan plow belted on the GMC's deckover 800 m away).
             if (implement is not None and implement.attached_to == tractor.id and self._compatible(tractor, implement)
                     and named(tractor, tractor_name)
+                    and tractor.belted_to is None and implement.belted_to is None
                     and all(usable(x, farm_id) and x.stopped for x in (tractor, implement))):
                 pairs.append((math.dist(implement.position, requester), tractor.id, tractor, implement))
         if not pairs:
@@ -1112,6 +1143,214 @@ class Executor:
             return Result("FAILED", getattr(error, "code", None) or type(error).__name__, states=tuple(states))
 
     LAND_VERIFY_S = 10.0
+
+    def _join_lane_beside(self, tractor_id, owner, a, b):
+        """On or beside lane a-b (within LANE_NEAR_M of its line, between its ends) but not facing along
+        it: onto the line LANE_JOIN_AHEAD_M ahead, towards the end it faces more, at that heading (live
+        2026-10-31: 0.19 m off the line, 68 deg turned, it went for a run-up past an end and found no route)."""
+        here = next((i for i in self.world.snapshot() if i.id == tractor_id), None)
+        if here is None or here.heading is None:
+            return
+        length = math.dist(a, b)
+        best = None
+        for start, end in ((a, b), (b, a)):
+            yaw = math.atan2(end[0] - start[0], end[1] - start[1])
+            fx, fz = math.sin(yaw), math.cos(yaw)
+            dx, dz = here.position[0] - start[0], here.position[1] - start[1]
+            lateral, along = abs(dx * fz - dz * fx), dx * fx + dz * fz
+            turned = abs((here.heading - yaw + math.pi) % (2 * math.pi) - math.pi)
+            if lateral <= LANE_NEAR_M and 0 <= along <= length and (best is None or turned < best[0]):
+                best = (turned, start, yaw, along)
+        if best is None:
+            return
+        _, start, yaw, along = best
+        ahead = min(along + LANE_JOIN_AHEAD_M, length - LANE_ARRIVAL_M - 1.0)
+        if ahead <= along:
+            return
+        point = (start[0] + math.sin(yaw) * ahead, start[1] + math.cos(yaw) * ahead)
+        log.info("JOIN onto the lane line at %s (%.1f m along), heading %.2f", point, ahead, yaw)
+        try:
+            self._lane_drive(tractor_id, point, owner, yaw)
+        except StepFailed as failure:
+            log.info("JOIN onto the lane line: %s", failure.code)
+        self._standing(tractor_id)
+
+    def _on_lane(self, tractor_id, a, b):
+        """(here on the lane line, the end it faces, the end behind it) when the tractor stands on lane
+        a-b within LANE_LATERAL_M and LANE_HEADING_RAD facing either way, LANE_ARRIVAL_M short of the
+        end it faces or more; else None."""
+        here = next((i for i in self.world.snapshot() if i.id == tractor_id), None)
+        if here is None or here.heading is None:
+            return None
+        length = math.dist(a, b)
+        for start, end in ((a, b), (b, a)):
+            yaw = math.atan2(end[0] - start[0], end[1] - start[1])
+            fx, fz = math.sin(yaw), math.cos(yaw)
+            dx, dz = here.position[0] - start[0], here.position[1] - start[1]
+            lateral, along = abs(dx * fz - dz * fx), dx * fx + dz * fz
+            turned = abs((here.heading - yaw + math.pi) % (2 * math.pi) - math.pi)
+            if lateral <= LANE_LATERAL_M and turned <= LANE_HEADING_RAD and 0 <= along <= length - LANE_ARRIVAL_M:
+                point = (start[0] + fx * along, start[1] + fz * along)
+                log.info("JOIN on the lane %.1f m along, %.2f m off, facing its end %s", along, lateral, end)
+                return point, end, start
+        return None
+
+    def _onto_lane(self, tractor_id, start, owner, yaw):
+        """To a strip lane's start lined up on it: a run-up LANE_RUN_UP_M straight behind it, then
+        the start; lowered only within LANE_LATERAL_M and LANE_HEADING_RAD of the lane line, so
+        what is plowed is straight (live 41701e68ab: lowered 2 m off and turned, the drive to the
+        lane's end plowed a curve; the user: "it looks like a boomerang"). Twice, else refused."""
+        fx, fz = math.sin(yaw), math.cos(yaw)
+
+        def lined_up():
+            here = next((i for i in self.world.snapshot() if i.id == tractor_id), None)
+            if here is None or here.heading is None:
+                return False
+            dx, dz = here.position[0] - start[0], here.position[1] - start[1]
+            lateral, along = abs(dx * fz - dz * fx), dx * fx + dz * fz
+            turned = abs((here.heading - yaw + math.pi) % (2 * math.pi) - math.pi)
+            log.info("JOIN lane start: %.2f m off the line, %.1f m along, %.1f deg turned",
+                     lateral, along, math.degrees(turned))
+            return lateral <= LANE_LATERAL_M and turned <= LANE_HEADING_RAD and -LANE_RUN_UP_M <= along <= LANE_PAST_START_M
+
+        # Already standing on the lane at its start, lined up (the user placed it there): from where it stands.
+        if lined_up():
+            return
+        run_up = (start[0] - fx * LANE_RUN_UP_M, start[1] - fz * LANE_RUN_UP_M)
+        for _ in range(2):
+            self._lane_drive(tractor_id, run_up, owner, yaw)
+            self._lane_drive(tractor_id, start, owner, yaw)
+            if lined_up():
+                return
+        raise StepFailed("LANE_NOT_LINED_UP")
+
+    def _lane_drive(self, tractor_id, point, owner, yaw):
+        """Farmhand's drive to a strip lane's end; a drive that ends within LANE_ARRIVAL_M of it
+        has arrived (live 1e27b06900b64385-6: 1.9 m from the lane start it missed the last
+        waypoint, replanned four times in 0.1 s and ended OBSTACLE_AHEAD with nothing there)."""
+        try:
+            self.world.farm_drive(tractor_id, point, owner, 0.0, yaw)
+        except StepFailed as failure:
+            self._standing(tractor_id)
+            here = next((i.position for i in self.world.snapshot() if i.id == tractor_id), None)
+            if here is None or math.dist(here, point) > LANE_ARRIVAL_M:
+                raise
+            log.info("JOIN lane point %s reached within %.1f m (%s)", point, math.dist(here, point), failure.code)
+
+    def _join_fields(self, command, enter, states) -> Result:
+        """Field ``field`` joined to ``into_field`` (the user, 2026-10-31: "add field 4 to field 5
+        with create fields enabled"): the strip between them plowed with field creation on, so
+        GIANTS' field work (which finds a field from its worked ground) takes them as one.
+        FIND the nearest tractor with a plow hitched -> RESERVE -> for each lane of the strip
+        (transport.strip_lanes): Farmhand's own drive to its start, the plow lowered with field
+        creation on (``worktool``), on to its end, raised -> STOP -> RELEASE."""
+        owner, farm_id = command["request_id"], command["farm_id"]
+        places = {p.id: p for p in self.world.field_places()} if hasattr(self.world, "field_places") else {}
+        a, b = places.get(f"field-{command['field']}"), places.get(f"field-{command['into_field']}")
+        if a is None or b is None or len(a.outline or ()) < 3 or len(b.outline or ()) < 3:
+            return Result("BLOCKED", "FIELD_NOT_FOUND", states=tuple(states))
+        enter("FIND")
+        items = sorted(self.world.snapshot(), key=lambda i: i.id)
+        observed = {i.id: i for i in items}
+        rigs = [(t, observed[t.attached_to]) for t in items
+                if t.category == "tractor" and t.attached_to in observed and of_kind(observed[t.attached_to], "plow")
+                and observed[t.attached_to].attached_to == t.id and t.belted_to is None
+                and all(usable(x, farm_id) and x.stopped for x in (t, observed[t.attached_to]))]
+        if not rigs:
+            return Result("BLOCKED", "NO_PLOW_HITCHED", states=tuple(states))
+        probe = transport.strip_lanes(tuple(a.outline), tuple(b.outline), 1.0)
+        if not probe:
+            return Result("BLOCKED", "FIELDS_NOT_ADJACENT", states=tuple(states))
+        tractor, plow = min(rigs, key=lambda r: (math.dist(r[0].position, probe[0][0]), r[0].id))
+        # Always the plow's working width (the user, 2026-10-31: "always go by working width"; its size
+        # box said 1.67 m for a 10 m plow, nine lanes for a ~7 m strip). Unknown: refused.
+        if plow.work_width is None:
+            return Result("BLOCKED", "WORK_WIDTH_UNKNOWN", states=tuple(states))
+        width = plow.work_width * STRIP_OVERLAP
+        lanes = transport.strip_lanes(tuple(a.outline), tuple(b.outline), width)
+        ids = (tractor.id, plow.id)
+        enter("RESERVE")
+        if not self.world.reserve(ids, owner):
+            return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
+        lowered, moved = False, False
+        status, reason = "FAILED", "STRIP_NOT_PLOWED"
+        try:
+            log.info("JOIN field %s to field %s: %d lane(s), %.1f m apart, tractor %s plow %s",
+                     command["field"], command["into_field"], len(lanes), width, *ids)
+            lanes = list(lanes)
+            here = next((i for i in self.world.snapshot() if i.id == tractor.id), None)
+            from_here = None
+            if len(lanes) == 1 and here is not None and here.heading is not None:
+                # Standing at an end of the strip roughly facing along it (the user places it there):
+                # lowered where it stands, straight to the far end; no lining up, no run-up (the user:
+                # "stop trying to line up with the field from inside the field").
+                for near, far in (lanes[0], lanes[0][::-1]):
+                    yaw = math.atan2(far[0] - here.position[0], far[1] - here.position[1])
+                    turned = abs((here.heading - yaw + math.pi) % (2 * math.pi) - math.pi)
+                    if math.dist(here.position, near) <= LANE_START_NEAR_M and turned <= LANE_START_TURN_RAD:
+                        from_here = far
+                        break
+            if from_here is not None:
+                log.info("JOIN from where it stands straight to %s", from_here)
+                enter("PLOW_STRIP")
+                moved = True
+                self.world.worktool(tractor.id, True, owner)
+                lowered = True
+                self._lane_drive(tractor.id, from_here, owner,
+                                 math.atan2(from_here[0] - here.position[0], from_here[1] - here.position[1]))
+                self.world.worktool(tractor.id, False, owner)
+                lowered = False
+                lanes = []
+            if lanes and self._on_lane(tractor.id, *lanes[0]) is None:
+                self._join_lane_beside(tractor.id, owner, *lanes[0])
+            if lanes:
+                on = self._on_lane(tractor.id, *lanes[0])
+                if on is not None:
+                    # Standing on the first lane facing along it (the user placed it there): plowed from
+                    # here to the end it faces; what lies behind becomes a lane of its own.
+                    here, far, behind = on
+                    lanes[0] = (here, far)
+                    if math.dist(behind, here) > LANE_ARRIVAL_M:
+                        lanes.insert(1, (here, behind))
+            for n, (start, end) in enumerate(lanes, 1):
+                yaw = math.atan2(end[0] - start[0], end[1] - start[1])
+                enter("TO_LANE")
+                moved = True
+                try:
+                    self._onto_lane(tractor.id, start, owner, yaw)
+                except StepFailed as failure:
+                    # That end's run-up is out of reach: the lane from its other end (live
+                    # 576682ea493f49ab-2: NO_ROUTE to the run-up beside an unnamed static "col").
+                    log.info("JOIN lane %d from its start: %s; from its other end", n, failure.code)
+                    self._standing(tractor.id)
+                    start, end = end, start
+                    yaw = math.atan2(end[0] - start[0], end[1] - start[1])
+                    self._onto_lane(tractor.id, start, owner, yaw)
+                enter("PLOW_STRIP")
+                self.world.worktool(tractor.id, True, owner)
+                lowered = True
+                self._lane_drive(tractor.id, end, owner, yaw)
+                self.world.worktool(tractor.id, False, owner)
+                lowered = False
+                log.info("JOIN lane %d/%d plowed", n, len(lanes))
+            status, reason = "COMPLETE", "FIELDS_JOINED"
+        except StepFailed as error:
+            status, reason = "FAILED", error.code
+        except StepUnverified as error:
+            status, reason = "UNVERIFIED", error.code
+        finally:
+            try:
+                if lowered:
+                    self.world.worktool(tractor.id, False, owner)
+                if moved:
+                    enter("STOP")
+                    self.world.stop(tractor.id, owner)
+                enter("RELEASE")
+                self.world.release(owner)
+            except Exception as error:
+                log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
+                status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        return Result(status, reason, ids, tuple(states))
 
     def _land(self, command, enter, states) -> Result:
         """FIND (the field's farmland parcel, its owner and price) -> BUY_LAND / SELL_LAND
@@ -1437,7 +1676,7 @@ class Executor:
             if not selling:
                 enter("UNLOADER")
                 moved = True
-                self.world.ad_unload(tractor.id, marker.id, command["field"], owner)
+                self.world.ad_unload(tractor.id, marker.id, command["field"], owner, command.get("destination", "sell"))
                 handed = True
                 status, reason = "COMPLETE", "UNLOADER_STARTED"
             else:
@@ -1655,8 +1894,11 @@ class Executor:
             now = (self._grain(after[combine.id]), sum(u.level or 0.0 for u in after[trailer.id].fill_units))
             log.info("OVERLOAD %s: combine %.0f -> %.0f l, trailer %.0f -> %.0f l", done, before[0], now[0],
                      before[1], now[1])
-            if not (now[0] < before[0] and now[1] > before[1]):
+            sent, received = before[0] - now[0], now[1] - before[1]
+            if sent <= 0 or received <= 0:
                 raise ObservationMismatch("GRAIN_NOT_MOVED")
+            if abs(sent - received) > 2.0:
+                raise ObservationMismatch("GRAIN_UNACCOUNTED")
             status, reason = "COMPLETE", "COMBINE_UNLOADED"
         except Cancelled:
             status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
@@ -2175,6 +2417,11 @@ class Executor:
         # falls in line behind it (live b46c3abddb2b4cee-1: at the run-up the tractor at its heading, the
         # trailer bent 50-69 degrees, ALONGSIDE_RIG_NOT_STRAIGHT). Without room for that run-in,
         # the aim directly.
+        if tractor is not None and math.dist(tractor.position, target) < OWN_STAGE_MIN_M:
+            # A few metres with a new heading is a knot for a planned drive (live 2026-10-31: 3 min
+            # circling 9.5 m from the aim beside the plow): GIANTS stages, else the next aim.
+            log.info("STAGE aim %s %.1f m away: GIANTS stages", pose, math.dist(tractor.position, target))
+            return False
         towing = any(i.attached_to == tractor_id for i in self.world.snapshot())
         if towing:
             lead = (target[0] - math.sin(pose.yaw) * STRAIGHT_LEAD_M, target[1] - math.cos(pose.yaw) * STRAIGHT_LEAD_M)
@@ -2209,6 +2456,20 @@ class Executor:
         AutoDrive to a marker, or GIANTS GOTO to a pose."""
         if deliver and self._farm_drives():
             target = tuple(route_position(route))
+            # A loaded transport on a long trip to an AutoDrive marker: AutoDrive drives it (it
+            # counts the belted cargo as the rig's own; GIANTS' helper refuses such a rig and
+            # Farmhand's own search over a long trip took minutes, live e738799ee3be4904-1: the
+            # GMC with the Series 9 from field 90 toward field 3, still searching after 4 min).
+            observed = {i.id: i for i in self.world.snapshot()}
+            tractor = observed.get(tractor_id)
+            if (partner_id is not None and any(i.belted_to == partner_id for i in observed.values())
+                    and isinstance(route, Destination) and tractor is not None and "autodrive" in tractor.capabilities
+                    and any(d.id == route.id for d in self.world.destinations())
+                    and math.dist(tractor.position, target) > LOADED_AUTODRIVE_M):
+                log.info("loaded rig %s %.0f m from marker %s: AutoDrive", tractor_id,
+                         math.dist(tractor.position, target), route.id)
+                self.world.deliver(tractor_id, route.id, owner)
+                return route
             try:
                 self.world.farm_drive(tractor_id, target, owner, 0.0)
                 return Destination("farmhand", target)
@@ -2340,6 +2601,8 @@ class Executor:
             return self._buy(command, enter, states)
         if command["task"] == "land":
             return self._land(command, enter, states)
+        if command["task"] == "join_fields":
+            return self._join_fields(command, enter, states)
         if command["task"] in ("load_tractor", "unload_tractor"):
             return self._transport(command, enter, states)
         if command["task"] == "follow_me":
@@ -2556,11 +2819,29 @@ class Executor:
                 seed = seed_position(implement, command.get("crop")) or 0      # the player's crop, else as set
                 extra = {**({"seed": seed} if seed else {}),
                          **({"hand": True} if command.get("hand_off") and not area else {})}
+                cleared = False
+                # Loose implements on the field go to the farm yard before GIANTS' helper starts.
+                place = next((p for p in self.world.field_places() if p.id == f"field-{field.id}"), None) \
+                    if hasattr(self.world, "field_places") else None
+                if place is not None and getattr(type(self.world), "teleport", None) is not None:
+                    from companion.standalone import StandaloneMove
+                    StandaloneMove(self.world).clear_field(tuple(place.outline or ()), ids, farm_id, owner)
                 for detour in range(MAX_DETOURS + 1):
                     try:
                         ended = self.world.fieldwork(tractor.id, field.id, start, owner, area or 0.0, **extra)
                         break
                     except StepFailed as failure:
+                        # Blocked where it stands (live 9f1e101ef8da48d7-1: the Series 9 unloaded
+                        # behind the GMC's deck) or on its way (5eb1005df58446f7-1: the GMC left on
+                        # the road): the parked vehicles nearby are driven out of the way, as a
+                        # worker would, and the helper starts again, once.
+                        if failure.code in ("FIELDWORK_BLOCKED_AT_START", "FIELDWORK_BLOCKED") and not cleared \
+                                and getattr(type(self.world), "reposition", None) is not None:
+                            from companion.standalone import StandaloneMove
+                            cleared = True
+                            if StandaloneMove(self.world)._move_blockers(ids, farm_id, owner):
+                                enter("FIELD_WORK")
+                                continue
                         # Stuck on the way while GIANTS still drives: as _navigate.
                         if failure.code != "FIELDWORK_STUCK" or detour == MAX_DETOURS:
                             raise
@@ -2673,6 +2954,10 @@ class Executor:
                 aim = {"next": 0, "drives": 0, "stuck": False, "unmoved": 0}
                 aims = list(aims)
 
+                # A hitch field work rescues by teleport (``teleport_fallback``, set by the
+                # coordinator) ends at its first refused line-up: the implement goes to the field's
+                # open edge instead of re-staging in a cramped spot (the user, 2026-10-31: the
+                # seeder by a tree, 8 min of shuffling).
                 def more():
                     return aim["next"] < len(aims) and aim["drives"] < MAX_APPROACH_DRIVES
 
@@ -2840,7 +3125,14 @@ class Executor:
                         self.world.maneuver(tractor.id, wagon.id, plan, owner)
                     except StepFailed as failure:
                         self._log_joints("LOCAL_MANEUVER failed", ids, plan)
-                        if failure.code not in REAPPROACH_CODES or not more():
+                        if failure.code in MANEUVER_RETRY_CODES and aim.get("retries", 0) < MANEUVER_RETRIES:
+                            aim["retries"] = aim.get("retries", 0) + 1
+                            log.info("LOCAL_MANEUVER stopped (%s): planned again from where it stands (%d)",
+                                     failure.code, aim["retries"])
+                            tractor, wagon, error = self._joints("re-plan start", ids, farm_id, owner, plan)
+                            continue
+                        if failure.code not in REAPPROACH_CODES or not more() or (
+                                command["task"] == "hitch_pair" and self.teleport_fallback):
                             raise
                         log.info("LOCAL_MANEUVER refused unmoved (%s): re-approach", failure.code)
                         refused = failure.code

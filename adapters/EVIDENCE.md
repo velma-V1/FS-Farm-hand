@@ -167,6 +167,7 @@ re-implements only the composition, for a rear drawbar, on GIANTS primitives.
 | Module visibility | PROVEN pattern | FS25 runs a mod's `sourceFile`s in one mod environment and later files use earlier files' globals (FH modDesc order `Transport, Collectors, Commands, Farmhand`; `Farmhand.lua` uses `FarmHandTransport`). A file's `return` value is not kept | Each module assigns one global (`FarmhandObserve`, `FarmhandHitch`, `FarmhandProbe`) and still returns its table for CI; the modDesc loads them in that order |
 | Game globals | PROVEN | AD reads the game's global table as `getfenv(0)` (`register.lua:329`, `RoutesManager.lua:75`) | `env` for all three modules in game |
 | Console commands, update | PROVEN | `addConsoleCommand(name, desc, funcName, target)` / `removeConsoleCommand(name)` (CP `ConsoleCommands.lua:40,47`); `addModEventListener` with `loadMap`/`update(dt)`/`deleteMap` (FH `Farmhand.lua:259-263, 387, 403`) | Commands are registered in `loadMap`; nothing runs until one is typed |
+| Script re-read (`fhReload`, development) | PROVEN source (GIANTS `base/Gui.lua` 1145-1149: `source(baseDir .. file)` runs a Lua file in the global environment; `g_currentModDirectory` while the mod's files load) / UNVERIFIED live | FarmhandProbe `fhReload`: refused while a Farmhand command or probe runs; re-sources Observe, Hitch, Drive, Bridge in modDesc order; each module's live global kept, its functions and UPPER-case constants replaced in place, the fresh table forwarding to it; Bridge's addModEventListener skipped while `FarmhandReloading`. modDesc, input bindings, l10n still need a save reload |
 | Folder mod without icon | PROVEN (FH comment) | FH `modDesc.xml` comment: a folder mod loads without `iconFilename`; only a ZIP is rejected | The probe is installed as a folder, never zipped |
 | `descVersion="113"` | UNVERIFIED for the user's patch | AD 3.0.1.4 and MA 1.1.1.0 use 113 | If the game reports an unknown descVersion, use the one its log names |
 | Plan in Lua | Our code, diagnostic only | Same rule as `companion/hitch.py`, which stays the only production planner | `Probe.plan`; a CI test compares both on random inputs. The probe's physical steps are the bridge's own operations |
@@ -275,7 +276,7 @@ earlier folder; `mmproj` files left out) and only reads them.
 | Windrows on a field; straw collected with a forage wagon (the user, 2026-10-22) | PROVEN source (Courseplay) / Our rule / UNVERIFIED live | Courseplay_FS25 150dcd51f8a108ffc86e95df3e3e240bcc80b6df `scripts/silo/BunkerSiloVehicleController.lua` 393-396 (`DensityMapHeightUtil.getFillTypeAtArea(sx, sz, wx, wz, hx, hz)`, then `getFillLevelAtArea(fillType, sx, sz, wx, wz, hx, hz)`; the corners world x/z: start, width end, length end, 248-271); GDN FillTypeManager 409 `getFillTypeIndexByName` 504-506; GDN ForageWagon 676 (`processForageWagonArea` 218-295 picks up any supported windrow fill type with `DensityMapHeightUtil.tipToGroundAroundLine`; `fillForageWagon` 314-329 turns it off and raises the pickup when the load no longer fits); GDN AIImplement 621 (`requiredDensityHeightTypes`, `createFieldCropsQuery` 1166-1221: GIANTS' helper works windrow-following implements); Pickup 704 (lowered by the helper, onAIImplementStartLine) | `Observe.fieldWindrow`: litres of STRAW, GRASS_WINDROW, DRYGRASS_WINDROW, ALFALFA_WINDROW, CLOVER_WINDROW (names the map lacks are skipped) over at most 256 square tiles of the field's grid, read only, null when the outline or the heap layer is unreadable; tiles quantise the edges (a swath is counted on whole tiles). `collect` field operation: a forage wagon with GIANTS' AIImplement, GIANTS' field-work helper drives it (handed off); done only when at most 100 l per ha lies on the field as measured (our rule); a field with none is NO_WINDROW_ON_FIELD before anything moves. The coordinator stops the helper once the wagon is 97 % full; with a destination ("... and sell it") the load is sold or stored (the `sell`/`store` rows: cargo gone, money in) and collecting starts again, then the load, then the wagon back to its origin and unhitched; without one it waits full, said. Whether GIANTS' helper accepts a given forage wagon, and what it does once full, is UNVERIFIED live |
 | Field work handed off ("workers go on", 2026-10-21) | PROVEN API (as FIELD_WORK) / Our rule / UNVERIFIED live | GIANTS' field-work job as the `fieldwork` row; `getIsFieldWorkActive` (as Bridge.logFieldWork reads it); `stopCurrentAIJob(AIMessageSuccessStoppedByUser.new())` (as `Hitch.cancelStaging`) | `fieldwork` op `hand` 1: DONE WORKING once the helper is in field work (getIsFieldWorkActive), the vehicle remembered as handed off; `stop` for it ends GIANTS' job and is DONE once no AI job runs and it is at rest. The executor returns COMPLETE WORKER_STARTED with the pair still reserved; the coordinator watches the snapshot (5 s), and once the tractor shows no AI job and at rest measures the field, stops and releases it, and runs its follow-up (back to its origin, unhitch) when no other job runs. A next operation on the same field starts once the one ahead shows 30 % of its result; without a free tractor it waits for the one ahead to come back. Contracts keep the field work in the job (their collection follows it) |
 | Harvesting with the straw swath ("harvest field 3", 2026-10-21) | PROVEN API / UNVERIFIED live | GDN Combine 78/644: `spec_combine.swath.isAvailable` (loadCombineSetup 750-759), `setIsSwathActive(isSwathActive, noEventSend, force)` 927-950 (`spec.isSwathActive`), as the player's own toggle `actionEventToggleChopper` 2168-2184; harvested as GIANTS judges it: `fruitTypeDesc:getIsCut(growthState)` on `FieldState.growthState` (PlowMission.isAvailableForField 145-156; FieldState.new 33-50) | A self-propelled vehicle with the combine specialization is category `harvester`; `harvest` field work needs one free with its header (`cutter`) on (`NO_HARVESTER_WITH_HEADER`), most of the field HARVEST_READY (`CROP_NOT_READY`), GIANTS' FIELDWORK job as the `fieldwork` row; before the job the mod switches the swath on wherever the combine has one (`SWATH_NOT_SET` if it does not take it). Done: the share of the field's crop samples GIANTS counts as cut (Observe field record `cut`). The combine is left where the helper ends (never unhitched or brought back). Type `HARVESTERS` and real combines' category rule UNVERIFIED live |
-| Unloading while harvesting and selling (2026-10-21) | PROVEN API (pinned AD `93cff22f759f`) / UNVERIFIED live | AD `AutoDrive.lua:23-28` (MODE_DELIVERTO 3, MODE_UNLOAD 5), `Specialization.lua:206-212` (modes: UnloadAtMode, CombineUnloaderMode), 285-292 (harvesters register themselves), `CombineUnloaderMode.lua:47-63` (start needs both markers; second = where it unloads), `HarvestManager.lua:239-300` (a harvester under a GIANTS AI job is served), `ExternalInterface.lua:114-161` `StartDriving(v, first, second)`, `UnloadAtMode.lua:1-80` (drives to the first marker, unloads, parks), `TriggerManager.lua:377-394` `ADTriggerManager:getHighestPayingSellStation(fillType)`, 444- `getMarkerAtStation(station, vehicle)` (a map marker's waypoint on the path over the trigger, else -1), `StateModule.lua:886-893` (marker of a waypoint via `ADGraphManager:getMapMarkers`), `getStartHelper`; GIANTS `g_fruitTypeManager:getFillTypeIndexByFruitTypeIndex` (SowingMachine 405), FieldState (as Observe), fill units (as Observe) | `ad_unload` (tractor, marker, field): idle, owned, start helper off, the field's marker known, the field's crop as a fill type (`FIELD_CROP_UNKNOWN`), the best paid sell point's marker (`NO_SELL_POINT`, `AD_NO_MARKER_AT_SELL_POINT`), setMode(MODE_UNLOAD), StartDriving(v, field marker, sell marker); DONE UNLOADING once AutoDrive runs it (handed off: a `stop` stops AutoDrive). `ad_sell` (tractor): the first filled unit behind it (`NOTHING_TO_SELL`), the best paid sell point for that fill type, setMode(MODE_DELIVERTO), StartDriving(v, m, m), then as `drive`. The executor's `unload_harvester` takes an AutoDrive tractor with a hitched trailer that has room (`NO_UNLOADER`), adds the field's AutoDrive marker AutoDrive's own way if missing, and keeps it reserved; the coordinator starts it with every harvest worker, stops it when the combine is done and sells what it still carries. `sell` takes the AutoDrive rig with the most cargo and is COMPLETE SOLD only when the cargo is down to 5 % and the farm's balance rose. AutoDrive's global settings are never changed |
+| Unloading while harvesting (2026-10-21; every destination 2026-10-31) | PROVEN API (pinned AD `93cff22f759f`) / UNVERIFIED live | AD `AutoDrive.lua:23-28` (MODE_DELIVERTO 3, MODE_UNLOAD 5), `Specialization.lua:206-212` (modes: UnloadAtMode, CombineUnloaderMode), 285-292 (harvesters register themselves), `CombineUnloaderMode.lua:47-63` (start needs both markers; second = where it unloads), `HarvestManager.lua:239-300` (a harvester under a GIANTS AI job is served), `ExternalInterface.lua:114-161` `StartDriving(v, first, second)`, `UnloadAtMode.lua:1-80` (drives to the first marker, unloads, parks), `TriggerManager.lua:377-394` `ADTriggerManager:getHighestPayingSellStation(fillType)`, 444- `getMarkerAtStation(station, vehicle)` (a map marker's waypoint on the path over the trigger, else -1), `StateModule.lua:886-893` (marker of a waypoint via `ADGraphManager:getMapMarkers`), `getStartHelper`; GIANTS `g_fruitTypeManager:getFillTypeIndexByFruitTypeIndex` (SowingMachine 405), FieldState (as Observe), fill units (as Observe) | `ad_unload` (tractor, marker, field): idle, owned, start helper off, the field's marker known, the field's crop as a fill type (`FIELD_CROP_UNKNOWN`), the best paid sell point's marker (`NO_SELL_POINT`, `AD_NO_MARKER_AT_SELL_POINT`), setMode(MODE_UNLOAD), StartDriving(v, field marker, sell marker); DONE UNLOADING once AutoDrive runs it (handed off: a `stop` stops AutoDrive). `ad_sell` (tractor): the first filled unit behind it (`NOTHING_TO_SELL`), the best paid sell point for that fill type, setMode(MODE_DELIVERTO), StartDriving(v, m, m), then as `drive`. The executor's `unload_harvester` takes an AutoDrive tractor with a hitched trailer that has room (`NO_UNLOADER`), adds the field's AutoDrive marker AutoDrive's own way if missing, and keeps it reserved; the coordinator starts it with every harvest worker, stops it when the combine is done and sells what it still carries. `sell` takes the AutoDrive rig with the most cargo and is COMPLETE SOLD only when the cargo is down to 5 % and the farm's balance rose. AutoDrive's global settings are never changed Since 2026-10-31 (the user: "while harvesting at speed") the unloader runs with every harvest: `ad_unload` direction 1 the best paid sell point, -1 the farm's silo (`Bridge.storeMarker`: the store delivery's silo station from GIANTS' Deliver job, then `getMarkerAtStation`), 0 parked at the field's own marker (the second marker = the first; the grain kept); what the trailer still holds when the harvest ends goes where the harvest goes (never sold unless selling). UNVERIFIED live: how AutoDrive's UnloadAtMode ends at a marker with no trigger (keep). |
 | AutoDrive destination for a field (`ad_marker` op) | PROVEN source (AutoDrive 3.0.1.4) / UNVERIFIED live | `ADGraphManager:createMapMarker(wayPointId, name)` (GraphManager.lua 360-381: broadcasts AutoDriveCreateMapMarkerEvent, the server adds the marker, notifies destination listeners, marks the network changed so AutoDrive saves it with the game); its HUD and name dialog use it (EnterTargetNameGUI.lua 73 via createMapMarkerOnClosest). ADGraphManager is a global of AutoDrive's own environment; that environment is the one of `AutoDrive:GetAvailableDestinations` (ExternalInterface.lua 84-94 uses ADGraphManager), reached with `getfenv` (AutoDrive itself calls getfenv in FS25: register.lua 329, RoutesManager.lua 75); `getWayPoints`, `getMapMarkerByName`. AutoDrive's external interface has no marker call, and `StartDriving` drives only to markers (114-161). GIANTS Field `polygonPoints` (as Observe samples them) | Only for a loaded rig to field N with no marker: the companion first copies the save's AutoDrive_config.xml (missionInfo.savegameDirectory, else the profile's active `save` folder) to modSettings/FS25_Farmhand/backup and verifies the copy (else AD_CONFIG_BACKUP_FAILED); the mod puts "Field N" on the connected waypoint (incoming and outgoing) nearest field N's boundary within 30 m (else AD_NO_WAYPOINT_AT_FIELD), DONE MARKER_CREATED once AutoDrive lists it (MARKER_EXISTS if it already does); unreachable or unknown: AD_MARKER_UNSUPPORTED. Not an official external interface: an AutoDrive update may change it; it fails closed |
 | Any-map field destination | PROVEN fields / UNVERIFIED live | GIANTS `g_fieldManager.fields`, each field's id (`getId`/`fieldId`) and `posX`/`posZ` (the position FieldState samples) | Snapshot `field_places` (every field, owned or not, at most 200); a `field_entrance` target the local config does not map is reached by GIANTS GOTO `PLACE_STANDOFF_M` short of that field position (the configured AutoDrive marker still wins); no map, place or field is hard-coded |
 | UNPARK geometry and motion | PROVEN API (as PULL_CLEAR) / Our rule / UNVERIFIED live | Unit size boxes: `vehicle.size.width/length/height/widthOffset/lengthOffset/heightOffset` around `rootNode` as GDN `AIDrivable:setAIRootNodeDirty` 526-531 reads them (`localToWorld`); AD `Specialization.lua:313`, `UtilFuncs.lua:85`. Attached units: `getAttachedImplements()` entries' `.object` (as `Bridge.logFieldWork`). Terrain height `getTerrainHeightAtWorldPos(terrainRootNode, x, 0, z)` (as the `block` op). Ground ahead: `aiSystem:getIsPositionReachable(x, 0, z)` (GDN `AIParameterPosition:validate` 83-90). Driving, brake, `forceIsActive`, takeover watch, vehicle list and player as PULL_CLEAR (row above); back in `getAIReverserNode() or getAISteeringNode()` with `moveForwards=false` as ALIGN_REVERSE | `unpark` op (mod/FarmhandBridge.lua) on the reserved, idle vehicle: `Hitch.newUnpark` refuses unmoved when seated, moving, under AI, unreserved, towed itself, articulated, a size unreadable, an attached unit more than 10 deg off the tractor (`UNPARK_RIG_NOT_STRAIGHT`), anything but the rig and the ground inside its size boxes 0.3 m above the terrain (`UNPARK_START_NOT_CLEAR`: walls, cargo, a raised floor), already in the open (`UNPARK_NOT_BOXED`), the margin beside it not clear (`UNPARK_TOO_TIGHT`), the swept slabs blocked before an exit (`UNPARK_EXIT_BLOCKED`), a vehicle root ahead of the leading end within 8 m, or the player anywhere within 6 m, of the steering node or the leading end (`UNPARK_BLOCKED`/`_PERSON`; the user 2026-10-20 after live bc8307516e994d85-1, the PROLANDER's root 5.6 m beside the 7R: a vehicle beside or behind counts by its body in the collision query and by moving), or no exit within 20 m (`UNPARK_EXIT_TOO_FAR`). Back only with nothing attached (`UNPARK_REVERSE_NOT_ALLOWED`). The exit, in 0.5 m slabs: the whole rig (every unit's extent, the tallest unit + 0.3 m, 0.5 m either side) swept from where it stands; at the exit nothing static over it up to 8 m, its footprint 1.5 m larger all round clear, GIANTS' map taking the points 2 and 5 m past its leading end. Per frame: authority, empty cab, the same units none turning 3 deg (`RIG_CHANGED`), 0.5 m off the line (`DIVERGED`), 20 m (`DISTANCE_LIMIT`), 60 s (40 s until the governor's 1.95 km/h), watched vehicles unmoved, none ahead of the leading end within 6 m nor the player within 4 m, a box past the leading end at least 2 m (speed x 1 s + stopping distance at 1 m/s2 + 0.5 m) clear (`OBSTACLE_AHEAD`), 5 cm per 4 s (`STALLED`); at the exit `CLEAR` (braked) only if fresh queries confirm the open, else `EXIT_NOT_CONFIRMED`. The executor verifies at rest and moved 0.5-21 m (`UNPARK_NOT_OBSERVED`). Obstacles lower than 0.3 m above the terrain are not seen (a collision shows as `STALLED`). Kinematic-stub tests only (tests/test_lua_unpark.py); UNVERIFIED in FS25 |
@@ -349,6 +350,8 @@ earlier folder; `mmproj` files left out) and only reads them.
    latency with FS25 running, and that it never takes VRAM.
 | Emptying a standing combine (pipe, overload) | PROVEN API (GDN FS25 2026-10-21) / UNVERIFIED live | Pipe: `setPipeState` 732-759 (targetState, animation), `getCurrentPipeState` 763-765, `spec.unloadingStates` (as `onUpdateTick`'s own automatic unfolding 527-553, `next(spec.unloadingStates)`), `getIsPipeStateChangeAllowed`; discharge into the object under the pipe by GIANTS itself: `automaticDischarge` default true (200), `handleDischargeRaycast` 1254-1277 (DISCHARGE_STATE_OBJECT while `getIsPowered` and the object has room). Motorized: `startMotor` 2153-2158, `getMotorState`, `getCanMotorRun` 1970-1983, `getIsPowered` 3341- (needs the motor STARTING/ON); `forceIsActive` and `raiseActive` as for LOCAL_MANEUVER. Discharge node and fill: `getCurrentDischargeNode()` (.node, .fillUnitIndex) and `getFillUnitFillLevel/Capacity`, as AIDriveStrategyCombine:getDriveData 105-108. Why: AIDriveStrategyCombine waits at a full tank (231-245) yet the live helper ended 7 s in (49b5344a47ec418a-2), and AutoDrive's HarvestManager:update serves only a combine whose AI runs or whose entered driver has the pipe out. The trailer is placed under the pipe point by GIANTS GOTO (`navigate`) |
 | Trailer cover for the overload | PROVEN source (GIANTS data scripts, `vehicles/specializations/Cover.lua`, read 2026-10-31 from the FS25 Modding Toolkit's installed-datas) / UNVERIFIED live | `Cover:aiPrepareLoading` (`getCoverByFillUnitIndex(fillUnitIndex)` -> `setCoverState(cover.index)`), `Cover:aiFinishLoading` (`setCoverState(0)` when `spec.hasCovers`), `setCoverState(state, noEventSend)` 226-260 (sends SetCoverStateEvent, queues the cover animations in `spec.runningAnimations`), `spec.state` (0 closed) | `Bridge.openCover`: before the overload, the cover of the trailer's first fill unit that has one opened as GIANTS' AI loading does it (live 2026-10-31, the user: "the cover is still on the trailer so it cant overload"); the idle timer waits while `runningAnimations` is not empty; the state it had put back when the overload ends or is stopped |
+| Joining two fields (`worktool` op, join_fields) | PROVEN source (GIANTS data scripts from the FS25 Modding Toolkit's installed-datas, read 2026-10-31) / UNVERIFIED live | GIANTS' field work finds a field's boundary from the worked ground around its helper's start (`field/course/FieldCourseField.lua` detectAtPosition: `BoundaryDetectionTask.new(x, z)`, rice fields excepted), not the map's field polygon. `Plow:setPlowLimitToField(limit, noEventSend)` (Plow.lua 316, the ALLOW CREATE FIELDS toggle), `getPlowForceLimitToField` (true when `Platform.gameplay.canCreateFields` is false), the farm's `createFields` permission (`onStartWorkAreaProcessing` 576-581: without it the plow stays limited); `AIImplement:aiImplementStartLine` / `aiImplementEndLine` (AIImplement.lua 831-846: the root vehicle's action controller lowers / raises) | `worktool` direction 1: field limit off (refused FIELD_CREATION_DISABLED / FIELD_CREATION_NOT_PERMITTED), each implement lowered as GIANTS' AI starts a line; -1 the reverse; done on `getIsLowered`. join_fields: the strip lanes between the two outlines (companion/hitch.py strip_lanes: the facing edges, 0.5 m into each field, 0.9 working widths apart (snapshot `work_width`), back and forth), each by Farmhand's own drive raised to its start, lowered to its end |
+| Working width (snapshot `work_width`) | PROVEN source (installed-datas `vehicles/specializations/AIImplement.lua` 427-: `getAIMarkers()` returns the left, right and back AI marker nodes, from the attached implement when `useAttributesOfAttachedImplement`) / UNVERIFIED live | FarmhandObserve: the distance between the left and right markers' world translations (`getWorldTranslation`), nil when either is missing or not finite; join_fields plans its lanes by it only (WORK_WIDTH_UNKNOWN otherwise) |
 | ALONGSIDE (AGENTS.md exception 6) | PROVEN API (as LOAD) / UNVERIFIED live | The same GIANTS calls as LOAD and UNPARK: `AIVehicleUtil.driveToPoint` forward on the start line, `forceIsActive` while driving, `overlapBox` swept volume, `getAISteeringNode`, vehicle size boxes; the pipe point as Observe reads it (`getCurrentDischargeNode().node`, `spec.unloadingStates[getCurrentPipeState()]`). Live motive: GIANTS GOTO ended `not_reachable` 15-23 m short of every spot under the MF 8570's pipe (3dc00834639340f7-1), and a full combine's helper ends COULD_NOT_PREPARE (AIMessageErrorCouldNotPrepare, 3dc00834639340f7-2, now logged by the fixed AI_JOB_STOPPED listener) |
 | AutoDrive drive diagnostics (`drive` op) | PROVEN source (pinned AD `93cff22f759f`) / UNVERIFIED live | Read only, every 5 s while AutoDrive drives: `ADStateModule:getCurrentTaskInfo` 586-588 (the task text; `$l10n_AD_task_pathfinding;` while DriveToDestinationTask plans onto the network, 65-70), `vehicle:getClosestWayPoint` (as `ADGraphManager:getDistanceFromNetwork` 230-233), `ADDrivePathModule:getWayPoints` and `isPaused` (141-147), `ADCollisionDetectionModule.detectedObstable` / `detectedCollision` (16-36, 69-82), each sensor's `triggered` (VirtualSensors 522-528), `AutoDrive.getAllImplementsFolded` (AutoDriveUtilFuncs 529-); for a triggered collision sensor its own `getBoxShape()` (VirtualSensors 287-375) and `getMask()` (CollSensor.lua 45-48) asked of GIANTS `overlapBox`, each shape's object (`getNodeObject`, else its parent's, as CollSensor.lua 66-74) and `AutoDrive:checkIsConnected(v:getRootVehicle(), object)` (as its callback asks) | Logged each 5 s; active and unmoved 2 m for 180 s: FAILED `AD_PATHFINDING_STALLED` (task text pathfinding: a route problem), `AD_WAITING_ON_OBSTACLE` (its collision module or a sensor: the log names what is in its box and whether AutoDrive counts it as the rig's own: vehicle incompatibility vs. something in the way), `AD_PAUSED`, else `AD_NOT_MOVING`; AutoDrive stopped by its own stop (the op's abort) |
 | AutoDrive started by Farmhand: awake, routed, staged (live 2026-10-22) | PROVEN live (Riverbend Springs save 1, AutoDrive 3.0.1.4) / source as cited | Live 78ad02f4cfab4e39-1 and 4f1244e0e60d4cb3-1 (the loaded GMC + Deckover to "Farm Barn"): AutoDrive active 180 s with no task, no route, no sensor triggered, motor off, `forceIsActive` true but `isActive` false: GIANTS was not updating the vehicle (an unentered vehicle runs its specializations' update only while raised active; AutoDrive's own `raiseActive` calls are inside that update), so AutoDrive's task never began. With `raiseActive()` every frame (live 18b8663 build): AutoDrive ran at once and logged `[AutoDrive] Could not calculate path - shutting down` (DriveToDestinationTask.lua 31-37): the rig was 30.8 m from the network (path planning onto it, 18-21) and its nearest waypoint 11802 is on a 7-waypoint dead end; `PathFinderModule:startPathPlanningToWayPoint` 207-226 plans only when `ADGraphManager:pathFromTo(closest, destination)` (GraphManager.lua 164-) has a route. The saved network (`AutoDrive_config.xml` <waypoints> id/x/z/out, read only): 12,238 waypoints, the nearest with a route to the marker 3515, 63.5 m off. Not the cargo: no sensor ever triggered | `drive` raises the vehicle active every frame while AutoDrive runs a job Farmhand started (and one handed off); before starting it asks `pathFromTo(getClosestWayPoint(), marker waypoint)` and refuses `AD_NO_ROUTE`; an end where it started is `AD_ENDED_UNMOVED`. The haul's `stage_transport` reads the saved network (companion/hitch.py) and, with no route from the empty transport, has GIANTS GOTO take it (truck and empty trailer) onto the nearest routed waypoint within 150 m before loading. The network is never edited (markers only, AGENTS.md) |
@@ -486,3 +489,725 @@ earlier folder; `mmproj` files left out) and only reads them.
   previews the route ahead, and commands at most 64 km/h with braking for turns
   and arrival. These changes need a live GMC and loaded-rig run before any speed
   or cornering qualification claim.
+
+## Physical geometry inventory (source-inspected; live unverified)
+
+- Toolkit installed dataS is FS25 1.25.0.0 (`VERSION.md`, archive SHA-256
+  `39bbcaedf45d39b8f661a7cd702bfa88fccc9d63447466bb31bfc042fe7d1b4`).
+  `Vehicle.lua` loads physical component nodes and adds them to physics;
+  `VehicleCamera.lua:67` identifies shape nodes with rigid bodies or compound
+  children and the VEHICLE collision group.
+- Community LUADOC documents `getRigidBodyAABB(node)` as a world AABB that may
+  be nil before physics is loaded, and `getShapeBoundingSphere(shape)` as a
+  local center/radius plus a geometry flag. These bounds can inventory loaded
+  shapes; neither is by itself an accurate occupied volume for an angled rig.
+- The read-only `fhRigGeometry <vehicleId>` diagnostic logs every unit in the
+  current footprint, its live pose, physical body AABBs, shape spheres and
+  collision flags, input joint and wheel representations. It has Lua stub
+  coverage and the live read-only capture below; no maneuver is claimed.
+- **2026-11-02 live Save 1 capture (geometry only):** `log.txt` at 22:22:35
+  recorded GMC 611 → Deckover 620 → belted Series 9 622 → plow 621, all four
+  units, with truck yaw -1.9894 and trailer yaw -2.3682. The units expose
+  48/33/8/2 collision-enabled shape nodes respectively, versus 1377/316/520/19
+  total shape nodes before filtering. The loaded shapes include TRIGGER
+  (`536870912`) and FILLABLE (`1073741824`) groups, which are not solid driving
+  occupancy; the relevant VEHICLE group is `65536` (installed `CollisionFlag.lua`).
+  Several `getRigidBodyAABB` numeric pairs appeared reversed at this angled pose,
+  so the raw values are diagnostic only and must not become clearance boxes.
+  The four logged Deckover wheel representations averaged 9.152 m from its
+  input hitch in this pose; their `isActive` fields were nil, so this is an
+  all-wheel representation measurement, not proof of the active wheel group.
+  This capture proves graph presence and live pose reporting, not shape accuracy,
+  prediction or passability. No movement request was issued for it.
+- **2026-11-02 Save 1 candidate comparison, current bent pose only:** at
+  22:26:59 the 2 m right candidate ended at (-871.508,-71.464,-1.8117).
+  Aggregate and rigid observed-unit boxes both reported predicted obstruction;
+  both named scenery near (-873,-73). The half-metre reverse-left ended at
+  (-869.157,-70.623,-1.9456) and both checks again reported predicted
+  obstruction near (-873,-73). This is a different starting pose from the
+  earlier aggregate-only false rejections, so it does not repeat or overturn
+  those cases. No motion was commanded and no contact was confirmed. The
+  automatic startup capture used for this comparison was removed afterward.
+- **2026-11-02 Save 1 own-drive reproduction:** with `nav_proof.flag` present
+  and `Drive.PROOF_NO_GHOST=true`, request `take the GMC to the silo` moved the
+  intact four-unit rig under Farmhand-owned control. Evidence
+  `.fs25-dev/evidence/2426101921fc4f71-2/game-log.txt` at 22:37:18.637 records
+  a near candidate (-867.71,-70.51,-2.327), curvature +0.0899167, with
+  aggregate `OBSTACLE` at scenery nodes near (-867,-61) and (-866,-59) while
+  separate observed-unit boxes reported clear. The same disagreement occurred
+  for the opposite turn and later at 22:37:34.413 from the moved pose.
+  This **proves the aggregate/per-unit decision disagreement live**. The
+  per-unit future pose is still rigid, and that particular curved candidate was
+  not executed, so physical passage and prediction remain UNVERIFIED.
+  The request entered repeated reverse/search cycles, was STOPPED once, and
+  its final observation shows all four units stopped and released at
+  GMC (-864.4885,-66.9279). No provider or scenery ghosting was observed in
+  the request log; the diagnostic added only read-only overlap queries.
+- A post-hoc straight reverse check from the two observed endpoint snapshots
+  of that run, using the measured hitch offset and 9.152 m all-wheel centre,
+  gave roughly 0.004 m trailer-root position error and 0.19° heading error.
+  The truck endpoint was supplied from observation, so this is **PARTIALLY
+  PROVEN trailer propagation**, not a commanded-motion predictor or a turn
+  qualification. The heading snapshots were rounded to 0.001 rad. The
+  experimental `Hitch.predictFromRootPose` reproduces this observed endpoint
+  in a focused test and refuses unmeasured wheelbase or a second articulated
+  trailer; it has not yet been called as a live FS25 predictor.
+- Courseplay `State3D:getNextTrailerHeading` keeps trailer heading separate
+  from tractor heading. Its Hybrid A* reverse primitives move with negative
+  local displacement but pass positive `primitive.d` to that heading formula.
+  Farmhand cannot infer a reverse sign convention from that formula alone;
+  reverse prediction needs an observed FS25 motion comparison.
+- **2026-11-02 bounded articulated right turn — PROVEN for this local case:**
+  Save 1 was physically brought to GMC (-869.690,-71.202,-1.2468), with the
+  Deckover, belted Series 9, and nested plow present. The wheel-representation
+  average from Deckover hitch was 9.156 m; `isActive` was not exposed, so this
+  is **not** a proven active wheel-group centre. For the same 2.00 m,
+  +0.0899167 yaw-curvature candidate, the aggregate rectangle reported
+  `OBSTACLE` at scenery around (-858,-79), (-859,-80), and (-873,-73), while
+  sampled articulated unit boxes were CLEAR. After the local call-site change,
+  `Drive.routeProbe` also returned CLEAR. The one-shot probe used GIANTS'
+  `driveAlongCurvature`, normal scenery collision, and no provider/GOTO or
+  teleport. It completed twice from the same saved pose; GMC travelled 1.938 m,
+  all four units advanced, and the final contact query reported `-` at rest.
+  Run 1 truck error was 0.347 m / 0.02094 rad; Deckover 0.375 m / 0.01770 rad;
+  Series 9 0.366 m / 0.01771 rad; plow 0.370 m / 0.01772 rad. Run 2 errors
+  were 0.346, 0.371, 0.362, and 0.367 m, respectively; truck and Deckover
+  final positions differed between runs by 0.002 and 0.003 m. The earlier
+  high-curvature setup arc had truck error 0.950 m / 0.660 rad, exposing a
+  GIANTS steering-sign mismatch and short-turn saturation/transient; that
+  setup behavior was removed from the diagnostic probe. Evidence is preserved
+  at `.fs25-dev/evidence/articulated-turn-20261102/game-log.txt`. This proves
+  the aggregate's local veto false for this physical motion and supports the
+  bounded observed-start articulated override. The original 22:37 starting
+  pose, exact free-space margin, and general `vehicle.size` occupancy accuracy
+  remain UNVERIFIED.
+- **2026-11-03 bounded reverse-left — PROVEN for the GMC rig and this local
+  maneuver:** from GMC (-869.690,-71.202,-1.24679), Deckover
+  (-862.787,-66.271,-2.44746), a -0.50 m, -0.0899167 yaw-curvature command
+  predicted all four units clear. The aggregate rectangle was BLOCKED by
+  scenery near (-862,-82), (-853,-81), (-858,-79), and (-874,-75), while
+  `Drive.routeProbe` returned CLEAR. Under normal collision, the GMC ended at
+  (-869.261,-71.272,-1.21292) vs predicted
+  (-869.219,-71.372,-1.20184): 0.108 m / 0.01109 rad error. The Deckover
+  ended at (-862.657,-66.197,-2.49498) vs predicted
+  (-862.663,-66.275,-2.50278): 0.079 m / 0.00779 rad. The Series 9 and plow
+  had 0.086 and 0.073 m position error; all four moved and the final contact
+  query was empty at rest. No provider, GOTO, ghosting, or teleport owned this
+  motion. The starting pose and exact trace are in
+  `.fs25-dev/evidence/articulated-reverse-20261103/game-log.txt`.
+- **2026-11-03 different-rig check — PARTIALLY PROVEN generalization:** the
+  unchanged `Hitch.predictShortMotion` / `Hitch.predictedUnitsClear` /
+  `Drive.routeProbe` ran on the 379 truck towing the LB 56 26, a two-unit
+  near-straight rig. Its measured hitch-to-exposed-wheel-representation mean
+  was 12.446–12.447 m (active wheel group unverified). The 2 m +0.0899167
+  forward turn and -0.5 m -0.0899167 reverse-left both had aggregate BLOCKED,
+  articulated/local CLEAR, physically moved under normal collision, and ended
+  with empty contact queries. Forward truck error was 0.586 m / 0.03230 rad;
+  trailer 0.332 m / 0.04922 rad. Reverse truck error was 0.162 m / 0.00837 rad;
+  trailer 0.071 m / 0.01478 rad. The forward truck error had approximately
+  0.553 m lateral and -0.192 m along-track components relative to its starting
+  heading: the **first miss is the powered root endpoint**, before trailer
+  propagation. A root-centred no-slip arc does not yet bound this rig tightly
+  enough for an unmeasured narrow gap. Actual turn-centre/axle reference and
+  steering transient or slip need discrimination before claiming universal
+  predictive clearance; no new state was added from these two motions alone.
+  Trace: `.fs25-dev/evidence/articulated-second-rig-20261103/game-log.txt`.
+
+## 2026-11-03 machinery and tree mechanics
+
+- **Cylindered short rotation — PROVEN for three loaded control families:**
+  Save 1 D11 blade, Cat 395 boom, and Komatsu 951 harvester arm each moved a
+  commanded 0.020 rad with observed angle error at most 0.00085 rad. Limited
+  `spec_cylindered.movingTools` require a normalized target state computed from
+  live `rotMin`/`rotMax`; a raw-radian target drove the D11 blade to its limit.
+  Native motor activation was also required. Installed dataS 1.25.0.0
+  `Cylindered.lua` and `.fs25-dev/evidence/moving-tool-20261103/game-log-extract.txt`.
+  The isolated 82-line mechanism and its explicit limits are in
+  `collected/proven_systems/bounded_moving_tool.lua` and its adjacent proof.
+- **TerraFarm low-speed tool availability — PROVEN for D11 ripper and blade:**
+  TerraFarm refused the tools while `Drivable:getDrivingDirection()` reported
+  zero at measured travel below 1.5 km/h. Temporarily selecting native
+  `DrivingDirectionMode.IGNORE=4` only after observed forward motion made both
+  tools available. Under normal physics, 0.406 m travel changed fixed-world
+  terrain samples by 0.165–0.248 m (ripper) and up to 0.503 m (blade); the
+  tools were deactivated afterward. Material conservation and independent
+  post-stop state equality remain unverified. Installed TerraFarm snapshot
+  `b50e677cdef062d605ab188f8982ae1faa2789e7`, GIANTS 1.25.0.0
+  `Drivable.lua`, and `.fs25-dev/evidence/terrafarm-20261103/`.
+- **Tree inventory and wood-volume baseline — PARTIALLY PROVEN:** the live
+  Save 1 read-only `CollisionFlag.TREE` overlap found 78 static unsplit
+  `MESH_SPLIT_SHAPE` nodes within 100 m of the player; nearby examples reported
+  native `getVolume` 0.566818 and 12.332018, with native cut permission true.
+  Evidence: `.fs25-dev/evidence/tree-20261103/read-only-census.txt`. Installed
+  1.25.0.0 `HandToolChainsaw.lua` delegates an eligible physical cut to
+  `ChainsawUtil.cutSplitShape`; `SplitShapeUtil.lua` records source `getVolume`
+  and split results. No cut, delimbing, stump removal, or before/after wood
+  conservation test has run. The installed chainsaw enforces a 1.5 m player
+  cut distance; the nearest inventoried tree was 7.48 m away. A remote split
+  call would not prove actual chainsaw operation, so it was not attempted.
+
+## 2026-11-03 powered-root turn-reference discriminator
+
+**PARTIALLY PROVEN diagnostic; no navigation behavior changed.** Re-analysis of
+the normal-physics endpoint records in
+`.fs25-dev/evidence/articulated-second-rig-20261103/game-log.txt` found that
+the 379 + LB 56 26 powered root moves laterally much farther than a no-slip
+arc centered on its `rootNode` predicts. In the starting root frame, the
+forward 2 m request moved 1.798 m forward and 0.733 m laterally while yaw
+changed +0.14754 rad. A root-centered arc with that *observed* yaw and forward
+travel would move only 0.133 m laterally. The remaining 0.600 m corresponds to
+an effective turn reference about 4.08 m behind `rootNode` using
+`(observedLateral - forward*tan(yawDelta/2))/sin(yawDelta)`.
+
+The independent reverse 0.5 m request on the same rig moved -0.445 m forward
+and +0.141 m laterally in its starting frame; yaw changed +0.03659 rad. The
+same calculation yields 4.08 m. The GMC reverse record in
+`.fs25-dev/evidence/articulated-reverse-20261103/game-log.txt` instead yields
+about 2.29 m. Log precision limits these estimates to centimetre scale.
+Agreement across both directions made a root-reference offset a strong,
+smaller hypothesis than adding a general slip model to explain this error.
+
+Installed dataS 1.25.0.0 `Wheels:getSteeringRotTimeByCurvature` computes the
+native command using wheel representations relative to
+`spec_wheels.steeringCenterNode`; `AIJobVehicle:getAISteeringNode` can also
+return a dedicated steering node. The read-only live probe in
+`mod/FarmhandProbe.lua` measured the 379's native `steeringCenterNode` and AI
+steering node at (0.000, -3.960) m in its root frame, between its two
+non-steered rear axles at about -3.31 and -4.61 m. The GMC's steering center
+and AI steering node were (0.019, -2.226) m; its non-steered rear axle
+representations were at -1.945 m. The measured centers differ from the
+motion-inferred references by only 0.12 and 0.06 m, respectively. Using each
+measured center and the *observed* endpoint yaw reduces the 379 lateral
+endpoint residual from 0.600 to about 0.018 m (forward) and from 0.149 to
+about 0.004 m (reverse); the GMC reverse residual reduces from 0.077 to about
+0.002 m. Full endpoint prediction and near-obstacle clearance remain
+unverified. The live extract is
+`.fs25-dev/evidence/turn-reference-20261103/game-log-extract.txt`.
+
+This supports a minimal runtime primitive: measure the native steering
+reference relative to the root, predict a short motion around that reference,
+and re-observe. It does **not** yet prove safe predictive clearance. The next
+qualification is to predict with the measured reference *before* a bounded
+forward and reverse normal-physics maneuver on both rigs, compare all unit
+poses, and measure clearance margins. No extra vehicle profile or collected
+component is justified yet.
+
+The first prospective shadow test has now run on the GMC four-unit rig. The
+same preflight and normal-physics motion gate remained authoritative; the
+steering-center prediction only logged a comparison. On a 2 m forward turn,
+root/trailer/cargo/plow endpoint position errors changed from
+0.349/0.370/0.366/0.362 m under the root-centered prediction to
+0.098/0.110/0.114/0.100 m under the measured-reference prediction. On a
+0.5 m reverse-left, they changed from 0.113/0.066/0.059/0.078 m to
+0.086/0.058/0.050/0.062 m. Both moves completed with no final contact-query
+hit. Evidence: `.fs25-dev/evidence/turn-shadow-20261103/game-log-extract.txt`.
+The 379 + LB 56 26 candidate was correctly refused in both directions because
+the trailer's first predicted segment overlapped the parked D11. No second-rig
+prospective physical qualification occurred. The remaining GMC root yaw error
+was 0.01811 rad forward and 0.01248 rad reverse; a steering-center reference
+fix alone cannot claim exact steering response or narrow-gap clearance.
+
+The next wrong assumption is shared above the predictor: `Drive.advance`
+constructs candidate endpoints as root-centered arcs, while `Drive.routeProbe`
+accepts articulated predicted clearance only if its endpoint is within
+0.05 m of that root-centered candidate. Substituting the steering-center
+predictor alone would fail this equality and silently return to the known
+false-rejecting aggregate box. A correct minimal change must make candidate
+generation and clearance use the same physical reference, or remove the exact
+root-arc equivalence when a bounded observed-start control candidate can be
+verified directly. This coupling is a dependency to resolve before promoting
+the shadow model; adding a clearance-only patch would preserve a wrong route
+state.
+
+On a fresh Save 1 load, the laboratory generated eight 0.25 m samples for a
+2 m GMC right-turn candidate from the measured steering reference, propagated
+all four rig units at each sample, and found every sampled pose clear. The
+existing independent preflight also returned clear; under normal physics the
+rig completed 1.9 m with no final contact-query hit. Steering-reference
+endpoint errors for root/trailer/plow/cargo were 0.092/0.111/0.121/0.103 m,
+versus 0.350/0.381/0.375/0.371 m for the old root arc. A subsequent 0.5 m
+reverse-left produced two clear steering-reference samples, completed under
+normal physics, and had no final contact-query hit; the four reference-based
+endpoint errors were 0.088/0.054/0.046/0.060 m. This **PROVES the local
+candidate → articulated propagation → sampled clearance → bounded physical
+execution chain for these GMC maneuvers only**. It does not validate all
+clearance margins or the legacy global planner. Evidence:
+`.fs25-dev/evidence/reference-candidate-20261103/game-log-extract.txt`.
+
+An out-of-sample replay of the earlier 379 + LB 56 26 endpoint logs, using its
+later-measured -3.960 m native center and the original commanded lengths and
+curvatures, reduced powered-root position error from 0.586 to 0.201 m forward
+and from 0.162 to 0.065 m reverse. This supports transfer of the same geometry
+mechanism to a materially different truck; it is retrospective and does not
+qualify a newly executed second-rig clearance decision. Both attempted new
+second-rig candidates were refused at the trailer near the parked D11. Whether
+that is genuine near-future contact or a remaining per-unit size-box false
+rejection requires a separate physical-occupancy discriminator.
+
+## 2026-11-03 resource-accounting dependency check
+
+**UNVERIFIED as a Farmhand mechanism; source-inspected only.** Installed FS25
+1.25.0.0 `utils/SplitShapeUtil.lua` captures `getVolume(shape)` before a native
+split and publishes `MessageType.SPLIT_SHAPE` with the source record and output
+shape IDs. `ChainsawUtil.cutSplitShape` uses that path and its callbacks add the
+new shapes to the mission/tree manager. This offers a cheap event boundary for
+observing a tree-to-wood transition, but the event itself does not establish
+that the sum of resulting `getVolume` values equals useful recoverable wood.
+That requires a live cut, measurement after physics settles, and observation
+of stump/branch handling and any removed material.
+
+Installed `FillUnit:getFillUnitFillLevel`/`getFillUnitFillType` expose a
+different, typed quantity. TerraFarm snapshot
+`b50e677cdef062d605ab188f8982ae1faa2789e7` uses
+`Machine:handleDeformationInput(liters, fillTypeIndex)` to put excavated
+material into a fill unit when one exists, optionally tip ripper material to
+ground, and otherwise return without a storage transfer. Its
+`Machine:dischargeToGround` removes the quantity actually dropped from the
+fill unit. Its leveler `onPostLoad` also clears a fill unit directly. Thus
+terrain height change alone cannot prove material conservation, as the live
+D11 blade result already suggested (`fillBefore=0`, `fillAfter=0`).
+
+The smallest plausible shared verifier is an action-scoped comparison of
+typed native measurements (source object/volume, destination objects/volume,
+fill type/level, terrain or field state) with explicit permitted sinks. It
+needs small measurement adapters, not one invented universal scalar or a
+persisted full-world resource ledger. This remains a hypothesis until one
+native tree cut and one material transfer are live-measured end to end.
+
+**Existing live fill-transfer evidence:** Farmhand's native combine discharge
+log recorded source/destination snapshots on 2026-10-23 and 2026-10-31.
+`5682→0 L` and `0→5682 L` match exactly at logged precision. Two partial
+transfers were `6836→2049 L` with trailer `0→4788 L`, and `2049→874 L`
+with trailer `4788→5962 L`; each differs by 1 L after rounding. This is
+**PROVEN for typed fill-unit source/destination change in those three live
+transfers**, with an approximately 1 L accounting tolerance at logged
+precision. It is **UNVERIFIED** for unobserved sinks or cross-domain
+conservation. The executor previously checked only opposite signs and would
+have accepted a large unexplained loss. Its combine-to-trailer path now
+compares source and destination deltas within 2 L, returning UNVERIFIED on
+unaccounted change; a focused regression and all 34 unload tests pass.
+This correction has not yet run in live FS25 and is not a collected universal
+verifier. Other resource forms still require typed measurements and declared
+sinks. Source:
+`modSettings/FS25_Farmhand/companion.log.1/.2` in the installed profile,
+`OVERLOAD` lines at 2026-10-23 13:09:20 and 2026-10-31 12:22:57/12:44:48.
+
+## 2026-11-03 tracked locomotion discriminator
+
+**PARTIALLY PROVEN:** A lab probe used the same native
+`AIVehicleUtil.driveAlongCurvature` command, bounded progress/authority/STOP
+supervision, and normal scenery collision on the Save 1 Cat 395 tracked
+excavator. A 0.50 m forward, +0.08 curvature request moved the root 0.426 m
+and changed heading +0.03757 rad; the commanded arc nominally changes heading
++0.04 rad at 0.50 m. The command terminated `DONE`, final contact query was
+empty, speed was 0.014 km/h, and the probe restored the motor it had started.
+This demonstrates that a separate tracked-drive command/controller is **not
+required for this machine and bounded motion**. It does not establish route
+following, reverse, terrain performance, tool coordination, or a second
+tracked-family generalization. Evidence:
+`.fs25-dev/evidence/tracked-motion-20261103/game-log-extract.txt`.
+
+The D11 0.50 m reverse trial refused before motion because its first proposed
+pose overlapped the nearby LB 56 26 trailer under the existing whole-rig
+preflight. This is a clearance/placement blocker, not a tracked-control
+failure. The later 379 trailer and D11 refusals make physical occupancy the
+next shared discriminator for second-rig navigation and dozer locomotion:
+determine whether the observed overlap is a real solid-shape conflict or a
+conservative metadata-box rejection before loosening either motion gate.
+
+Read-only inventory at the blocked pose found the trailer's solid collision
+shapes near (-54.1,-183.8) and the D11 blade's solid shapes near
+(-54.1,-181.9), in addition to large trigger volumes that must be ignored
+for physical occupancy. The current contact query reported `standing` on
+both rigs. These shape bounding spheres and box queries alone do not prove an
+exact shape-to-shape contact, but they justify treating the fixture as a
+genuine near-contact until normal physics says otherwise. Evidence:
+`.fs25-dev/evidence/physical-pair-20261103/game-log-extract.txt`.
+
+A diagnostic contact departure then sampled a straight D11 reverse at 0.5 m
+intervals. The known trailer was the only hit at 0.5 m; every sample from
+1.0 to 4.0 m was clear. Under normal physics, the D11 moved 3.053 m east,
+heading changed only -0.00230 rad, and the final contact query was empty.
+The 4.0 m request ended **FAILED** at its 12 second timeout, so it is proof
+of physical separation and bounded tracked reverse motion, not completion of
+the requested distance. A later read-only inventory measured 0.032 km/h and
+no AI owner. The timeout was too short for its observed low-speed travel;
+no velocity-model or controller workaround was added.
+
+With that space opened, the same measured-reference local candidate chain
+prospectively passed on the materially different 379 + LB 56 26 rig. Its 2 m
+forward right-turn had eight clear reference-based samples, then completed
+under normal physics with no final contact query hit. Truck/trailer endpoint
+position errors were 0.210/0.131 m, versus 0.576/0.349 m for root-centered
+prediction. A 0.5 m reverse-left had two clear reference-based samples and
+completed with no final contact query hit; truck/trailer errors were
+0.088/0.079 m versus 0.161/0.069 m. The trailer reverse position estimate
+became slightly worse while its yaw error improved from 0.01458 to 0.00078
+rad. Classification: **PROVEN** for these bounded local maneuvers on two
+different articulated rigs; **PARTIALLY PROVEN** for the reference-based
+predictor as a general clearance primitive. It still uses metadata unit
+rectangles and has no measured narrow-gap clearance bound. Evidence:
+`.fs25-dev/evidence/second-rig-reference-20261103/game-log-extract.txt`.
+
+After a Save 1 reload preserved the D11's clear position, a prospective
+0.50 m reverse, -0.08 curvature trial used the same generic native drive
+command and bounded supervisor as the Cat 395. Both 0.25 m samples were clear.
+The D11 moved 0.463 m, changed heading +0.01195 rad, ended `DONE`, and had no
+final contact query hit. The sign of the yaw change is consistent with
+negative travel and negative curvature. This extends the bounded locomotion
+result to two materially different tracked machines without a separate track
+controller. It does **not** establish long route following, steering accuracy
+under load, or terrain performance. Raw game log at 2026-11-03 12:31:52–54.
+
+A broader read-only census then checked every loaded powered vehicle with a
+wheel specialization. Seven ordinary wheeled machines exposed a native
+steering center with distinct root-relative offsets, including an MF 8570
+combine with the center **ahead** of its root (+1.992 m). Three tracked
+families (Komatsu 951, Cat 395, D11) exposed `(0,0)` centers; the train had
+zero wheels and no center. This supports runtime discovery and explicit
+refusal for missing references, not a stored model per machine. It does not
+make a root-centered tracked arc physically exact: the D11's short reverse
+turn changed heading +0.01195 rad against a nominal +0.04 rad, while the Cat
+395 forward changed +0.03757 rad against +0.04. A shared bounded
+observe/command/compare loop remains necessary for realized curvature,
+especially before trusting tight clearance. Evidence:
+`.fs25-dev/evidence/turn-reference-census-20261103/game-log-extract.txt`.
+
+Opposite-direction normal-physics trials separated the control families.
+Cat 395 reverse -0.50 m at -0.08 curvature moved 0.560 m and changed yaw
++0.05099 rad (`DONE`, no final contact), comparable to its forward +0.03757
+rad. D11 forward +0.50 m at +0.08 curvature moved 0.426 m and changed yaw
++0.00943 rad (`DONE`, no final contact), comparable to its reverse +0.01195
+rad. All four candidate endpoints preflighted clear. Thus the D11 has usable
+forward/reverse motion under the common native command, but its realized
+short-turn curvature is far below nominal in **both** directions. The first
+wrong assumption for tracked route prediction is `requested curvature =
+realized curvature`; adding a named-D11 controller would only conceal that
+general control-observation dependency. A bounded response measurement can
+test and correct it at runtime. Stability across speed, terrain, and longer
+turns is unverified. Evidence:
+`.fs25-dev/evidence/tracked-opposite-direction-20261103/game-log-extract.txt`.
+
+## 2026-11-03 native forestry work-point prerequisite
+
+**PARTIALLY PROVEN:** Save 1's loaded Komatsu 951 exposes native
+`spec_woodHarvester.cutNode`; GIANTS' own `findSplitShape` returned zero at
+that cut plane. The nearest standing static split shape found within a 30 m
+read-only query was 6.527 m from the plane, with native `getVolume=4.082619`
+and a loaded head radius limit of 0.390 m. Its shape origin was
+`(-583.234,46.992,93.576)` and the head plane was about
+`(-585.52,47.37,99.69)`. A remote cut command at this state would bypass
+the native eligibility/placement prerequisite; no cut was issued.
+
+The installed 1.25.0.0 `WoodHarvester.lua` detects a shape at its `cutNode`
+using `findSplitShape`, checks tree permission/radius/orientation, then uses
+native `splitShape` and attaches the resulting useful trunk. The installed
+`SplitShapeUtil.lua` publishes the source `getVolume` and output shape IDs
+via `MessageType.SPLIT_SHAPE`. This suggests one shared action contract:
+measure native target eligibility, boundedly move the interaction point,
+execute the native operation, then measure resulting objects and resource
+quantity. The native cut and conservation remain **UNVERIFIED**.
+
+The player requires contact at the **lowest native cuttable part** of a
+compatible tree. That is a 3D interaction-point target, not the split
+shape's origin or a horizontal radius alone. Installed `WoodHarvester` uses
+`findSplitShape` at the cut node's actual plane and checks native access,
+angle and radius; if the base is too thick, it tries a higher cut plane.
+The smallest plausible read-only target search is a bounded height scan
+along the loaded trunk using those same native predicates, followed by
+settled cut-node alignment and another native eligibility check. This is
+source-derived and **UNVERIFIED live**; no inferred fixed cut height should
+enter the clean build.
+
+One bounded 0.020 rad arm-1 input reached its joint target within 0.00052
+rad, but the cut node moved only 0.008 m by the 3 s joint-terminal record.
+After physical settling it was about 0.67 m from its pre-input world pose;
+the machine root also shifted about 0.21 m. A second 0.020 rad arm-2 input
+reached within 0.00024 rad; its cut node moved about 0.009 m at 3 s and
+roughly 0.03 m after settling. The first wrong observation for endpoint
+control is therefore treating actuator completion as settled work-point
+completion, or treating world-point displacement as purely joint response.
+Future local control must observe the interaction point relative to the live
+root after physics settles. This requirement also applies to buckets,
+grapples, loader forks, and hitch points; no named 951 kinematic table is
+justified. Evidence: game log 2026-11-03 16:09–16:16; read-only head probe
+and bounded `machine_actuator_628_4/5` trials under normal physics.
+
+Follow-up vehicle-frame measurements after 0.020 rad steps found distinct
+settled cut-point responses: arm 1 `(+0.064,+0.104,+0.216) m`, arm 2
+`(-0.036,+0.060,+0.054) m`, and cabin yaw `(+0.120,-0.033,+0.116) m` in the
+loaded 951 root frame. All joint targets completed within 0.001 rad and
+the root was observed idle at the later reads. The three response vectors
+show multiple controllable physical directions, but they are local samples,
+not a global inverse kinematic model. The closest tree remains about 6 m
+from the native cut plane. The immediate dependency is a bounded
+work-point positioning loop that measures the actual result after each
+input; the shared control contract may serve forestry, excavator buckets,
+loaders, and crane hooks. A successful head placement or cut is still
+**UNVERIFIED**. Evidence: game log 2026-11-03 16:20–16:22.
+
+**FAILED zero-boundary control:** A later diagnostic requested −0.10 rad
+from a +0.03725 rad unlimited cabin joint. The lab passed −0.06275 as an
+ordinary native target. GIANTS `Cylindered:setToolRotation` wraps unlimited
+angles into `[0, 2π)`, so that target was unreachable; by the timeout the
+reported angle differed by 5.41438 rad and the head had moved several
+metres. The target was cleared, the motor stopped, the vehicle settled,
+and the native cut-plane check still returned zero (tree standing). This
+is a failure in the **generic bounded actuator primitive**, not a forestry
+special case. The collected candidate now uses wrapped targets and circular
+progress; a Lua regression covers both wrap directions, but live validation
+of that correction is outstanding. The unsafe lab target was replaced with
+wrapped target and circular progress checks before further use.
+
+**Native alignment discriminator:** The loaded 951 also has GIANTS
+`automaticArmControlHarvester`. Its native `getSupportsAutoTreeAlignment()`
+returned true in Save 1, while `getIsAutoTreeAlignmentAllowed()` returned
+false because the machine was not player-controlled and its Easy Arm Control
+was off. `foundValidTargetServer=false`, although the native detection node
+was approximately 6.96 m from the measured tree, inside its configured
+5–7.75 m radius. Installed `AutomaticArmControlHarvester.lua` already
+contains tree discovery, permission/radius checks, X/Y/Z alignment and
+braking-aware moving-tool control. This could eliminate a forestry-specific
+endpoint solver if a minimal Farmhand-owned invocation can use it under
+proper authority and verify the cut plane afterward. Source presence and
+`supported=true` alone are **not** physical proof of accessibility or
+successful alignment. Live read-only log: 2026-11-03 16:38:47.
+
+The next native read-only check passed that same nearby tree to
+`getBestTreeToAutoAlign`. It returned `best=nil`, `invalid=<tree>`, reason
+`3=WRONG_TYPE`, despite loaded X/Y/Z alignment tools and an eligible
+distance. `getSplitShapeAllowsHarvester` is a separate compatibility gate
+from `getSplitType`, cut permission, volume, and distance. Thus the first
+incorrect assumption was treating any measurable standing split shape as
+harvestable by the currently selected head. The shared object/capability
+resolver must ask the native work mechanic whether **this tool can process
+this object**, then choose another tree or another tool. This is also the
+right pattern for fill types, attachments, work areas, and logistics targets.
+No tree has been cut. Live log: 2026-11-03 16:42:08.
+
+A wider native compatibility census around the 951 found 31 standing split
+shapes within 30 m of the cut node, 6 of which
+`getSplitShapeAllowsHarvester` accepts. Only one tree was inside the loaded
+automatic detector's 5–7.75 m ring, and that tree was the incompatible
+nearest one. The nearest compatible tree was 9.640 m from the cut node at
+`(-590.337,46.992,91.341)`. Thus the current tree attempt is blocked first
+by **target selection and physical positioning**, not lack of cut API or
+wood-volume measurement. A live 951 cut would require a safe approach to a
+compatible tree and proof that Farmhand can invoke the native alignment
+under its own control. This couples forestry to the same navigation and
+interaction-point substrate rather than justifying a forestry-only motion
+stack. Live read-only log: 2026-11-03 16:48:37.
+
+The 951's third normal-physics 1 m straight approach completed after
+0.945 m, extending the bounded native drive proof to a third tracked
+family. Its fourth 1 m request preflighted clear but moved only 0.018 m
+before the 3.5 s no-progress gate stopped it; final rig contact was empty.
+An instrumented rerun from the saved nearby pose preflighted clear and
+initially moved 0.66 m, then crept at roughly 0.1 km/h. Motor state became
+`ON` by 3.1 s, RPM stayed about 842–855, root height remained ~0.013 m
+above terrain, and no final contact was reported. The request timed out
+after 12 s at 0.897 m (0.003 m short of its DONE threshold). The first
+wrong assumption remains under diagnosis: a fixed 0.22 acceleration may be
+too weak for this machine/terrain, while a short fixed timeout can turn
+slow physical progress into failure. No named-machine throttle profile was
+added. Evidence: game log 2026-11-03 16:52–16:58.
+
+### 2026-11-03 951 contact and directed-progress discriminator
+
+**PARTIALLY PROVEN:** At successive later poses, the 951's 1 m forward trials
+still timed out while the normal-physics rig moved 0.601 m and then 0.452 m
+in the horizontal plane. Those starts were different, so they do not prove
+that the changed throttle caused either result. Projecting the recorded
+displacements onto the observed starting heading shows why the old Euclidean
+progress metric is unsound near an obstacle: the first three successful
+straight trials moved 0.992/0.994/0.946 m along heading with at most 0.022 m
+lateral displacement, whereas the last 0.452 m net movement contained only
+0.318 m along heading and 0.322 m lateral. A short-motion supervisor needs
+directed progress and cross-track deviation, not just distance from start.
+
+The proposed forward and reverse poses at the later site both hit the same
+static `LOD0` tree node at `(-583.234, 93.576)`; terrain ahead was 47.0 m
+across the sampled 4 m by 4 m strip. The loaded 951 footprint read 3.15 m
+wide by 11.30 m long, with its centre 1.15 m ahead of the root. Shrinking
+the route box by 0.25, 0.50 and 0.75 m did not clear the tree. A later live
+`rigContacts` read reported a standing **envelope overlap**, even though an
+earlier terminal read was empty. Source inspection showed that this query
+uses the unit's size rectangle, not a native physics contact event. Calling
+its result confirmed physical contact was the first wrong assumption. This
+does not yet prove the 11.3 m unit footprint is oversized.
+
+A lab-only 0.5 m guarded reverse accepted predicted samples that stayed in
+the broad footprint overlap only after seeing the same standing proxy hit
+and increasing distance from its static node. An initial trial at native
+GIANTS AI acceleration `1` reached the directed-distance threshold, but a
+`m.y`/`m.yaw` reporter typo made its terminal result unverified. The typo is
+corrected and covered by a focused Lua regression in both Lua 5.1 and 5.4.
+
+After the FS25 update to **1.25.1.0**, two separately preflighted 0.5 m
+reverses completed under normal physics: 0.456 and 0.439 m along the
+commanded reverse heading, 0.010 and 0.005 m lateral displacement, yaw
+changes -0.00195 and -0.00082 rad. The standing **proxy** overlap persisted
+after both, proving that its presence alone is not a valid veto on bounded
+motion away from the tree. A third 0.5 m retreat was correctly refused when
+its second predicted sample also hit a different `col(-579,97)` obstacle.
+No ghosting, teleport, or external drive provider was used. This is
+**PROVEN for this one monotonic-separation case**; a general recovery rule
+remains **PARTIALLY PROVEN** because there is no second obstacle/rig case and
+no native contact or clearance-end proof. The lab code and Save1 ID must not
+migrate. Live log extract:
+`.fs25-dev/evidence/tracked-contact-departure-20261103/game-log-extract.txt`.
+
+**Cross-system implication:** directed progress and fresh proxy-overlap state
+are shared navigation, recovery and machine-positioning observations. Do not
+label a size-box overlap confirmed physics contact; no native contact signal
+has yet been identified. Static
+world shapes can have a collision node without a mission object, so any
+generic obstacle relationship must admit node identity. A monotonic
+separation rule may be smaller than clearing an entire long unit box before
+every retreat, but it needs a second obstacle/rig family before collection.
+
+### Native 951 compatible-tree cut and one processing cycle (2026-11-03)
+
+**Live, teleport-assisted forestry trial; FS25 1.25.1.0, Save1.** The nearest
+tree at the original 951 pose was rejected by GIANTS' automatic selector as
+`WRONG_TYPE`. Six of 31 standing split shapes within 30 m were harvester
+compatible. A raw `findSplitShape` query at the split-shape node origin missed
+the trunk; offset samples hit it. GIANTS' `SplitShapeUtil.getTreeOffsetPosition`
+already resolves that offset. At the nearest compatible tree it returned a
+0.266 m radius and target center at native 0.4 m cut height plus 0.075 m
+margin, within the head's 0.39 m radius limit. Do not migrate the lab grid scan
+or tree-origin assumptions. The native helper is the smaller candidate.
+
+The user explicitly requested a teleport for this forestry experiment. A
+collision-clear pose was selected from live tree and 951 geometry and GIANTS'
+`teleportVehicle` moved the 951 there. This is **not navigation proof**. GIANTS'
+`getBestTreeToAutoAlign` then selected the compatible tree. Farmhand called
+native `doTreeArmAlignment` in a bounded window; its X then Z alignment moved
+the head to the trunk in 2.543 s on the second attempt. The first attempt also
+reached the native tree shape, but stopping the motor let the head drift away,
+and the subsequent cut was correctly refused. Keeping power through alignment
+and rechecking `spec_woodHarvester.curSplitShape` enabled one native `cutTree(0)`:
+the standing source disappeared and a new dynamic split shape attached to the
+head. **PROVEN for this 951/tree pair only**; settled head alignment and a
+different harvester remain unverified.
+
+One native 5 m feed/delimb and automatic log cut completed. A dynamic-object
+overlap query found the released log at 0.817917 m³ and the held remainder at
+0.392576 m³. Their sum, 1.210493 m³, differs from the held shape's pre-process
+1.211264 m³ by 0.000771 m³ (~0.064%). The standing tree was recorded at
+1.482044 m³ before felling, while the first held shape measured 1.211264 m³;
+the full standing-tree-to-products balance is therefore **UNVERIFIED**. The
+released log landed near the head; a deliberately chosen elevated feed pose,
+stack destination, stump handling and full wood conservation are **UNVERIFIED**.
+GIANTS' `WoodHarvester` owns cut, delimb, segmentation and split-shape physics;
+Farmhand needs eligibility, bounded alignment, action-scoped measurement and
+placement rather than a separate tree-cutting engine. Raw log:
+`.fs25-dev/evidence/native-951-tree-20261103/game-log-extract.txt`.
+
+The probe was reloaded repeatedly through `probe_reload.flag` while Save1
+remained running. No full game reload or desktop focus takeover was required
+for these Lua edits. Reload is refused while a Farmhand motion/actuator/task is
+active; future lab edits should use this hot path where possible.
+
+**Elevated feed / stack discriminator, same live trial:** With the 0.392576 m³
+remainder still held, GIANTS' native arm control raised the head from 47.324 m
+to 50.314 m (3.321 m above local terrain). The head settled roughly 1.68 m
+horizontal from the chosen first-log node despite native alignment reporting
+finished. Native feed advanced `attachedSplitShapeY` from 5.3984 to 10.3984 m
+with `cutAttachDirection=1`, then automatically cut another section. A later
+native dynamic-shape query measured 0.817917 m³ in the first log, 0.364682 m³
+in the second released log, and 0.027623 m³ still held: 1.210222 m³ total,
+0.001042 m³ below the held volume before the first feed. **Resource retention
+is partially proven for these two processing steps; full original-tree
+conservation is not.**
+
+**Stacking FAILED in this trial.** The second log rolled onto the ground, as
+also observed by the player. Its node ended about 9.7 m from the first log's
+node, but node distance alone is not a physical stack test: native
+`getSplitShapePlaneExtents` showed long occupied segments. Their measured
+axes also differed substantially (first approximately `(0.016,-0.027,-1)`,
+second `(-0.850,0.011,-0.526)`), and both released logs were near rest when
+audited. The head's feed axis was approximately `(-0.799,0.340,-0.496)`;
+the released section moved broadly opposite its horizontal direction.
+The smallest transferable requirement is to measure the live feed axis and
+native split-shape extents, choose a head pose from the **desired occupied log
+segment**, then verify settled log geometry and contact. A named 951 drop
+offset or node-position-only verifier would be wrong. Whether the same
+placement primitive works on other processors remains **UNVERIFIED**. Raw
+stack log: `.fs25-dev/evidence/native-951-tree-20261103/stack-log-extract.txt`.
+
+**Player-observed correction for the next trial:** Keep the head approximately
+0.75–1.0 m above the current ground or stack top while feeding, to limit
+rolling and avoid pushing logs already placed. The 3.321 m elevation used
+above is a failed stack setup, not a target height. Measure the actual stack
+top at runtime and verify the released log settles without displacing existing
+logs. This height rule is a testable hypothesis, not yet live-proven.
+
+**2026-11-04 corrected-trial setup, NOT a stacking result:** Save1 remained
+running; the probe hot reloaded without a full game restart. The previous
+0.027623 m³ held remnant was no longer attached, so it could not support a
+meaningful stack test. The lab trial now chooses a settled released log by
+measured split-shape occupied endpoints, native cross-section radius, and
+alignment with the live head feed axis. It targets the feed-side endpoint at
+0.875 m above the measured log top. It refuses the cut if the actual head is
+outside 0.75–1.0 m clearance, misses the endpoint by more than 0.5 m, or
+changes feed direction; after release it measures occupied overlap, lateral
+offset, settled speed, existing-log motion, final top and volume balance.
+This code is **UNVERIFIED under FS25 physics**; it is lab instrumentation,
+not a collected component.
+
+The new tree setup exposed an earlier prerequisite. A clear 951 pose with the
+tree inside native detection radius (7.333 m) let the arm move partially, but
+it stopped in native Z alignment with the cut point about 3.7 m horizontally
+from the target. Another clear pose reduced predicted head distance to
+3.134 m; the arm still stopped in Z alignment. Scanning seven compatible
+trees found a clear pose with predicted head distance 2.752 m at a different
+tree, but after native alignment the actual cut point remained about 2.7 m
+from its target. All three bounded attempts timed out with no native
+split-shape contact and **no cut**. The first incorrect setup assumption was
+that native tree eligibility plus a clear detection pose guaranteed reachable
+head motion. It does not. Native alignment's Z state remained active without
+useful cut-point motion; whether that was an actuator limit, control
+precondition, or another physical constraint is **UNVERIFIED**. Actual
+cut-point response and reachable workspace must be observed. Do not force a
+cut or infer stacking success from command/state alone. These pose searches
+and teleports are lab setup, not navigation proof.
+No 2026-11-04 wood was consumed.
+Raw log: `.fs25-dev/evidence/native-951-tree-20261104/game-log-extract.txt`.
+
+**Reach discriminator:** Repeating the bounded alignment at the last pose
+measured native Z-alignment input near +1.411 on every sampled update while
+the cut point moved only millimetres over 8 s. The referenced Z moving tool
+reported angle 0, translation 0, animation time 0, no rotation or translation
+limits, and no animation speed; the native controller stayed in state 3.
+Installed `Cylindered:onUpdate` only applies an `externalMove` when the
+tool has a rotation, translation or animation speed. Whether this tool is a
+dummy/dependent reference or has a mod-specific control path remains
+unverified, but **commanded Z input is not an effective actuator in this
+state**. A native FINISHED/active-state signal cannot substitute for measured
+work-point motion. The corrected 0.875 m stack release was refused because
+the prerequisite cut/held log could not be produced safely. This is a
+reach/control discovery, **not a stacking success or failure**.
+
+**Cross-system finding:** A high-level native controller can request progress
+without useful work-point movement. Reachability should be
+measured through work-point displacement and actuator limit state, then
+reported as a refusal before manipulating wood, pallets, buckets or other
+payloads. The existing bounded moving-tool primitive may supply this
+observation; do not create a 951 reach profile.
+
+The native WoodHarvester source calls `splitShape` on the standing source
+then `removeSplitShapeAttachments` while delimbling. Therefore a strict
+standing-tree-to-log balance must include the lower split/stump and distinguish
+native removed attachments from recoverable trunk. The 1.482044 m³ standing
+measurement versus 1.211264 m³ first held measurement is **not proof of
+lost useful wood**. Stump/attachment volumes were not measured in that live
+cut. The general resource contract remains action-scoped before/after
+measurement across source, destination and world remainder.
+
+The installed native `ChainsawUtil.cutSplitShape` likewise registers
+resulting static and dynamic split shapes through its callback; native
+`StumpCutter` can split or crush short remnants. A future conservation
+measurement should capture the native split event's complete output set,
+including the stump, before classifying a volume difference as lost wood.
+These source facts do not prove chainsaw control or wood conservation live.

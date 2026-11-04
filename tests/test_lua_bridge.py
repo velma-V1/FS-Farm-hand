@@ -589,6 +589,17 @@ class LuaBridgeTests(unittest.TestCase):
         self.beating(92000)
         self.assertEqual(self.results(1)[-1], (1, "FAILED", "NAVIGATE_STUCK"))
 
+    def test_a_loaded_rig_unmoved_at_start_yields_quickly_to_recovery(self):
+        self.adopt()
+        self.w.gotoStarts = True
+        self.bridge.beltedCargo = self.lua.eval("""function()
+            return {{removeAIVehicleObstacle=function() end,
+                     setAIVehicleObstacleStateDirty=function() end}}
+        end""")
+        self.send(1, "navigate", self.POSE)
+        self.beating(7000)
+        self.assertEqual(self.results(1)[-1], (1, "FAILED", "NAVIGATE_STUCK_AT_START"))
+
     def test_block_marks_ground_impassable_the_way_giants_placeables_do(self):
         self.adopt()
         calls = self.lua.execute("""
@@ -2077,6 +2088,35 @@ class AutoDriveSellTests(unittest.TestCase):
         self.env.v.active = False
         self.assertEqual(self.bridge.step(self.env, task, 16), ("DONE", "AD_ENDED"))
 
+    def test_a_full_trailer_goes_where_the_harvest_goes(self):
+        # The user, 2026-10-31: unloading while harvesting at speed, whatever the grain is for.
+        # keep (0): parked at the field's own marker; store (-1): the farm's silo, as the store
+        # delivery picks it (GIANTS' Deliver job's stations, the silo's own unloading station).
+        run = self.lua.eval("""function(B, env, direction)
+            local task, code = B.start(env, { op = "ad_unload", tractor = env.v, marker = 4, field = 7, farmId = 1,
+                                             direction = direction, owned = function() return true end })
+            return task ~= nil, code end""")
+        self.assertEqual(tuple(run(self.bridge, self.env, 0))[0], True)
+        self.assertEqual((self.env.started[1].first, self.env.started[1].second), (4, 4))
+        self.lua.execute("""local env = ...
+            local silo = { rootNode = 1, ownerFarmId = 1, spec_silo = {} }
+            local station = { owningPlaceable = silo, isa = function() return false end,
+                              getIsFillTypeAISupported = function() return true end }
+            silo.spec_silo.unloadingStation = station
+            env.SellingStation = {}
+            env.NetworkUtil = { getObject = function(id) return id == 31 and station or nil end }
+            env.getWorldTranslation = function() return 0, 0, 0 end
+            env.AIJobType = { DELIVER = 4 }
+            env.g_currentMission = { aiJobTypeManager = { createJob = function() return
+                { unloadingStationParameter = { unloadingStationIds = { 31 } } } end } }
+            env.triggers.getMarkerAtStation = function(self, st, v) return st == station and 40 or -1 end""", self.env)
+        self.env.v.active = False
+        self.assertEqual(tuple(run(self.bridge, self.env, -1))[0], True)
+        self.assertEqual((self.env.started[2].first, self.env.started[2].second), (4, 4))   # marker 4 is at the silo here
+        self.lua.execute("local env = ...; env.triggers.getMarkerAtStation = function() return -1 end", self.env)
+        self.env.v.active = False
+        self.assertEqual(tuple(run(self.bridge, self.env, -1)), (False, "AD_NO_MARKER_AT_SILO"))
+
     def test_no_sell_point_or_no_marker_there_starts_nothing(self):
         self.env.trailer.levels[1] = 5000
         self.env.triggers.wp = -1
@@ -2595,3 +2635,111 @@ class TeleportRigTests(unittest.TestCase):
         self.assertGreaterEqual(x, -797.4)
         lua.eval("""function(h) h.routePoseClear = function() return false end end""")(hitch)
         self.assertIsNone(bridge.laneSpot(lua.table(), lua.table(), -795.3, 99.9, 3.13))
+
+
+class WorkToolTests(unittest.TestCase):
+    """worktool: the plow lowered with field creation on, and back (the user, 2026-10-31: "add
+    field 4 to field 5 with create fields enabled"). GIANTS' own calls only."""
+
+    ENV = r"""
+        local env = { NetworkUtil = { getObjectId = function() return 3 end }, allowed = true }
+        env.g_currentMission = { getHasPlayerPermission = function(self, name) return name == "createFields" and env.allowed end }
+        local plow = { spec_plow = {}, limit = true, lowered = false, forced = false, calls = {} }
+        function plow:setPlowLimitToField(v) self.limit = v; self.calls[#self.calls + 1] = "limit " .. tostring(v) end
+        function plow:getPlowForceLimitToField() return self.forced end
+        function plow:aiImplementStartLine() self.lowered = true; self.calls[#self.calls + 1] = "start" end
+        function plow:aiImplementEndLine() self.lowered = false; self.calls[#self.calls + 1] = "end" end
+        function plow:getIsLowered() return self.lowered end
+        local t = { ownerFarmId = 1 }
+        function t:getAttachedImplements() return { { object = plow } } end
+        env.t, env.plow = t, plow
+        return env
+    """
+
+    def setUp(self):
+        self.lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        self.lua.globals().print = lambda *a: None
+        for name in ("FarmhandObserve.lua", "FarmhandHitch.lua"):
+            self.lua.execute((ROOT / "mod" / name).read_text())
+        self.bridge = self.lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        self.env = self.lua.execute(self.ENV)
+        self.run = self.lua.eval("""function(B, env, direction)
+            local task, code = B.start(env, { op = "worktool", tractor = env.t, direction = direction, farmId = 1,
+                                             owned = function() return true end })
+            if task == nil then return nil, code end
+            task.elapsed = 600
+            return B.step(env, task, 16) end""")
+
+    def test_the_plow_goes_down_with_field_creation_on_and_back(self):
+        self.assertEqual(tuple(self.run(self.bridge, self.env, 1)), ("DONE", "LOWERED"))
+        self.assertEqual((self.env.plow.limit, self.env.plow.lowered), (False, True))
+        self.assertEqual(tuple(self.run(self.bridge, self.env, -1)), ("DONE", "RAISED"))
+        self.assertEqual((self.env.plow.limit, self.env.plow.lowered), (True, False))
+        self.assertEqual(list(self.env.plow.calls.values()), ["limit false", "start", "end", "limit true"])
+
+    def test_refused_where_the_game_forbids_creating_fields(self):
+        self.env.allowed = False
+        self.assertEqual(tuple(self.run(self.bridge, self.env, 1)), (None, "FIELD_CREATION_NOT_PERMITTED"))
+        self.env.allowed, self.env.plow.forced = True, True
+        self.assertEqual(tuple(self.run(self.bridge, self.env, 1)), (None, "FIELD_CREATION_DISABLED"))
+        self.assertEqual((self.env.plow.limit, self.env.plow.lowered), (True, False))   # untouched
+
+
+class CargoObstacleTests(unittest.TestCase):
+    """While Farmhand's GOTO drives a loaded rig, the belted cargo's own AI obstacle is out
+    (AIVehicleObstacle): RELEASE_BACKLOG "Loaded transport standalone"."""
+
+    def test_the_belted_cargo_on_the_towed_trailer_is_found(self):
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        lua.globals().print = lambda *a: None
+        bridge = lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        cargo, truck = lua.execute("""
+            local cargo = { removeAIVehicleObstacle = function() end }
+            local deck = { spec_tensionBelts = { objectsToJoint = { { object = cargo } } } }
+            function deck:getAttachedImplements() return {} end
+            local truck = {}
+            function truck:getAttachedImplements() return { { object = deck } } end
+            return cargo, truck""")
+        found = bridge.beltedCargo(truck)
+        self.assertEqual(len(found), 1)
+        self.assertTrue(lua.eval("function(a, b) return a == b end")(found[1], cargo))
+
+    def test_navigate_at_fixed_contact_yields_to_farmhand_departure(self):
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        lua.globals().print = lambda *a: None
+        bridge = lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        bridge.Hitch = lua.table_from({"rigContacts": lua.eval(
+            "function() return 'unit1:collision@kiosk standing' end")})
+        vehicle = lua.table_from({"getLastSpeed": lua.eval("function() return 0 end")})
+        task, code, status = bridge.start(lua.table(), lua.table_from({"op": "navigate", "tractor": vehicle}))
+        self.assertIsNone(task)
+        self.assertEqual(code, "NAVIGATE_START_CONTACT")
+        self.assertEqual(status, "FAILED")
+
+    def test_transport_wheels_keep_crop_intact_and_restore_their_own_flags(self):
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        lua.globals().print = lambda *a: None
+        bridge = lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        truck, deck, cargo = lua.execute("""
+            local function wheel(care)
+                local w = { destruction = { isCareWheel = care } }
+                function w:setIsCareWheel(value) self.destruction.isCareWheel = value end
+                return w
+            end
+            local cargo = { spec_wheels = { wheels = {wheel(false)} } }
+            local deck = { spec_wheels = { wheels = {wheel(true)} },
+                           spec_tensionBelts = { objectsToJoint = { {object=cargo} } } }
+            function deck:getAttachedImplements() return {} end
+            local truck = { spec_wheels = { wheels = {wheel(false),wheel(true)} } }
+            function truck:getAttachedImplements() return { {object=deck} } end
+            return truck, deck, cargo
+        """)
+        flags = lua.eval("""function(t,d,c) return t.spec_wheels.wheels[1].destruction.isCareWheel,
+            t.spec_wheels.wheels[2].destruction.isCareWheel,
+            d.spec_wheels.wheels[1].destruction.isCareWheel,
+            c.spec_wheels.wheels[1].destruction.isCareWheel end""")
+        saved = bridge.protectTransportCrops(truck)
+        self.assertEqual(len(saved), 4)
+        self.assertEqual(flags(truck, deck, cargo), (True, True, True, True))
+        bridge.restoreTransportCrops(saved)
+        self.assertEqual(flags(truck, deck, cargo), (False, True, True, False))

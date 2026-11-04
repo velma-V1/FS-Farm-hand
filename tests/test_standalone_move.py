@@ -370,7 +370,7 @@ class StandaloneMoveTests(unittest.TestCase):
                                        "tractor_name": "gmc", "target": {"type": "field_entrance", "field": 5}})
         self.assertNotIn("travel", [c[0] for c in world.calls])
 
-    def test_a_loaded_rig_off_autodrives_network_is_taken_onto_a_routed_waypoint_first(self):
+    def test_a_loaded_rig_can_use_autodrive_after_native_navigation_refuses(self):
         # Live 2026-10-31 (save 1): the loaded GMC 51 m off AutoDrive's network in the yard,
         # AutoDrive ended at once unmoved; its route starts at a waypoint on the west road.
         from adapters.world import StepFailed
@@ -382,6 +382,10 @@ class StandaloneMoveTests(unittest.TestCase):
         class OffNetwork(World):
             teleport_recovery = True
             drive_fails = False
+
+            def navigate(self, vehicle_id, pose, owner):
+                self.calls.append(("navigate", (pose.x, pose.z)))
+                raise StepFailed("NAVIGATE_GOTO_INVALID")
 
             def destinations(self):
                 return (Destination("77", (-629.0, 205.0), "Field 5"),)
