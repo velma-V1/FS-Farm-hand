@@ -4233,6 +4233,9 @@ end
 Bridge.Hitch = FarmhandHitch
 if type(FarmhandHitch) == "table" then FarmhandHitch.onJobStart = Bridge.farmhandJob end   -- its GOTO jobs too
 Bridge.Drive = FarmhandDrive
+if FarmhandReloading and type(FarmhandObserve) == "table" and type(FarmhandObserve.adoptState) == "function" then
+    FarmhandObserve.adoptState(FarmhandBridge, Bridge)            -- see Observe.adoptState
+end
 FarmhandBridge = Bridge
 -- fhReload (FarmhandProbe) re-reads this file into the running game: registered once only.
 if type(addModEventListener) == "function" and not FarmhandReloading then addModEventListener(Bridge) end

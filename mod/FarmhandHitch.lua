@@ -4008,5 +4008,8 @@ function Hitch.attachState(_env, s, dt)
 end
 
 -- FS25 discards a sourceFile's return value (see FarmhandObserve.lua).
+if FarmhandReloading and type(FarmhandObserve) == "table" and type(FarmhandObserve.adoptState) == "function" then
+    FarmhandObserve.adoptState(FarmhandHitch, Hitch)            -- see Observe.adoptState
+end
 FarmhandHitch = Hitch
 return Hitch

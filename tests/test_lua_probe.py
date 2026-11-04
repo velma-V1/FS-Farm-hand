@@ -311,6 +311,59 @@ class LuaProbeTests(unittest.TestCase):
         self.assertEqual(len(g.listeners), 2)                                              # bridge, probe once
         self.assertIsNone(g.FarmhandReloading)
 
+    def test_reload_into_an_older_live_build_adds_its_new_state(self):
+        # Live 2026-11-04: production Lua hot-reloaded over the lab's build failed every
+        # frame (pairs(Bridge.handedSpeed), nil): Probe.merge keeps the live table and
+        # installs only functions and UPPERCASE keys, so new state fields were dropped.
+        lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
+        lua.execute("listeners = {}\n"
+                    "function addModEventListener(l) listeners[#listeners + 1] = l end\n"
+                    "function addConsoleCommand() end\nfunction removeConsoleCommand() end\n"
+                    "g_currentModDirectory = 'mods/FS25_Farmhand/'\nfiles = {}\n"
+                    "function source(path) assert((loadstring or load)(files[path]))() end\n"
+                    "function copyFile(src, dst) files[dst] = files[src]; return true end\n"
+                    "function fileExists(path) return files[path] ~= nil end\n"
+                    "function deleteFile(path) files[path] = nil end\n"
+                    "function getTimeSec() return 1234 end")
+        g = lua.globals()
+        for name in PACKAGED_MODULES:
+            g.files["mods/FS25_Farmhand/" + name] = (ROOT / "mod" / name).read_text()
+            lua.execute(g.files["mods/FS25_Farmhand/" + name])
+        # The older live build: none of this build's lowercase state, except what the
+        # game has been using (kept by identity), plus Bridge.dir for the reload.
+        dropped = lua.execute("""
+            local dropped, kept = {}, { dir = true, pay = true, handed = true, aiStops = true }
+            for _, name in ipairs({ "FarmhandObserve", "FarmhandHitch", "FarmhandDrive", "FarmhandBridge", "FarmhandProbe" }) do
+                local t = _G[name]
+                for k, v in pairs(t) do
+                    if type(k) == "string" and not k:match("^%u") and type(v) ~= "function" and not kept[k] then
+                        dropped[#dropped + 1] = name .. "." .. k
+                        t[k] = nil
+                    end
+                end
+            end
+            FarmhandBridge.dir = "settings/FS25_Farmhand/"
+            FarmhandBridge.pay.amount = 7
+            return dropped""")
+        dropped = [dropped[i] for i in range(1, len(dropped) + 1)]
+        self.assertIn("FarmhandBridge.handedSpeed", dropped)
+        pay = g.FarmhandBridge.pay
+        probe = g.FarmhandProbe
+        probe.env = g
+        self.assertTrue(probe.consoleReload(probe).startswith("fhReload: reloaded FarmhandObserve.lua"))
+        missing = lua.execute("""
+            local missing = {}
+            for _, key in ipairs(...) do
+                local mod, field = key:match("^([^.]+)%.(.+)$")
+                if rawget(_G[mod], field) == nil and field ~= "catalog" then missing[#missing + 1] = key end
+            end
+            return table.concat(missing, ", ")""", lua.table_from(dropped))
+        self.assertEqual(missing, "")
+        self.assertTrue(lua.eval("function(p) return FarmhandBridge.pay == p end")(pay))  # same state table
+        self.assertEqual(g.FarmhandBridge.pay.amount, 7)
+        g.FarmhandBridge.keepHandedAwake()                     # the per-frame call that failed live
+        g.FarmhandBridge.giveBackAdSpeed(lua.table())
+
     def test_moddesc_loads_the_dependencies_first(self):
         desc = ET.parse(ROOT / "mod/modDesc.xml").getroot()
         files = [f.get("filename") for f in desc.iter("sourceFile")]

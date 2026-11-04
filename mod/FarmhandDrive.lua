@@ -2390,5 +2390,8 @@ function Drive.releaseGhost(env, s, Hitch)
     s.ghostedHere = nil
 end
 
+if FarmhandReloading and type(FarmhandObserve) == "table" and type(FarmhandObserve.adoptState) == "function" then
+    FarmhandObserve.adoptState(FarmhandDrive, Drive)            -- see Observe.adoptState
+end
 FarmhandDrive = Drive
 return Drive

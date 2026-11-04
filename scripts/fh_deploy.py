@@ -47,6 +47,10 @@ STATE_FILES = ("settings.json", "goal.json", "routes.json")
 SKIP_DIRS = {"__pycache__"}
 RELOADED = ("FarmhandObserve.lua", "FarmhandHitch.lua", "FarmhandDrive.lua", "FarmhandBridge.lua", "FarmhandProbe.lua")
 RELOAD_CONSUME_S, RELOAD_LOG_S = 30.0, 15.0
+# After the companion starts: the game must report the new build, linked with fresh frames,
+# twice in a row this far apart, within the bounded wait, with no Farmhand Lua error logged.
+READY_WAIT_S, READY_SPACING_S = 60.0, 3.0
+_LUA_ERROR = re.compile(r"(reload_\d+_\d+\.lua|Farmhand\w*\.lua):\d+:")
 _STAMP = re.compile(r'BUILD = "([A-Za-z0-9_.-]+)"')
 
 
@@ -128,6 +132,7 @@ class Host:
     def __init__(self, targets: runner.Targets):
         self.targets = targets
         self.runner = runner.Runner(ROOT, targets)
+        self.log_offset = 0
 
     def fs25_running(self) -> bool:
         return bool(self.runner.system.processes(runner.FS25_IMAGE))
@@ -157,11 +162,50 @@ class Host:
     def start_companion(self, build: str) -> int:
         return self.runner._start_companion(build)
 
+    def _log_since(self, offset: int) -> str:
+        log = self.targets.game_log
+        if not log.is_file():
+            return ""
+        size = log.stat().st_size
+        with open(log, "rb") as handle:
+            handle.seek(offset if size >= offset else 0)
+            return handle.read(4_000_000).decode("utf-8", "replace")
+
+    def game_ready(self, build: str) -> tuple[bool, dict]:
+        """The game side, after the companion started: linked, fresh, running `build` on
+        both sides, no Lua error from Farmhand since the reload. Two healthy answers
+        READY_SPACING_S apart (a per-frame error stales the snapshot within that)."""
+        deadline, healthy, last = time.monotonic() + READY_WAIT_S, 0, {}
+        while time.monotonic() < deadline:
+            errors = [l.strip()[-240:] for l in self._log_since(self.log_offset).splitlines() if _LUA_ERROR.search(l)]
+            if errors:
+                return False, {"lua_errors": errors[:5]}
+            try:
+                result = self.runner.companion.ask("status").get("result") or {}
+            except runner.Refused as error:
+                result = {"problems": [error.code]}
+            game = result.get("game") or {}
+            problems = [p for p in result.get("problems") or []
+                        if p.startswith("GAME_") or p in ("MOD_BUILD_MISMATCH", "COMPANION_BUILD_UNSTAMPED")
+                        or p.startswith("COMPANION_")]
+            last = {"linked": game.get("linked"), "mod_build": game.get("mod_build"),
+                    "companion_build": (result.get("companion") or {}).get("build"), "problems": problems}
+            if (not problems and game.get("linked") is True and game.get("mod_build") == build
+                    and last["companion_build"] == build):
+                healthy += 1
+                if healthy >= 2:
+                    return True, last
+            else:
+                healthy = 0
+            time.sleep(READY_SPACING_S)
+        return False, {"timeout_s": READY_WAIT_S, **last}
+
     def reload(self) -> tuple[bool, str]:
         """Ask the running game to re-read the installed Lua; True once its log says
         all five files were reloaded. Nothing is pressed or focused."""
         marker, log = self.targets.settings / ".fhReload", self.targets.game_log
         offset = log.stat().st_size if log.is_file() else 0
+        self.log_offset = offset                              # game_ready reads errors from here on
         marker.write_text("reload\n", encoding="ascii")
         deadline = time.monotonic() + RELOAD_CONSUME_S
         while marker.exists():
@@ -323,6 +367,11 @@ class Deployer:
             self._write_state(target.state)
             self._check(target, with_state=True)
             done["companion_pid"] = self.host.start_companion(build)
+            if running:
+                ok, seen = self.host.game_ready(build)
+                done["game"] = seen
+                if not ok:
+                    raise DeployError("GAME_NOT_READY", **seen)
             self._check(target, with_state=False)
         except Exception as error:
             code = getattr(error, "code", type(error).__name__)
@@ -355,6 +404,11 @@ class Deployer:
         step("state", lambda: self._write_state(previous.state))
         step("verify", lambda: self._check(previous, with_state=True))
         result["companion_pid"] = step("start", lambda: self.host.start_companion(result["build"]))
+        if running and result["companion_pid"] is not None:
+            ready = step("game", lambda: self.host.game_ready(result["build"]))
+            result["game"] = ready
+            if ready is not None and not ready[0]:
+                problems.append(f"game: {ready[1]}")
         result["problems"], result["ok"] = problems, not problems
         self._log("put_back", **result)
         return result
@@ -431,6 +485,10 @@ class RehearsalHost:
     def start_companion(self, build):
         self.events.append(f"start {build}")
         return 1
+
+    def game_ready(self, build):
+        self.events.append(f"ready {build}")
+        return True, {"mod_build": build}
 
     def reload(self):
         self.events.append("reload")

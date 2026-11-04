@@ -1433,7 +1433,26 @@ function Observe.snapshot(env, seq, session, dt)
     }), nil
 end
 
+-- fhReload (FarmhandProbe) keeps the running game's module table and installs only the
+-- new functions and UPPERCASE constants (Probe.merge), so a state field a newer build adds
+-- (Bridge.handedSpeed = {}) would be missing from the live table and fail every frame.
+-- Each module calls this while it is being re-read, before its global is replaced: a
+-- lowercase field the live table lacks gets the fresh value; existing state is never
+-- touched. Works whichever build's Probe does the reload.
+function Observe.adoptState(live, fresh)
+    if type(live) ~= "table" or type(fresh) ~= "table" or live == fresh then return 0 end
+    local added = 0
+    for k, v in pairs(fresh) do
+        if type(k) == "string" and not k:match("^%u") and type(v) ~= "function" and rawget(live, k) == nil then
+            rawset(live, k, v)
+            added = added + 1
+        end
+    end
+    return added
+end
+
 -- FS25 discards a sourceFile's return value, so the mod reaches this table
 -- through a mod-environment global; CI loads the returned table instead.
+if FarmhandReloading then Observe.adoptState(FarmhandObserve, Observe) end
 FarmhandObserve = Observe
 return Observe

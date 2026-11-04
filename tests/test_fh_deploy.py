@@ -55,6 +55,20 @@ class ReloadAlwaysFails(fh_deploy.RehearsalHost):
         return False, "fhReload: a Farmhand command is running; stop it first"
 
 
+class GameNeverReady(fh_deploy.RehearsalHost):
+    """The Lua reloads, the companion starts, but the game side never comes up on a build."""
+
+    def __init__(self, ready_for=()):
+        super().__init__()
+        self.ready_for = ready_for
+
+    def game_ready(self, build):
+        self.events.append(f"ready {build}")
+        if build in self.ready_for:
+            return True, {"mod_build": build}
+        return False, {"lua_errors": ["reload_1_4.lua:459: bad argument #1 to 'pairs' (table expected, got nil)"]}
+
+
 class FakeCompanion:
     def __init__(self, answer):
         self.answer = answer
@@ -199,6 +213,58 @@ class DeployTest(unittest.TestCase):
             with self.assertRaises(fh_deploy.DeployError) as caught:
                 host.job_running()
             self.assertEqual(caught.exception.code, "JOB_STATUS_UNKNOWN")
+
+    def test_game_not_ready_after_start_rolls_back(self):
+        host = GameNeverReady(ready_for=("2f3d1f6-dirty",))
+        deployer = self.deployer(host)
+        before = deployer.installed().digest()
+        with self.assertRaises(fh_deploy.DeployError) as caught:
+            deployer.switch("abc1234")
+        self.assertEqual(caught.exception.code, "ROLLED_BACK")
+        self.assertEqual(caught.exception.detail["failed"], "GAME_NOT_READY")
+        self.assertEqual(deployer.installed().digest(), before)
+        self.assertEqual(host.events[-1], "ready 2f3d1f6-dirty")   # the lab build verified game-side again
+        self.assertIsNone(deployer._active())
+
+    def test_game_not_ready_after_put_back_is_incomplete(self):
+        deployer = self.deployer(GameNeverReady())
+        with self.assertRaises(fh_deploy.DeployError) as caught:
+            deployer.switch("abc1234")
+        self.assertEqual(caught.exception.code, "ROLLBACK_INCOMPLETE")
+        self.assertTrue(any(p.startswith("game") for p in caught.exception.detail["restored"]["problems"]))
+        self.assertEqual(deployer._active()["incomplete"], "ROLLBACK_INCOMPLETE")
+
+    def test_host_game_ready_reads_the_game_and_its_log(self):
+        log = self.base / "profile" / "log.txt"
+        host = object.__new__(fh_deploy.Host)
+        host.targets, host.log_offset = self.targets, 0
+        healthy = {"result": {"game": {"linked": True, "mod_build": "abc1234"},
+                              "companion": {"build": "abc1234"}, "problems": ["NO_CANDIDATE_PAIR"]}}
+        old = (fh_deploy.READY_WAIT_S, fh_deploy.READY_SPACING_S)
+        fh_deploy.READY_WAIT_S, fh_deploy.READY_SPACING_S = 0.3, 0.01
+        try:
+            log.write_text("[Farmhand] fhReload: reloaded ...\n", encoding="utf-8")
+            host.runner = FakeRunner(5, healthy, True)
+            ok, seen = host.game_ready("abc1234")
+            self.assertTrue(ok, seen)                         # scene problems are not deployment health
+            with open(log, "a", encoding="utf-8") as handle:  # the 2026-11-04 failure, every frame
+                handle.write("Error: Running LUA method 'update'.\n"
+                             "settings/FS25_Farmhand/reload_34563699_4.lua:459: bad argument #1 to 'pairs'\n")
+            ok, seen = host.game_ready("abc1234")
+            self.assertFalse(ok)
+            self.assertIn("reload_34563699_4.lua:459", seen["lua_errors"][0])
+            host.log_offset = log.stat().st_size              # errors before this deployment do not count
+            for answer in ({"result": {"game": {"linked": True, "mod_build": "2f3d1f6-dirty"},
+                                       "companion": {"build": "abc1234"}, "problems": ["MOD_BUILD_MISMATCH"]}},
+                           {"result": {"game": {"linked": False}, "companion": {"build": "abc1234"},
+                                       "problems": ["GAME_STALE_SNAPSHOT", "GAME_NOT_LINKED"]}},
+                           runner.Refused("COMPANION_NO_ANSWER")):
+                host.runner = FakeRunner(5, answer, True)
+                ok, seen = host.game_ready("abc1234")
+                self.assertFalse(ok, answer)
+                self.assertEqual(seen["timeout_s"], 0.3)
+        finally:
+            fh_deploy.READY_WAIT_S, fh_deploy.READY_SPACING_S = old
 
     def test_this_checkout_builds_a_deployable_build(self):
         out = self.base / "real"

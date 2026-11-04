@@ -2490,6 +2490,9 @@ Probe.Observe = FarmhandObserve
 Probe.Hitch = FarmhandHitch
 Probe.Bridge = FarmhandBridge
 local previousProbe = FarmhandProbe
+if FarmhandReloading and type(FarmhandObserve) == "table" and type(FarmhandObserve.adoptState) == "function" then
+    FarmhandObserve.adoptState(FarmhandProbe, Probe)            -- see Observe.adoptState
+end
 FarmhandProbe = Probe
 if previousProbe == nil and type(addModEventListener) == "function" then addModEventListener(Probe) end
 return Probe
