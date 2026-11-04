@@ -16,10 +16,12 @@ from protocol.model import Result
 
 log = logging.getLogger("farmhand")
 
-def lab_own_nav_only():
-    """Temporary local proof toggle, absent during normal play and tests."""
-    from companion.ai import data_dir
-    return (data_dir() / "nav_proof.flag").is_file()
+def own_navigation_only(world) -> bool:
+    """The developer option "Farmhand's own driving only (navigation test)" (Settings.navigation_proof;
+    companion/service.py sets world.navigation_proof): every drive by Farmhand's own route search and
+    driver - no GIANTS or AutoDrive leg, no blocker moved, no teleport - as standalone navigation is
+    qualified (AGENTS.md 11). Off unless exactly true."""
+    return getattr(world, "navigation_proof", False) is True
 
 # Farmhand's own drive found no way, or could not move the rig: GIANTS' GOTO is tried.
 # Parked vehicles this near the rig that is boxed in are driven out of the way, at most this many.
@@ -204,8 +206,8 @@ class StandaloneMove:
         minutes to find no route across the river), then Farmhand's own drive for what is left
         of it. A short one, or one GIANTS cannot do: Farmhand's own drive; with no route of its
         own (live 6d9dfa2f4a6e453c-1), GIANTS' GOTO for the long leg (``_long_leg``)."""
-        if lab_own_nav_only():
-            log.info("navigation proof: Farmhand-owned drive only to %s", goal.target)
+        if own_navigation_only(self.world):
+            log.info("navigation test (developer option): Farmhand's own drive only to %s", goal.target)
             self.world.farm_drive(goal.vehicle_id, goal.target, owner, area)
             return
         items = self.world.snapshot()
@@ -572,7 +574,7 @@ class StandaloneMove:
                 try:
                     self._drive(goal, owner, area)
                 except Exception as failure:
-                    if lab_own_nav_only():
+                    if own_navigation_only(self.world):
                         raise
                     # Boxed in by parked vehicles (live 140a6b52320b4587-1: the GMC rig against the
                     # 3650 and its trailer; no route, GIANTS blocked at its start, no way onto open

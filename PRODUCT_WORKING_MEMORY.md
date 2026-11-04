@@ -111,6 +111,8 @@ Any future secure-mount implementation must handle:
 ## Current standalone-navigation proof findings
 These facts are current evidence for the proving-ground program; they are not a requirement to preserve the legacy planner.
 
+- 2026-11-04 production branch: the hidden `nav_proof.flag` file no longer does anything. The same mode is Settings (Left Alt + N) → Developer options → "Farmhand's own driving only (navigation test)" (settings.json `navigation_proof`); the main list says "Developer options: navigation test on" while it is on. Scenery ghosting is off unless "Pass through scenery in tight spots" is turned on.
+
 - Live local checks proved the aggregate whole-rig rectangle can falsely reject usable articulated space: a 2 m right turn and a short reverse-left were BLOCKED by the aggregate box while separate observed-unit boxes were clear.
 - Separate rigid unit boxes are not yet a proven future-motion model; future clearance must account for articulation through the candidate motion.
 - The rig footprint traversal previously stopped at belted vehicle cargo and omitted implements attached to that cargo. A focused regression reproduced three units instead of four; the generic recursive traversal fix includes the nested plow.

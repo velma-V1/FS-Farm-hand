@@ -233,6 +233,43 @@ class StandaloneMoveTests(unittest.TestCase):
         self.assertEqual(result.status, "COMPLETE", result)
         self.assertEqual([c[0] for c in world.calls[1:3]], ["navigate", "drive"])           # the rest, its own
 
+    def test_the_navigation_test_option_keeps_every_leg_on_farmhands_own_driver(self):
+        # AGENTS.md 11: standalone navigation is qualified with no GIANTS GOTO, AutoDrive, blocker
+        # moving or teleport; the developer option (it replaced the hidden nav_proof.flag) does that.
+        from adapters.world import StepFailed
+
+        class Far(World):
+            navigation_proof = True
+            teleport_recovery = True
+            refuse = False
+
+            def navigate(self, vehicle_id, pose, owner):
+                self.calls.append(("navigate",))
+
+            def reposition(self, vehicle_id, owner):
+                self.calls.append(("reposition",))
+
+            def teleport(self, vehicle_id, owner, min_m=0.0, at=None):
+                self.calls.append(("teleport",))
+
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                if self.refuse:
+                    self.calls.append(("drive",))
+                    raise StepFailed("NO_ROUTE")
+                return super().farm_drive(vehicle_id, target, owner, area, yaw)
+
+        world = Far((unit("611", "GMC Sierra", "tractor", position=(-100.0, 500.0)),))   # a long trip
+        request = {"version": 1, "request_id": "gmc-barn", "farm_id": "1", "task": "move_pair",
+                   "tractor_name": "gmc", "target": {"type": "place", "name": "farm barn"}}
+        result = Executor(world).execute(request)
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual([c[0] for c in world.calls[1:]], ["drive", "stop", "release"])     # its own drive only
+        world = Far((unit("611", "GMC Sierra", "tractor", position=(-100.0, 500.0)),))
+        world.refuse = True                                   # no route of its own: said, nothing else
+        result = Executor(world).execute(request)
+        self.assertEqual((result.status, result.reason), ("FAILED", "NO_ROUTE"), result)
+        self.assertEqual({c[0] for c in world.calls} & {"navigate", "reposition", "teleport"}, set())
+
     def test_with_no_way_out_by_driving_the_teleport_recovery_frees_the_rig_when_allowed(self):
         # The user, 2026-10-30: "if farmhand still can not move it, it should teleport it and any
         # attached items to an open area close by".

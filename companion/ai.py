@@ -124,6 +124,13 @@ class Settings:
         data["pay"] = {"mode": mode, "amount": float(amount)}
         self.save(data)
 
+    def navigation_proof(self) -> bool:
+        """Developer option for qualifying Farmhand's own navigation (AGENTS.md 11): every drive
+        by Farmhand's own route search and driver only - no GIANTS helper or AutoDrive leg, no
+        blocker moved, no teleport recovery. Off unless exactly true. It replaces the old hidden
+        nav_proof.flag file, so the mode is always visible in the settings screen."""
+        return self.load().get("navigation_proof", False) is True
+
     MAX_SPENDING_LIMIT = 100_000_000
 
     def spending_limit(self) -> float | None:
@@ -542,6 +549,7 @@ class SettingsMenu:
             ("harvest", f"Harvest: {dict(DESTINATIONS).get(s.harvest_destination() or 'keep')}"),
             ("teleport", f"Teleport a stuck rig: {'on' if s.teleport_recovery() else 'off'}"),
             ("ghosting", f"Pass through scenery in tight spots: {'on' if s.scenery_ghosting() else 'off'}"),
+            ("developer", "Developer options" + (": navigation test on" if s.navigation_proof() else "")),
             ("ai", "AI model"),
             ("close", "Close"),
         ]
@@ -560,6 +568,10 @@ class SettingsMenu:
             return f"Pay {dict(PAY_LABELS)[self._pay_mode]}", labels + ["Back"]
         if key == "harvest":
             return "What happens to the harvest", [label for _, label in DESTINATIONS] + ["Back"]
+        if key == "developer":
+            return "Developer options", [
+                f"Farmhand's own driving only (navigation test): {'on' if self.settings.navigation_proof() else 'off'}",
+                "Back"]
         raise KeyError(key)
 
     # ------------------------------------------------------------ picks
@@ -593,6 +605,12 @@ class SettingsMenu:
             self.settings.set_spending_limit(SPENDING_LIMITS[index - 1])
             self.on_change()
             return "main"
+        if key == "developer":
+            data = self.settings.load()
+            data["navigation_proof"] = not self.settings.navigation_proof()
+            self.settings.save(data)
+            self.on_change()
+            return "developer"
         return None
 
     def _main(self, index: int) -> str | None:
@@ -615,4 +633,4 @@ class SettingsMenu:
             return None
         if entry == "close":
             return None
-        return entry                                      # pay, limit, harvest: their own lists
+        return entry                                      # pay, limit, harvest, developer: their own lists

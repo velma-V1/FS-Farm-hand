@@ -30,7 +30,7 @@ class SettingsMenuTests(unittest.TestCase):
         return self.menu.choose("main", self.index(entry))
 
     def test_every_list_fits_the_games_option_dialog(self):
-        for key in ("main", "pay", "limit", "harvest"):
+        for key in ("main", "pay", "limit", "harvest", "developer"):
             title, labels = self.menu.open(key)
             self.assertTrue(title)
             self.assertLessEqual(len(title), 60, key)
@@ -45,7 +45,7 @@ class SettingsMenuTests(unittest.TestCase):
         self.assertEqual(labels, ["Pay: per hour at GIANTS' rate", "Buying: buys only when told",
                                   "Spending limit: none", "Harvest: keep it in the trailer",
                                   "Teleport a stuck rig: on", "Pass through scenery in tight spots: off",
-                                  "AI model", "Close"])
+                                  "Developer options", "AI model", "Close"])
 
     def test_only_implemented_settings_are_listed(self):
         # Nothing saves or reads equipment preferences yet: no entry claims to (AGENTS.md).
@@ -119,6 +119,24 @@ class SettingsMenuTests(unittest.TestCase):
                 self.settings.set_spending_limit(bad)
         self.assertEqual(self.settings.spending_limit(), 25000.0)             # a refused value changes nothing
 
+    def test_the_navigation_test_is_a_visible_developer_option_off_by_default(self):
+        # It replaced the hidden nav_proof.flag file: the mode is never on without the screen saying so.
+        self.assertFalse(self.settings.navigation_proof())
+        self.assertEqual(self.pick("developer"), "developer")
+        title, labels = self.menu.open("developer")
+        self.assertEqual(labels, ["Farmhand's own driving only (navigation test): off", "Back"])
+        self.assertEqual(self.menu.choose("developer", 1), "developer")   # toggled, the list shown again
+        self.assertTrue(self.settings.navigation_proof())
+        self.assertEqual(self.menu.open("developer")[1][0], "Farmhand's own driving only (navigation test): on")
+        self.assertEqual(self.label("developer"), "Developer options: navigation test on")
+        self.assertEqual(self.menu.choose("developer", 2), "main")        # Back
+        self.assertEqual(self.menu.choose("developer", 1), "developer")
+        self.assertFalse(self.settings.navigation_proof())
+        self.assertEqual(len(self.changes), 2)
+        for stored in ("yes", 1, None):
+            self.settings.save({"navigation_proof": stored})
+            self.assertFalse(self.settings.navigation_proof(), stored)
+
     def test_the_ai_model_and_close_leave_the_settings_list(self):
         self.assertIsNone(self.pick("ai"))
         self.assertEqual(self.ai_opened, [True])
@@ -131,7 +149,7 @@ class SettingsMenuTests(unittest.TestCase):
         self.assertEqual(len(entries), len(set(entries)))
         self.assertEqual(entries[-1], "close")
         for entry in entries:
-            if entry in ("pay", "limit", "harvest"):
+            if entry in ("pay", "limit", "harvest", "developer"):
                 self.assertEqual(self.pick(entry), entry)
                 self.menu.open(entry)                                         # its list exists
 

@@ -293,6 +293,8 @@ class FS25World:
         # The most one purchase may cost (Settings.spending_limit, the player's; None: no limit
         # beyond the farm's money), checked before every store and land purchase (executor).
         self.spending_limit = None
+        # The developer option "Farmhand's own driving only" (Settings.navigation_proof; standalone.py).
+        self.navigation_proof = False
         # Farmhand's pay (mode, amount) reader (Settings.pay; companion/service.py), sent once per
         # game session; None: the game's default in the mod.
         self.pay = None
