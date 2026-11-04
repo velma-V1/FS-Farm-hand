@@ -519,6 +519,24 @@ class TractorTransportTests(unittest.TestCase):
         self.assertIsNone(after[tractor.id].belted_to)
         self.assertEqual((after[deck.id].fold, after[deck.id].belts_fastened), (0.0, False))
 
+    def test_an_unload_refused_before_moving_leaves_the_tractor_secured_as_found(self):
+        # Live 4a63f2e75a1146d4-3: belts released, ramps down, then LOAD_PATH_BLOCKED (the path
+        # behind hit an object) and the Series 9 was left loose on the deck with the ramps down.
+        class Blocked(MockWorld):
+            def load(self, tractor_id, trailer_id, direction, owner):
+                if direction < 0:
+                    raise StepFailed("LOAD_PATH_BLOCKED")
+                return super().load(tractor_id, trailer_id, direction, owner)
+
+        world, tractor, deck, _ = transport_world(cls=Blocked)
+        Executor(world).execute(load())
+        result = Executor(world).execute(dict(intent(), task="unload_tractor"))
+        self.assertEqual((result.status, result.reason), ("FAILED", "LOAD_PATH_BLOCKED"), result)
+        after = world.items
+        self.assertEqual(after[tractor.id].belted_to, deck.id)
+        self.assertEqual((after[deck.id].fold, after[deck.id].belts_fastened), (0.0, True))
+        self.assertIn("RAMPS_UP", result.states)
+
     def test_a_tractor_stopped_on_the_ramps_is_unloaded_from_there(self):
         # Live ac71c4b45aea40dd-1: UNLOAD stopped ENVELOPE_CONTACT with the Series 9 half down the
         # ramps, belts released, ramps down; "unload the deutz" then found no loaded tractor.

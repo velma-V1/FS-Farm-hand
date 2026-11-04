@@ -2328,3 +2328,31 @@ class JoinFieldsTests(unittest.TestCase):
                                           "target": "player_at_acceptance", "field": 4, "into_field": 5})
         self.assertEqual((result.status, result.reason), ("BLOCKED", "NO_PLOW_HITCHED"))
         self.assertEqual(events, [])
+
+
+class DriveStopTests(unittest.TestCase):
+    """Live abf1610fc62543be-3: after the requester's STOP, Farmhand's own drive ended STOPPED
+    and the executor logged "the route's provider is tried". A STOP ends the drive."""
+
+    def run_move(self, code):
+        calls = []
+
+        class World(MockWorld):
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                calls.append("farm_drive")
+                raise StepFailed(code)
+
+        executor = Executor(World(rig("plow"), PLAYERS, fields=(field(4, 0.6),), farm=FARM))
+        executor._navigate = lambda *args: calls.append("navigate")
+        try:
+            executor._move("t-1", Pose(10.0, 20.0, 0.0), "o-1", deliver=True, partner_id="i-1")
+        except StepFailed as failure:
+            calls.append(failure.code)
+        return calls
+
+    def test_a_stopped_drive_tries_no_other_provider(self):
+        for code in ("STOPPED", "RESERVATION_LOST"):
+            self.assertEqual(self.run_move(code), ["farm_drive", code])
+
+    def test_a_failed_drive_still_tries_the_route_provider(self):
+        self.assertEqual(self.run_move("NO_GOAL_PROGRESS"), ["farm_drive", "navigate"])

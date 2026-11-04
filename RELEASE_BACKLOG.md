@@ -201,6 +201,17 @@ Acceptance:
 - completion, failure, STOP, cancellation, link loss and provider handoff restore the exact original wheel flags;
 - no hardcoded map/route coordinates or external gameplay-mod requirement.
 
+## Bounded-area measurement
+
+Live abf1610fc62543be-1 (2026-11-04): the mod stopped GIANTS' helper for a 400 m2 test area
+when its measure (any ground/spray share change x field area, `Bridge.changedArea`) reached
+~414 m2; the companion then measured the operation's own share growth (192 m2) and reported
+PARTIAL_COVERAGE although the work was done. Two different measures decide stop and acceptance,
+both from ~112-124 field samples (~200 m2 each), the after-reading with extra track samples
+(another denominator). Needed: one measure for both, at a resolution finer than the asked area
+(e.g. samples along the worked track compared before/after on the same points). Do not widen
+COVERAGE_REQUIRED to hide it.
+
 ## Sell equipment
 Status: OPEN
 Priority: MEDIUM

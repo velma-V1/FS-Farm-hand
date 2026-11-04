@@ -38,6 +38,10 @@ DELIVERY_STANDOFF_M = 10.0
 PLACE_STANDOFF_M = 15.0
 YARD_M = 150.0                    # buildings matching the words this close together are one place
 TRACTOR_ARRIVAL_TOLERANCE_M = 3.0
+# An unload that ended with the tractor this close to where it was unbelted is re-secured.
+RESECURE_UNMOVED_M = 0.3
+# Farmhand's own drive ended by a STOP (the player's, the requester's) or a lost reservation.
+DRIVE_ENDED_BY_STOP = frozenset({"STOPPED", "RESERVATION_LOST", "PREEMPTED"})
 # GIANTS' field-work helper ended without driving to the field (its planner, or never ready
 # to drive): Farmhand's own drive takes the pair this far inside the field's edge.
 HELPER_DID_NOT_DRIVE = ("NOT_REACHABLE", "COULD_NOT_PREPARE")
@@ -1477,6 +1481,7 @@ class Executor:
         owner, farm_id = command["request_id"], command["farm_id"]
         loading = command["task"] == "load_tractor"
         reserved = moved = False
+        unbelted_at = None
         ids: tuple = ()
         status, reason = "BLOCKED", "NO_TRANSPORT"
         try:
@@ -1579,6 +1584,7 @@ class Executor:
                 status, reason = "COMPLETE", "LOADED_AND_SECURED"
             else:
                 enter("UNBELT")
+                unbelted_at = tractor.position            # put back as found if it never leaves the deck
                 self.world.belts(trailer.id, False, owner)
                 tractor, trailer = self._transport_pair(ids)
                 if trailer.belts_fastened is not False or tractor.belted_to is not None:
@@ -1611,6 +1617,8 @@ class Executor:
                             raise ObservationMismatch("STOP_NOT_CONFIRMED")
                         if not self._at_rest(ids)[ids[0]].stopped:
                             raise ObservationMismatch("STOP_NOT_OBSERVED")
+                    if unbelted_at is not None and status != "COMPLETE":
+                        self._resecure(ids, unbelted_at, owner)
                     enter("RELEASE")
                     self.world.release(owner)
                 except Exception as error:
@@ -1619,6 +1627,22 @@ class Executor:
         self.active = ()
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, ids, tuple(states))
+
+    def _resecure(self, ids, unbelted_at, owner) -> None:
+        """An unload that ended before the tractor left the deck (live 4a63f2e75a1146d4-3:
+        LOAD_PATH_BLOCKED after the belts came off and the ramps went down): belts back on and
+        ramps up, as it was found. A tractor that moved is left as it stands."""
+        tractor, trailer = self._transport_pair(ids)
+        if math.dist(tractor.position, unbelted_at) > RESECURE_UNMOVED_M or not transport.on_deck(tractor, trailer):
+            log.info("unload ended with tractor %s %.2f m from where it was unbelted: not re-secured",
+                     tractor.id, math.dist(tractor.position, unbelted_at))
+            return
+        self.world.belts(trailer.id, True, owner)
+        tractor, trailer = self._transport_pair(ids)
+        if trailer.belts_fastened is not True or tractor.belted_to != trailer.id:
+            raise ObservationMismatch("BELTS_NOT_HOLDING")
+        self._ramps(trailer.id, -1, owner, "RAMPS_UP")
+        log.info("unload ended early: tractor %s belted on trailer %s again, ramps up", tractor.id, trailer.id)
 
     def _follow(self, command, enter, states) -> Result:
         """"Follow me" (only when the player asks): FIND the hitched rig named (else the one
@@ -2534,6 +2558,10 @@ class Executor:
                 self.world.farm_drive(tractor_id, target, owner, 0.0)
                 return Destination("farmhand", target)
             except StepFailed as failure:
+                # A STOP is the end of the drive, never a reason to try another provider (live
+                # abf1610fc62543be-3: "ended STOPPED; the route's provider is tried").
+                if failure.code in DRIVE_ENDED_BY_STOP:
+                    raise
                 log.info("Farmhand's own drive to %s ended %s; the route's provider is tried", target, failure.code)
         if isinstance(route, Pose):
             self._navigate(tractor_id, route, owner, partner_id)
