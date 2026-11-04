@@ -3,7 +3,8 @@
 -- selected here. Search success is only a candidate route, never a drive verdict.
 -- GIANTS' AIVehicleUtil.driveToPoint and collision world will be the executor.
 local Drive = {}
-Drive.PROOF_NO_GHOST = true -- temporary standalone-navigation experiment
+-- Scenery ghosting (Hitch.ghost) is never part of an ordinary drive: only a drive whose command
+-- carries the player's opt-in setting (args.ghost, Farmhand settings, default off) may use it.
 
 local pi, sin, cos, sqrt, floor, abs, atan2 = math.pi, math.sin, math.cos,
     math.sqrt, math.floor, math.abs, math.atan2 or math.atan
@@ -1569,11 +1570,13 @@ function Drive.begin(env, args, Hitch)
                 touching = observed and type(contacts) == "string"
                     and contacts:find("standing", 1, true) ~= nil
             end
-            if vehicle == nil and touching and not Drive.PROOF_NO_GHOST
+            if vehicle == nil and touching and args.ghost == true
                     and type(Hitch.ghost) == "function" then
-                -- Against scenery: the departure is not held by it (live 1682e794a2ee4476-1:
-                -- every straight back-off from a structure's leg stopped dead after 0.5 m).
-                if Hitch.ghost(env, v, "START_AGAINST_SCENERY", hits) then
+                -- Against scenery, with the player's opt-in setting: the departure is not held by
+                -- it (live 1682e794a2ee4476-1: every straight back-off from a structure's leg
+                -- stopped dead after 0.5 m). Without the setting the measured departure below
+                -- leaves it under normal collision.
+                if Hitch.ghost(env, v, "START_AGAINST_SCENERY", hits, true) then
                     ghostedAtStart = true
                     say("[Farmhand] drive starts against scenery: the rig's collision with buildings off")
                 end
@@ -1636,7 +1639,7 @@ function Drive.begin(env, args, Hitch)
                     sectionAttempt = 1, navHint = navHint,
                     result = nil, movedAt = 0,
                     lastMovedX = x, lastMovedZ = z, replans = 0, ghostedHere = ghostedAtStart,
-                    ghostUses = ghostedAtStart and 1 or nil,
+                    ghostUses = ghostedAtStart and 1 or nil, ghost = args.ghost == true,
                     initial = { start = planStart, x = x, z = z, yaw = yaw } }
         if straighten ~= nil then
             s.initial = nil
@@ -1694,12 +1697,12 @@ function Drive.begin(env, args, Hitch)
     return session, reason
 end
 
--- Near buildings the rig stops colliding with the scenery obstacles near it (Hitch.ghost,
--- pair by pair), back once it is clear of them; checked twice a second, at once when held
--- fast. Planning keeps its clearances.
+-- Only with the player's opt-in setting (s.ghost, from the drive's command): near buildings the
+-- rig stops colliding with the scenery obstacles near it (Hitch.ghost, pair by pair), back once
+-- it is clear of them; checked twice a second, at once when held fast. Planning keeps its
+-- clearances. Without the setting a drive keeps the game's real collisions throughout.
 local function ghostWatch(env, s, Hitch, x, z, yaw, why)
-    -- Temporary standalone-navigation proof: use the game's real collisions.
-    if Drive.PROOF_NO_GHOST then return end
+    if s.ghost ~= true then return end
     if type(Hitch.ghost) ~= "function" then return end
     local ghosted = Hitch.ghosted[s.tractor] ~= nil
     if why == nil then
@@ -1716,7 +1719,7 @@ local function ghostWatch(env, s, Hitch, x, z, yaw, why)
         end
         return
     end
-    local ok, added = Hitch.ghost(env, s.tractor, why or "NEAR_BUILDINGS", nodes)
+    local ok, added = Hitch.ghost(env, s.tractor, why or "NEAR_BUILDINGS", nodes, true)
     if ok and (added or 0) > 0 then
         s.ghostedHere = true
         s.ghostUses = (s.ghostUses or 0) + 1

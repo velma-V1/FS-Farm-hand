@@ -29,6 +29,22 @@ Acceptance:
 - every retained clean-build primitive is backed by a specific observed failure and live proof;
 - legacy mechanisms without proven player benefit are explicitly left behind.
 
+## Scenery ghosting: prove the need or remove the option
+Status: OPEN
+Priority: HIGH
+Found: 2026-11-04
+
+Pairwise scenery-collision ghosting is now only the player's opt-in setting "Pass through scenery in tight spots" (settings.json `scenery_ghosting`, default OFF). Ordinary hitch steps and drives keep every collision; the command carries `gh="1"` only when the setting is on, `Hitch.ghost` refuses without that permission, and the player is notified when it starts. The lab flag `Drive.PROOF_NO_GHOST` is gone. Not yet live-run.
+
+Next:
+- With the setting OFF, rerun the cases that originally motivated ghosting under normal physics (structure leg 1682e794a2ee4476-1, posts 13f374b86b594744-2, "collisionNonAIBlocking" beside the Titan trailer d053a7e5822a4489-1, hitches near buildings).
+- If each completes, or fails for a cause a geometry/approach fix removes, delete the option and `Hitch.ghost`.
+- If one genuinely needs it, keep the option, record its exact trigger, and verify restoration on success, failure, STOP, cancel, takeover and link loss.
+
+Acceptance:
+- default gameplay never ghosts (verified in the game log: no "collision ... off" lines with the setting off);
+- the option is removed, or retained with one recorded qualifying case and verified restoration.
+
 ## Loaded transport standalone
 Status: OPEN
 Priority: RELEASE-BLOCKER

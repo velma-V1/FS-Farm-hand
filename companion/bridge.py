@@ -31,7 +31,8 @@ from adapters.fs25 import Observation, observation_from_snapshot
 from adapters.world import StepFailed, StepUnverified
 from companion.drive_goal import DRIVEN
 from companion.hitch import STAGING_DISTANCE_M, load_ad_graph
-from protocol.ipc import MAX_NOTICES, PIPE_PATH, FrameError, FrameReader, encode_command, encode_session
+from protocol.ipc import (GHOST_OPS, MAX_NOTICES, PIPE_PATH, FrameError, FrameReader, encode_command,
+                          encode_session)
 from protocol.model import Contract, Destination, Equipment, FarmInfo, Field, HitchPlan, Pose, Position, StoreItem
 
 log = logging.getLogger("farmhand")
@@ -281,6 +282,10 @@ class FS25World:
         # and the jobs that used theirs.
         self.teleport_recovery = True
         self._teleported: set[str] = set()
+        # Passing through scenery beside the rig in tight spots (Settings.scenery_ghosting, the
+        # player's opt-in, default off; companion/service.py sets it): only then does a motion
+        # command carry ghost=1 (protocol.ipc GHOST_OPS). Off, every motion keeps all collisions.
+        self.scenery_ghosting = False
         # Farmhand's pay (mode, amount) reader (Settings.pay; companion/service.py), sent once per
         # game session; None: the game's default in the mod.
         self.pay = None
@@ -539,6 +544,8 @@ class FS25World:
                 self.set_pay(*self.pay())
             except (StepFailed, StepUnverified) as failure:
                 log.info("pay not set: %s", failure.code)
+        if op in GHOST_OPS and self.scenery_ghosting is True:
+            args = {**args, "ghost": 1}
         status, code = self.link.command(op, args, self.cancel)
         if status == "FAILED":
             raise StepFailed(code)

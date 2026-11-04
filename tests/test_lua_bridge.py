@@ -1666,6 +1666,55 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertIn("abort:STOPPED", self.calls())          # braked and latched, as a stop
         self.assertIsNone(self.bridge.lastManeuver)
 
+    def test_a_hitch_step_passes_through_scenery_only_with_the_players_setting(self):
+        # AGENTS.md 10: the hitch steps' old building ghosting is the player's opt-in only; the
+        # command carries it (gh="1"), and without it the step keeps every collision.
+        self.adopt()
+        fake = self.scripted_maneuver(["CONTINUE"])
+        ghosted = self.lua.execute("""
+            local F, w = ...
+            local calls = {}
+            w.env.localDirectionToWorld = function() return 0, 0, 1 end
+            F.routeFootprint = function() return {} end
+            F.staticNodesNear = function() return {41, 42} end
+            F.ghost = function(env, tractor, why, nodes, permitted)
+                calls[#calls + 1] = why .. ":" .. #nodes .. ":" .. tostring(permitted)
+                return true, #nodes
+            end
+            return calls
+        """, fake, self.w)
+        command = 0
+        for args, expected in ((self.MANEUVER, []), ({**self.MANEUVER, "ghost": 0}, []),
+                               ({**self.MANEUVER, "ghost": 1}, ["maneuver:2:true"])):
+            command += 1
+            self.send(command, "maneuver", args)
+            self.assertEqual(self.results(command)[0], (command, "ACCEPTED", "ACCEPTED"))
+            self.assertEqual(list(ghosted.values()), expected, args)
+            command += 1
+            self.send(command, "stop", {"tractor": 11})
+            self.W.run(self.w, 200)
+            self.assertEqual(self.results(command)[-1], (command, "DONE", "STOPPED"))
+
+    def test_a_farm_drive_carries_the_players_scenery_setting_to_the_drive(self):
+        self.adopt()
+        seen = self.lua.execute("""
+            local Bridge = ...
+            local seen = {}
+            Bridge.Drive = { begin = function(env, args) seen[#seen + 1] = tostring(args.ghost); return nil, "NO_ROUTE" end,
+                             step = function() return "NO_ROUTE" end, abort = function() end }
+            return seen
+        """, self.bridge)
+        drive = {"tractor": 11, "x": 5.0, "z": 5.0, "area": 0.0, "yaw": 10.0}
+        for command, extra in enumerate(({}, {"ghost": 1}, {"ghost": 0}), start=1):
+            self.send(command, "farm_drive", {**drive, **extra})
+            self.assertEqual(self.results(command)[-1], (command, "FAILED", "NO_ROUTE"))
+        self.assertEqual(list(seen.values()), ["false", "true", "false"])
+
+    def test_the_player_is_told_in_game_when_scenery_ghosting_starts(self):
+        self.hitch.onGhost(self.w.tractor, "NEAR_BUILDINGS", 2)        # Bridge:open wired it
+        self.assertIn("4:Farmhand: passing through scenery beside the rig (your setting); "
+                      "its collision returns once clear", list(self.w.notices.values()))
+
     def test_maneuver_notice_texts(self):
         cases = {"WORKING_LOCAL_MANEUVER": ("Farmhand: lining up with the implement", False),
                  "WORKING_STAGE": ("Farmhand: driving to the implement", False),

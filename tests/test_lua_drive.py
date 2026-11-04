@@ -1177,9 +1177,8 @@ class ShuffleAndApproachTests(unittest.TestCase):
         env, args, hitch = self.lua.execute(self.PLACE, lambda x, z, _y: x * x + z * z < 25, 40)
         self.assertEqual(self.drive.begin(env, args, hitch)[1], "NO_CLEAR_APPROACH")
 
-    def test_fixed_start_contact_reverses_before_forward_route_search(self):
-        self.drive.PROOF_NO_GHOST = False  # legacy contact mode, outside the navigation proof
-        env, args, hitch, seen = self.lua.execute("""
+    CONTACT_START = """
+            local ghost = ...
             local seen = {ghosts=0}
             local vehicle = {ownerFarmId='1', rootNode={x=0,z=0},
                 spec_drivable={cruiseControl={speed=40}}, maxTurningRadius=6,
@@ -1206,9 +1205,16 @@ class ShuffleAndApproachTests(unittest.TestCase):
                     seen[#seen+1] = {reverse=reverse,nudge=f.departureNudge,z=z}
                     return reverse and f.departureNudge and z < 0
                 end,
-                ghost=function() seen.ghosts=seen.ghosts+1; return true end, watchDriver=function() end}
-            return env,{tractor=vehicle,farmId='1',x=0,z=50,isReserved=function() return true end},hitch,seen
-        """)
+                ghost=function(_,_,_,_,permitted)
+                    assert(permitted == true, 'ghosted without the setting')
+                    seen.ghosts=seen.ghosts+1; return true
+                end, watchDriver=function() end}
+            return env,{tractor=vehicle,farmId='1',x=0,z=50,ghost=ghost,isReserved=function() return true end},hitch,seen
+        """
+
+    def test_fixed_start_contact_reverses_before_forward_route_search(self):
+        # With the player's opt-in scenery setting (args.ghost): the legacy contact assist.
+        env, args, hitch, seen = self.lua.execute(self.CONTACT_START, True)
         self.drive.planEgress = self.lua.eval("function() return nil,'EGRESS_BLOCKED' end")
         self.drive.plan = self.lua.eval("function() error('forward search before departure') end")
         session, reason = self.drive.begin(env, args, hitch)
@@ -1220,6 +1226,7 @@ class ShuffleAndApproachTests(unittest.TestCase):
         self.assertTrue(session.foot.departureNudge)
         self.assertTrue(all(seen[i].reverse for i in range(1, len(seen) + 1)))
         self.assertEqual(seen.ghosts, 1)
+        self.assertTrue(session.ghost)
         hitch.rigContacts = self.lua.eval("function() return '-' end")
         self.drive.planUnbend = self.lua.eval("function() return nil end")
         clear_session, clear_reason = self.drive.begin(env, args, hitch)
@@ -1228,6 +1235,21 @@ class ShuffleAndApproachTests(unittest.TestCase):
         self.assertEqual(seen.ghosts, 1)  # the route box alone is not physical contact
         hitch.routePoseClear = self.lua.eval("function() return false,'OBSTACLE building',{{x=0,z=2}} end")
         self.assertEqual(self.drive.begin(env, args, hitch)[1], "START_NOT_CLEAR")
+
+    def test_without_the_players_setting_a_contact_start_keeps_every_collision(self):
+        # AGENTS.md 10: ordinary driving never ghosts; the same measured reverse leaves the
+        # scenery under normal collision. Absent and false are both off.
+        for ghost in (None, False):
+            with self.subTest(ghost=ghost):
+                env, args, hitch, seen = self.lua.execute(self.CONTACT_START, ghost)
+                self.drive.planEgress = self.lua.eval("function() return nil,'EGRESS_BLOCKED' end")
+                self.drive.plan = self.lua.eval("function() error('forward search before departure') end")
+                session, reason = self.drive.begin(env, args, hitch)
+                self.assertIsNone(reason)
+                self.assertTrue(session.retreat.contact)              # still reverses off it first
+                self.assertTrue(session.foot.departureNudge)
+                self.assertEqual(seen.ghosts, 0)
+                self.assertFalse(session.ghost)
 
     def test_a_shuffle_runs_leg_by_leg_and_plans_each_next_leg_from_where_it_stopped(self):
         env, session, hitch, at = self.lua.execute("""
@@ -2424,11 +2446,39 @@ class GhostTests(unittest.TestCase):
         self.lua.globals().print = lambda *p: None
         self.hitch = self.lua.execute(HITCH.read_text())
         self.drive = self.lua.execute(SOURCE.read_text())
-        self.drive.PROOF_NO_GHOST = False  # exercise the existing optional scenery handler
         self.env, self.tractor, self.pairs, self.groups, self.floor, self.F = self.lua.execute(GHOST_RIG)
 
     def off(self):
         return sorted(k for k, v in self.pairs.items() if v)
+
+    def test_nothing_is_switched_off_without_the_players_permission(self):
+        # AGENTS.md 10: ghosting is the player's opt-in only; the single call that switches
+        # collision off refuses anything but an explicit true from the running motion.
+        self.groups[11] = self.F.STATIC_OBJECT + self.F.AI_BLOCKING
+        told = []
+        self.hitch.onGhost = lambda *a: told.append(a)
+        for permitted in (None, False, 1, "true"):
+            ok, why = self.hitch.ghost(self.env, self.tractor, "NEAR_BUILDINGS", self.lua.table_from([11]), permitted)
+            self.assertFalse(ok, permitted)
+            self.assertEqual(why, "GHOSTING_OFF")
+        self.assertEqual(self.off(), [])
+        self.assertIsNone(self.hitch.ghosted[self.tractor])
+        self.assertEqual(told, [])
+
+    def test_the_player_is_told_once_per_rig_when_its_collision_goes_off(self):
+        self.groups[11] = self.F.STATIC_OBJECT + self.F.AI_BLOCKING
+        self.groups[12] = self.F.BUILDING + self.F.AI_BLOCKING
+        told = []
+        self.hitch.onGhost = lambda tractor, why, added: told.append((why, added))
+        self.assertTrue(self.hitch.ghost(self.env, self.tractor, "NEAR_BUILDINGS", self.lua.table_from([11]), True)[0])
+        self.assertTrue(self.hitch.ghost(self.env, self.tractor, "HELD_FAST", self.lua.table_from([12]), True)[0])
+        self.assertEqual(told, [("NEAR_BUILDINGS", 1)])                      # once, not every frame
+        self.hitch.unghost(self.env, self.tractor)
+        self.hitch.ghost(self.env, self.tractor, "HELD_FAST", self.lua.table_from([12]), True)
+        self.assertEqual(told, [("NEAR_BUILDINGS", 1), ("HELD_FAST", 1)])    # again after a restore
+        self.hitch.onGhost = self.lua.eval("function() error('observer failed') end")
+        self.hitch.unghost(self.env, self.tractor)
+        self.assertTrue(self.hitch.ghost(self.env, self.tractor, "X", self.lua.table_from([12]), True)[0])
 
     def test_only_obstacles_near_the_rig_are_switched_off_pair_by_pair_and_back_exactly(self):
         F = self.F
@@ -2437,11 +2487,11 @@ class GhostTests(unittest.TestCase):
         self.groups[13] = F.STATIC_OBJECT + F.CAMERA_BLOCKING                   # a pad GIANTS' AI drives over
         self.groups[9] = F.STATIC_OBJECT + F.AI_BLOCKING                        # an object's own node
         nodes = self.lua.table_from([11, 12, 13, 9])
-        ok, added = self.hitch.ghost(self.env, self.tractor, "NEAR_BUILDINGS", nodes)
+        ok, added = self.hitch.ghost(self.env, self.tractor, "NEAR_BUILDINGS", nodes, True)
         self.assertTrue(ok)
         self.assertEqual(added, 2)
         self.assertEqual(self.off(), sorted(f"{c}:{n}" for c in (101, 102, 201) for n in (11, 12)))
-        self.assertEqual(self.hitch.ghost(self.env, self.tractor, "AGAIN", nodes)[1], 0)   # already off
+        self.assertEqual(self.hitch.ghost(self.env, self.tractor, "AGAIN", nodes, True)[1], 0)   # already off
         self.hitch.unghost(self.env, self.tractor)
         self.assertEqual(self.off(), [])
         self.assertIsNone(self.hitch.ghosted[self.tractor])
@@ -2450,7 +2500,7 @@ class GhostTests(unittest.TestCase):
         # Live 6e781c7702a84a26-1: a pad's collision off, the tractor dropped through it (OVERSPEED).
         self.groups[11] = self.F.BUILDING + self.F.AI_BLOCKING                  # a shed, floor and walls
         self.floor.node = 11
-        ok, why = self.hitch.ghost(self.env, self.tractor, "NEAR_BUILDINGS", self.lua.table_from([11]))
+        ok, why = self.hitch.ghost(self.env, self.tractor, "NEAR_BUILDINGS", self.lua.table_from([11]), True)
         self.assertFalse(ok)
         self.assertEqual(why, "NOTHING_TO_GHOST")
         self.assertEqual(self.off(), [])
@@ -2460,7 +2510,7 @@ class GhostTests(unittest.TestCase):
         foot = self.lua.eval("function() return {excluded={[5]=true}, masks={}} end")()
         same = self.lua.eval("function(a, b) return a == b end")
         self.assertTrue(same(self.hitch.withGhosted(self.env, foot, self.tractor), foot))   # not ghosted
-        self.hitch.ghost(self.env, self.tractor, "NEAR_BUILDINGS", self.lua.table_from([11]))
+        self.hitch.ghost(self.env, self.tractor, "NEAR_BUILDINGS", self.lua.table_from([11]), True)
         ghosted = self.hitch.withGhosted(self.env, foot, self.tractor)
         self.assertTrue(ghosted.excluded[11] and ghosted.excluded[5])
         self.assertIsNone(foot.excluded[11])                                   # the drive's own foot unchanged
@@ -2473,7 +2523,8 @@ class GhostTests(unittest.TestCase):
             local hitch = {GHOST={nearM=2, clearM=0.5}, ghosted={}}
             function hitch.staticNodesNear() return near.nodes end
             function hitch.staticNear(env, foot, x, z, yaw, extra) return not near.clear end
-            function hitch.ghost(env, t, why, nodes)
+            function hitch.ghost(env, t, why, nodes, permitted)
+                assert(permitted == true)
                 hitch.ghosted[t] = {}; calls[#calls+1] = "ghost " .. why .. " " .. #nodes; return true, #nodes end
             function hitch.unghost(env, t) hitch.ghosted[t] = nil; calls[#calls+1] = "unghost"; return true end
             return hitch, calls, near
@@ -2482,6 +2533,12 @@ class GhostTests(unittest.TestCase):
         def step():
             s.elapsed = s.elapsed + 600
             self.drive.ghostWatch(self.env, s, hitch, 0, 0, 0)
+        near.nodes = self.lua.table_from([11, 12])
+        step()                                                    # a drive without the setting: never
+        self.drive.ghostWatch(self.env, s, hitch, 0, 0, 0, "HELD_FAST")
+        self.assertEqual(list(calls.values()), [])
+        s.ghost = True                                            # the player's opt-in, on this drive
+        near.nodes = self.lua.table_from([])
         step()
         self.assertEqual(list(calls.values()), [])                # open ground: nothing
         near.nodes = self.lua.table_from([11, 12])

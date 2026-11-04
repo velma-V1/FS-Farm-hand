@@ -10,7 +10,7 @@
         <en>Farmhand AC-001 (development)</en>
     </title>
     <description>
-        <en>On foot: Left Alt + K to tell Farmhand what to do in your own words, Left Alt + J to bring a tractor and forage wagon to you, Left Alt + L to stop; hold Left Alt + V to speak (needs a microphone); Left Alt + N for Farmhand's settings (pay, teleport recovery, buying, harvest, the AI model; or type "settings"). The local Farmhand companion does the work and reports in game. The fhHitch* console commands are diagnostics. Nothing moves on load.</en>
+        <en>On foot: Left Alt + K to tell Farmhand what to do in your own words, Left Alt + J to bring a tractor and forage wagon to you, Left Alt + L to stop; hold Left Alt + V to speak (needs a microphone); Left Alt + N for Farmhand's settings (pay, teleport recovery, passing through scenery in tight spots (off unless you turn it on), buying, harvest, the AI model; or type "settings"). The local Farmhand companion does the work and reports in game. The fhHitch* console commands are diagnostics. Nothing moves on load.</en>
     </description>
     <!-- Actions, bindings and texts as AutoDrive 3.0.1.4 modDesc.xml 51-119. -->
     <l10n filenamePrefix="translations/translation" />

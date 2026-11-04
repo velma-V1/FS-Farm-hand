@@ -194,6 +194,7 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
     def apply_settings():
         saved = Settings()
         world.teleport_recovery = saved.teleport_recovery()
+        world.scenery_ghosting = saved.scenery_ghosting()
         coordinator.buy_when_needed = saved.load().get("buy_when_needed", False) is True
         world._paid_session = None            # the pay goes to the game again before the next command
 
@@ -338,6 +339,7 @@ def main(argv=None) -> int:
     (data / PID_FILE).write_text(str(os.getpid()), encoding="utf-8")
     world = FS25World(link, categories)
     world.teleport_recovery = Settings().teleport_recovery()
+    world.scenery_ghosting = Settings().scenery_ghosting()
     world.pay = Settings().pay                # Farmhand's pay, the player's choice
     live = None
     if args.live_test:

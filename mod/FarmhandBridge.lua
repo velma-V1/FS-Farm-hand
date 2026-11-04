@@ -80,6 +80,8 @@ local function finite(n)
     return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
 end
 
+local atan2 = math.atan2 or math.atan   -- Lua 5.1 (FS25) / 5.4 (tests)
+
 local function stopped(v)
     local speed = v:getLastSpeed()
     return finite(speed) and math.abs(speed) < 1
@@ -183,6 +185,7 @@ function starters.farm_drive(env, spec)
         tractor = spec.tractor, x = spec.x, z = spec.z, area = spec.area, yaw = spec.yaw,
         via = spec.via,
         farmId = spec.farmId, isReserved = spec.owned,
+        ghost = spec.ghost == 1,      -- the player's opt-in scenery setting, this drive only
     }, Bridge.Hitch)
     if session == nil then Bridge.Hitch.disarm(spec.tractor); return nil, reason end
     Bridge.lastDrive = session
@@ -737,20 +740,22 @@ aborts.navigate = function(env, task)
 end
 
 -- --------------------------------------------------------------- maneuver
--- A hitch step with buildings within its reach: the tractor's collision with them off first,
--- as Farmhand's drive does (Hitch.ghost; the bridge's watcher restores it once clear).
-local function ghostNearBuildings(env, tractor, step)
-    local H = Bridge.Hitch
-    if type(H.ghost) ~= "function" then return end
+-- A hitch step with buildings within its reach, and the player's opt-in scenery setting on for
+-- it (the command's gh="1"; AGENTS.md 10, default off): the tractor's collision with them off
+-- first, as Farmhand's drive does then (Hitch.ghost; the bridge's watcher restores it once
+-- clear). Without the setting the step keeps every collision.
+local function ghostNearBuildings(env, spec, step)
+    local H, tractor = Bridge.Hitch, spec.tractor
+    if spec.ghost ~= 1 or type(H.ghost) ~= "function" then return end
     pcall(function()
         local foot = H.routeFootprint(env, tractor)
         if foot == nil then return end
         local x, _, z = env.getWorldTranslation(tractor.rootNode)
         local fx, _, fz = env.localDirectionToWorld(tractor.rootNode, 0, 0, 1)
         -- Anywhere a hitch step may reach (its work radius).
-        local nodes = H.staticNodesNear(env, foot, x, z, math.atan2(fx, fz), H.LOCAL_LIMITS.workRadiusM)
+        local nodes = H.staticNodesNear(env, foot, x, z, atan2(fx, fz), H.LOCAL_LIMITS.workRadiusM)
         if nodes ~= nil and #nodes > 0 then
-            local ok, added = H.ghost(env, tractor, step, nodes)
+            local ok, added = H.ghost(env, tractor, step, nodes, true)
             log("%s near buildings: the rig's collision with %s scenery obstacle(s) off%s", step,
                 ok and tostring(added) or "no", ok and "" or (" (" .. tostring(added) .. ")"))
         end
@@ -759,7 +764,7 @@ end
 
 -- Hitch.onNote prints each phase line (once per phase and at the end).
 function starters.maneuver(env, spec)
-    ghostNearBuildings(env, spec.tractor, "maneuver")
+    ghostNearBuildings(env, spec, "maneuver")
     Bridge.Hitch.onNote = function(line) log("maneuver %s", line) end
     Bridge.Hitch.onDiagnostic = function(line) log("maneuver diagnostics: %s", line) end
     -- Read-only steering samples of the local maneuver (diagnostics, 2 per second).
@@ -793,7 +798,7 @@ end
 
 -- ------------------------------------------------------------------ align
 function starters.align(env, spec)
-    ghostNearBuildings(env, spec.tractor, "align")
+    ghostNearBuildings(env, spec, "align")
     local session, reason = Bridge.Hitch.newAlign(env, {
         tractor = spec.tractor, wagon = spec.wagon, tractorJoint = spec.tractorJoint,
         wagonJoint = spec.wagonJoint, farmId = spec.farmId, isReserved = spec.owned,
@@ -1000,7 +1005,7 @@ function starters.reposition(env, spec)
     -- At least the rig's own length away: driven to, not set down beside it. First where GIANTS'
     -- own navigation can start from (live 21a5e70740024850-3: every "open ground" inside the farm
     -- yard left GIANTS' GOTO blocked at its start), up to Bridge.REPOSITION_REACH_M out; else any.
-    local length, yaw = foot.aMax - foot.aMin, math.atan2(fx, fz)
+    local length, yaw = foot.aMax - foot.aMin, atan2(fx, fz)
     local ai = env.g_currentMission.aiSystem
     local navigable = nil
     if ai ~= nil and type(ai.getIsPositionReachable) == "function" and ai.navigationMap ~= nil then
@@ -1022,7 +1027,7 @@ function starters.reposition(env, spec)
     -- degrees off that heading, corrected until OBSTACLE_AHEAD).
     return starters.farm_drive(env, { tractor = v, x = tx, z = tz, area = 0,
                                       yaw = v.spec_pipe ~= nil and tyaw or 10, farmId = spec.farmId,
-                                      owned = spec.owned })
+                                      owned = spec.owned, ghost = spec.ghost })
 end
 steppers.reposition = function(env, task, dt) return steppers.farm_drive(env, task, dt) end
 aborts.reposition = function(env, task) return aborts.farm_drive(env, task) end
@@ -1177,7 +1182,7 @@ function starters.teleport(env, spec)
     local foot = Bridge.grown(own, Bridge.TELEPORT_ROOM)
     local x, _, z = env.getWorldTranslation(v.rootNode)
     local fx, _, fz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
-    local yaw = math.atan2(fx, fz)
+    local yaw = atan2(fx, fz)
     -- Near (spec.x, spec.z) at spec.yaw when the companion names a spot (a loaded rig onto
     -- AutoDrive's road: live 2026-10-31, AutoDrive would not drive it the 51 m out of the yard);
     -- x beyond 50000: near the rig itself (= companion/bridge.py TELEPORT_HERE, 90000).
@@ -1566,7 +1571,6 @@ end
 Bridge.AD_LINK_M = 6
 Bridge.AD_LINK_DEG = 60
 
-local atan2 = math.atan2 or math.atan   -- Lua 5.1 (FS25) / 5.4 (tests)
 local function heading(a, b) return atan2(b.x - a.x, b.z - a.z) end
 local function turnDeg(a, b)
     local d = (b - a + math.pi) % (2 * math.pi) - math.pi
@@ -3226,7 +3230,9 @@ end
 
 local ATTRS = { tractor = "tractor", wagon = "wagon", marker = "marker", x = "x", z = "z", yaw = "yaw",
                 tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", seed = "seed", hand = "hand", item = "item", hitch = "hitch", engine = "eng", opt1 = "o1", opt2 = "o2", opt3 = "o3", opt4 = "o4",
-                direction = "fd" }
+                direction = "fd",
+                -- 1 only when the player's opt-in scenery setting is on (protocol.ipc GHOST_OPS)
+                ghost = "gh" }
 
 function Bridge:pollCommand()
     local env, path = self.env, self.dir .. Bridge.COMMAND_FILE
@@ -3375,6 +3381,7 @@ end
 Bridge.NOTICES = {
     CONNECTED = "Farmhand: companion connected",
     TELEPORTED = "Farmhand: the rig could not move, so it was teleported to open ground nearby",
+    GHOSTED = "Farmhand: passing through scenery beside the rig (your setting); its collision returns once clear",
     ACCEPTED = "Farmhand: fetching a tractor and the implement",
     BUSY = "Farmhand: already working on a request",
     QUEUED = "Farmhand: busy; your request is next in line",
@@ -3935,6 +3942,11 @@ function Bridge:open(env)
     pcall(env.createFolder, base .. "modSettings/")
     pcall(env.createFolder, self.dir)
     pcall(env.deleteFile, self.dir .. Bridge.COMMAND_FILE)
+    -- Scenery ghosting runs only with the player's opt-in setting, and never silently: each rig
+    -- whose collision with scenery goes off is said in game (AGENTS.md 10).
+    if type(Bridge.Hitch) == "table" then
+        Bridge.Hitch.onGhost = function() self:notify(Bridge.NOTICES.GHOSTED, false) end
+    end
     log("bridge ready; waiting for the companion session in %s", self.dir)
 end
 

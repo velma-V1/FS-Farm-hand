@@ -151,6 +151,10 @@ _ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "
               "direction": "fd"}
 _INTEGER = {"tractor", "wagon", "marker", "tractorJoint", "wagonJoint", "field", "seed", "hand", "item", "hitch", "engine",
             "opt1", "opt2", "opt3", "opt4"}
+# The motions that may pass through scenery beside the rig, and only with the player's opt-in
+# setting (companion/ai.py Settings.scenery_ghosting, default off): an optional ghost=1. Absent is
+# off, so no older or other sender can turn it on by leaving a field out (AGENTS.md 10).
+GHOST_OPS = frozenset({"farm_drive", "reposition", "maneuver", "align"})
 _TOKEN = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 MAX_COMMAND_ID = 2147483647
 
@@ -162,11 +166,16 @@ def encode_command(session: str, command_id: int, op: str, args: dict) -> str:
     if type(command_id) is not int or not 1 <= command_id <= MAX_COMMAND_ID:
         raise ValueError("INVALID_COMMAND_ID")
     via = args.get("via") if op == "farm_drive" else None
+    ghost = args.get("ghost") if op in GHOST_OPS else None
     expected = set(COMMAND_ARGS.get(op, ()))
     if via is not None:
         expected.add("via")
+    if ghost is not None:
+        expected.add("ghost")
     if op not in COMMAND_ARGS or set(args) != expected:
         raise ValueError("INVALID_COMMAND")
+    if ghost is not None and (type(ghost) is not int or ghost not in (0, 1)):
+        raise ValueError("INVALID_ARGUMENT")
     if via is not None and (not isinstance(via, str) or len(via) > 2048 or
                             not re.fullmatch(r"-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?(?:;-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?)*", via) or
                             len(via.split(";")) > 128):
@@ -185,6 +194,8 @@ def encode_command(session: str, command_id: int, op: str, args: dict) -> str:
         parts.append(f'{_ATTRIBUTE[name]}="{text}"')
     if via is not None:
         parts.append(f'via="{via}"')
+    if ghost is not None:
+        parts.append(f'gh="{ghost}"')
     return '<?xml version="1.0" encoding="utf-8" standalone="no" ?>\n<command ' + " ".join(parts) + " />\n"
 
 

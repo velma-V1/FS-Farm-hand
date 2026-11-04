@@ -902,19 +902,26 @@ end
 -- "unitN:hits floor^clearance groundOnly|standing", or "-" (live b8e4fcf886464f0a-1: the
 -- loaded GMC crept 3 min at full lock with nothing in AutoDrive's sensors).
 -- ------------------------------------------------- ghosting past buildings
--- The user (2026-10-30): around buildings the follower may be up to ~1 m off its planned
--- line where everything is tight; rigs wedged on posts and structure legs (live
--- 13f374b86b594744-2, 1682e794a2ee4476-1). While a Farmhand-driven rig is near buildings, or
--- held fast, its units stop colliding with the scenery obstacles near it, pair by pair:
--- GIANTS' setPairCollision(componentNode, node, false), as AttacherJoints (1866, 2052) and
--- MountableObject (159, 188) switch a vehicle's parts off one other node. Only obstacles: a
--- static node GIANTS' AI avoids (AI_BLOCKING). Never the ground the rig drives on: a node a ray
--- down from a unit meets (a shed's or a dock's floor), nor scenery GIANTS' AI drives over (live
--- 6e781c7702a84a26-1: a pad's collision off, the tractor dropped through it, OVERSPEED). Terrain,
--- roads, vehicles, people, loads and triggers are untouched. Planning still keeps its
--- clearances. Restored once the rig is clear of scenery.
+-- An early workaround, now the player's own opt-in setting (AGENTS.md 10, default OFF): ordinary
+-- Farmhand motion keeps every collision. Only when the player has turned "pass through scenery
+-- in tight spots" on, and only for the motion that carries that permission, does a rig near
+-- buildings or held fast stop colliding with the scenery obstacles beside it. Its motive (the
+-- user, 2026-10-30): around buildings the follower may be up to ~1 m off its planned line where
+-- everything is tight; rigs wedged on posts and structure legs (live 13f374b86b594744-2,
+-- 1682e794a2ee4476-1). Pair by pair: GIANTS' setPairCollision(componentNode, node, false), as
+-- AttacherJoints (1866, 2052) and MountableObject (159, 188) switch a vehicle's parts off one
+-- other node. Only obstacles: a static node GIANTS' AI avoids (AI_BLOCKING). Never the ground
+-- the rig drives on: a node a ray down from a unit meets (a shed's or a dock's floor), nor
+-- scenery GIANTS' AI drives over (live 6e781c7702a84a26-1: a pad's collision off, the tractor
+-- dropped through it, OVERSPEED). Terrain, roads, vehicles, people, loads and triggers are
+-- untouched. Planning still keeps its clearances. Restored once the rig is clear of scenery
+-- (Hitch.unghost; the bridge's watcher, Hitch.releaseGhosts, for every rig no motion drives).
+-- A ghosted motion is no proof of ordinary navigation.
 Hitch.GHOST = { staticBits = { "STATIC_OBJECT", "BUILDING", "TREE" }, nearM = 2.0, clearM = 0.5 }
 Hitch.ghosted = {}            -- tractor -> { components = {node, ...}, pairs = {[node] = true}, why }
+-- Optional observer, told once per rig when its collision with scenery first goes off
+-- (tractor, why, pairs): the bridge shows the player a notification, so it is never silent.
+Hitch.onGhost = nil
 
 -- The static nodes within `extra` metres of the rig's route box at x, z, yaw (every one, the
 -- passable ones too), or nil when unreadable.
@@ -974,8 +981,12 @@ local function ghostable(env, node)
 end
 
 -- Ghost the rig against `nodes` (scenery near it): true once at least one pair is off, false
--- and why otherwise (none ghostable, all under it, an unreadable call).
-function Hitch.ghost(env, tractor, why, nodes)
+-- and why otherwise (not permitted, none ghostable, all under it, an unreadable call).
+-- `permitted` must be exactly true: the player's setting carried by the running motion's own
+-- command. Anything else switches nothing off (GHOSTING_OFF).
+function Hitch.ghost(env, tractor, why, nodes, permitted)
+    if permitted ~= true then return false, "GHOSTING_OFF" end
+    local isNew = Hitch.ghosted[tractor] == nil
     local ok, result, reason = pcall(function()
         local g = Hitch.ghosted[tractor]
         if g == nil then
@@ -1000,6 +1011,9 @@ function Hitch.ghost(env, tractor, why, nodes)
         return true, added
     end)
     if not ok then return false, "GHOST_UNREADABLE" end
+    if result == true and isNew and Hitch.onGhost ~= nil then
+        pcall(Hitch.onGhost, tractor, why, reason)       -- a failing observer never undoes the ghost
+    end
     return result, reason
 end
 

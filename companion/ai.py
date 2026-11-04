@@ -98,6 +98,13 @@ class Settings:
         19, "allow teleport recovery"; the user turned it on 2026-10-30). Default on."""
         return self.load().get("teleport_recovery", True) is not False
 
+    def scenery_ghosting(self) -> bool:
+        """Whether Farmhand may switch off a rig's collision with the buildings, fences and other
+        static scenery right beside it while it hitches next to them or is wedged against them,
+        restored once the rig is clear (AGENTS.md 10: an early workaround, kept only as the
+        player's opt-in). Off unless the player turns it on; only exactly true turns it on."""
+        return self.load().get("scenery_ghosting", False) is True
+
     PAY_MODES = {"none": 0, "hour": 1, "job": 2, "day": 3, "game": 4}
 
     def pay(self) -> tuple[int, float]:
@@ -494,20 +501,25 @@ class SettingsMenu:
             return "per hour at GIANTS' rate"
         return f"{_money(amount)} {dict(PAY_LABELS)[name]}"
 
-    def open(self, key: str) -> tuple[str, list[str]]:
+    def main_entries(self) -> list[tuple[str, str]]:
+        """The main list as (entry, label), in its shown order; a pick is dispatched by entry."""
         s = self.settings
+        data = s.load()
+        buy = "buys only when told" if not data.get("buy_when_needed", False) else "buys what a job needs"
+        return [
+            ("pay", f"Pay: {self.pay_text()}"),
+            ("teleport", f"Teleport a stuck rig: {'on' if s.teleport_recovery() else 'off'}"),
+            ("ghosting", f"Pass through scenery in tight spots: {'on' if s.scenery_ghosting() else 'off'}"),
+            ("buying", f"Buying: {buy}"),
+            ("harvest", f"Harvest: {dict(DESTINATIONS).get(s.harvest_destination() or 'keep')}"),
+            ("preferences", f"Preferred equipment: {len(data.get('preferences', []))} saved"),
+            ("ai", "AI model"),
+            ("close", "Close"),
+        ]
+
+    def open(self, key: str) -> tuple[str, list[str]]:
         if key == "main":
-            data = s.load()
-            buy = "buys only when told" if not data.get("buy_when_needed", False) else "buys what a job needs"
-            return "Farmhand settings", [
-                f"Pay: {self.pay_text()}",
-                f"Teleport a stuck rig: {'on' if s.teleport_recovery() else 'off'}",
-                f"Buying: {buy}",
-                f"Harvest: {dict(DESTINATIONS).get(s.harvest_destination() or 'keep')}",
-                f"Preferred equipment: {len(data.get('preferences', []))} saved",
-                "AI model",
-                "Close",
-            ]
+            return "Farmhand settings", [label for _, label in self.main_entries()]
         if key == "pay":
             return "Farmhand's pay", [label for _, label in PAY_LABELS] + ["Back"]
         if key == "pay_amount":
@@ -559,22 +571,23 @@ class SettingsMenu:
         return None
 
     def _main(self, index: int) -> str | None:
-        if index == 2:                                    # teleport recovery on / off
+        entry = self.main_entries()[index - 1][0]
+        toggles = {                                       # each flips one saved choice, shown at once
+            "teleport": ("teleport_recovery", self.settings.teleport_recovery),
+            "ghosting": ("scenery_ghosting", self.settings.scenery_ghosting),
+            "buying": ("buy_when_needed", lambda: self.settings.load().get("buy_when_needed", False) is True),
+        }
+        if entry in toggles:
+            name, current = toggles[entry]
             data = self.settings.load()
-            data["teleport_recovery"] = not self.settings.teleport_recovery()
+            data[name] = not current()
             self.settings.save(data)
             self.on_change()
             return "main"
-        if index == 3:                                    # buying only when told / what a job needs
-            data = self.settings.load()
-            data["buy_when_needed"] = not data.get("buy_when_needed", False)
-            self.settings.save(data)
-            self.on_change()
-            return "main"
-        if index == 6:                                    # the AI model list (its own menu)
+        if entry == "ai":                                 # the AI model list (its own menu)
             if self.ai_menu is not None:
                 self.ai_menu()
             return None
-        if index == 7:
+        if entry == "close":
             return None
-        return {1: "pay", 4: "harvest", 5: "preferences"}[index]
+        return entry                                      # pay, harvest, preferences: their own lists

@@ -267,6 +267,24 @@ class CommandFramingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             encode_command("s", 1, "farm_drive", {**args, "via": '0,0\"/><bad'})
 
+    def test_only_the_scenery_motions_take_the_optional_ghost_flag(self):
+        def attrs(op, args):
+            return ET.fromstring(encode_command("s", 1, op, args).split("\n", 1)[1]).attrib
+        drive = {"tractor": 11, "x": 20, "z": 30, "area": 0, "yaw": 10}
+        self.assertNotIn("gh", attrs("farm_drive", drive))                   # absent: off
+        self.assertEqual(attrs("farm_drive", {**drive, "ghost": 1})["gh"], "1")
+        self.assertEqual(attrs("farm_drive", {**drive, "ghost": 0})["gh"], "0")
+        self.assertEqual(attrs("align", {"tractor": 1, "wagon": 2, "tractorJoint": 1, "wagonJoint": 1,
+                                         "maxDistanceM": 10.0, "ghost": 1})["gh"], "1")
+        for op, args in (("farm_drive", {**drive, "ghost": True}), ("farm_drive", {**drive, "ghost": 2}),
+                         ("farm_drive", {**drive, "ghost": "1"}), ("farm_drive", {**drive, "ghost": 1.0}),
+                         ("stage", {"tractor": 1, "x": 0, "z": 0, "yaw": 0, "ghost": 1}),     # never a GOTO
+                         ("load", {"tractor": 1, "wagon": 2, "direction": 1, "ghost": 1}),
+                         ("stop", {"tractor": 1, "ghost": 0})):
+            with self.subTest(op=op, args=args):
+                with self.assertRaises(ValueError):
+                    encode_command("s", 1, op, args)
+
     def test_commands_are_strict_and_session_bound(self):
         text = encode_command("abc123", 7, "stage", {"tractor": 11, "x": 1.5, "z": -2, "yaw": 0.25})
         attrs = ET.fromstring(text.split("\n", 1)[1]).attrib
@@ -389,11 +407,13 @@ NEAR = (0.0, 20.0)      # the tractor's joint starts inside the local work radiu
 
 class ProductionSequenceTests(unittest.TestCase):
     def run_ac001(self, target="player_at_acceptance", field_entrances=None, categories=CATEGORIES,
-                  teleport=True, **game_args):
+                  teleport=True, ghosting=None, **game_args):
         game = FakeGame(**game_args)
         self.addCleanup(game.stop)
         world = FS25World(game.link, categories)
         world.teleport_recovery = teleport
+        if ghosting is not None:
+            world.scenery_ghosting = ghosting
         with unittest.mock.patch.object(bridge, "ACCEPT_TIMEOUT_S", 0.3), \
                 unittest.mock.patch.dict(bridge.DONE_TIMEOUT_S, {op: 0.3 for op in bridge.DONE_TIMEOUT_S}):
             result = Executor(world, field_entrances=field_entrances).execute(intent(target))
@@ -414,6 +434,19 @@ class ProductionSequenceTests(unittest.TestCase):
         self.assertEqual((float(drive["x"]), float(drive["z"])), tuple(map(float, game.markers[3][1:])))
         self.assertEqual((game.commands[1]["tj"], game.commands[1]["wj"]), ("1", "1"))
         self.assertEqual(world._reservations, {})                   # released only at the very end
+
+    def test_motions_pass_through_scenery_only_when_the_player_turned_it_on(self):
+        # AGENTS.md 10: by default no command carries the scenery permission; with the player's
+        # opt-in setting only the motions that may use it (protocol.ipc GHOST_OPS) carry gh="1".
+        game, world, result = self.run_ac001()
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertFalse(world.scenery_ghosting)
+        self.assertEqual([c for c in game.commands if "gh" in c], [])
+        game, world, result = self.run_ac001(ghosting=True)
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual([(c["op"], c.get("gh")) for c in game.commands],
+                         [("stage", None), ("maneuver", "1"), ("align", "1"), ("attach", None),
+                          ("farm_drive", "1"), ("stop", None)])
 
     def test_no_configuration_is_needed(self):
         # No category map, no AutoDrive: the tractor is recognised from GIANTS data.
@@ -981,6 +1014,8 @@ class ServiceTests(unittest.TestCase):
             self.wait_for(lambda: game.link_world.teleport_recovery is False)  # the running world too
             menu_id, lines = self.menu(game)
             self.assertEqual(lines[1], "Teleport a stuck rig: off")
+            self.assertEqual(lines[2], "Pass through scenery in tight spots: off")
+            self.assertFalse(game.link_world.scenery_ghosting)             # off until the player says
             game.pick(3, menu_id, 1)                                    # Pay
             self.wait_for(lambda: notices.count("MENU") == 3)
             menu_id, lines = self.menu(game)
@@ -990,7 +1025,13 @@ class ServiceTests(unittest.TestCase):
             game.pick(5, menu_id, lines.index("1,000") + 1)
             self.wait_for(lambda: notices.count("MENU") == 5)
             self.assertEqual(ai.Settings().pay(), (3, 1000.0))
-            self.assertEqual(self.menu(game)[1][0], "Pay: 1,000 per day")
+            menu_id, lines = self.menu(game)
+            self.assertEqual(lines[0], "Pay: 1,000 per day")
+            game.pick(6, menu_id, 3)                                    # pass through scenery: on
+            self.wait_for(lambda: notices.count("MENU") == 6)
+            self.assertTrue(ai.Settings().scenery_ghosting())
+            self.wait_for(lambda: game.link_world.scenery_ghosting is True)  # applied to the running world
+            self.assertEqual(self.menu(game)[1][2], "Pass through scenery in tight spots: on")
 
     def test_the_ai_menu_is_offered_once_then_on_request_and_a_pick_is_validated(self):
         import tempfile as tmp

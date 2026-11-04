@@ -32,8 +32,25 @@ class SettingsMenuTests(unittest.TestCase):
         labels = self.menu.open("main")[1]
         self.assertEqual(labels[0], "Pay: per hour at GIANTS' rate")
         self.assertEqual(labels[1], "Teleport a stuck rig: on")
-        self.assertEqual(labels[2], "Buying: buys only when told")
+        self.assertEqual(labels[2], "Pass through scenery in tight spots: off")   # opt-in, default off
+        self.assertEqual(labels[3], "Buying: buys only when told")
         self.assertEqual(labels[-1], "Close")
+
+    def test_passing_through_scenery_is_off_until_the_player_turns_it_on(self):
+        # AGENTS.md 10: the early building ghosting is never imposed; only the player's choice.
+        self.assertFalse(self.settings.scenery_ghosting())
+        for stored in ("yes", 1, None, {"on": True}):                         # only exactly true is on
+            self.settings.save({"scenery_ghosting": stored})
+            self.assertFalse(self.settings.scenery_ghosting(), stored)
+        self.settings.save({})
+        self.assertEqual(self.menu.choose("main", 3), "main")
+        self.assertIs(self.settings.load()["scenery_ghosting"], True)
+        self.assertTrue(self.settings.scenery_ghosting())
+        self.assertEqual(self.menu.open("main")[1][2], "Pass through scenery in tight spots: on")
+        self.assertEqual(self.menu.choose("main", 3), "main")                 # and off again
+        self.assertFalse(self.settings.scenery_ghosting())
+        self.assertEqual(len(self.changes), 2)                                # applied at once each time
+        self.assertTrue(self.settings.teleport_recovery())                    # nothing else changed
 
     def test_pay_is_chosen_by_mode_then_amount_and_saved(self):
         self.assertEqual(self.menu.choose("main", 1), "pay")
@@ -49,18 +66,28 @@ class SettingsMenuTests(unittest.TestCase):
     def test_toggles_and_the_harvest_destination_are_saved(self):
         self.assertEqual(self.menu.choose("main", 2), "main")
         self.assertFalse(self.settings.teleport_recovery())
-        self.assertEqual(self.menu.choose("main", 3), "main")
+        self.assertEqual(self.menu.choose("main", 4), "main")
         self.assertTrue(self.settings.load()["buy_when_needed"])
-        self.assertEqual(self.menu.choose("main", 4), "harvest")
+        self.assertEqual(self.menu.choose("main", 5), "harvest")
         self.assertEqual(self.menu.choose("harvest", 1), "main")
         self.assertEqual(self.settings.harvest_destination(), "sell")
+        self.assertEqual(self.menu.choose("main", 6), "preferences")
 
     def test_the_ai_model_and_close_leave_the_settings_list(self):
-        self.assertIsNone(self.menu.choose("main", 6))
-        self.assertEqual(self.ai_opened, [True])
         self.assertIsNone(self.menu.choose("main", 7))
+        self.assertEqual(self.ai_opened, [True])
+        self.assertIsNone(self.menu.choose("main", 8))
         self.assertEqual(self.menu.choose("pay", 6), "main")                 # Back
         self.assertEqual(self.menu.choose("main", 99), "main")               # out of range: stays
+
+    def test_each_main_entry_leads_where_its_label_says(self):
+        entries = [entry for entry, _ in self.menu.main_entries()]
+        self.assertEqual(len(entries), len(set(entries)))
+        self.assertEqual(entries[-1], "close")
+        for index, entry in enumerate(entries, start=1):
+            if entry in ("pay", "harvest", "preferences"):
+                self.assertEqual(self.menu.choose("main", index), entry)
+                self.menu.open(entry)                                         # its list exists
 
 
 if __name__ == "__main__":
