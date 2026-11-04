@@ -1657,6 +1657,20 @@ class LuaBridgeTests(unittest.TestCase):
         self.W.run(self.w, 200)
         self.assertEqual(self.results(2)[-1], (2, "DONE", "STOPPED"))
 
+    def test_a_dropped_session_ends_the_takeover_watch_and_releases_powered_combines(self):
+        # Review 2026-11-04: armed stayed set, so a drive the player made meanwhile ended the next
+        # session's first job DRIVER_TOOK_OVER; a combine kept powered for an overload stayed so.
+        self.adopt()
+        combine = self.lua.table(forceIsActive=True)
+        self.lua.execute("""local B, H, t, c = ...
+            H.armed[t] = true; H.takeovers[t] = true
+            B.powered[c] = true""", self.bridge, self.hitch, self.w.tractor, combine)
+        self.W.run(self.w, 11000)                                        # no heartbeat: COMPANION_LOST
+        self.assertIsNone(self.hitch.armed[self.w.tractor])
+        self.assertIsNone(self.hitch.takeovers[self.w.tractor])
+        self.assertFalse(combine.forceIsActive)
+        self.assertIsNone(self.bridge.powered[combine])
+
     def test_a_lost_companion_aborts_the_maneuver(self):
         self.adopt()
         self.scripted_maneuver(["CONTINUE"])
@@ -2126,6 +2140,27 @@ class AutoDriveSellTests(unittest.TestCase):
         self.assertEqual((started.mode, started.first, started.second), (5, 4, 9))
         self.assertEqual(self.env.askedFillType, 103)                      # the field's crop
         self.assertEqual(self.bridge.handed[self.env.v], "drive")          # a stop still ends it
+
+    def test_the_players_autodrive_limits_come_back_when_the_handed_run_ends(self):
+        # AutoDrive saves its limits per vehicle: Farmhand's 64 km/h cap must not outlive its run.
+        st = self.env.v.ad.stateModule
+        task, status, code = self.run(self.bridge, self.env, "ad_unload", 4, 7)
+        self.assertEqual((status, st.speedLimit), ("DONE", 64))           # capped while it works
+        self.bridge.keepHandedAwake()
+        self.assertEqual(st.speedLimit, 64)                                # still running: kept
+        self.env.v.active = False                                          # AutoDrive's run ended
+        self.bridge.keepHandedAwake()
+        self.assertEqual((st.speedLimit, st.fieldSpeedLimit), (80, 20))
+        self.env.v.active = False                                          # a run that never starts
+        self.lua.execute("local env = ...; env.AutoDrive.StartDriving = function() end", self.env)
+        task = self.lua.eval("""function(B, env)
+            local t = B.start(env, { op = "ad_unload", tractor = env.v, marker = 4, field = 7, farmId = 1,
+                                     owned = function() return true end })
+            t.elapsed = 99999
+            return t end""")(self.bridge, self.env)
+        self.assertEqual(st.speedLimit, 64)
+        self.assertEqual(tuple(self.bridge.step(self.env, task, 16)), ("FAILED", "AD_NOT_STARTED"))
+        self.assertEqual(st.speedLimit, 80)                                # its abort gave them back
 
     def test_selling_delivers_the_cargo_to_the_best_paid_sell_point(self):
         self.assertEqual(self.run(self.bridge, self.env, "ad_sell", 0, 0), (None, "NOTHING_TO_SELL"))

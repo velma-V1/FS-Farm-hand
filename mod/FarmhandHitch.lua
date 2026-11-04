@@ -999,18 +999,26 @@ function Hitch.ghost(env, tractor, why, nodes, permitted)
         end
         local under = floorNodes(env, g.units)
         local added = 0
+        -- Recorded before each pair goes off: an error part way still leaves every pair it
+        -- switched off restorable (Hitch.unghost; setting a pair back on that never went off is harmless).
+        Hitch.ghosted[tractor] = g
         for _, node in ipairs(nodes or {}) do
             if not g.pairs[node] and not under[node] and ghostable(env, node) then
-                for _, component in ipairs(g.components) do env.setPairCollision(component, node, false) end
                 g.pairs[node] = true
+                for _, component in ipairs(g.components) do env.setPairCollision(component, node, false) end
                 added = added + 1
             end
         end
-        if next(g.pairs) == nil then return false, "NOTHING_TO_GHOST" end
-        Hitch.ghosted[tractor] = g
+        if next(g.pairs) == nil then
+            Hitch.ghosted[tractor] = nil
+            return false, "NOTHING_TO_GHOST"
+        end
         return true, added
     end)
-    if not ok then return false, "GHOST_UNREADABLE" end
+    if not ok then
+        if Hitch.ghosted[tractor] ~= nil and next(Hitch.ghosted[tractor].pairs) == nil then Hitch.ghosted[tractor] = nil end
+        return false, "GHOST_UNREADABLE"
+    end
     if result == true and isNew and Hitch.onGhost ~= nil then
         pcall(Hitch.onGhost, tractor, why, reason)       -- a failing observer never undoes the ghost
     end
@@ -1075,17 +1083,29 @@ end
 -- Ghosted rigs no drive holds any more, restored once each stands clear of scenery
 -- (Hitch.GHOST.clearM). `busy(tractor)`: true while a Farmhand motion still drives it.
 function Hitch.releaseGhosts(env, busy)
+    local gone = {}
     for tractor in pairs(Hitch.ghosted) do
         if not busy(tractor) then
-            local ok, foot = pcall(Hitch.routeFootprint, env, tractor)
-            local x, _, z = world(env, tractor.rootNode)
-            local fx, _, fz = env.localDirectionToWorld(tractor.rootNode, 0, 0, 1)
-            local yaw = (math.atan2 or math.atan)(fx, fz)
-            if ok and foot ~= nil and Hitch.staticNear(env, foot, x, z, yaw, Hitch.GHOST.clearM) == false then
+            -- One rig at a time: one that cannot be read (sold, deleted) never holds up the others.
+            local read, clear, x, z = pcall(function()
+                local okFoot, foot = pcall(Hitch.routeFootprint, env, tractor)
+                local px, _, pz = world(env, tractor.rootNode)
+                local fx, _, fz = env.localDirectionToWorld(tractor.rootNode, 0, 0, 1)
+                local yaw = (math.atan2 or math.atan)(fx, fz)
+                return okFoot and foot ~= nil and Hitch.staticNear(env, foot, px, pz, yaw, Hitch.GHOST.clearM) == false,
+                       px, pz
+            end)
+            if not read then
+                gone[#gone + 1] = tractor
+            elseif clear then
                 Hitch.unghost(env, tractor)
                 print(string.format("[Farmhand] collision with buildings restored for the rig at %.1f,%.1f (clear of them)", x, z))
             end
         end
+    end
+    for _, tractor in ipairs(gone) do
+        Hitch.unghost(env, tractor)          -- each pair put back under pcall; the entry dropped
+        print("[Farmhand] a ghosted rig can no longer be read (removed?): its collision pairs put back")
     end
 end
 

@@ -1250,6 +1250,21 @@ class ShuffleAndApproachTests(unittest.TestCase):
         hitch.routePoseClear = self.lua.eval("function() return false,'OBSTACLE building',{{x=0,z=2}} end")
         self.assertEqual(self.drive.begin(env, args, hitch)[1], "START_NOT_CLEAR")
 
+    def test_a_drive_that_ghosts_at_its_start_and_then_cannot_begin_restores_collision(self):
+        # Review 2026-11-04: begin returned nil after ghosting (no session, so no drive restored it).
+        env, args, hitch, seen = self.lua.execute(self.CONTACT_START, True)
+        self.lua.execute("""local args, hitch, seen = ...
+            seen.unghosts = 0
+            hitch.unghost = function() seen.unghosts = seen.unghosts + 1 end
+            args.tractor.getCruiseControlMaxSpeed = function() return nil end   -- begin fails late""",
+                         args, hitch, seen)
+        self.drive.planEgress = self.lua.eval("function() return nil,'EGRESS_BLOCKED' end")
+        self.drive.plan = self.lua.eval("function() error('forward search before departure') end")
+        session, reason = self.drive.begin(env, args, hitch)
+        self.assertIsNone(session)
+        self.assertEqual(reason, "CRUISE_UNREADABLE")
+        self.assertEqual((seen.ghosts, seen.unghosts), (1, 1))
+
     def test_without_the_players_setting_a_contact_start_keeps_every_collision(self):
         # AGENTS.md 10: ordinary driving never ghosts; the same measured reverse leaves the
         # scenery under normal collision. Absent and false are both off.
@@ -2509,6 +2524,43 @@ class GhostTests(unittest.TestCase):
         self.hitch.unghost(self.env, self.tractor)
         self.assertEqual(self.off(), [])
         self.assertIsNone(self.hitch.ghosted[self.tractor])
+
+    def test_pairs_switched_off_before_an_error_stay_restorable(self):
+        self.groups[11] = self.F.STATIC_OBJECT + self.F.AI_BLOCKING
+        self.groups[12] = self.F.STATIC_OBJECT + self.F.AI_BLOCKING
+        fail = self.lua.eval("""function(env, pairs)
+            local set = env.setPairCollision
+            env.setPairCollision = function(a, b, on)
+                if b == 12 and on == false then error("engine") end
+                return set(a, b, on)
+            end
+            return function() env.setPairCollision = set end
+        end""")
+        undo = fail(self.env, self.pairs)
+        ok, why = self.hitch.ghost(self.env, self.tractor, "NEAR_BUILDINGS", self.lua.table_from([11, 12]), True)
+        self.assertEqual((ok, why), (False, "GHOST_UNREADABLE"))
+        self.assertTrue(self.off())                                            # 11 went off before the error
+        undo()
+        self.hitch.unghost(self.env, self.tractor)
+        self.assertEqual(self.off(), [])
+
+    def test_a_rig_that_can_no_longer_be_read_never_holds_up_the_others(self):
+        self.groups[11] = self.F.STATIC_OBJECT + self.F.AI_BLOCKING
+        gone = self.lua.eval("function(t) return {rootNode={}, components={{node=301}}} end")(self.tractor)
+        self.lua.execute("""local hitch, gone = ...
+            hitch.ghosted[gone] = {components={301}, pairs={[11]=true}}""", self.hitch, gone)
+        self.hitch.ghost(self.env, self.tractor, "NEAR_BUILDINGS", self.lua.table_from([11]), True)
+        self.lua.execute("""local hitch, env, t = ...
+            hitch.routeFootprint = function() return {} end
+            hitch.staticNear = function() return false end
+            env.localDirectionToWorld = function() return 0, 0, 1 end
+            local get = env.getWorldTranslation
+            env.getWorldTranslation = function(n) if n.x == nil then error("deleted") end return get(n) end""",
+                         self.hitch, self.env, self.tractor)
+        self.hitch.releaseGhosts(self.env, self.lua.eval("function() return false end"))
+        self.assertIsNone(self.hitch.ghosted[gone])
+        self.assertIsNone(self.hitch.ghosted[self.tractor])                   # the readable one restored too
+        self.assertEqual(self.off(), [])
 
     def test_the_ground_under_the_rig_is_never_switched_off(self):
         # Live 6e781c7702a84a26-1: a pad's collision off, the tractor dropped through it (OVERSPEED).

@@ -441,9 +441,25 @@ local function keepAwake(v)
     if v.ad ~= nil and v.ad.stateModule:isActive() == true then v:raiseActive() end
 end
 
+-- AutoDrive's own speed limits from before a run Farmhand handed on to it (ad_unload): the run
+-- keeps Farmhand's cap while it works and the player's limits come back once it ends, is stopped
+-- or never starts (AutoDrive saves them per vehicle, so a cap left on is lost to the player).
+Bridge.handedSpeed = {}
+function Bridge.giveBackAdSpeed(v)
+    local h = Bridge.handedSpeed[v]
+    if h == nil then return end
+    Bridge.handedSpeed[v] = nil
+    pcall(Bridge.restoreAdSpeed, v, h.saved)
+end
+
 function Bridge.keepHandedAwake()
     for v, op in pairs(Bridge.handed) do
         if op == "drive" then pcall(keepAwake, v) end
+    end
+    for v, h in pairs(Bridge.handedSpeed) do        -- seen running, then ended: limits back
+        local ok, active = pcall(function() return v.ad.stateModule:isActive() end)
+        if ok and active == true then h.seen = true
+        elseif not ok or h.seen then Bridge.giveBackAdSpeed(v) end
     end
 end
 
@@ -1753,7 +1769,8 @@ function starters.ad_unload(env, spec)
     elseif spec.direction == -1 then unload, why = Bridge.storeMarker(env, v, fillType, spec.farmId)
     else unload, why = Bridge.bestSellMarker(env, v, fillType) end
     if unload == nil then return nil, why end
-    Bridge.capAdSpeed(v)              -- handed on to AutoDrive: it keeps Farmhand's cap
+    -- Handed on to AutoDrive: it keeps Farmhand's cap while it runs (Bridge.giveBackAdSpeed after).
+    Bridge.handedSpeed[v] = Bridge.handedSpeed[v] or { saved = Bridge.capAdSpeed(v), seen = false }
     v.ad.stateModule:setMode(AD.MODE_UNLOAD)
     AD:StartDriving(v, spec.marker, unload)
     log("ad_unload: waiting at marker %s, unloading at marker %s", tostring(spec.marker), tostring(unload))
@@ -1775,6 +1792,7 @@ end
 aborts.ad_unload = function(_env, task)
     local v = task.spec.tractor
     if v.ad.stateModule:isActive() == true then v:stopAutoDrive() end
+    Bridge.giveBackAdSpeed(v)
 end
 
 -- ad_sell (tractor): the rig's cargo delivered by AutoDrive (MODE_DELIVERTO: UnloadAtMode
@@ -2052,7 +2070,16 @@ local function dischargeFill(v)
     return v:getFillUnitFillLevel(node.fillUnitIndex), v:getFillUnitCapacity(node.fillUnitIndex)
 end
 
+-- Combines Farmhand keeps powered between ops (pipe out, then the overload): every one is let
+-- go again by the op that ends it, by a failed or stopped pipe-out, and when the session drops.
+Bridge.powered = {}
+function Bridge.unpower(v)
+    Bridge.powered[v] = nil
+    v.forceIsActive = false
+end
+
 local function keepPowered(v)
+    Bridge.powered[v] = true
     v.forceIsActive = true
     v:raiseActive()
     local state = v:getMotorState()
@@ -2082,7 +2109,7 @@ function steppers.pipe(_env, task)
     if task.spec.owned() ~= true then return "FAILED", "RESERVATION_LOST" end
     local v = task.spec.tractor
     if v:getCurrentPipeState() == task.target then
-        if task.target == 1 then v.forceIsActive = false end
+        if task.target == 1 then Bridge.unpower(v) end
         return "DONE", task.target == 1 and "PIPE_IN" or "PIPE_OUT"
     end
     if task.target ~= 1 then keepPowered(v) end
@@ -2090,7 +2117,11 @@ function steppers.pipe(_env, task)
     return nil
 end
 
-function aborts.pipe() end           -- GIANTS finishes the pipe move it started; nothing drives
+-- GIANTS finishes the pipe move it started; nothing drives. A pipe-out that failed or was stopped
+-- lets the combine go (nothing will overload from it).
+function aborts.pipe(_env, task)
+    if task.target ~= 1 then Bridge.unpower(task.spec.tractor) end
+end
 
 -- The trailer's cover opened for the discharge the way GIANTS' own AI loading does it
 -- (Cover:aiPrepareLoading: getCoverByFillUnitIndex(i) -> setCoverState(cover.index)) and put
@@ -2167,15 +2198,15 @@ function Bridge.stepOverload(_env, task)
     for i in ipairs(trailer:getFillUnits()) do
         free = free + math.max(0, trailer:getFillUnitCapacity(i) - trailer:getFillUnitFillLevel(i))
     end
-    if level < 1 then v.forceIsActive = false; return "DONE", "EMPTIED" end
-    if task.flowed and free < 1 then v.forceIsActive = false; return "DONE", "TRAILER_FULL" end
+    if level < 1 then Bridge.unpower(v); return "DONE", "EMPTIED" end
+    if task.flowed and free < 1 then Bridge.unpower(v); return "DONE", "TRAILER_FULL" end
     if task.elapsed - task.lastAt > Bridge.OVERLOAD_IDLE_MS then
-        v.forceIsActive = false
+        Bridge.unpower(v)
         log("overload ended at %.0f l (from %.0f l)", level, task.start)
         if task.flowed then return "DONE", "OVERLOAD_STOPPED" end
         return "FAILED", "NOT_OVERLOADING"
     end
-    if task.elapsed > Bridge.OVERLOAD_TIMEOUT_MS then v.forceIsActive = false; return "FAILED", "OVERLOAD_TIMEOUT" end
+    if task.elapsed > Bridge.OVERLOAD_TIMEOUT_MS then Bridge.unpower(v); return "FAILED", "OVERLOAD_TIMEOUT" end
     return nil
 end
 
@@ -2183,7 +2214,7 @@ end
 -- (Pipe:setPipeState 732-759, as the companion's pipe step); nothing drives.
 function aborts.overload(_env, task)
     local v = task.spec.tractor
-    v.forceIsActive = false
+    Bridge.unpower(v)
     pcall(function() v:setPipeState(1) end)
     restoreCover(task)
 end
@@ -3015,7 +3046,10 @@ function starters.stop(env, spec)
     elseif handed == "drive" and spec.tractor.ad.stateModule:isActive() == true then
         spec.tractor:stopAutoDrive()
     end
-    if spec.tractor ~= nil then Bridge.handed[spec.tractor] = nil end
+    if spec.tractor ~= nil then
+        Bridge.handed[spec.tractor] = nil
+        Bridge.giveBackAdSpeed(spec.tractor)
+    end
     return { handed = handed }
 end
 
@@ -3176,6 +3210,11 @@ function Bridge:dropSession(code)
         self.active = nil
     end
     if self:companionOwner() then Bridge.owner = nil end
+    -- What spans several of its ops ends with the session: the takeover watch (a later session's
+    -- first job would end DRIVER_TOOK_OVER on a drive the player made meanwhile) and combines
+    -- kept powered for an overload that will never come.
+    for v in pairs(Bridge.Hitch.armed or {}) do Bridge.Hitch.disarm(v) end
+    for v in pairs(Bridge.powered) do pcall(Bridge.unpower, v) end
     Bridge.lastAlign, Bridge.lastManeuver, Bridge.lastDetach, Bridge.lastPull = nil, nil, nil, nil
     Bridge.lastUnpark, Bridge.lastLoad, Bridge.lastDrive = nil, nil, nil
     log("bridge session %s dropped: %s", tostring(self.session), code)

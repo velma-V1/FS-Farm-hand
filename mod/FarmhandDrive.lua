@@ -1466,6 +1466,7 @@ function Drive.begin(env, args, Hitch)
     end
     Drive.scanSurface = type(Hitch.surfaceScan) == "function"
         and function(...) return Hitch.surfaceScan(env, ...) end or nil
+    local ghostedHereAtStart = false
     local ok, session, reason = pcall(function()
         local v = args.tractor
         if v == nil or v.ownerFarmId ~= args.farmId then return nil, "NOT_OWNED" end
@@ -1577,7 +1578,7 @@ function Drive.begin(env, args, Hitch)
                 -- stopped dead after 0.5 m). Without the setting the measured departure below
                 -- leaves it under normal collision.
                 if Hitch.ghost(env, v, "START_AGAINST_SCENERY", hits, true) then
-                    ghostedAtStart = true
+                    ghostedAtStart, ghostedHereAtStart = true, true
                     say("[Farmhand] drive starts against scenery: the rig's collision with buildings off")
                 end
             end
@@ -1693,6 +1694,10 @@ function Drive.begin(env, args, Hitch)
         v:setCruiseControlMaxSpeed(travelLimit)
         return s
     end)
+    if (not ok or session == nil) and ghostedHereAtStart and type(Hitch.unghost) == "function" then
+        -- No drive will run to restore it: the rig stands as it did, so its collision comes back now.
+        pcall(Hitch.unghost, env, args.tractor)
+    end
     if not ok then return nil, "UNKNOWN_OBSERVATION" end
     return session, reason
 end
