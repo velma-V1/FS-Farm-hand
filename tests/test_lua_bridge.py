@@ -760,7 +760,7 @@ class LuaBridgeTests(unittest.TestCase):
             "4:Farmhand: tractor and implement delivered",
             "4:Farmhand: stopping",
             "1:Farmhand: could not start - no available tractor and implement",
-            "1:Farmhand: stopped short - SOMETHING_NEW"])
+            "1:Farmhand: stopped short - something new"])
 
     def test_the_ai_menu_is_shown_and_the_pick_is_sent(self):
         from protocol.ipc import encode_menu
@@ -2792,3 +2792,85 @@ class CargoObstacleTests(unittest.TestCase):
         self.assertEqual(flags(truck, deck, cargo), (True, True, True, True))
         bridge.restoreTransportCrops(saved)
         self.assertEqual(flags(truck, deck, cargo), (False, True, True, False))
+
+
+class ReasonWordingTests(unittest.TestCase):
+    """Every failure the companion or the mod can report reaches the player in words: "could not
+    start - no way there was found for the rig", never "could not start - NO_ROUTE". The codes
+    are read from the source, so a new one without wording fails here (AGENTS.md: status
+    explains observed state; the human interface needs no developer knowledge)."""
+
+    # Codes that are never a failure reason the player is shown: success and phase codes, the
+    # route probe's own reasons, ghosting's internal answers, and codes the companion handles.
+    INTERNAL = frozenset({
+        "ARRIVED", "LINED_UP", "CANDIDATE", "CONTINUE", "PENDING", "ATTACH_REQUESTED", "ATTACH_IN_PROGRESS",
+        "BACKED_OFF", "PASSED", "UNDER_PIPE", "CLEAR", "ALREADY_CLEAR", "ALONGSIDE_ALREADY_CLEAR",
+        "UNPARK_NOT_BOXED", "NO_CANDIDATE", "LOCAL_TURN", "LOCAL_APPROACH", "LOCAL_LINEUP",
+        "CROP", "FIELD", "GRADE", "WATER", "UNKNOWN", "PREDICTION_UNREADABLE", "UNIT_SIZE_UNREADABLE",
+        "GHOSTING_OFF", "NOTHING_TO_GHOST", "GHOST_UNREADABLE",
+        "HAULED", "LOADED",                                           # a haul's own progress
+        "CONTRACT_", "REJECTED_", "NO_IMPLEMENT_FOR_",                # prefixes, worded below
+    })
+
+    @classmethod
+    def setUpClass(cls):
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        lua.globals().print = lambda *a: None
+        cls.bridge = lua.execute((ROOT / "mod" / "FarmhandBridge.lua").read_text())
+
+    @staticmethod
+    def emitted():
+        import re
+        codes = {}
+        python = re.compile(r'(?:Result\(\s*"(?:BLOCKED|FAILED|UNVERIFIED)"\s*,\s*|return None, |'
+                            r'(?:GoalError|ObservationMismatch|StepFailed|StepUnverified)\(\s*)"([A-Z][A-Z0-9_]+)"')
+        for path in sorted((ROOT / "companion").glob("*.py")):
+            for match in python.finditer(path.read_text()):
+                codes.setdefault(match.group(1), path.name)
+        lua_failure = re.compile(r'return\s+(?:nil|"FAILED"|"UNVERIFIED"|false)\s*,\s*"([A-Z][A-Z0-9_]{2,})"')
+        lua_step = re.compile(r'return\s+"([A-Z][A-Z0-9_]{2,})"\s*(?:end|$)')
+        for name in ("FarmhandBridge.lua", "FarmhandDrive.lua", "FarmhandHitch.lua"):
+            for line in (ROOT / "mod" / name).read_text().split("\n"):
+                if "return" in line:
+                    for match in list(lua_failure.finditer(line)) + list(lua_step.finditer(line)):
+                        codes.setdefault(match.group(1), name)
+        return codes
+
+    def test_every_reported_failure_has_words(self):
+        reasons = set(self.bridge.REASONS.keys())
+        codes = self.emitted()
+        self.assertGreater(len(codes), 150)                                   # the scan still finds them
+        missing = sorted(f"{code} ({where})" for code, where in codes.items()
+                         if code not in reasons and code not in self.INTERNAL)
+        self.assertEqual(missing, [], "add wording to Bridge.REASONS (or INTERNAL if never shown)")
+
+    def test_the_wording_completes_the_players_sentence(self):
+        for code, text in self.bridge.REASONS.items():
+            with self.subTest(code=code):
+                self.assertTrue(text and text == text.strip() and not text.endswith("."), text)
+        # A reason is a sentence's end, never a whole notice: it belongs in REASONS, not NOTICES.
+        notices = {key: text for key, text in self.bridge.NOTICES.items()}
+        self.assertEqual(sorted(k for k, text in notices.items() if not text.startswith("Farmhand")), [])
+
+    def test_every_field_operation_says_which_implement_is_missing(self):
+        from companion.executor import OPERATIONS
+        for name in OPERATIONS:
+            self.assertIn(f"NO_IMPLEMENT_FOR_{name.upper()}", set(self.bridge.REASONS.keys()), name)
+
+    def test_the_follow_refusals_reach_the_player_in_words(self):
+        self.assertEqual(tuple(self.bridge.noticeText("BLOCKED_PLAYER_NOT_IN_VEHICLE")),
+                         ("Farmhand: could not start - get into the vehicle it should follow first", True))
+        self.assertIn("FollowMe mod", self.bridge.noticeText("BLOCKED_FOLLOWME_UNAVAILABLE")[0])
+
+    def test_notices_read_as_words_even_for_a_code_not_yet_worded(self):
+        cases = {"FAILED_NO_ROUTE": "Farmhand: stopped short - no way there was found for the rig",
+                 "BLOCKED_VEHICLE_AMBIGUOUS": "Farmhand: could not start - more than one vehicle answers to "
+                                              "that name; say which",
+                 "BLOCKED_OVER_SPENDING_LIMIT": "Farmhand: could not start - it costs more than your spending "
+                                                "limit (Farmhand settings)",
+                 "FAILED_SOMETHING_NEW": "Farmhand: stopped short - something new",
+                 "BLOCKED_CONTRACT_NO_PERMISSION": "Farmhand: could not start - the game would not start the "
+                                                   "contract (no permission)"}
+        for notice, expected in cases.items():
+            with self.subTest(notice=notice):
+                self.assertEqual(tuple(self.bridge.noticeText(notice)), (expected, True))
