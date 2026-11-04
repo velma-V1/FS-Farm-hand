@@ -507,6 +507,15 @@ class ProductionSequenceTests(unittest.TestCase):
         self.assertEqual(len(pays), 1)                                     # once this session
         self.assertEqual(game.commands[0]["op"], "pay")                    # before its first command
         self.assertEqual((float(pays[0]["fd"]), float(pays[0]["area"])), (3.0, 750.0))
+        # A save reloaded: the fresh mod re-adopts this session with its default pay and says
+        # hello again; the player's pay goes again before the next command.
+        game.link.on_frame({"event": "hello"})
+        with unittest.mock.patch.object(bridge, "ACCEPT_TIMEOUT_S", 0.3), \
+                unittest.mock.patch.dict(bridge.DONE_TIMEOUT_S, {op: 0.3 for op in bridge.DONE_TIMEOUT_S}):
+            Executor(world).execute(intent())
+        pays = [c for c in game.commands if c["op"] == "pay"]
+        self.assertEqual(len(pays), 2)
+        self.assertEqual((float(pays[1]["fd"]), float(pays[1]["area"])), (3.0, 750.0))
 
     def test_without_autodrive_giants_goto_travels_and_delivers_here(self):
         # Farmhand's own drive travels to the wagon (live f27757a15ce94d2a-2: GIANTS GOTO never

@@ -73,6 +73,9 @@ class CommandLink:
         self._cond = threading.Condition()
         self._snapshot: dict | None = None
         self.hello: dict | None = None    # the game's latest hello (its mod version and build)
+        # Hellos received: each is the game (re)opening the pipe - a reloaded save's fresh mod
+        # re-adopting this same session too - so what is pushed once per game (pay) goes again.
+        self.hellos = 0
         self._catalog_pages: dict[int, list] = {}
         self.catalog: tuple = ()            # the store items of the linked game (complete pages only)
         self._snapshots = 0
@@ -163,6 +166,7 @@ class CommandLink:
                 # after a savegame reload: its request ids restart there.
                 self._last_request = 0
                 self.hello = frame
+                self.hellos += 1
                 # Its store items come again: never buy from another game's catalog.
                 self.catalog, self._catalog_pages = (), {}
             elif event == "snapshot":
@@ -540,9 +544,11 @@ class FS25World:
     # ------------------------------------------------------------- operations
     def _run(self, op: str, **args) -> str:
         # Farmhand's pay goes to each game session once, before its first real command (never
-        # before a job that blocks with nothing sent).
-        if op not in ("pay", "charge") and self.pay is not None and self._paid_session != self.link.session:
-            self._paid_session = self.link.session
+        # before a job that blocks with nothing sent), and again after the game said hello anew:
+        # a reloaded save's mod starts from its default pay under the same session.
+        paid = (self.link.session, getattr(self.link, "hellos", 0))
+        if op not in ("pay", "charge") and self.pay is not None and self._paid_session != paid:
+            self._paid_session = paid
             try:
                 self.set_pay(*self.pay())
             except (StepFailed, StepUnverified) as failure:
