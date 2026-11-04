@@ -619,6 +619,20 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
                 if pass ~= true then break end
             end
         end
+        -- The goal pose itself, once per goal (live abf1610fc62543be-3 / 0390b41df0e14112-2:
+        -- every search to it exhausted, yet each plans in open ground; what the probe rejects
+        -- at the goal tells a blocked goal from a blocked way in).
+        local goalKey = string.format("%.1f,%.1f,%s", gx, gz, tostring(goalYaw))
+        if Drive.goalProbed ~= goalKey then
+            Drive.goalProbed = goalKey
+            local pieces = {}
+            local headings = goalYaw ~= nil and { goalYaw } or { 0, pi/4, pi/2, 3*pi/4, pi, -3*pi/4, -pi/2, -pi/4 }
+            for _, heading in ipairs(headings) do
+                local pass, why = probe(gx, gz, heading, 0)
+                pieces[#pieces+1] = string.format("%.2f:%s", heading, pass == true and "clear" or tostring(why))
+            end
+            say("[Farmhand] drive goal pose probe " .. table.concat(pieces, " "))
+        end
     end
     return nil, "NO_ROUTE"
 end
@@ -1067,6 +1081,28 @@ function Drive.pathError(path, nextIndex, x, z)
     end
     return nearest
 end
+
+-- The rig's observed offset from its path: the vector from the nearest path point to (x, z)
+-- (the same nearest point as Drive.pathError). Zero when there is no path.
+function Drive.pathOffset(path, nextIndex, x, z)
+    if path == nil or #path < 2 then return 0, 0 end
+    local best, ox, oz = math.huge, 0, 0
+    for i = math.max(2,nextIndex-2), math.min(#path,nextIndex+2) do
+        local a,b = path[i-1],path[i]
+        local dx,dz = b[1]-a[1],b[2]-a[2]
+        local length2 = dx*dx+dz*dz
+        if length2 > 0 then
+            local t = math.max(0,math.min(1,((x-a[1])*dx+(z-a[2])*dz)/length2))
+            local nx, nz = a[1]+dx*t, a[2]+dz*t
+            local d = distance(x,z,nx,nz)
+            if d < best then best, ox, oz = d, x-nx, z-nz end
+        end
+    end
+    return ox, oz
+end
+
+-- Above this observed offset the preview also checks the path where the rig actually tracks it.
+Drive.PREVIEW_OFFSET_M = 0.3
 
 function Drive.sectionReached(path, x, z, yaw)
     if path == nil or #path == 0 then return false end
@@ -1809,6 +1845,11 @@ local function guard(env, s, Hitch, x, z, yaw, atTarget)
         if not finite(kmh) then return "UNKNOWN_OBSERVATION" end
         local metresPerSecond = kmh / 3.6
         local horizon = math.max(8, metresPerSecond * 0.5 + metresPerSecond * metresPerSecond / 4 + 5)
+        -- Where the rig will actually be: its path shifted by the offset it tracks it with now
+        -- (live 0390b41df0e14112-2: 1.2-1.7 m inside the bends for seconds, against the route
+        -- box's 0.5 m margin; both contacts were in that band, never on the path itself).
+        local ox, oz = Drive.pathOffset(s.path, s.next, x, z)
+        local shifted = math.sqrt(ox * ox + oz * oz) > Drive.PREVIEW_OFFSET_M
         local traveled = 0
         for i = s.next, #s.path do
             local segmentLength
@@ -1824,6 +1865,14 @@ local function guard(env, s, Hitch, x, z, yaw, atTarget)
                     say(string.format("[Farmhand] drive preview blocked at %.2f,%.2f yaw %.2f: %s",
                                         px, pz, pyaw, tostring(why)))
                     return clear == nil and "UNKNOWN_OBSERVATION" or "OBSTACLE_AHEAD"
+                end
+                if shifted then
+                    clear, why = Hitch.routePoseClear(env, s.foot, px + ox, pz + oz, pyaw, turn)
+                    if clear ~= true then
+                        say(string.format("[Farmhand] drive preview blocked as tracked (%.1f m off the path) at %.2f,%.2f yaw %.2f: %s",
+                                            math.sqrt(ox * ox + oz * oz), px + ox, pz + oz, pyaw, tostring(why)))
+                        return clear == nil and "UNKNOWN_OBSERVATION" or "OBSTACLE_AHEAD"
+                    end
                 end
                 if metres >= length then break end
             end

@@ -1507,6 +1507,68 @@ class ShuffleAndApproachTests(unittest.TestCase):
         env, session, hitch = self.lua.execute(setup, 50, 0, limit - 1000)
         self.assertNotEqual(self.drive.step(env, session, 16, hitch), "NO_GOAL_PROGRESS")
 
+    def test_the_preview_checks_where_the_rig_tracks_not_only_the_planned_path(self):
+        # Live 0390b41df0e14112-2: the follower ran 1.2-1.7 m inside the bends for seconds; the
+        # route box (0.5 m margin) passed every planned sample and the tractor met an object in
+        # that band twice (ENVELOPE_CONTACT). An object where the rig actually tracks is ahead.
+        lines = []
+        self.lua.globals().print = lambda *parts: lines.append(" ".join(map(str, parts)))
+        setup = """
+            local pathX = ...
+            local vehicle = {rootNode=1, ownerFarmId='1',
+                getLastSpeed=function() return 3 end,
+                getIsAIActive=function() return false end,
+                getIsEntered=function() return true end}
+            local foot={units={vehicle},lMin=-1.2,lMax=1.2,aMin=-4,aMax=3}
+            local env={getWorldTranslation=function() return 0,0,0 end,
+                localDirectionToWorld=function() return 0,0,1 end}
+            -- An object 1-4 m ahead on the rig's own line (x near 0), clear of x = 1.5.
+            local hitch={routeFootprint=function() return foot end,
+                routePoseClear=function(_, _, px, pz)
+                    if math.abs(px) < 0.5 and pz > 1 and pz < 4 then return false, "OBSTACLE test" end
+                    return true
+                end,
+                driverConflict=function() return nil end,
+                halt=function() end}
+            local session={tractor=vehicle,farmId='1',isReserved=function() return true end,
+                foot=foot,targetX=pathX,targetZ=60,
+                path={{pathX,-4,0},{pathX,0,0},{pathX,4,0},{pathX,8,0},{pathX,12,0}},next=2,
+                radius=6,elapsed=8000,movedAt=8000,lastMovedX=0,lastMovedZ=0,replans=0,
+                lastSpeedMode='drive',previewAt=0}
+            return env,session,hitch
+        """
+        env, session, hitch = self.lua.execute(setup, 1.5)          # 1.5 m beside its path
+        self.drive.step(env, session, 16, hitch)
+        self.assertTrue(session.recovering)
+        self.assertTrue(any("blocked as tracked (1.5 m off the path)" in l for l in lines), lines)
+        lines.clear()
+        env, session, hitch = self.lua.execute(setup, 0.0)          # on its path: the same object is on it
+        self.drive.step(env, session, 16, hitch)
+        self.assertTrue(session.recovering)
+        self.assertFalse(any("as tracked" in l for l in lines))
+        self.assertTrue(any("preview blocked at" in l for l in lines))
+        lines.clear()
+        env, session, hitch = self.lua.execute(setup, 1.5)
+        session.foot.lMin, session.foot.lMax = -0.2, 0.2            # rig on x = 1.5 now: nothing in its way
+        self.lua.execute("local s = ...; s.path = {{0,-4,0},{0,0,0},{0,4,0}}; s.targetX = 0", session)
+        hitch.routePoseClear = self.lua.eval("function() return true end")
+        self.drive.step(env, session, 16, hitch)
+        self.assertFalse(bool(session.recovering))
+
+    def test_an_exhausted_local_search_says_what_the_probe_finds_at_the_goal_once(self):
+        # Live abf1610fc62543be-3 / 0390b41df0e14112-2: every search to the goal exhausted, yet
+        # each of those geometries plans in open ground; the trace never said why.
+        lines = []
+        self.lua.globals().print = lambda *parts: lines.append(" ".join(map(str, parts)))
+        probe = self.lua.eval("function(x, z) if math.abs(x - 10) < 3 and math.abs(z - 10) < 3 then "
+                              "return false, 'OBSTACLE goalbox' end return true end")
+        start, goal = self.lua.table_from((0, 0, 0)), self.lua.table_from((10, 10))
+        for _ in range(2):
+            self.assertIsNone(self.drive.plan(start, goal, 6, probe, None, None, True, 300)[0])
+        probed = [l for l in lines if "goal pose probe" in l]
+        self.assertEqual(len(probed), 1)                       # once per goal, not every attempt
+        self.assertEqual(probed[0].count("OBSTACLE goalbox"), 8)  # no heading asked: eight
+
     def test_held_fast_under_throttle_marks_just_past_the_front_as_blocked_and_replans(self):
         # Live 7fd526481ca24c1c-3: stopped dead from 6.6 km/h by something no query saw;
         # four replans drove at it again and the drive ended OBSTACLE_AHEAD.
