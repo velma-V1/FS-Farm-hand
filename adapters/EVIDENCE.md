@@ -1211,3 +1211,63 @@ resulting static and dynamic split shapes through its callback; native
 measurement should capture the native split event's complete output set,
 including the stump, before classifying a volume difference as lost wood.
 These source facts do not prove chainsaw control or wood conservation live.
+
+## 2026-11-04 bounded drive and preview check
+
+Natural request `take the 3650 to the farm barn` completed in 78.36 s with
+observed vehicle displacement and stop (`00b5a0e57f8b4bfa-1`). The next
+request, `take the 3650 to field 3`, first moved the exact 3650 after 3.99 s
+but failed `OBSTACLE_AHEAD` near the barn (`c919ca9824c446bc-1`). A read-only
+physical query at the later pose found no standing unit contact. A bounded
+0.5 m reverse using native curvature control moved 0.434 m; native point
+control moved 0.440 m at 2 km/h and 0.427 m at 1.5 km/h; the production
+governor moved 0.439 m. All ended idle under normal collision. **PROVEN:**
+reverse control works at that clear pose. The earlier held-fast reverse was
+pose-specific; a general reverse-actuator workaround is unjustified.
+
+The planner emits 2 m half-length segments when 4 m arcs do not fit, while
+the drive preview sampled every segment through 4 m. A focused regression
+demonstrated that the old preview extended a 2 m arc past its endpoint; the
+preview now derives arc length from each segment's chord and yaw and stops at
+the validated endpoint. This is a code-level correction, **UNVERIFIED as the
+sole cause** of the barn failure. A new field 3 request from about 4.4 m
+farther north (`4abac5bb23274cae-1`) started verified movement after 4.00 s
+and completed with observed arrival and stop in 48.89 s. It had no blocked
+preview. Different starting pose prevents a controlled before/after claim.
+One additional natural round trip, field 3 → farm barn → field 3, completed
+with observed stops in 51.57 s and 46.31 s (`4abac5bb23274cae-2/-3`).
+First verified movement was 4.08 s and 4.00 s respectively. The barn stop
+was about 10 m from the earlier failing pose, so these runs strengthen the
+nearby-workflow result but still do not reproduce the original exact pose.
+
+**Cross-system finding:** route generation, safety preview, and control must
+share the same physical segment definition. Repeated replanning from an
+unchanged pose cannot correct a preview that examines unplanned space. The
+remaining measured-steering-reference candidate mismatch is separate; this
+trial does not qualify that change. The natural requests used Farmhand-owned
+navigation, no provider fallback, teleport, or scenery ghosting.
+
+## 2026-11-04 bounded fieldwork dependency
+
+An initial 100 m² fertilization request selected the correct MT635/RZK rig,
+but a speculative field scan teleported an unrelated canola trailer before
+any obstruction was observed. That preflight relocation was removed. The
+first helper attempt stood idle for 64 s, then returned `NOT_REACHABLE`;
+Farmhand's own drive took the attached rig to field 2, and GIANTS changed
+376 m² before the bounded stop. The final field snapshot measured about
+756 m² of additional spray coverage; farm money fell 9.2543 while the
+sprayer fill stayed at zero, consistent with helper purchase but not a
+complete material balance. The job returned and detached the sprayer,
+contrary to preserving the assembled rig. Evidence:
+`.fs25-dev/evidence/6d5db688de5049d7-1/`.
+
+The bounded-job builder now skips return/detach when the rig was already
+assembled. A far-field entry candidate was added to skip the observed idle
+helper attempt. In its next live run, Farmhand began driving within about
+5 s, but route search repeated for ~40 s about 5 m from its entry point;
+it eventually reached that point. The interrupted helper and a later
+near-field retry showed an active helper with no movement/tool activation
+after 60 s. **Field-entry suitability remains UNVERIFIED**: proximity to one
+point is not enough. The partial live reruns do not prove a faster complete
+fieldwork job. Evidence: `.fs25-dev/evidence/5c48a61fc51d4add-2/` and
+`-3/`. The final retry was STOPped; do not treat it as completion.

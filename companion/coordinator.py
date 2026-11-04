@@ -471,7 +471,8 @@ def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: st
     work_op = "cultivate" if note == "NO_PLOW_CULTIVATING" else operation
     with_crop = {"crop": crop} if crop else {}
     steps = []
-    if not _hitched(items, kind, crop):
+    was_hitched = _hitched(items, kind, crop)
+    if not was_hitched:
         freed = _tractor_to_free(items, kind, farm_id)
         if freed is not None:
             # Every tractor has something hitched (live 7dada469b72f44ed-3, a contract taken):
@@ -482,9 +483,12 @@ def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: st
             steps.append({"task": "hitch_pair", "implement": kind, **with_crop})
     steps.append({"task": "field_work", "field": field, "operation": work_op, "implement": kind,
                   **({"area_m2": area_m2} if area_m2 else {}), **with_crop})
-    # Back where it was taken from, then unhitched there: never left in the field.
-    steps.append({"task": "move_pair", "implement": kind, "target": {"type": "origin"}})
-    steps.append({"task": "detach_pair", "implement": kind})
+    # A bounded test-area request ends when its measured area is done. Keep an
+    # already assembled player rig intact instead of returning and detaching it.
+    # Full-field/background workers retain their existing return workflow.
+    if not was_hitched or area_m2 is None:
+        steps.append({"task": "move_pair", "implement": kind, "target": {"type": "origin"}})
+        steps.append({"task": "detach_pair", "implement": kind})
     return steps, note
 
 

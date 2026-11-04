@@ -625,6 +625,20 @@ class DrivePlannerTests(unittest.TestCase):
         self.assertAlmostEqual(yaw, end[2], places=5)
         self.assertAlmostEqual(curvature, 1.0 / radius, places=5)
 
+    def test_preview_short_reverse_uses_reverse_arc_and_endpoint(self):
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        drive = lua.execute(SOURCE.read_text())
+        radius = 6.0
+        change = -2.0 / radius
+        end = (radius * (1 - math.cos(change)), -radius * math.sin(-change), change, -1)
+        path = lua.table_from(((0.0, 0.0, 0.0), end), recursive=True)
+        x, z, yaw, curvature, length = drive.routeSample(path, 2, 4.0)
+        self.assertAlmostEqual(length, 2.0, places=5)
+        self.assertAlmostEqual(x, end[0], places=5)
+        self.assertAlmostEqual(z, end[1], places=5)
+        self.assertAlmostEqual(yaw, end[2], places=5)
+        self.assertAlmostEqual(curvature, 1.0 / radius, places=5)
+
     def test_path_error_detects_a_vehicle_leaving_the_generated_line(self):
         lua = lua54.LuaRuntime(unpack_returned_tuples=True)
         drive = lua.execute(SOURCE.read_text())
