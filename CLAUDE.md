@@ -1,3 +1,7 @@
+## Claude Cloud ↔ FS25 lab reference (2026-11-04)
+
+The production branch has a separate private MCP service `farmhand-live-lab`; see `CLOUD_LAB_ACCESS.md` for the current connection and verified non-focus-stealing hot-reload workflow. An MCP entry existing in `.mcp.json` does NOT prove this particular cloud session is authenticated. Verify with `toolkit_list("notes")` and `live_status()` before citing live/toolkit access. No arbitrary host shell, GUI input, game restarts, or cloud-code deployment is available through the gateway. Source access is for private research; do not publish GIANTS/provider code. Lab test successes are not proof that cloud changes ran in FS25. Preserve Codex's separate laboratory and the player's foreground.
+
 ## Current production directive — 2026-11-04
 
 **Production is underway on this cloud branch.** Build the actual, installable, fully integrated standalone Farmhand, not an indefinite proof-of-concept or an improved lab. AGENTS.md's production directive supersedes its historical lab-only section here. Use the laboratory's measured code, results and tests as inputs, and return to targeted research only to resolve a concrete blocker. Own the end-to-end player outcome. Exercise full engineering discretion about implementation, architecture, work ordering and parallelization; optimize for the simplest robust product. Commit coherent validated production improvements. Never claim an unperformed local-game live test.

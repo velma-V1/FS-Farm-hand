@@ -1,33 +1,59 @@
-# Farmhand live laboratory access — 2026-11-04
+# Farmhand production ↔ local FS25 lab access
 
-**Status:** A separate authenticated remote MCP gateway runs on the owner's PC. The `.mcp.json` entry provides the current HTTPS endpoint, but **cloud authentication must be activated in the Claude cloud environment before the tool works**.
+Last verified: 2026-11-04. See `.mcp.json` for the current remote MCP URL.
 
-## Cloud authorization (secure, no repo secret)
+## What exists
 
-1. Open the existing Farmhand Claude Code cloud session; use the caret beside the session title -> **Edit cloud environment**.
-2. Under **Network secrets**, add a **Bearer** credential for the exact host `catalogs-donor-sand-shine.trycloudflare.com`; use the token held exclusively on the PC at `~/.local/share/farmhand-cloud-bridge/auth_token`. The value is **never committed or pasted into this repository**.
-3. Reconnect the project-scoped `farmhand-live-lab` MCP server in `/mcp`. Existing sessions may need to reload their MCP configuration after pulling this repository change. Do **not** change the Claude model to accomplish this. For new sessions, .mcp.json loads on startup.
-4. The tunnel is currently an **ephemeral Cloudflare Quick Tunnel**. Its hostname can change if the service is restarted. Update the `.mcp.json` URL and the network-secret host in that case. A named tunnel is preferable for long-term use.
+A private MCP gateway is running on the owner's Windows/WSL2 PC, independently of Codex's working tree. It exposes **read-only** FS25 toolkit research plus bounded operations against the **existing local lab runner**, which is attached to FS25 **Save 1**. No new runner or game was started.
 
-The local gateway is controlled by two user systemd services: `farmhand-mcp.service` and `farmhand-tunnel.service`. Both run from `~/.local/share/farmhand-cloud-bridge`, **not** from this source checkout.
+Gateway services (PC only):
+- `systemctl --user status farmhand-mcp.service farmhand-tunnel.service`
+- Implementation: `~/.local/share/farmhand-cloud-bridge/bridge.py`
+- Credential: `~/.local/share/farmhand-cloud-bridge/auth_token` — NEVER commit it.
+- HTTPS endpoint: `https://catalogs-donor-sand-shine.trycloudflare.com/mcp`
+- Temporary Cloudflare Quick Tunnel. Hostname **changes when recreated**; replace the URL and network-secret allowed host together.
 
-## Tools
+## Connect the existing Claude Cloud session — one account-side authorization
 
-- `toolkit_list(directory)`: list permitted toolkit paths (private FS25 source).
-- `toolkit_read(path,start_line,max_lines)`: read a limited excerpt.
-- `toolkit_search(term,max_matches)`: search source references.
-- `live_status()`: inspect running local FS25 test environment.
-- `live_collect(test_id)`: retrieve available historical test evidence.
-- `live_start_request(text)` and `live_job_status(job_id)`: run and monitor one bounded live request against the **local lab**, asynchronously.
-- `live_request(text)`: synchronous live request; prefer start/poll for long runs.
-- `live_stop()`: STOP the local lab task.
+1. The user should open their existing Claude cloud session, select the caret after its title, then **Edit cloud environment → Network secrets → Add secret**.
+2. Name: **Farmhand private lab**. Allowed website: **catalogs-donor-sand-shine.trycloudflare.com**.
+3. Use **Authorization** header, **Bearer** prefix, and paste the secret value privately from the PC file `~/.local/share/farmhand-cloud-bridge/auth_token`. On Windows PowerShell, `wsl cat ~/.local/share/farmhand-cloud-bridge/auth_token` displays it. Do not paste it into chat, a GitHub commit, or Claude's source tree.
+4. Save the network secret. Anthropic's proxy can attach it to outgoing requests for the allowed hostname without letting the model read it. The approved hostname is reachable even under a Trusted cloud-network policy.
+5. In the existing cloud session, bring in **only the new configuration/doc files** from the remote `cloud/farmhand-production-20261104` branch, preserving all local changes. Reconnect the `farmhand-live-lab` MCP server or enable its custom connector if the session had already started before the project .mcp.json was added. **Do not change the model or reread the whole repo.**
+6. **PROVE access**: call `toolkit_list("notes")`, `toolkit_read("skills/fs25-master-skill/SKILL.md",1,15)`, and `live_status()`. Do not claim Claude Cloud is connected before these return.
 
-## Strict separation
+No token, installed GIANTS corpus, game executable, or private toolkit files are stored in the public Farmhand GitHub repository.
 
-This connects to the **existing local lab** checkout `/home/xxthatguyxx/projects/FS-Farm-hand` and its trusted host runner and FS25 save 1, **not** to the cloud production branch. A successful lab test does not verify an uninstalled cloud patch. The gateway does not expose arbitrary shell execution, file writes, install/restart, UI clicking, or host lifecycle controls. Do not change/reload the FS25 game or local runner through unrelated tools. Never treat third-party or GIANTS references as redistributable software.
+## Available remote MCP tools
 
-Use the established toolkit's exact installed game data for API/physics hypotheses; minimize tool outputs and make targeted searches instead of reading the entire corpus.
+- `toolkit_list(directory)` — browse allowed reference directories.
+- `toolkit_read(path,start_line,max_lines)` — read one bounded source excerpt.
+- `toolkit_search(term,max_matches)` — search the actual locally installed FS25 reference corpus.
+- `live_status()` — compact status, readiness, savegame, installed build and active task (no GUI focus).
+- `live_collect(test_id)` — retrieve lab test evidence.
+- `live_start_request(text)` — start one bounded natural-language test **only if local Save 1 is READY with no active job**; returns an ID.
+- `live_job_status(job_id)` — check remote test completion.
+- `live_stop(job_id)` — may stop **only a cloud-originated active test**.
+- `live_hot_reload()` — perform Codex's **existing** background Lua hot reload of **already-installed local code**; refuses unless game linked and all jobs idle. It never presses keys, clicks menus, switches windows, launches or restarts FS25.
 
-## User-local gateway check
+## Hot reload, with zero PC focus theft
 
-`systemctl --user status farmhand-mcp farmhand-tunnel` and `journalctl --user -u farmhand-tunnel -n 40 --no-pager` show connection health and the current hostname.
+Codex implemented a filesystem-triggered reload in `mod/FarmhandBridge.lua`: every ~1 second Farmhand checks the exact local game-profile directory
+`modSettings/FS25_Farmhand/.fhReload`. When no command is running, the existing `FarmhandProbe:consoleReload()` reloads the five already-installed Lua modules in dependency order. It preserves listener/state identity and refreshes incompatible observation caches. The marker is consumed; `log.txt` records `[Farmhand] fhReload: reloaded ...`.
+
+The gateway's `live_hot_reload()` verifies game and companion readiness, recent live frame, no active job, and no pending marker. It then creates only that marker and verifies consumption and game-log confirmation. **No foreground change or savegame reload.** Local live verification completed November 4: all five modules reloaded and the marker was consumed.
+
+**Limitation:** Hot reload is **not deployment**. It reloads code ALREADY installed in the local lab. It cannot deploy cloud edits to the PC. New cloud production code must first be reviewed, tested, and deliberately promoted into a separate local staging workspace; do not overwrite Codex's dirty lab or silently install production patches over a running player's save.
+
+GUI `click`/`key`, menus, `restart-fs25`, game closure and unrestricted host commands are intentionally **not** exposed through the MCP gateway. Existing Codex background screenshot path uses `.fhScreen`; do not bring FS25 to foreground just to inspect it.
+
+## Engineering boundaries and product priorities
+
+- Codex laboratory: discover/prove the smallest reusable primitives in actual FS25.
+- Claude cloud: implement production Farmhand; use research and existing lab evidence but distinguish **lab proof** from **proof of cloud source**.
+- Promote only evidence-backed improvements; no blind merge, no silent ghosting/teleport/restart, no user-focus theft.
+- Preserve autonomous user-observer operation and physical verification. Live test movement must be confirmed by observed equipment/field state, not helper acceptance or planner logs.
+- Build player-facing low-cost settings for optional behavior (ghosting defaults OFF), plain-language commands, STOP, and recovery with bounded side effects.
+- Never copy GIANTS proprietary or other restricted third-party implementations into public product code. Use source for API facts and original implementations.
+
+This gateway is a **temporary development channel**, not a production dependency of the released Farmhand mod. The shipping mod must function without the user's cloud account, MCP gateway or tunnel.
