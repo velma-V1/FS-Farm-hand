@@ -594,13 +594,13 @@ function Probe:update(dt)
                             local x,_,z=env.getWorldTranslation(unit.rootNode)
                             local fx,_,fz=env.localDirectionToWorld(unit.rootNode,0,0,1)
                             local yaw=(math.atan2 or math.atan)(fx,fz)
-                            for _, step in ipairs({0,1,2,-1,-2}) do
-                                local px,pz=x+fx*step,z+fz*step
-                                local ok,clear,reason=pcall(self.Hitch.routePoseClear,
-                                    env,foot,px,pz,yaw,0,step<0)
+                            for _, offset in ipairs({0,1,2,-1,-2}) do
+                                local px,pz=x+fx*offset,z+fz*offset
+                                local okClear,clear,reason=pcall(self.Hitch.routePoseClear,
+                                    env,foot,px,pz,yaw,0,offset<0)
                                 log("physical pair candidate id=%d step=%d xyz=(%.3f,%.3f) clear=%s reason=%s",
-                                    id,step,px,pz,tostring(ok and clear),
-                                    tostring(ok and reason or "UNREADABLE"))
+                                    id,offset,px,pz,tostring(okClear and clear),
+                                    tostring(okClear and reason or "UNREADABLE"))
                             end
                             local center=unit.spec_wheels and unit.spec_wheels.steeringCenterNode
                             if center~=nil then
@@ -990,10 +990,6 @@ function Probe:stepActuatorProof(dt)
     end
     if p.tool.curTargetPosition == nil and p.motionElapsed == 0 then
         p.tool.curTargetPosition = p.stateTarget
-        local currentState = select(p.tool.rotationAxis, env.getRotation(p.tool.node))
-        if p.tool.rotMin ~= nil and p.tool.rotMax ~= nil then
-            currentState = (currentState - p.tool.rotMin) / (p.tool.rotMax - p.tool.rotMin)
-        end
         p.tool.curTargetDirection = p.delta > 0 and 1 or -1
     end
     local current = select(p.tool.rotationAxis, env.getRotation(p.tool.node))
@@ -1062,7 +1058,7 @@ function Probe:logTreeInventory()
     local farmId = player:getFarmId()
     local found, seen, hits = {}, {}, 0
     local target = {}
-    function target:onTree(node)
+    function target.onTree(_, node)
         hits = hits + 1
         if seen[node] or not env.getHasClassId(node, env.ClassIds.MESH_SPLIT_SHAPE)
                 or env.getSplitType(node) == 0 or env.getRigidBodyType(node) ~= env.RigidBodyType.STATIC
@@ -1101,7 +1097,7 @@ function Probe:logTreeHeadReach()
                 spec.cutSizeY, spec.cutSizeZ)
             local nearest, seen, found = nil, {}, {}
             local target = {}
-            function target:onTree(node)
+            function target.onTree(_, node)
                 if seen[node] or not env.getHasClassId(node, env.ClassIds.MESH_SPLIT_SHAPE)
                         or env.getSplitType(node) == 0
                         or env.getRigidBodyType(node) ~= env.RigidBodyType.STATIC
@@ -1215,7 +1211,7 @@ function Probe:logLowestCuttableTree()
             local hx, hy, hz = env.getWorldTranslation(spec.cutNode)
             local seen, trees = {}, {}
             local target = {}
-            function target:onTree(node)
+            function target.onTree(_, node)
                 if seen[node] or not env.getHasClassId(node, env.ClassIds.MESH_SPLIT_SHAPE)
                         or env.getSplitType(node) == 0
                         or env.getRigidBodyType(node) ~= env.RigidBodyType.STATIC
@@ -1278,7 +1274,7 @@ function Probe:previewTreeTeleport()
             local localHx, _, localHz = env.worldToLocal(vehicle.rootNode, hx, hy, hz)
             local seen, candidates = {}, {}
             local overlap = {}
-            function overlap:onTree(node)
+            function overlap.onTree(_, node)
                 if seen[node] or not env.getHasClassId(node, env.ClassIds.MESH_SPLIT_SHAPE)
                         or env.getRigidBodyType(node) ~= env.RigidBodyType.STATIC
                         or env.getIsSplitShapeSplit(node) then return end
@@ -1394,7 +1390,7 @@ function Probe:startNativeTreeAlign()
             local dx, dy, dz = env.getWorldTranslation(auto.treeDetectionNode)
             local seen, found = {}, {}
             local target = {}
-            function target:onTree(node)
+            function target.onTree(_, node)
                 if not seen[node] and env.getHasClassId(node, env.ClassIds.MESH_SPLIT_SHAPE)
                         and env.getRigidBodyType(node) == env.RigidBodyType.STATIC
                         and not env.getIsSplitShapeSplit(node) then
@@ -1676,7 +1672,7 @@ function Probe:auditNearbyWood()
                 tostring(spec.cutAttachDirection), tostring(spec.attachedSplitShapeY))
             local seen, shapes = {}, {}
             local target = {}
-            function target:onTree(node)
+            function target.onTree(_, node)
                 if seen[node] or not env.getHasClassId(node, env.ClassIds.MESH_SPLIT_SHAPE)
                         or env.getSplitType(node) == 0 then return end
                 seen[node] = true
@@ -1749,13 +1745,13 @@ function Probe:startTreeStackTrial()
             if heldVolume < 0.1 then
                 return log("tree stack REFUSED held volume %.6f too small for placement trial", heldVolume)
             end
-            local fx, fy, fz = env.localDirectionToWorld(spec.cutNode, 1, 0, 0)
+            local fx, _, fz = env.localDirectionToWorld(spec.cutNode, 1, 0, 0)
             local feedHorizontal = math.sqrt(fx*fx+fz*fz)
             if feedHorizontal < 0.8 then return log("tree stack REFUSED feed axis too vertical") end
             fx, fz = fx/feedHorizontal, fz/feedHorizontal
             local best, seen = nil, {}
             local target = {}
-            function target:onWood(node)
+            function target.onWood(_, node)
                 if seen[node] or node == held
                         or not env.getHasClassId(node, env.ClassIds.MESH_SPLIT_SHAPE)
                         or env.getRigidBodyType(node) == env.RigidBodyType.STATIC then return end
@@ -1916,7 +1912,7 @@ function Probe:stepTreeStackTrial(dt)
         if p.settleMs < 4000 then return end
         local logs, seen = {}, {}
         local target = {}
-        function target:onWood(node)
+        function target.onWood(_, node)
             if seen[node] or not env.getHasClassId(node,env.ClassIds.MESH_SPLIT_SHAPE)
                     or env.getRigidBodyType(node)==env.RigidBodyType.STATIC then return end
             seen[node]=true

@@ -1166,14 +1166,6 @@ function starters.teleport(env, spec)
     if v.spec_enterable ~= nil then denied = idle(env, v, spec.farmId) else denied = looseIdle(v, spec.farmId) end
     if denied ~= nil then return nil, denied end
     local H = Bridge.Hitch
-    local units = {}
-    local function add(u)
-        units[#units + 1] = u
-        for _, implement in ipairs(type(u.getAttachedImplements) == "function" and u:getAttachedImplements() or {}) do
-            add(implement.object)
-        end
-    end
-    add(v)
     -- Seated is no refusal (the player is an observer; GIANTS' teleportVehicle is made for the
     -- vehicle the player drives, FSBaseMission.lua 2595; live 8570c6316cb9406f-2: TELEPORT_SEATED);
     -- belted cargo goes along (Bridge.teleportRig).
@@ -1951,7 +1943,10 @@ Bridge.DELIVER_STALL_MS = 600000        -- GIANTS' helper running but unmoved 2 
 function Bridge.deliverStation(env, spec, job, fillType, v)
     local store = spec.direction == -1
     local best, bestScore, vx, vz = nil, nil, nil, nil
-    if store then vx, _, vz = env.getWorldTranslation(v.rootNode) end
+    if store then
+        local x, _, z = env.getWorldTranslation(v.rootNode)
+        vx, vz = x, z
+    end
     for _, id in ipairs(job.unloadingStationParameter.unloadingStationIds or {}) do
         local station = env.NetworkUtil.getObject(id)
         if station ~= nil and station:getIsFillTypeAISupported(fillType) then
@@ -2200,7 +2195,7 @@ end
 -- says so; what is held is the companion's to verify from the snapshot.
 Bridge.BELTS_TIMEOUT_MS = 5000
 
-function starters.belts(env, spec)
+function starters.belts(_, spec)
     if spec.owned() ~= true or spec.tractor.ownerFarmId ~= spec.farmId then return nil, "RESERVATION_LOST" end
     local v = spec.tractor
     local direction = (spec.direction == 1 and 1) or (spec.direction == -1 and -1) or nil
@@ -2345,8 +2340,8 @@ function starters.fieldwork(env, spec)
         log("fieldwork: straw swath on")
     end
     if spec.seed ~= nil then
-        local denied = Bridge.chooseSeed(v, spec.seed)
-        if denied ~= nil then return nil, denied end
+        local seedDenied = Bridge.chooseSeed(v, spec.seed)
+        if seedDenied ~= nil then return nil, seedDenied end
     end
     local ok, reason = pcall(function()
         local mission = env.g_currentMission
@@ -3372,7 +3367,7 @@ function Bridge:update(dt)
         local line = self.Observe.snapshot(self.env, self.seq, self.session, elapsed)
         if line ~= nil then self:writeLine(line) end
         local catalog = self.Observe.tickCatalog and self.Observe.tickCatalog(self.env)
-        for _, line in ipairs(catalog or {}) do self:writeLine(line) end
+        for _, page in ipairs(catalog or {}) do self:writeLine(page) end
     end
 end
 
@@ -3565,7 +3560,6 @@ Bridge.REASONS = {
     AD_NO_WAYPOINT_AT_PLACE = "AutoDrive has no road near that building",
     AD_PLACE_NOT_FOUND = "no farm building there for AutoDrive",
     NO_STORAGE = "the farm has no storage that takes this crop",
-    NO_TRAILER_FOR_THE_GRAIN = "no trailer with room for the grain",
     NOT_ON_DECK = "the tractor is not on the deck; check it",
     DETACH_NOT_ALLOWED = "the game does not allow unhitching it right now",
     NOT_ATTACHED = "that implement is not hitched",
@@ -3685,8 +3679,7 @@ Bridge.REASONS = {
     DELIVER_UNAVAILABLE = "GIANTS' deliver helper cannot drive that rig",
     DELIVER_INVALID = "GIANTS' deliver helper refused the trip",
     DELIVER_NOT_STARTED = "GIANTS' deliver helper did not start",
-    CARGO_NOT_UNLOADED = "the trailer was not emptied at the sell point; check it",
-    PAYMENT_NOT_OBSERVED = "no payment came in for the load; check it",
+    -- PAYMENT_NOT_OBSERVED (above) also ends a purchase and a land deal: one wording for all.
     ALONGSIDE_NOT_LINED_UP = "the trailer did not end up on the pipe's line",
     ALONGSIDE_PATH_BLOCKED = "something stands in the way beside the combine",
     ALONGSIDE_BLOCKED = "another vehicle is too close to the way beside the combine",

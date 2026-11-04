@@ -895,7 +895,7 @@ function Observe.fieldGrid(poly, maxPoints, minStep)
     area = math.abs(area) / 2
     if area <= 0 then return {} end
     local step = math.max(minStep, math.sqrt(area / maxPoints))
-    local points = {}
+    local points
     while true do
         points = {}
         for x = minX + step / 2, maxX, step do

@@ -689,7 +689,7 @@ local function surfaceAt(env, x, z)
     local flag = env.CollisionFlag ~= nil and env.CollisionFlag.ROAD or nil
     if type(env.raycastClosest) ~= "function" or not finite(flag) then return ground, false end
     local hit = {}
-    function hit.onFarmhandSurface(_, node, _, y) hit.y = y end
+    function hit.onFarmhandSurface(_, _node, _, y) hit.y = y end
     env.raycastClosest(x, ground + Hitch.DECK.aboveM, z, 0, -1, 0, Hitch.DECK.aboveM + 1,
                        "onFarmhandSurface", hit, flag)
     if finite(hit.y) and hit.y > ground + Hitch.DECK.minM then return hit.y, true end
@@ -1030,7 +1030,7 @@ end
 
 -- A copy of `foot` that no longer counts the scenery nodes the rig is ghosted against (they
 -- do not hold it); everything else, vehicles first, still counts.
-function Hitch.withGhosted(env, foot, tractor)
+function Hitch.withGhosted(_, foot, tractor)
     local g = Hitch.ghosted[tractor]
     if g == nil then return foot end
     local copy, excluded = {}, {}
@@ -2294,8 +2294,6 @@ function Hitch.routeFootprint(env, tractor)
             aMin, aMax = math.min(aMin, box.aMin), math.max(aMax, box.aMax)
             lMin, lMax = math.min(lMin, box.lMin), math.max(lMax, box.lMax)
             height = math.max(height, box.height)
-            local ux, _, uz = world(env, unit.rootNode)
-            local ufx, _, ufz = env.localDirectionToWorld(unit.rootNode, 0, 0, 1)
             local dx, dz = ux - x, uz - z
             unitRects[#unitRects + 1] = {
                 ahead = dx * math.sin(startYaw) + dz * math.cos(startYaw),
@@ -3791,10 +3789,10 @@ function Hitch.newAlongside(env, args)
         s.rigBox = rigBox
         if s.pass then
             -- The combine's front (the combine and what hangs on it, its header) in the frame.
-            local okC, cUnits = pcall(rigUnits, combine)
-            if not okC then return "ALONGSIDE_GEOMETRY_UNKNOWN" end
+            local okFront, frontUnits = pcall(rigUnits, combine)
+            if not okFront then return "ALONGSIDE_GEOMETRY_UNKNOWN" end
             local front = -math.huge
-            for _, unit in ipairs(cUnits) do
+            for _, unit in ipairs(frontUnits) do
                 local okBox, box = pcall(unitBox, env, s, unit)
                 if not okBox then return "ALONGSIDE_GEOMETRY_UNKNOWN" end
                 front = math.max(front, box.aMax)

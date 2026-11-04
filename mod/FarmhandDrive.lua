@@ -107,7 +107,7 @@ end
 Drive.FRAME_BUDGET_S = 0.010
 local PENDING = setmetatable({}, { __tostring = function() return "PENDING" end })
 Drive.PENDING = PENDING
-local unpack = unpack or table.unpack
+local unpack = unpack or rawget(table, "unpack")   -- Lua 5.1 (FS25) / 5.4 (tests)
 local episode -- the planning step running in this frame, if any
 
 local function pack(...) return { n = select("#", ...), ... } end
@@ -119,7 +119,7 @@ end
 -- A search kept across frames: make() builds its state, advance(job) runs it
 -- until it sets job.result and returns true, or returns false when over budget.
 -- A replay that asks for a different search in the same place discards the rest.
-local function resumable(signature, make, advance)
+local function resumable(signature, make, run)
     local job
     if episode ~= nil then
         episode.n = episode.n + 1
@@ -137,7 +137,7 @@ local function resumable(signature, make, advance)
         job = make()
     end
     if not job.done then
-        if not advance(job) then error(PENDING, 0) end
+        if not run(job) then error(PENDING, 0) end
         job.done = true
     end
     return unpack(job.result, 1, job.result.n)
@@ -539,7 +539,7 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
     if found ~= nil then return found, nil end
     if guide == nil and not localOnly then
         local avoided = {}
-        for attempt = 1, 4 do
+        for _ = 1, 4 do
         local global = guidedRoute(start,target,probe,radius,avoided)
         if global ~= nil then
             local gridStep = #global > 2 and distance(global[2][1],global[2][2],
@@ -563,15 +563,14 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
                                        math.max(2,math.floor(stride/2)),1}) do
                     local i = math.min(reached + span, #global)
                     local waypoint = global[i]
-                    local guide = {}
-                    for n = reached, i do guide[#guide+1] = global[n] end
-                    local goalYaw
+                    local sectionGuide = {}
+                    for n = reached, i do sectionGuide[#sectionGuide+1] = global[n] end
+                    local sectionYaw
                     if i < #global then
-                        goalYaw = (math.atan2 or math.atan)(waypoint[1]-global[i-1][1],
-                                                            waypoint[2]-global[i-1][2])
+                        sectionYaw = atan2(waypoint[1]-global[i-1][1], waypoint[2]-global[i-1][2])
                     end
                     section = Drive.plan(current, {waypoint[1],waypoint[2]},
-                                         radius, probe, guide, goalYaw)
+                                         radius, probe, sectionGuide, sectionYaw)
                     if section ~= nil then chosen = i; break end
                 end
                 if section == nil then
@@ -1275,20 +1274,20 @@ local function startShuffle(s, start, clear, after)
     local corridor = s.corridor or corridorFrom(s, start, clear)
     if corridor == nil then return "NO_ROUTE" end
     local reached = s.corridor ~= nil and s.reached or 1
-    local function onto(corridor, reached)
+    local function onto(along, from)
         for attempt = 1, 2 do
-            local path, i = Drive.section(start,s.radius,clear,corridor,reached,attempt,Drive.SHUFFLE_SWITCHES,
+            local path, i = Drive.section(start,s.radius,clear,along,from,attempt,Drive.SHUFFLE_SWITCHES,
                                           canSteerReverse(s))
             if path ~= nil then
-                local _, waypoint, guide, goalYaw = sectionGoal(corridor, reached, attempt)
-                s.corridor, s.reached, s.recovering, s.replans = corridor, reached, false, 0
+                local _, waypoint, guide, goalYaw = sectionGoal(along, from, attempt)
+                s.corridor, s.reached, s.recovering, s.replans = along, from, false, 0
                 s.shuffle = { waypoint = waypoint, guide = guide, goalYaw = goalYaw, reached = i }
                 local gears = 0
                 for n = 3, #path do
                     if (path[n][4] or 1) ~= (path[n-1][4] or 1) then gears = gears + 1 end
                 end
                 say(string.format("[Farmhand] drive shuffle after %s: %d steps, %d gear changes, to corridor %d/%d",
-                                  after, #path, gears, i, #corridor))
+                                  after, #path, gears, i, #along))
                 beginLeg(s, path, start[1], start[2], start[3])
                 return true
             end
@@ -1387,9 +1386,9 @@ local function initialPlan(env, s, Hitch)
         return Drive.routeProbe(env, s.foot, Hitch, px, pz, pyaw, curve, gear)
     end
     local start, target = s.initial.start, { s.targetX, s.targetZ }
-    local path, why, corridor, reached, sectionAttempt, retreat, backOut
+    local path, corridor, reached, sectionAttempt, retreat, backOut
     if s.learned == nil and distance(start[1],start[2],target[1],target[2]) <= 200 then
-        path, why = Drive.plan(start,target,s.radius,clear,nil,s.goalYaw,true)
+        path = Drive.plan(start,target,s.radius,clear,nil,s.goalYaw,true)
     end
     if path == nil and s.egress == nil then
         retreat = not s.shortRetreatUsed and Drive.planRetreat(start,s.radius,clear) or nil
@@ -1494,7 +1493,7 @@ function Drive.begin(env, args, Hitch)
         local egress, ghostedAtStart
         local straighten = startClear == false and hits ~= nil and #hits > 0
                            and Drive.planUnbend(env, foot, Hitch, v, x, z, yaw, clear, startReason) or nil
-        if straighten ~= nil then
+        if straighten ~= nil then -- luacheck: ignore 542
             -- planned after the straightening reverse, from the pose it ends in
         elseif startClear == false and hits ~= nil and #hits > 0 then
             say("[Farmhand] drive start clearance: " .. tostring(startReason))
@@ -1522,11 +1521,12 @@ function Drive.begin(env, args, Hitch)
                 if vehicle.rootNode == nil or vehicle.ownerFarmId ~= args.farmId or not stopped(vehicle) then
                     return nil, "START_NOT_CLEAR"
                 end
-                ox, _, oz = env.getWorldTranslation(vehicle.rootNode)
+                local vx, _, vz = env.getWorldTranslation(vehicle.rootNode)
+                ox, oz = vx, vz
             end
             local ignoredFoot, excluded = {}, {}
-            for key, value in pairs(foot) do ignoredFoot[key] = value end
-            for key, value in pairs(foot.excluded) do excluded[key] = value end
+            for field, value in pairs(foot) do ignoredFoot[field] = value end
+            for item, value in pairs(foot.excluded) do excluded[item] = value end
             if vehicle ~= nil then
                 excluded[vehicle] = true
             else
@@ -2140,7 +2140,8 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
         local e = s.egress
         local ox, oz = e.ox, e.oz
         if e.obstacle ~= nil then
-            ox, _, oz = env.getWorldTranslation(e.obstacle.rootNode)
+            local px, _, pz = env.getWorldTranslation(e.obstacle.rootNode)
+            ox, oz = px, pz
             if not (finite(ox) and finite(oz)) or distance(ox, oz, e.ox, e.oz) > 0.25 then
                 return "EGRESS_OBSTACLE_MOVED"
             end
@@ -2181,19 +2182,19 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
         if clear then
             Hitch.halt(env, s, dt)
             if not stopped(s.tractor) then return "CONTINUE" end
-            local function clear(px, pz, pyaw)
+            local function probe(px, pz, pyaw)
                 return Drive.routeProbe(env, s.foot, Hitch, px, pz, pyaw)
             end
             local start = {x,z,yaw}
             local path
             if distance(x,z,s.targetX,s.targetZ) <= 200 then
                 path = Drive.plan(start,{s.targetX,s.targetZ},s.radius,
-                                  clear,nil,s.goalYaw,true)
+                                  probe,nil,s.goalYaw,true)
             end
             if path == nil then
-                s.corridor = corridorFrom(s,start,clear)
+                s.corridor = corridorFrom(s,start,probe)
                 if s.corridor == nil then return "NO_ROUTE" end
-                path,s.reached = Drive.section(start,s.radius,clear,s.corridor,1,1)
+                path,s.reached = Drive.section(start,s.radius,probe,s.corridor,1,1)
                 if path == nil then s.reached = 1 end
                 s.sectionAttempt = path and 1 or 2
             end
