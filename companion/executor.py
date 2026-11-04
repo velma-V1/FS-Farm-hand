@@ -40,6 +40,9 @@ YARD_M = 150.0                    # buildings matching the words this close toge
 TRACTOR_ARRIVAL_TOLERANCE_M = 3.0
 # An unload that ended with the tractor this close to where it was unbelted is re-secured.
 RESECURE_UNMOVED_M = 0.3
+# Hitch travel this near the implement goes by Farmhand's own drive even to an AutoDrive marker
+# (the drive plans a direct local route within 200 m: FarmhandDrive.lua).
+OWN_DRIVE_FIRST_M = 200.0
 # Farmhand's own drive ended by a STOP (the player's, the requester's) or a lost reservation.
 DRIVE_ENDED_BY_STOP = frozenset({"STOPPED", "RESERVATION_LOST", "PREEMPTED"})
 # GIANTS' field-work helper ended without driving to the field (its planner, or never ready
@@ -3140,7 +3143,13 @@ class Executor:
                 if against_loose_implement(tractor, [i for i in self.world.snapshot() if i.id != ids[1]]):
                     raise _Blocked("AGAINST_IMPLEMENT")
                 self._tailgate_down(tractor, plan.tractor_joint, owner)
-                if isinstance(travel, Pose) and self._farm_drives():
+                tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
+                if travel is not None and self._farm_drives() and (isinstance(travel, Pose) or min(
+                        math.dist(tractor.position, (a.x, a.z)) for a in aims) <= OWN_DRIVE_FIRST_M):
+                    # To an AutoDrive marker too when the implement is near (live 4a63f2e75a1146d4-5:
+                    # AutoDrive took 5.5 min over its network for 95 m to the seeder); the marker's
+                    # provider only if Farmhand's own drive does not get there. Farther, AutoDrive's
+                    # network first (Farmhand's own long search took minutes, see _move).
                     # Near the implement by Farmhand's own drive (live f27757a15ce94d2a-2: GIANTS
                     # GOTO ended at once at every aim, the 3650 unmoved 340 m from the trailer),
                     # onto the nearest approach at its heading (live a0dca0862a424319-1: arrived
@@ -3152,7 +3161,7 @@ class Executor:
                     try:
                         self.world.farm_drive(ids[0], (near.x, near.z), owner, 0.0, near.yaw)
                     except StepFailed as failure:
-                        log.info("TRAVEL_NEAR by Farmhand's own drive: %s; GIANTS GOTO is tried", failure.code)
+                        log.info("TRAVEL_NEAR by Farmhand's own drive: %s; the route's provider is tried", failure.code)
                     else:
                         tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
                         left = min(math.dist(tractor.position, (a.x, a.z)) for a in aims)

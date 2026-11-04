@@ -1134,6 +1134,37 @@ class HitchCompositionTests(unittest.TestCase):
         result = Executor(world).execute(intent())
         self.assertEqual((result.status, result.reason), ("FAILED", "TRAVEL_ENDED_TOO_FAR"))
 
+    def test_marker_travel_goes_by_farmhands_own_drive_first(self):
+        # Live 4a63f2e75a1146d4-5: AutoDrive took 5.5 minutes over its network for 95 m to the seeder.
+        base = simple_world()
+        tractor, wagon = base.snapshot()
+        staging = plan_hitch(tractor, wagon).staging
+        # ~95 m from the implement, as live; within OWN_DRIVE_FIRST_M.
+        far = replace(tractor, position=(staging.x + 95.0, staging.z), ai_root=Pose(staging.x + 95.0, staging.z, 0.0))
+        near_wagon = Destination("marker-near-wagon", (staging.x + 10, staging.z))
+        drives = []
+
+        class OwnDrive(MockWorld):
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                drives.append(target)
+                t = self.items[vehicle_id]
+                heading = t.heading if yaw is None else yaw
+                self.items[vehicle_id] = replace(t, position=tuple(target), heading=heading,
+                                                 ai_root=Pose(target[0], target[1], heading))
+                for key, unit in list(self.items.items()):
+                    if unit.attached_to == vehicle_id:                       # the hitched implement follows
+                        self.items[key] = replace(unit, position=(target[0], target[1] - 4.0))
+
+            def travel(self, *args):
+                raise AssertionError("AutoDrive used although Farmhand's own drive got there")
+
+        world = OwnDrive([far, wagon], PLAYERS, DESTINATIONS + (near_wagon,))
+        result = Executor(world).execute(intent())
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertIn("TRAVEL_NEAR", result.states)
+        self.assertGreaterEqual(len(drives), 1)
+        # Beyond that range the marker's provider still goes first (see test_far_tractor_travels_by_autodrive_first).
+
     def test_unreachable_or_unplannable_pairs_block_before_reservation(self):
         base = simple_world()
         tractor, wagon = base.snapshot()
