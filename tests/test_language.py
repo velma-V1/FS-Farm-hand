@@ -283,8 +283,10 @@ class ChainTests(unittest.TestCase):
         chain = ChainInterpreter(RuleInterpreter(), Model())
         self.assertEqual(chain.interpret("stop"), STOP)
         self.assertEqual(calls, [])                         # STOP never waits for a model
-        self.assertEqual(chain.interpret("how far along are you"), STATUS)
-        self.assertEqual(calls, ["how far along are you"])
+        self.assertEqual(chain.interpret("how far along are you"), STATUS)   # the rules know it now
+        self.assertEqual(calls, [])
+        self.assertEqual(chain.interpret("give me an update"), STATUS)       # words only the model knows
+        self.assertEqual(calls, ["give me an update"])
         self.assertIsNone(ChainInterpreter(RuleInterpreter(), Broken()).interpret("sing a song"))
         calls.clear()
         self.assertIsNone(chain.interpret("don't bring the tractor and wagon"))   # refused: model not asked
@@ -368,3 +370,49 @@ class LabelledPhrasingTests(unittest.TestCase):
                 got = rules.interpret(case["say"])
                 self.assertTrue(matches(got, case["expect"]), got)
                 self.assertTrue(COMMAND_VALIDATOR.is_valid(got), got)
+
+
+class SafetyWordingTests(unittest.TestCase):
+    """A missed STOP moves equipment; a question, negation or ambiguity must never spend money,
+    trade land or change ground (language review, 2026-11-04)."""
+
+    def setUp(self):
+        from companion.language import RuleInterpreter
+        self.rules = RuleInterpreter()
+
+    def command(self, text):
+        proposal = self.rules.interpret(text)
+        return proposal and proposal["command"]
+
+    def test_stop_wins_wherever_it_is_said_as_a_verb(self):
+        for text in ("take it to field 3 stop", "bring it here wait", "plow field 3, stop", "buy a plow, stop",
+                     "sell the wheat, no wait, stop", "i said stop the tractor", "you need to stop",
+                     "stop follow me", "wait follow me", "quit follow me", "hold up", "hang on", "ok hold on",
+                     "pause", "hit the brakes", "emergency stop", "e stop", "i take that back", "scratch that",
+                     "call it off", "take it to the barn stop stop", "move it to the barn freeze"):
+            with self.subTest(text=text):
+                self.assertEqual(self.command(text), "stop")
+
+    def test_a_stop_in_a_place_name_or_an_order_not_to_stop_is_not_a_stop(self):
+        self.assertEqual(self.command("bring a tractor and forage wagon to the bus stop please"), "fetch_pair")
+        self.assertIsNone(self.command("don't stop"))
+
+    def test_questions_negations_and_doubts_never_act(self):
+        from companion.language import refuses
+        for text in ("buy field 12?", "sell field 3?", "sell the wheat?", "merge field 4 and 5?",
+                     "don't follow me", "no follow me", "why does the gmc follow me", "should i buy field 12",
+                     "maybe sell the wheat", "can the gmc follow me"):
+            with self.subTest(text=text):
+                self.assertNotIn(self.command(text), ("land", "sell", "join_fields", "follow_me", "buy"))
+                self.assertTrue(refuses(text))
+
+    def test_polite_orders_and_status_questions_still_work(self):
+        self.assertEqual(self.command("could you plow field 3?"), "field_work")
+        self.assertEqual(self.command("have the gmc follow me"), "follow_me")
+        self.assertEqual(self.command("do a contract"), "contract")
+        self.assertEqual(self.command("how far along are you"), "status")
+
+    def test_combine_alone_never_merges_fields(self):
+        self.assertNotEqual(self.command("combine field 4 and 5"), "join_fields")
+        self.assertEqual(self.command("combine field 4 with field 5"), "join_fields")
+        self.assertEqual(self.command("merge field 4 and 5"), "join_fields")

@@ -13,16 +13,44 @@ import re
 from typing import Protocol
 
 # Leading words that address Farmhand rather than say anything.
-_ADDRESS = re.compile(r"^(?:(?:hey|ok|okay|hi|yo)\s+)?(?:farm\s*hand|farmhand)\b\s*|^(?:please|pls|could you|can you|would you)\s+")
-_STOP_WORDS = ("stop", "halt", "cancel", "abort", "freeze", "wait", "whoa", "woah")
-_STOP_PHRASES = ("hold on", "hold it", "never mind", "nevermind", "stand down", "forget it", "stay there",
-                 "stay put", "stand still", "no stop", "kill the engine", "shut it down", "shut down", "pull over",
-                 "park it there", "that s enough", "enough")
+_ADDRESS = re.compile(r"^(?:(?:hey|ok|okay|hi|yo)\s+)?(?:farm\s*hand|farmhand)\b\s*"
+                      r"|^(?:please|pls|could you|can you|would you|will you)\s+")
+_STOP_WORDS = ("stop", "halt", "cancel", "abort", "freeze", "wait", "whoa", "woah", "pause", "brake", "brakes",
+               "quit", "cease", "estop", "hold")
+# A stop wherever it stands as a verb: "i said stop the tractor", "take it to field 3 stop", "plow
+# field 3, stop" (a missed STOP moves equipment; a needless one only stops it). Never the noun of a
+# place ("to the bus stop"), nor an order not to stop ("don't stop").
+_STRONG_STOP = frozenset({"stop", "halt", "cancel", "abort", "freeze", "pause", "brake", "brakes", "quit", "cease",
+                          "estop"})
+_STOP_NOUN_AFTER = frozenset({"bus", "truck", "rest", "pit", "train", "tram", "the", "a", "an", "next", "last",
+                              "first", "non"})
+# Unambiguous anywhere ("ok hold on", "wait, never mind"); the others only open the sentence.
+_STOP_ANYWHERE = re.compile(r"\b(?:hold on|hold up|hang on|hold still|hold your horses|never mind|nevermind|stand down"
+                            r"|forget it|forget that|scratch that|scrap that|strike that|call it off|cut it out"
+                            r"|hit the brakes|kill the engine|shut it down|shut it off|pull over|stay put|stand still"
+                            r"|i take (?:that|it|it all) back|red light)\b")
+_STOP_PHRASES = ("hold it", "stay there", "no stop", "park it there", "that s enough", "enough", "kill it",
+                 "turn it off", "stand by", "end task", "that will do", "that ll do", "shut down", "emergency")
 # A request that ends in a stop ("bring it back here and stop") is a stop.
 _STOP_TAIL = re.compile(r"\b(?:and|then|now)\s+(?:stop|halt|cancel|stay\s+put|stay\s+there|stand\s+still)$")
 # Words that make a sentence not an order: never move on a negation or a question.
 _NEGATION = re.compile(r"\b(?:don t|dont|do not|does not|doesn t|not|never|no|didn t|didnt|won t|wont)\b")
-_QUESTION = re.compile(r"^(?:where|why|did|is|are|was|were|has|have|had|who|when|which|what|whose|does|do)\b")
+# "do a contract" is an order; "can the gmc ...", "should i ...", "maybe ...", "what if ..." are not.
+_QUESTION = re.compile(r"^(?:where|why|did|is|are|was|were|has|have(?!\s+(?:the|my|our|a|an|that|this)\b)|had|who|when"
+                       r"|which|what|whose|does"
+                       r"|do(?!\s+(?:a|an|the|some|any|that|this|those|these|my|our|field|it)\b)"
+                       r"|should|shall|can|could|would|will|how|may|might|maybe|perhaps|if)\b")
+# A trailing question mark makes a question ("buy field 12?", "sell the wheat?") - unless it is the
+# polite form of an order ("could you plow field 3?").
+_POLITE = re.compile(r"^(?:(?:hey|ok|okay|hi|yo)\s+)?(?:farm\s*hand\s+)?(?:please\s+)?(?:can|could|would|will)\s+you\b")
+
+
+def asked(text: str) -> bool:
+    """The words end in a question mark and are not a polite order."""
+    raw = text.strip().casefold() if isinstance(text, str) else ""
+    if not raw.rstrip("!. ").endswith("?"):
+        return False
+    return not _POLITE.match(re.sub(r"[^0-9a-z]+", " ", raw).strip())
 # Too general to name one place; the sentence is not understood instead.
 # ("farm" is a name the executor resolves exactly or blocks: a marker or one building.)
 _GENERIC = frozenset({"field", "the field", "there", "over there", "that", "it", "this",
@@ -33,7 +61,10 @@ _TRAILING = re.compile(r"\s+(?:please|now|right now|right away|asap|quickly|soon
 _SETTINGS = re.compile(r"^(?:(?:open|show|change|choose|select|pick|set up|setup)\s+)?(?:the\s+)?(?:farmhand\s+)?"
                        r"(?:ai|a i|model|ai model|language model|settings|options|menu)(?:\s+(?:settings|model|menu))?$")
 _STATUS = re.compile(r"\b(?:what are you doing|what s happening|whats happening|what are you up to|status|where are you|"
-                     r"how s it going|hows it going|how is it going|progress|report|are you done|are you finished)\b")
+                     r"how s it going|hows it going|how is it going|progress|report|are you done|are you finished"
+                     r"|how far along|how much longer|how close are you|are you there yet|nearly done|almost done)\b")
+_REPORT = re.compile(r"^(?:(?:save|make|send|write|create)\s+(?:a\s+)?)?(?:farmhand\s+)?"
+                     r"(?:report|diagnostics|bug report|logs)$")
 _NEW_PAIR = re.compile(r"\b(?:a|an|any|another|available|free|spare)\s+(?:\w+\s+)?(?:tractor|forage|loader|silage|wagon)")
 _FETCH_ONLY = re.compile(r"\b(?:grab|fetch|get me|i need|i want)\b")
 _FETCH_VERB = re.compile(r"\b(?:bring|get|fetch|grab|send|need|want|give|hitch|hook)\b")
@@ -129,25 +160,40 @@ def normalize(text: str) -> str:
 
 
 def is_stop(words: str) -> bool:
-    """STOP: a stop word first, or a short utterance with one. A longer sentence
-    that only mentions one (a marker called "bus stop") is not a stop."""
+    """STOP, deterministic and first: a stop word opening or closing the sentence, a short
+    utterance with one, a strong stop word used as a verb anywhere, or a stop phrase. The noun
+    in a place's name ("to the bus stop") and an order not to stop ("don't stop") are not."""
     tokens = words.split()
     if not tokens:
         return False
-    if tokens[0] in _STOP_WORDS or any(words.startswith(p) for p in _STOP_PHRASES) or _STOP_TAIL.search(words):
+
+    def verb(i):
+        if tokens[i] not in _STRONG_STOP and not (tokens[i] in _STOP_WORDS and i in (0, len(tokens) - 1)):
+            return False
+        if i > 0 and tokens[i - 1] in _STOP_NOUN_AFTER:
+            return False                                   # "the bus stop", "non stop"
+        if (i > 0 and tokens[i - 1] in ("dont", "never")) or (i > 1 and tokens[i - 2:i] in (["don", "t"],
+                                                                                         ["do", "not"])):
+            return False                                   # "don't stop": an order not to
         return True
-    return len(tokens) <= 3 and any(t in _STOP_WORDS for t in tokens)
+
+    if any(verb(i) for i in range(len(tokens))):
+        return True
+    if _STOP_ANYWHERE.search(words) or any(words.startswith(p) for p in _STOP_PHRASES) or _STOP_TAIL.search(words):
+        return True
+    return len(tokens) <= 3 and any(t in _STOP_WORDS for t in tokens) and not re.search(r"\b(?:don t|dont|do not|never)\b",
+                                                                                         words)
 
 
 def refuses(text: str) -> bool:
     """A negation or a question that is not a stop or status: never an order, so
-    no model may turn it into one ("don't bring the tractor")."""
+    no model may turn it into one ("don't bring the tractor", "buy field 12?")."""
     if not isinstance(text, str):
         return True
     words = normalize(text)
     if is_stop(words) or _STATUS.search(words):
         return False
-    return bool(_NEGATION.search(words) or _QUESTION.match(words))
+    return bool(_NEGATION.search(words) or _QUESTION.match(words) or asked(text))
 
 
 # Field work: "plow, seed and fertilize field 7", "seed the smallest field".
@@ -193,6 +239,11 @@ _JOIN = re.compile(r"^(?:please\s+)?(?:add|join|merge|combine|connect)\s+(?:the\
 def join_fields(words: str) -> dict | None:
     match = _JOIN.match(words)
     if match is None or int(match["a"]) < 1 or int(match["b"]) < 1 or match["a"] == match["b"]:
+        return None
+    # "combine field 4 and 5" may mean harvest both: merging (permanent ground) needs a merge word
+    # with it ("into", "with", "onto", "together", "as one"); never guessed.
+    if words.startswith(("combine", "please combine")) and not re.search(r"\b(?:into|with|onto|together|as one)\b",
+                                                                          words):
         return None
     return {"version": 1, "command": "join_fields", "field": int(match["a"]), "into_field": int(match["b"])}
 
@@ -748,9 +799,26 @@ class RuleInterpreter:
                 return several
         return single
 
+    @staticmethod
+    def _asking(words: str) -> dict | None:
+        """A question, negation or retraction is never an order: only what it may ask for
+        (STATUS, the settings screen, a report), else nothing."""
+        if _SETTINGS.match(words):
+            return {"version": 1, "command": "settings"}
+        if _REPORT.match(words):
+            return {"version": 1, "command": "report"}
+        if _STATUS.search(words):
+            return {"version": 1, "command": "status"}
+        return None
+
     def _clause(self, text: str) -> dict | None:
-        """One command: the goal and reference rules first, then the plain rules."""
+        """One command: STOP first, then questions and negations (never an order), then the
+        goal and reference rules, then the plain rules."""
         words = normalize(text)
+        if is_stop(words):
+            return {"version": 1, "command": "stop"}
+        if _NEGATION.search(words) or _QUESTION.match(words) or asked(text):
+            return self._asking(words)
         parcel = land(words)
         if parcel is not None:
             return parcel
@@ -917,8 +985,7 @@ class RuleInterpreter:
             return {"version": 1, "command": "stop"}
         if _SETTINGS.match(words):
             return {"version": 1, "command": "settings"}
-        if re.match(r"^(?:(?:save|make|send|write|create)\s+(?:a\s+)?)?(?:farmhand\s+)?"
-                    r"(?:report|diagnostics|bug report|logs)$", words):
+        if _REPORT.match(words):
             return {"version": 1, "command": "report"}
         if _STATUS.search(words):
             return {"version": 1, "command": "status"}

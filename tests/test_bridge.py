@@ -976,8 +976,8 @@ class ServiceTests(unittest.TestCase):
                 return {"version": 1, "command": "status"}
 
         game, notices = self.start(autodrive=False, voice={"ai": SlowModel()})
-        game.say(1, "how far along are we, mate")             # the rules do not know it
-        self.wait_for(lambda: asked == ["how far along are we, mate"])
+        game.say(1, "give us an update, mate")                # the rules do not know it
+        self.wait_for(lambda: asked == ["give us an update, mate"])
         started = time.monotonic()
         game.key(2, "stop")
         self.wait_for(lambda: notices[-1:] == ["NOTHING_TO_STOP"])
@@ -985,7 +985,7 @@ class ServiceTests(unittest.TestCase):
         release.set()
         time.sleep(0.3)
         self.assertEqual(notices, ["NOTHING_TO_STOP"])           # the answer came after a STOP: void
-        game.say(3, "how far along are we, then")               # no stop in between: used
+        game.say(3, "give us an update, then")                  # no stop in between: used
         self.wait_for(lambda: notices[-1:] == ["STATUS_IDLE"])
 
     def test_refused_words_never_reach_the_model(self):

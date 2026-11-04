@@ -145,6 +145,8 @@ class ModelInterpreterTests(unittest.TestCase):
         self.assertEqual(chain.interpret("bring me a tractor and forage wagon")["command"], "fetch_pair")
         self.assertEqual(server.requests, [])
         self.assertEqual(chain.interpret("how far along are you"), {"version": 1, "command": "status"})
+        self.assertEqual(server.requests, [])                               # the rules know it now
+        self.assertEqual(chain.interpret("give me an update"), {"version": 1, "command": "status"})
         self.assertEqual(len(server.requests), 1)
 
 
