@@ -1,3 +1,7 @@
+## Current production directive — 2026-11-04
+
+**Production is underway on this cloud branch.** Build the actual, installable, fully integrated standalone Farmhand, not an indefinite proof-of-concept or an improved lab. AGENTS.md's production directive supersedes its historical lab-only section here. Use the laboratory's measured code, results and tests as inputs, and return to targeted research only to resolve a concrete blocker. Own the end-to-end player outcome. Exercise full engineering discretion about implementation, architecture, work ordering and parallelization; optimize for the simplest robust product. Commit coherent validated production improvements. Never claim an unperformed local-game live test.
+
 # CLAUDE.md
 
 Claude Code works under `AGENTS.md`. Read it first. If this file conflicts with `AGENTS.md`, `AGENTS.md` wins.

@@ -1,3 +1,9 @@
+## Current user directive — production begins (2026-11-04)
+
+This branch is the **start of the actual standalone Farmhand product**, sourced from a faithful snapshot of the active lab. The lab continues separately as an optional proving ground, not the production milestone or the default workload. This newer explicit user objective supersedes Section 3's former lab-only mission on **this production branch**.
+
+Deliver the working, polished, integrated Farmhand product now. Promote already proven capabilities; repair, simplify or replace unsuitable legacy code when that yields a better outcome. Do not require all possible primitives to be proved in advance of real product construction. Where uncertainty materially affects gameplay correctness, use a narrowly targeted lab experiment or executable test, carry the resulting proven component into production, and continue actual construction. Product-level behavior and trustworthy verification determine priority. A cloud session cannot prove live FS25 behavior without access to real gameplay; distinguish automated checks from actual game proof.
+
 # FARMHAND — AUTHORITATIVE ENGINEERING CONTRACT
 
 This file is the current engineering authority for Farmhand. Read it before substantial work.
