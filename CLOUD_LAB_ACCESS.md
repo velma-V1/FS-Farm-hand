@@ -45,6 +45,33 @@ The gateway's `live_hot_reload()` verifies game and companion readiness, recent 
 
 **Limitation:** Hot reload is **not deployment**. It reloads code ALREADY installed in the local lab. It cannot deploy cloud edits to the PC. New cloud production code must first be reviewed, tested, and deliberately promoted into a separate local staging workspace; do not overwrite Codex's dirty lab or silently install production patches over a running player's save.
 
+## Testing the production build in the lab — reversible deployment
+
+`scripts/fh_deploy.py` (production branch) puts the production mod and companion into the lab and back without touching Codex's checkout, tests or evidence. It runs **on the PC**, from a separate clone; the gateway cannot install code.
+
+```sh
+git clone -b claude/fs25-farmhand-agent-jy2ds2 https://github.com/velma-v1/fs-farm-hand ~/farmhand-production
+cd ~/farmhand-production
+python3 scripts/fh_deploy.py selftest   # the full round trip on a throwaway copy; must print "ok": true
+python3 scripts/fh_deploy.py stage      # build this clone (refuses inside ~/projects/FS-Farm-hand)
+python3 scripts/fh_deploy.py switch     # only in an agreed test window, no job running
+python3 scripts/fh_deploy.py restore    # put the lab install back, byte for byte
+python3 scripts/fh_deploy.py status
+```
+
+- **What it changes:** only `<profile>\mods\FS25_Farmhand\`, `%LOCALAPPDATA%\FS25Farmhand\app\` and the companion's `settings.json`, `goal.json` and `routes.json`.
+- **First switch:** it first copies the lab's installed bytes, including its uncommitted lab files, into `~/.local/share/farmhand-deploy/snapshots/<id>-baseline` and proves the copy identical. The lab install cannot be rebuilt from git, since its `.fhReload` code is uncommitted, so this snapshot is the only way back.
+- **Restore:** it reinstalls that snapshot, checks every file hash matches, and keeps the test build's state as a `posttest` snapshot for evidence.
+- **With FS25 running:**
+  1. The companion is stopped through the runner's quit file.
+  2. The mod files are replaced in place.
+  3. The existing background `.fhReload` re-reads the five Lua files. Success requires the game log line naming all five.
+  4. The companion is restarted windowless, and the switch waits until it reports the new build.
+
+  No key, click, focus change, restart or save reload is used. `modDesc.xml` and translations are not re-read until the next save load; the production `modDesc` change is only description text.
+- **Refusals and rollback:** it refuses during a job or test, or with a reload marker pending. Any failed step, such as a reload error or a companion that won't start, puts the previous install back automatically.
+- **After a switch:** `live_status()` should show `installed.mod == installed.app == <production build>`, while `repo_head` still names Codex's checkout. Lab test results then exercise production code; record them against that build id.
+
 GUI `click`/`key`, menus, `restart-fs25`, game closure and unrestricted host commands are intentionally **not** exposed through the MCP gateway. Existing Codex background screenshot path uses `.fhScreen`; do not bring FS25 to foreground just to inspect it.
 
 ## Engineering boundaries and product priorities
