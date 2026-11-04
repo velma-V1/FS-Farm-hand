@@ -10,6 +10,9 @@ local pi, sin, cos, sqrt, floor, abs, atan2 = math.pi, math.sin, math.cos,
     math.sqrt, math.floor, math.abs, math.atan2 or math.atan
 local STEP, BIN, CELL = 4, pi / 8, 2
 local LIMIT = 6000
+-- A drive must come this much closer to its goal within this time (see the step's goal check).
+Drive.GOAL_PROGRESS_M = 2.0
+Drive.GOAL_PROGRESS_MS = 150000
 
 local function finite(n)
     return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
@@ -2221,6 +2224,17 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
         end
     end
     Drive.planAhead(env, s, Hitch)
+    -- Goal progress (live abf1610fc62543be-3: "take the cultivator back", 28 m to go, drove
+    -- 9 minutes and ended 80 m from it; only the 4 h TIMEOUT bounded a drive). A drive that
+    -- has not come GOAL_PROGRESS_M closer in straight line for GOAL_PROGRESS_MS ends.
+    local toGoal = distance(x, z, s.targetX, s.targetZ)
+    if s.goalBest == nil or toGoal < s.goalBest - Drive.GOAL_PROGRESS_M then
+        s.goalBest, s.goalBestAt = toGoal, s.elapsed
+    elseif s.elapsed - s.goalBestAt > Drive.GOAL_PROGRESS_MS then
+        say(string.format("[Farmhand] drive no goal progress: %.1f m from the goal at %.1f,%.1f, best %.1f m %.0f s ago",
+                          toGoal, x, z, s.goalBest, (s.elapsed - s.goalBestAt) / 1000))
+        return "NO_GOAL_PROGRESS"
+    end
     if s.elapsed - s.movedAt >= 8000 then
         if distance(x, z, s.lastMovedX, s.lastMovedZ) < 0.5 then
             -- Held fast under throttle by something the route box did not see (live

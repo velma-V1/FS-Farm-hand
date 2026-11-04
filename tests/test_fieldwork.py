@@ -525,6 +525,8 @@ class OverCropTests(unittest.TestCase):
         c.submit(proposal)
         c.wait(20)
         self.assertEqual(c.last.state, "COMPLETE")
+        # A small area is reported as one, not as the whole field (live abf1610fc62543be-2).
+        self.assertEqual(c.last.reason, "AREA_WORK_OBSERVED")
         self.assertIn(("field_work", True), ran)
         # The executor honours it too.
         world = MockWorld(rig("cultivator"), PLAYERS, fields=(field(7, 0.4, StandingCropTests.READY),), farm=FARM)

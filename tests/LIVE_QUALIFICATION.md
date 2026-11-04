@@ -30,6 +30,17 @@ money; run them first. "Log" means the game's `log.txt` `[Farmhand]` lines.
 | 7 | Opt-in ghosting disclosed | Turn "Pass through scenery in tight spots" on, repeat row 6 | One notification "passing through scenery beside the rig (your setting)..."; a later `collision with buildings restored` log line once the rig is clear; turn the setting off after | OPEN |
 | 8 | Follower reference (navigation) | Existing logs first: `drive track ... error E` lines while a rig drove a steady bend | E near a²/(2R) outward (GMC ≈ 0.2 m, 379 ≈ 0.5-0.7 m) supports adapters/EVIDENCE.md "2026-11-04 production follower reference mismatch"; near zero disproves it (path points are 4 m chords: allow ≈0.2 m chord error at mid-segment) | OPEN |
 
+## Production build in the lab (2026-11-04, build b0f673c, MapUS savegame 1)
+
+Deployed with `scripts/fh_deploy.py` (lab install snapshotted byte for byte); requests through the
+cloud gateway's runner, no PC input. Positions are the companion's final observation (vehicle roots).
+
+| Request | Test id | Result | Observed |
+| --- | --- | --- | --- |
+| "cultivate a small test area of the smallest field" (nothing hitched to a free tractor) | abf1610fc62543be-1 | FAILED after a composed hitch (final reason cut off by the gateway's bounded record) | FIND, RESERVE, TRAVEL_NEAR, LOCAL_MANEUVER, then STOP/RELEASE within that second; a second FIND chose again: TRAVEL_NEAR, LOCAL_MANEUVER (LINED_UP), ALIGN 9.55 m allowed -> CANDIDATE, ATTACH -> ATTACHED: tractor 615 on cultivator 613, both stopped at (-702.7, 255.4)/(-701.4, 249.5). Tractors 611, 612, 622 rejected ATTACHED; 629 also lacks move/attach/stop. The field work after the hitch did not complete: cause not visible through the gateway |
+| Same words again, rig now assembled | abf1610fc62543be-2 | **PASS** COMPLETE (bounded area) | FIND, RESERVE, FIELD_WORK, VERIFY in 34 s; the executor's bounded-area check passed (the field's own cultivated share grew by >= 95 % of 400 m2); rig 615+613 drove (-702.7, 255.4) -> (-708.8, 282.9), stopped, still hitched. Reported as FIELD_WORK_OBSERVED: the coordinator dropped the executor's AREA_WORK_OBSERVED (fixed: a bounded job reports AREA_WORK_OBSERVED) |
+| "take the cultivator back and unhitch it" | abf1610fc62543be-3 | **FAIL**, stopped by the tester after 9 min | move_pair to origin (where 613 was hitched, ~28 m away): Farmhand's own drive (farm_drive) ran 9 min in DELIVER and left the rig at (-730.5, 180.3), ~80 m from the goal, ~105 m from the start; STOP, RELEASE, stopped and hitched. The drive trace is in the game log only (the gateway summary keeps hitch lines). Cause of the route not found; a drive had no bound but a 4 h TIMEOUT (fixed: NO_GOAL_PROGRESS after 150 s without coming 2 m closer) |
+
 ## Hitch / attachment
 
 | Case | Test id | Build | Result | Observed |

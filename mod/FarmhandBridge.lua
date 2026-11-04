@@ -3913,6 +3913,7 @@ Bridge.REASONS = {
     NO_PLOW_HITCHED = "no tractor with a plow hitched is free",
     NO_RIG_TO_FOLLOW = "no free hitched rig is there to follow you",
     NO_ROUTE = "no way there was found for the rig",
+    NO_GOAL_PROGRESS = "it kept driving without getting closer to where it was going, so it stopped",
     NO_SUCH_OPTION = "that model has no such option in the store",
     NO_SUCH_TRACTOR = "no tractor by that name",
     NO_UNLOADING_STATE = "the combine's pipe has no unloading position",

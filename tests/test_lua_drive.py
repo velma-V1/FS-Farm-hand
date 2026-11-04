@@ -1470,6 +1470,43 @@ class ShuffleAndApproachTests(unittest.TestCase):
         self.assertGreaterEqual(back, 24)
         self.assertIsNone(self.drive.planBackOut(start, target, 6, self.wrap(lambda x, z, _y: z > -2), None, None))
 
+    def test_a_drive_that_comes_no_closer_to_its_goal_ends(self):
+        # Live abf1610fc62543be-3: "take the cultivator back", 28 m to go; the drive went on for
+        # 9 minutes and ended 80 m from it. Only the 4 h TIMEOUT bounded a drive.
+        lines = []
+        self.lua.globals().print = lambda *parts: lines.append(" ".join(map(str, parts)))
+        setup = """
+            local best, bestAt, elapsed = ...
+            local vehicle = {rootNode=1, ownerFarmId='1',
+                getLastSpeed=function() return 0 end,
+                getIsAIActive=function() return false end,
+                getIsEntered=function() return true end}
+            local foot={units={vehicle},lMin=-1.2,lMax=1.2,aMin=-14,aMax=3}
+            local env={getWorldTranslation=function() return 0,0,0 end,
+                localDirectionToWorld=function() return 0,0,1 end}
+            local hitch={routeFootprint=function() return foot end,
+                routePoseClear=function() return true end,
+                driverConflict=function() return nil end,
+                halt=function() end}
+            local session={tractor=vehicle,farmId='1',isReserved=function() return true end,
+                foot=foot,targetX=0,targetZ=60,path={{0,0,0},{0,4,0},{0,8,0}},next=2,
+                radius=6,elapsed=elapsed,movedAt=elapsed,lastMovedX=0,lastMovedZ=0,replans=0,
+                lastSpeedMode='drive',previewAt=1e9,goalBest=best,goalBestAt=bestAt}
+            return env,session,hitch
+        """
+        limit = self.drive.GOAL_PROGRESS_MS
+        # 60 m from the goal, never better than 50 m, for longer than the limit: ended.
+        env, session, hitch = self.lua.execute(setup, 50, 0, limit + 1000)
+        self.assertEqual(self.drive.step(env, session, 16, hitch), "NO_GOAL_PROGRESS")
+        self.assertTrue(any("no goal progress" in l for l in lines))
+        # Just as long, but now closer than ever by more than the margin: the clock restarts.
+        env, session, hitch = self.lua.execute(setup, 70, 0, limit + 1000)
+        self.assertNotEqual(self.drive.step(env, session, 16, hitch), "NO_GOAL_PROGRESS")
+        self.assertEqual(session.goalBest, 60)
+        # No closer, but within the limit: it drives on.
+        env, session, hitch = self.lua.execute(setup, 50, 0, limit - 1000)
+        self.assertNotEqual(self.drive.step(env, session, 16, hitch), "NO_GOAL_PROGRESS")
+
     def test_held_fast_under_throttle_marks_just_past_the_front_as_blocked_and_replans(self):
         # Live 7fd526481ca24c1c-3: stopped dead from 6.6 km/h by something no query saw;
         # four replans drove at it again and the drive ended OBSTACLE_AHEAD.

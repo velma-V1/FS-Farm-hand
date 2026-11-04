@@ -1551,7 +1551,10 @@ class Coordinator:
                     break
         if started:
             return Result("COMPLETE", "WORKERS_STARTED", tuple(equipment), tuple(states))
-        return Result("COMPLETE", "FIELD_WORK_OBSERVED", tuple(equipment), tuple(states))
+        # A bounded test area is reported as such (live abf1610fc62543be-2: "a small test area"
+        # measured on the field, then told to the player as if the whole field were done).
+        reason = "AREA_WORK_OBSERVED" if work.get("area_m2") else "FIELD_WORK_OBSERVED"
+        return Result("COMPLETE", reason, tuple(equipment), tuple(states))
 
     COMBINE_FULL_SHARE = 0.9          # a combine this full is emptied before its helper starts
     COMBINE_WAITING_SHARE = 0.95      # a harvesting combine this full and standing waits for a trailer
