@@ -10,13 +10,13 @@ Gateway services (PC only):
 - `systemctl --user status farmhand-mcp.service farmhand-tunnel.service`
 - Implementation: `~/.local/share/farmhand-cloud-bridge/bridge.py`
 - Credential: `~/.local/share/farmhand-cloud-bridge/auth_token` — NEVER commit it.
-- HTTPS endpoint: `https://catalogs-donor-sand-shine.trycloudflare.com/mcp`
+- HTTPS endpoint: `https://bookstore-warrant-wiki-distribution.trycloudflare.com/mcp`
 - Temporary Cloudflare Quick Tunnel. Hostname **changes when recreated**; replace the URL and network-secret allowed host together.
 
 ## Connect the existing Claude Cloud session — one account-side authorization
 
 1. The user should open their existing Claude cloud session, select the caret after its title, then **Edit cloud environment → Network secrets → Add secret**.
-2. Name: **Farmhand private lab**. Allowed website: **catalogs-donor-sand-shine.trycloudflare.com**.
+2. Name: **Farmhand private lab**. Allowed website: **bookstore-warrant-wiki-distribution.trycloudflare.com**.
 3. Use **Authorization** header, **Bearer** prefix, and paste the secret value privately from the PC file `~/.local/share/farmhand-cloud-bridge/auth_token`. On Windows PowerShell, `wsl cat ~/.local/share/farmhand-cloud-bridge/auth_token` displays it. Do not paste it into chat, a GitHub commit, or Claude's source tree.
 4. Save the network secret. Anthropic's proxy can attach it to outgoing requests for the allowed hostname without letting the model read it. The approved hostname is reachable even under a Trusted cloud-network policy.
 5. In the existing cloud session, bring in **only the new configuration/doc files** from the remote `cloud/farmhand-production-20261104` branch, preserving all local changes. Reconnect the `farmhand-live-lab` MCP server or enable its custom connector if the session had already started before the project .mcp.json was added. **Do not change the model or reread the whole repo.**
