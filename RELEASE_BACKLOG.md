@@ -29,6 +29,19 @@ Acceptance:
 - every retained clean-build primitive is backed by a specific observed failure and live proof;
 - legacy mechanisms without proven player benefit are explicitly left behind.
 
+## One controlled point for planning, clearance and following
+Status: OPEN
+Priority: RELEASE-BLOCKER (narrow-gap navigation)
+Found: 2026-11-04
+
+The lab-proven steering-reference predictor (collected/proven_systems/measured_short_motion.lua) is not in production. Code reading shows why promoting it alone is not enough: the follower aims GIANTS' steering node at the planned root path, while planning, prediction and the aggregate probe assume the root follows it - an expected ≈a²/(2R) outward root offset in bends (≈0.2 m GMC, ≈0.5–0.7 m 379; adapters/EVIDENCE.md "2026-11-04 production follower reference mismatch").
+
+Next:
+- Run the single-bend discriminator in that entry on the GMC and 379 rigs (normal physics, no ghosting).
+- If confirmed, change candidate generation, articulated prediction, probe poses and the follower's aim/progress together to one controlled point; qualify on both rigs and the 2 m / reverse-left fixtures.
+
+Acceptance: planned-versus-observed unit poses through a bend within the articulated clearance pad on both rigs; no regression of the proven local maneuvers.
+
 ## Scenery ghosting: prove the need or remove the option
 Status: OPEN
 Priority: HIGH

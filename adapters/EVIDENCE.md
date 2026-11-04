@@ -744,6 +744,33 @@ second-rig candidates were refused at the trailer near the parked D11. Whether
 that is genuine near-future contact or a remaining per-unit size-box false
 rejection requires a separate physical-occupancy discriminator.
 
+### 2026-11-04 production follower reference mismatch (code reading; UNVERIFIED live)
+
+The lab proofs above executed candidates with `driveAlongCurvature`. The
+production route follower does not: `mod/FarmhandDrive.lua` (the travel branch of
+`frame`) picks its aim point on the planned **root** path, from the root's own
+position (`Drive.goalPoint`), and hands it to `driveToPoint` in the frame of
+`getAISteeringNode()`. GIANTS' pursuit therefore pulls the **steering node** onto
+the planned root path, while `Drive.plan` (`advance`), `Hitch.predictShortMotion`
+and `Hitch.routePoseClear` all treat that path as where the **root** will be. In a
+steady turn of radius R the root then runs outside its planned poses by about
+a²/(2R), a = the steering reference's distance behind the root: with the
+measured offsets, ≈0.22 m for the GMC (a = 2.226 m, R ≈ 11 m) and ≈0.5–0.7 m for
+the 379 (a = 3.960 m, R ≈ 11–15 m) - close to the 0.5 m pad the articulated
+override adds. This is a kinematic consequence of the code, not a measurement.
+
+Consequence for promotion: substituting the steering-reference predictor alone
+(the coupling noted above) would still leave the follower steering a different
+point than the plan and the clearance model assume. A correct change must define
+one controlled point and use it in all four places - candidate generation,
+articulated prediction, aggregate probe poses, and the follower's aim/progress
+(for instance: plan and follow the steering reference, deriving root/unit poses
+for clearance and arrival). The smallest live discriminator before any change:
+one normal-physics farm_drive through a single constant-radius bend on each of
+the two rigs, logging planned root pose, observed root and steering-node pose
+at the same along-path distance; a lateral residual near a²/(2R) confirms this,
+near zero disproves it. Not changed in production until that run.
+
 ## 2026-11-03 resource-accounting dependency check
 
 **UNVERIFIED as a Farmhand mechanism; source-inspected only.** Installed FS25
