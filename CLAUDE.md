@@ -1,3 +1,7 @@
+## Claude Cloud ↔ FS25 lab reference (2026-11-04)
+
+The production branch has a separate private MCP service `farmhand-live-lab`; see `CLOUD_LAB_ACCESS.md` for the current connection and verified non-focus-stealing hot-reload workflow. An MCP entry existing in `.mcp.json` does NOT prove this particular cloud session is authenticated. Verify with `toolkit_list("notes")` and `live_status()` before citing live/toolkit access. No arbitrary host shell, GUI input, game restarts, or cloud-code deployment is available through the gateway. Source access is for private research; do not publish GIANTS/provider code. Lab test successes are not proof that cloud changes ran in FS25. Preserve Codex's separate laboratory and the player's foreground.
+
 ## Current production directive — 2026-11-04
 
 **Production is underway on this cloud branch.** Build the actual, installable, fully integrated standalone Farmhand, not an indefinite proof-of-concept or an improved lab. AGENTS.md's production directive supersedes its historical lab-only section here. Use the laboratory's measured code, results and tests as inputs, and return to targeted research only to resolve a concrete blocker. Own the end-to-end player outcome. Exercise full engineering discretion about implementation, architecture, work ordering and parallelization; optimize for the simplest robust product. Commit coherent validated production improvements. Never claim an unperformed local-game live test.
@@ -284,3 +288,16 @@ DO NOT MIGRATE
 ```
 
 Only after the minimum set is proven should a clean Farmhand navigation implementation be designed.
+
+
+## Universal capability composition — production outcome (2026-11-04)
+
+Build the final Farmhand as one **general-purpose, player-directed FS25 worker**. Inspect the existing code, exact physical proof, relevant tests, and measured limitations **before implementing overlapping equipment behavior**. Reuse GIANTS-native functions and the smallest Codex-proven primitives, rather than writing separate planners/controllers for every tractor, implement, trailer, vehicle, or special tool. Keep engineering discretion: implement missing functions where actual game evidence shows the shared substrate is insufficient.
+
+Compose one general path: **user objective → discover actual world objects and capabilities → resolve compatible equipment and constraints → navigate/approach/align → hitch, configure, load/unload or actuate the item's exposed controls → perform fieldwork/logistics/other supported work → observe real-world outcomes → recover, STOP or complete truthfully**. Different items should use the same bounded action and observation contracts, with small specialized adapters only for genuine API differences. The player should not need to know an item's internal specialization, object ID, route or mod provider.
+
+Inspect `collected/proven_systems/` and each `*.PROOF.md` (measured steering-reference short motion; generic bounded moving-tool rotation; optional TerraFarm direction adapter), route memory, tested navigation/hitch/fieldwork paths, plus `adapters/EVIDENCE.md`. **Do not equate a proved short control pulse with a complete task**. Codex's final five-file changes are available through PR #3; review/test/integrate without overwriting active production. The unsuccessful field-entry prestage was reverted and remains unverified.
+
+Validate composition with representative **end-to-end player requests**, including at least (a) equipment selection/attachment/navigation/actual fieldwork with physically verified coverage and (b) a different machine or transport/load/unload job, then generalize across materially different vehicles, implements, geometries, modded equipment, and failure cases. Optimize observed request-to-first-useful-action, total completion time, simplicity and player control; avoid duplicate paths, long idle loops, hardcoded IDs/coordinates and unnecessary retries.
+
+Preserve owner identity, compatible equipment selection, native physics, safe STOP, already-assembled rig state, truthful outcomes and the user's PC foreground. Use Codex's **background `.fhReload`** when local Lua is already installed and idle, never assume a cloud edit has been tested in-game. Ghosting remains opt-in and OFF by default; no silent teleport, purchases, save reloads or hijacked keyboard/mouse. The deliverable is the complete independent, installable Farmhand—not isolated proofs.
