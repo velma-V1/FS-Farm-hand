@@ -69,7 +69,9 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "unload_combine": ("unload_harvester", "ACCEPTED_UNLOAD_COMBINE", "COMPLETE_UNLOAD_COMBINE"),
         "land": ("land", "ACCEPTED_LAND", "COMPLETE_LAND"),
         "combine_full": ("overload", "COMBINE_FULL", "COMPLETE_UNLOAD_COMBINE"),
-        "wagon_full": ("field_work", "WAGON_FULL", "COMPLETE_FIELD_WORK")}
+        "wagon_full": ("field_work", "WAGON_FULL", "COMPLETE_FIELD_WORK"),
+        "clear_worker": ("clear_worker", "WORKER_BLOCKED", "COMPLETE_CLEAR_WORKER"),
+        "join_fields": ("join_fields", "ACCEPTED_JOIN_FIELDS", "COMPLETE_JOIN_FIELDS")}
 # The proposal fields that pass into a job command's intent.
 NAMES = ("tractor_name", "implement_name", "cargo_name")
 
@@ -208,7 +210,12 @@ UNREACHABLE_IMPLEMENT = frozenset({"LOCAL_PATH_HITS_WAGON", "NO_SAFE_APPROACH", 
                                    # d58e38ce474b416e-2: the Titan trailer beyond grades 330 m off).
                                    "UNPARK_START_NOT_CLEAR", "NO_ROUTE",
                                    # Its one UNPARK spent on the trailer before (live 9c6b1d904f544423-1).
-                                   "UNPARK_ALREADY_USED"})
+                                   "UNPARK_ALREADY_USED",
+                                   # The bounded steps could not line up there, stopped braked (live
+                                   # ad2bdc29c456469f-1, ac799523dcfc4f75-1: the Titan trailer on a
+                                   # loading pad under a structure): the next trailer, as a person would.
+                                   "STALLED", "DIVERGED", "OVERSPEED", "LOCAL_NO_PATH", "LOCAL_PATH_LEAVES_AREA",
+                                   "LOCAL_PATH_TOO_LONG", "LINEUP_MISSED"})
 
 
 def work_for(proposal: dict) -> dict | None:
@@ -241,6 +248,8 @@ def work_for(proposal: dict) -> dict | None:
         return {"field": proposal.get("field")}
     if command == "land":
         return {"field": proposal["field"], "land_action": proposal["land_action"]}
+    if command == "join_fields":
+        return {"field": proposal["field"], "into_field": proposal["into_field"]}
     return None
 
 
@@ -371,6 +380,12 @@ def implement_kind(items: tuple[Equipment, ...], operation: str, farm_id: str,
     for kind in kinds:
         if _have(items, kind, farm_id):
             return kind, None
+    from companion.executor import rejections
+    for item in items:
+        if any(of_kind(item, kind) for kind in kinds):
+            log.info("%s %s passed over for %s: %s", item.id, item.name, operation,
+                     ", ".join(rejections(item, farm_id) + ([] if "ai_implement" in item.kinds else ["NOT_AI_USABLE"]))
+                     or "UNKNOWN")
     return None, "NO_IMPLEMENT_FOR_" + operation.upper()
 
 
@@ -456,7 +471,8 @@ def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: st
     work_op = "cultivate" if note == "NO_PLOW_CULTIVATING" else operation
     with_crop = {"crop": crop} if crop else {}
     steps = []
-    if not _hitched(items, kind, crop):
+    was_hitched = _hitched(items, kind, crop)
+    if not was_hitched:
         freed = _tractor_to_free(items, kind, farm_id)
         if freed is not None:
             # Every tractor has something hitched (live 7dada469b72f44ed-3, a contract taken):
@@ -467,9 +483,12 @@ def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: st
             steps.append({"task": "hitch_pair", "implement": kind, **with_crop})
     steps.append({"task": "field_work", "field": field, "operation": work_op, "implement": kind,
                   **({"area_m2": area_m2} if area_m2 else {}), **with_crop})
-    # Back where it was taken from, then unhitched there: never left in the field.
-    steps.append({"task": "move_pair", "implement": kind, "target": {"type": "origin"}})
-    steps.append({"task": "detach_pair", "implement": kind})
+    # A bounded test-area request ends when its measured area is done. Keep an
+    # already assembled player rig intact instead of returning and detaching it.
+    # Full-field/background workers retain their existing return workflow.
+    if not was_hitched or area_m2 is None:
+        steps.append({"task": "move_pair", "implement": kind, "target": {"type": "origin"}})
+        steps.append({"task": "detach_pair", "implement": kind})
     return steps, note
 
 
@@ -587,6 +606,9 @@ class Coordinator:
         # read before each job (Settings.pay; companion/service.py sets the reader).
         self.pay = lambda: None
         self._unreachable: set[str] = set()        # implements no hitch could reach this session (not tried again)
+        self._queue: list[tuple] = []               # requests waiting for the current job (start's arguments)
+        self._blocked_since: dict[str, float] = {}   # worker owner -> when its helper was first seen BLOCKED
+        self._cleared: set[str] = set()             # workers whose way was cleared (once each)
         self._after: list[list] = []              # their follow-up steps, run when Farmhand is free
         self._watcher: threading.Thread | None = None
 
@@ -674,8 +696,9 @@ class Coordinator:
     def stop(self, spoken: bool = False) -> None:
         """Deterministic and immediate; never waits for an interpreter or the job.
         One requester stop per job, never during its own cleanup: a second stop
-        command would pre-empt the job's confirming stop."""
+        command would pre-empt the job's confirming stop. The waiting list is emptied."""
         with self._lock:
+            self._queue.clear()
             job = self.current
             send = False
             if job is not None:
@@ -696,7 +719,10 @@ class Coordinator:
                              name="farmhand-stop").start()
 
     # ------------------------------------------------------------------ workers
+    MAX_QUEUE = 5                              # requests waiting their turn
     WATCH_S = 5.0
+    # A worker whose helper's agent says BLOCKED this long has what stands near it moved (once).
+    WORKER_BLOCKED_S = 90.0
 
     def _worker_owners(self) -> set:
         with self._lock:
@@ -720,11 +746,27 @@ class Coordinator:
     def _add_worker(self, worker: Worker) -> None:
         with self._lock:
             self.workers.append(worker)
+        self._ensure_watch()
+
+    def _ensure_watch(self) -> None:
+        with self._lock:
             start = self._watcher is None or not self._watcher.is_alive()
             if start:
                 self._watcher = threading.Thread(target=self._watch, daemon=True, name="farmhand-workers")
         if start:
             self._watcher.start()
+
+    def _blocked_long(self, key: str, blocked: bool) -> bool:
+        """Whether ``key``'s helper has been BLOCKED for WORKER_BLOCKED_S and not cleared yet
+        (then it counts as cleared)."""
+        if not blocked:
+            self._blocked_since.pop(key, None)
+            return False
+        since = self._blocked_since.setdefault(key, time.monotonic())
+        if time.monotonic() - since < self.WORKER_BLOCKED_S or key in self._cleared:
+            return False
+        self._cleared.add(key)
+        return True
 
     def _watch(self) -> None:
         """Until no helper works and no follow-up waits: each helper seen ended (no AI
@@ -733,13 +775,47 @@ class Coordinator:
         while True:
             with self._lock:
                 workers, waiting = list(self.workers), bool(self._after)
-            if not workers and not waiting:
+            try:
+                observed = {i.id: i for i in self.world.snapshot()}
+                farm_id = self.farm()
+            except StepUnverified as error:
+                # A save/menu transition temporarily ends observations. Keep the
+                # worker watch alive so it can resume when the game links again.
+                log.info("worker watch waits for game observation: %s", error.code)
+                time.sleep(self.WATCH_S)
+                continue
+            # GIANTS helpers on the farm that are not Farmhand's own (hired by the player, or kept
+            # through a save: live 2026-10-31, the seeder's helper resumed after the reload, blocked
+            # by an implement): blocked long, their way is cleared too.
+            ours = {w.tractor for w in workers}
+            seen = [(i.id, i.category, i.busy_reason, i.ai_blocked) for i in observed.values() if i.busy]
+            if seen != getattr(self, "_seen_busy", None):
+                self._seen_busy = seen
+                log.info("busy vehicles: %s", seen)
+            others = [i for i in observed.values() if i.id not in ours and i.farm_id == farm_id
+                      and i.category == "tractor" and i.busy and i.busy_reason == "AI_ACTIVE"]
+            if not workers and not waiting and not others:
                 return
-            observed = {i.id: i for i in self.world.snapshot()}
+            for helper in others:
+                # AI-active yet standing: stuck, whatever GIANTS' agent state says (live 2026-10-31:
+                # the seeder's helper stood at 81.5 % with its agent not BLOCKED).
+                stuck = helper.ai_blocked or (helper.stopped and not combine_full(helper, self.COMBINE_WAITING_SHARE))
+                if f"vehicle-{helper.id}" not in self._blocked_since and stuck:
+                    log.info("helper %s (%s) is standing", helper.id, helper.name)
+                if self._blocked_long(f"vehicle-{helper.id}", stuck):
+                    with self._lock:
+                        self._after.append({"job": "clear_worker", "work": {"tractor": helper.id}})
             for w in workers:
                 tractor = observed.get(w.tractor)
                 if tractor is None:
                     continue
+                # GIANTS' helper waits for an obstacle it knows; a parked vehicle or a dropped
+                # implement never leaves (live 2026-10-31: the seeder worker stopped at field 3's
+                # corner by the implement Farmhand dropped there): it is moved, as a worker would.
+                stuck = tractor.busy and (tractor.ai_blocked or tractor.stopped) and w.operation not in ("unload", "harvest")
+                if self._blocked_long(w.owner, stuck):
+                    with self._lock:
+                        self._after.append({"job": "clear_worker", "work": {"tractor": w.tractor, "owner": w.owner}})
                 # GIANTS' combine helper waits at a full tank for a trailer under the pipe
                 # (AIDriveStrategyCombine:getDriveData 231-245); with no unloader none comes.
                 if (w.operation == "harvest" and tractor.busy and tractor.stopped
@@ -811,7 +887,9 @@ class Coordinator:
             # The harvest is done: what this harvest put in the trailer goes where it was told.
             with self._lock:
                 self._after.append([{"task": destination, "tractor_name": rig}])
-        # The combine is done: its unloader stops, and what it still carries is sold.
+        # The combine is done: its unloader stops, and what it still carries goes where this
+        # harvest's grain goes (sold or stored; kept, it stays in the trailer).
+        leftover_to = self._destination(w.destination) if w.operation == "harvest" else None
         for u in unloaders:
             try:
                 if not self.world.stop(u.tractor, u.owner):
@@ -825,9 +903,9 @@ class Coordinator:
                     self.workers.remove(u)
             observed = {i.id: i for i in self.world.snapshot()}
             trailer = observed.get(observed[u.tractor].attached_to) if u.tractor in observed else None
-            if trailer is not None and sum(f.level or 0.0 for f in trailer.fill_units) > 0:
+            if trailer is not None and sum(f.level or 0.0 for f in trailer.fill_units) > 0 and leftover_to:
                 with self._lock:
-                    self._after.append([{"task": "sell"}])
+                    self._after.append([{"task": leftover_to}])
 
     def _collect_ended(self, w: Worker, done, full: bool) -> None:
         """A forage wagon's helper ended (or was stopped full). Done (the windrow measured gone):
@@ -897,8 +975,14 @@ class Coordinator:
     def start(self, command: str, target, spoken: bool = False, implement: str | None = None,
               work: dict | None = None) -> Job | None:
         with self._lock:
+            queued = False
             if self.current is not None:
                 busy = True
+                # A waiting list (the user, 2026-10-31: "farmhand needs a queue (waiting list) for
+                # field work"): it starts when the current job ends.
+                if len(self._queue) < self.MAX_QUEUE:
+                    self._queue.append((command, target, spoken, implement, work))
+                    queued = True
             else:
                 busy = False
                 self._jobs += 1
@@ -906,7 +990,7 @@ class Coordinator:
                 self.current = Job(self._jobs, f"{self.session()}-{self._jobs}", spoken=spoken, command=command)
                 job, cancel = self.current, self._cancel
         if busy:
-            self.notify("BUSY", spoken)
+            self.notify("QUEUED" if queued else "BUSY", spoken)
             return None
         self.notify(JOBS[command][1], spoken)
         worker = threading.Thread(target=self._run, args=(job, cancel, command, target, implement, work),
@@ -964,6 +1048,11 @@ class Coordinator:
             if then is not None and self.kept is not None:
                 self._retarget_kept(then)
                 self.resume(job.spoken)
+            else:
+                with self._lock:
+                    following = self._queue.pop(0) if self._queue and self.current is None else None
+                if following is not None:
+                    self.start(*following)
 
     # ---------------------------------------------------------- resume / retarget
     def resume(self, spoken: bool = False) -> Job | None:
@@ -1068,6 +1157,10 @@ class Coordinator:
             return self._combine_full(job, cancel, entered, work)
         if command == "wagon_full":
             return self._wagon_full(job, cancel, entered, work)
+        if command == "clear_worker":
+            return self._clear_worker(job, work)
+        if command == "join_fields":
+            return self._join_fields(job, cancel, entered, work)
         if command == "load_tractor" and work and work.get("carry"):
             return self._load_with(job, cancel, entered, work)
         if command == "land":
@@ -1322,9 +1415,11 @@ class Coordinator:
         if field is None:
             return Result("BLOCKED", failure)
         log.info("job %d field work %s on field %s (%.2f ha)", job.number, work["operations"], field.id, field.area_ha)
+        self._ensure_watch()                       # helpers already working (kept through a save) are watched too
         background = work.get("background", True) and not work.get("area_m2")
         states, equipment, started = [], [], []
         n = 0
+        teleported = False
 
         def fresh():
             return next((f for f in self.world.fields() if f.id == field.id), field)
@@ -1344,13 +1439,20 @@ class Coordinator:
                     fresh().coverage is not None
                     and OPERATIONS[ahead.operation].done(fresh().coverage) >= HEAD_START)):
                 return Result("CANCELLED", "CANCELLED_BY_REQUESTER", tuple(equipment), tuple(states))
-            for attempt in (1, 2):
+            for attempt in (1, 2, 3):
                 field = fresh()
                 if already_done(OPERATIONS[operation], field, work.get("area_m2")):
                     log.info("job %d %s: field %s already done; skipped", job.number, operation, field.id)
                     states.append(f"{operation}:ALREADY_DONE")
                     break
                 crop = None if work.get("over_crop") else crop_problem(OPERATIONS[operation], field)
+                if crop == "CROP_GROWING" and operation == "cultivate" and "sow" in work["operations"]:
+                    # Cultivating only prepared the sowing asked for, and most of it is sown already
+                    # (live 2026-10-31: field 3 82 % sown; "seed field 3" refused CROP_GROWING): on to
+                    # the sowing, which finishes what is left.
+                    log.info("job %d cultivate: field %s mostly sown; on to sowing", job.number, field.id)
+                    states.append("cultivate:SOWN_ALREADY")
+                    break
                 if crop is not None:
                     # Before anything is hitched or moved.
                     log.info("job %d %s: field %s %s", job.number, operation, field.id, crop)
@@ -1375,10 +1477,25 @@ class Coordinator:
                               "target": "player_at_acceptance", **step}
                     log.info("job %d step %d intent %s", job.number, n, json.dumps(intent))
                     self.running = intent["request_id"]
-                    result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
+                    # A hitch the teleport can still rescue ends at its first refused line-up.
+                    self.executor.teleport_fallback = (step["task"] == "hitch_pair" and not teleported
+                                                       and getattr(self.world, "teleport_recovery", False))
+                    try:
+                        result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
+                    finally:
+                        self.executor.teleport_fallback = False
                     states += [f"{step['task']}:{s}" for s in result.states]
                     equipment += [e for e in result.equipment_ids if e not in equipment]
                     log.info("job %d step %d result %s %s", job.number, n, result.status, result.reason)
+                    if (step["task"] == "hitch_pair" and result.status != "COMPLETE"
+                            and result.reason in UNREACHABLE_IMPLEMENT and not teleported
+                            and len(result.equipment_ids) == 2 and self._teleport_to_field(job, result.equipment_ids[1], field)):
+                        # The implement could not be reached where it stands (the user, 2026-10-31:
+                        # the seeder's drawbar against a tree, "can farmhand teleport it to the field
+                        # when stuck?"): teleported to the field's edge, then hitched there, once.
+                        teleported = True
+                        retry = True
+                        break
                     if (result.status == "BLOCKED" and step["task"] == "hitch_pair" and ahead is not None
                             and attempt == 1):
                         # No free tractor while the one ahead works: it comes back first.
@@ -1398,10 +1515,11 @@ class Coordinator:
                         self._add_worker(worker)
                         started.append(worker)
                         self.notify("WORKER_STARTED", job.spoken)
-                        # AutoDrive's combine unloader takes the grain to a sell point: only when
-                        # this harvest's crop is to be sold.
-                        if step["operation"] == "harvest" and self._destination(worker.destination) == "sell":
-                            self._start_unloader(job, cancel, entered, field.id)
+                        # AutoDrive's combine unloader follows the combine and unloads it on the
+                        # move (the user, 2026-10-31: "while harvesting at speed"); a full trailer
+                        # goes where this harvest's grain goes.
+                        if step["operation"] == "harvest":
+                            self._start_unloader(job, cancel, entered, field.id, self._destination(worker.destination))
                         break
                 if not retry:
                     break
@@ -1617,10 +1735,9 @@ class Coordinator:
             if any(w.field == field_id and w.operation == "unload" for w in self.workers):
                 return Result("COMPLETE", "UNLOADER_ALREADY_WORKING")
         worker = next(w for w in harvesting if w.field == field_id)
-        if self._destination(worker.destination) == "sell":
-            result = self._start_unloader(job, cancel, entered, field_id)
-            if result.reason == "UNLOADER_STARTED":
-                return result
+        result = self._start_unloader(job, cancel, entered, field_id, self._destination(worker.destination))
+        if result.reason == "UNLOADER_STARTED":
+            return result
         combine = next((i for i in self.world.snapshot() if i.id == worker.tractor), None)
         if not self._pause_worker(worker):
             return Result("UNVERIFIED", "STOP_NOT_CONFIRMED")
@@ -1641,12 +1758,79 @@ class Coordinator:
                 self.workers.remove(w)
         return True
 
-    def _start_unloader(self, job: Job, cancel: threading.Event, entered, field_id: int) -> Result:
-        """Unloading while harvesting (the user 2026-10-21): an AutoDrive rig with a
-        trailer that has room runs AutoDrive's combine unloader for this field, a worker
-        until the combine is done. Without one the combine waits when full (said so)."""
+    def _join_fields(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
+        """"Add field 4 to field 5": a plow hitched to a free tractor unless one is, then the strip
+        between the fields plowed with field creation on (executor join_fields)."""
+        items = tuple(self.world.snapshot())
+        observed = {i.id: i for i in items}
+        hitched = any(t.category == "tractor" and t.attached_to in observed and of_kind(observed[t.attached_to], "plow")
+                      and usable(t, self.farm()) for t in items)
+        prepare = []
+        if not hitched:
+            # As field work gets its plow: a tractor freed of what it tows first if none is free
+            # (live 2026-10-31: every tractor had something hitched, NO_ELIGIBLE_PAIR).
+            planned, note = field_steps(items, "plow", work["into_field"], self.farm(), None, None)
+            if planned is None:
+                return Result("BLOCKED", note)
+            prepare = [s for s in planned[:next((i for i, s in enumerate(planned) if s["task"] == "field_work"), len(planned))]]
+        steps = prepare + [{"task": "join_fields", "field": work["field"], "into_field": work["into_field"]}]
+        return self._run_steps(job, cancel, entered, steps, "j")
+
+    def _clear_worker(self, job: Job, work: dict) -> Result:
+        """A worker's helper blocked by what stands near it: each parked vehicle driven out of the
+        way, each loose implement teleported aside (when the player allows teleporting); the
+        helper then drives on by itself."""
+        from companion.standalone import StandaloneMove
+        observed = {i.id: i for i in self.world.snapshot()}
+        tractor = observed.get(work["tractor"])
+        if tractor is None:
+            return Result("BLOCKED", "WORKER_NOT_FOUND")
+        ids = tuple(i for i in (tractor.id, tractor.attached_to) if i)
+        moved = StandaloneMove(self.world)._move_blockers(ids, self.farm(), job.owner)
+        log.info("job %d: worker %s blocked; %d moved out of its way", job.number, tractor.id, moved)
+        return Result("COMPLETE" if moved else "BLOCKED", "WAY_CLEARED" if moved else "NOTHING_TO_MOVE")
+
+    def _teleport_to_field(self, job: Job, implement_id: str, field) -> bool:
+        """Teleport recovery for an implement that could not be reached where it stands: onto the
+        field's edge nearest it, facing the field, when the player allows teleporting (Settings).
+        Whether it was moved."""
+        if not getattr(self.world, "teleport_recovery", False) or not hasattr(self.world, "teleport"):
+            return False
+        from companion.standalone import _edge_point
+        from protocol.model import Pose
+        item = next((i for i in self.world.snapshot() if i.id == implement_id), None)
+        place = next((p for p in self.world.field_places() if p.id == f"field-{field.id}"), None) \
+            if hasattr(self.world, "field_places") else None
+        if item is None or place is None:
+            return False
+        outline = tuple(place.outline or ())
+        point = (_edge_point(outline, item.position)[0] if len(outline) >= 3 else None) or place.position
+        yaw = math.atan2(place.position[0] - point[0], place.position[1] - point[1])
+        owner = f"{job.owner}-tp"
+        if not self.world.reserve_rig((implement_id,), owner, loose=True):
+            log.info("job %d: %s could not be taken for the teleport", job.number, implement_id)
+            return False
+        try:
+            log.info("job %d: %s unreachable where it stands; teleported to field %s's edge at (%.1f, %.1f)",
+                     job.number, implement_id, field.id, point[0], point[1])
+            self.world.teleport(implement_id, owner, 0.0, Pose(point[0], point[1], yaw))
+            return True
+        except (StepFailed, StepUnverified, ValueError) as error:
+            log.info("job %d: teleport of %s: %s", job.number, implement_id, getattr(error, "code", error))
+            return False
+        finally:
+            self.world.release(owner)
+
+    def _start_unloader(self, job: Job, cancel: threading.Event, entered, field_id: int,
+                        destination: str | None = "sell") -> Result:
+        """Unloading while harvesting (the user 2026-10-21; at speed whatever the grain is for,
+        2026-10-31): an AutoDrive rig with a trailer that has room runs AutoDrive's combine
+        unloader for this field, a worker until the combine is done; a full trailer goes where
+        the harvest goes (sold, stored, or kept: parked at the field's marker). Without one the
+        combine waits when full (said so)."""
         intent = {"version": 1, "request_id": f"{job.owner}-u{field_id}", "farm_id": self.farm(),
-                  "target": "player_at_acceptance", "task": "unload_harvester", "field": field_id}
+                  "target": "player_at_acceptance", "task": "unload_harvester", "field": field_id,
+                  "destination": destination or "keep"}
         self.running = intent["request_id"]
         result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
         log.info("job %d unloader for field %s: %s %s", job.number, field_id, result.status, result.reason)

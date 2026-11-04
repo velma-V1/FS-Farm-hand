@@ -183,6 +183,20 @@ _LAND = re.compile(r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?(?P<verb>buy|purchase|s
                    r"field\s+(?:number\s+)?(?P<number>\d{1,5})(?:\s+please)?$")
 
 
+# "add field 4 to field 5", "join fields 4 and 5", "merge field 4 into field 5" (the user,
+# 2026-10-31): the strip between them plowed with field creation on.
+_JOIN = re.compile(r"^(?:please\s+)?(?:add|join|merge|combine|connect)\s+(?:the\s+)?fields?\s+(?:number\s+)?(?P<a>\d{1,5})"
+                   r"\s+(?:to|into|with|and|onto)\s+(?:the\s+)?(?:field\s+)?(?:number\s+)?(?P<b>\d{1,5})"
+                   r"(?:\s+(?:together|as\s+one(?:\s+field)?))?(?:\s+with\s+(?:create|creating)\s+fields?(?:\s+(?:enabled|on))?)?(?:\s+please)?$")
+
+
+def join_fields(words: str) -> dict | None:
+    match = _JOIN.match(words)
+    if match is None or int(match["a"]) < 1 or int(match["b"]) < 1 or match["a"] == match["b"]:
+        return None
+    return {"version": 1, "command": "join_fields", "field": int(match["a"]), "into_field": int(match["b"])}
+
+
 def land(words: str) -> dict | None:
     match = _LAND.match(words)
     if match is None or int(match["number"]) < 1:
@@ -740,6 +754,9 @@ class RuleInterpreter:
         parcel = land(words)
         if parcel is not None:
             return parcel
+        joined = join_fields(words)
+        if joined is not None:
+            return joined
         use = _USE.match(words)
         if use is not None and not implement_kind(use["name"]):
             rest = self._clause(use["rest"])

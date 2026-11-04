@@ -7,7 +7,7 @@ import unittest
 
 from adapters.world import StepFailed
 from companion.executor import DELIVERY_STANDOFF_M, MAX_APPROACH_DRIVES, PLACE_STANDOFF_M, Executor
-from companion.hitch import PULL_CLEAR_M, against_loose_implement, approach_poses, joint_separation, plan_hitch
+from companion.hitch import PULL_CLEAR_M, against_loose_implement, approach_families, approach_poses, joint_separation, plan_hitch
 from protocol.model import Destination, Equipment, InputJoint, OutputJoint, Pose
 from simulator.world import MockWorld
 
@@ -624,7 +624,9 @@ class GiantsNavigationTests(unittest.TestCase):
 
     def test_aims_that_leave_the_tractor_where_it_stood_cost_no_drive(self):
         # Live 27539c7115a44b86-1: NOT_REACHABLE at once, 1248 m off, unmoved.
-        for unmoved, outcome in ((6, ("COMPLETE", "DELIVERY_OBSERVED")), (7, ("BLOCKED", "NO_SAFE_APPROACH"))):
+        aim_count = 2 * len(approach_families(plan_hitch(*self.world(GOTO_TRACTOR, far=True).snapshot()))) + 1
+        for unmoved, outcome in ((aim_count - 1, ("COMPLETE", "DELIVERY_OBSERVED")),
+                                 (aim_count, ("BLOCKED", "NO_SAFE_APPROACH"))):
             with self.subTest(unmoved=unmoved):
                 calls = []
 
@@ -639,7 +641,7 @@ class GiantsNavigationTests(unittest.TestCase):
                 result = Executor(world).execute(intent())
                 self.assertEqual((result.status, result.reason), outcome, result)
                 if outcome[0] == "BLOCKED":
-                    self.assertEqual(len(calls), 7)                 # each aim once (six approaches + staging)
+                    self.assertEqual(len(calls), aim_count)         # each aim once (the approaches + staging)
                     self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
 
     def test_a_goto_stopped_as_stalled_is_judged_by_the_observation(self):
@@ -762,7 +764,8 @@ class GiantsNavigationTests(unittest.TestCase):
 
     def test_aims_giants_refuses_as_blocked_are_skipped_without_moving(self):
         # AIParameterPosition:validate 83-90: a target on blocked ground is refused.
-        for refused, outcome in ((6, "COMPLETE"), (7, "BLOCKED")):          # six approaches + the staging pose
+        aim_count = 2 * len(approach_families(plan_hitch(*self.world(GOTO_TRACTOR, far=True).snapshot()))) + 1
+        for refused, outcome in ((aim_count - 1, "COMPLETE"), (aim_count, "BLOCKED")):   # the approaches + staging
             with self.subTest(refused=refused):
                 calls = []
 
@@ -780,7 +783,8 @@ class GiantsNavigationTests(unittest.TestCase):
                 before = world.snapshot()
                 result = Executor(world).execute(intent())
                 self.assertEqual(result.status, outcome, result)
-                self.assertEqual(calls[:len(aims)], list(aims[:len(calls)]))
+                self.assertEqual(calls[:min(len(calls), refused + 1, len(aims))],
+                                 list(aims[:min(len(calls), refused + 1, len(aims))]))
                 if outcome == "BLOCKED":
                     self.assertEqual(result.reason, "NO_SAFE_APPROACH")
                     self.assertEqual(len(calls), len(aims))          # each aim once

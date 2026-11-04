@@ -68,6 +68,10 @@ class LuaAlongsideTests(unittest.TestCase):
     def setUp(self):
         self.lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
         self.hitch = self.lua.execute((ROOT / "mod/FarmhandHitch.lua").read_text())
+        # Behaviour tests run at the 3 km/h they were tuned for; production limits: SpeedLimitTests.
+        for limits in (self.hitch.LOAD_LIMITS, self.hitch.BACKOFF, self.hitch.ALONGSIDE, self.hitch.UNPARK_LIMITS,
+                       self.hitch.PULL_LIMITS):
+            limits.maxSpeedKmh = 3
         self.W = self.lua.execute(STUBS, self.hitch)
         loader = "load" if self.runtime is lua54 else "loadstring"
         self.combine = self.lua.eval(f"function(src, W, w, o) return {loader}(src)(W, w, o) end")

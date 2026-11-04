@@ -406,7 +406,7 @@ class MockWorld:
         tractor = self.items[tractor_id]
         return self.items.get(tractor.attached_to)
 
-    def ad_unload(self, tractor_id, marker_id, field, owner):
+    def ad_unload(self, tractor_id, marker_id, field, owner, destination="sell"):
         # Mock-only: AutoDrive's unloader runs (busy) until stopped; tests fill its trailer.
         with self._lock:
             reservation = self._reservations.get(owner)
@@ -414,8 +414,9 @@ class MockWorld:
                 raise RuntimeError("NOT_RESERVED")
             if marker_id not in self.destination_map:
                 raise StepFailed("UNKNOWN_MARKER")
-            if self.mock_sell_at is None:
+            if destination == "sell" and self.mock_sell_at is None:
                 raise StepFailed("NO_SELL_POINT")
+            self.mock_unload_to = {**getattr(self, "mock_unload_to", {}), tractor_id: destination}
             self.mock_workers = {**self.mock_workers, tractor_id: None}
             self.items[tractor_id] = replace(self.items[tractor_id], busy=True, busy_reason="AUTODRIVE_ACTIVE")
             return "UNLOADING"

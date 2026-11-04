@@ -29,6 +29,7 @@ class LuaPullClearTests(unittest.TestCase):
     def setUp(self):
         self.lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
         self.hitch = self.lua.execute((ROOT / "mod/FarmhandHitch.lua").read_text())
+        self.hitch.PULL_LIMITS.maxSpeedKmh = 3    # tuned at 3 km/h; production 8: test_lua_load SpeedLimitTests
         self.W = self.lua.execute(STUBS, self.hitch)
 
     def world(self, **opts):

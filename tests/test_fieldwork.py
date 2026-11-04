@@ -4,7 +4,8 @@ from dataclasses import replace
 import math
 import unittest
 
-from adapters.world import StepFailed
+from adapters.world import StepFailed, StepUnverified
+from companion import hitch as transport
 from companion.executor import Executor
 from companion.executor import COVERAGE_REQUIRED, OPERATIONS, resolve_field
 from protocol.model import Equipment, FarmInfo, Field, FieldCoverage, FillUnit, InputJoint, OutputJoint, Pose
@@ -71,6 +72,23 @@ class FieldWorkTests(unittest.TestCase):
                 self.assertEqual(result.states, ("FIND", "RESERVE", "FIELD_WORK", "VERIFY", "STOP", "RELEASE"))
                 self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
 
+    def test_fieldwork_does_not_preemptively_teleport_nearby_equipment(self):
+        # Live 2026-11-04: the field-2 scan moved a parked canola trailer even
+        # though the helper had not reported that trailer as an obstruction.
+        from protocol.model import Destination
+        world = self.world("sprayer", 500.0)
+        world.items["i-9"] = Equipment("i-9", "implement", "farm-a", (200.0, 300.0),
+                                         kinds=frozenset({"trailer"}), heading=0.0)
+        outline = ((150.0, 250.0), (250.0, 350.0), (250.0, 350.0), (250.0, 250.0))
+        world.mock_field_places = (Destination("field-7", (200.0, 300.0), "Field 7", outline),)
+        world.teleport_recovery = True
+        teleports = []
+        world.teleport = lambda *args, **kwargs: teleports.append(args)
+        result = Executor(world).execute(work("fertilize"))
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual(teleports, [])
+
+
     def test_a_field_the_helper_cannot_reach_from_afar_is_reached_by_autodrive_first(self):
         # Live 5c8eeb68ccea4304-2: the 3650 + spreader 1 km from field 10, GIANTS' helper ended
         # NOT_REACHABLE at once. AutoDrive takes the pair to the field's marker (made its own
@@ -115,6 +133,8 @@ class FieldWorkTests(unittest.TestCase):
                 self.driven = target
                 for unit, behind in (("t-1", 0.0), ("i-1", 4.0)):
                     self.items[unit] = replace(self.items[unit], position=(target[0], target[1] - behind))
+                if yaw is not None:
+                    self.items["t-1"] = replace(self.items["t-1"], heading=yaw)
 
             def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0, seed=0, hand=False):
                 if math.dist(self.items[tractor_id].position, (200.0, 300.0)) > 150.0:
@@ -225,7 +245,9 @@ class PlanTests(unittest.TestCase):
                                  {"task": "move_pair", "implement": "sowing_machine", "target": {"type": "origin"}},
                                  {"task": "detach_pair", "implement": "sowing_machine"}])
         hitched = self.items("cultivator", "sowing_machine", hitched=1)
-        self.assertEqual(field_steps(hitched, "sow", 7, "farm-a")[0][0]["task"], "field_work")   # already on
+        self.assertEqual(field_steps(hitched, "sow", 7, "farm-a", area_m2=100)[0],
+                         [{"task": "field_work", "field": 7, "operation": "sow", "implement": "sowing_machine",
+                           "area_m2": 100}])
         # No plow on the farm: the cultivator does it, and says so.
         steps, note = field_steps(items, "plow", 7, "farm-a")
         self.assertEqual((steps[1]["operation"], steps[1]["implement"], note),
@@ -370,6 +392,65 @@ class ReturnToOriginTests(unittest.TestCase):
         self.assertEqual(result.states, ())
 
 
+class BlockedAtStartTests(unittest.TestCase):
+    def test_a_helper_blocked_where_it_stands_has_the_parked_truck_moved_and_starts_again(self):
+        # Live 9f1e101ef8da48d7-1: the Series 9 unloaded behind the GMC's deck, GIANTS' helper
+        # blocked; a worker would pull the truck away first.
+        moved = []
+
+        class Boxed(MockWorld):
+            blocked = True
+
+            def reserve_rig(self, ids, owner):
+                return True
+
+            def release(self, owner):
+                if not owner.endswith("-clear0"):
+                    return super().release(owner)
+
+            def stop(self, vehicle_id, owner):
+                return True if owner.endswith("-clear0") else super().stop(vehicle_id, owner)
+
+            def reposition(self, vehicle_id, owner):
+                moved.append(vehicle_id)
+                v = self.items[vehicle_id]
+                self.items[vehicle_id] = replace(v, position=(v.position[0] + 40.0, v.position[1]))
+                self.blocked = False
+
+            code = "FIELDWORK_BLOCKED_AT_START"
+
+            def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0, seed=0, hand=False):
+                if self.blocked:
+                    raise StepFailed(self.code)
+                return super().fieldwork(tractor_id, field_id, pose, owner, area_m2, seed, hand)
+
+        # At its start, or on its way (live 5eb1005df58446f7-1: the GMC left on the road).
+        for code in ("FIELDWORK_BLOCKED_AT_START", "FIELDWORK_BLOCKED"):
+            with self.subTest(code=code):
+                moved.clear()
+                truck = Equipment("g-1", "tractor", "farm-a", (100.0, 108.0), heading=0.0,
+                                  ai_root=Pose(100.0, 108.0, 0.0), capabilities=frozenset({"move", "attach", "stop"}))
+                world = Boxed(rig("cultivator") + [truck], PLAYERS, fields=(field(7, 0.4),), farm=FARM)
+                world.code = code
+                result = Executor(world).execute(work("cultivate"))
+                self.assertEqual((result.status, result.reason), ("COMPLETE", "FIELD_WORK_OBSERVED"), result)
+                self.assertEqual(moved, ["g-1"])
+
+
+class StrappedOnTransportTests(unittest.TestCase):
+    def test_a_pair_strapped_on_a_transport_is_never_sent_to_work(self):
+        # Live 2026-10-31 (save 1): "plow field 3" took the Series 9 and its Titan plow belted on
+        # the GMC's deckover 800 m away.
+        from dataclasses import replace as _replace
+        tractor, plow = rig("plow")
+        world = MockWorld([_replace(tractor, belted_to="d-1"), _replace(plow, belted_to="d-1")], PLAYERS,
+                          fields=(field(7, 0.4),), farm=FARM)
+        before = world.snapshot()
+        result = Executor(world).execute(work("plow"))
+        self.assertEqual(result.status, "BLOCKED", result)
+        self.assertEqual(world.snapshot(), before)
+
+
 class StandingCropTests(unittest.TestCase):
     """Live FourFields field 1: 100 % HARVEST_READY wheat. Cultivating or sowing it
     would destroy the crop: BLOCKED before anything is hitched or moved."""
@@ -389,6 +470,16 @@ class StandingCropTests(unittest.TestCase):
                 result = Executor(world).execute(work(operation))
                 self.assertEqual((result.status, result.reason), ("BLOCKED", reason))
                 self.assertEqual(world.snapshot(), before)
+
+    def test_harvested_stubble_still_marked_ready_is_worked(self):
+        # Live 2026-10-31 (save 1 field 3): every sample cut, the ground state still HARVEST_READY;
+        # "plow field 3" was refused CROP_READY_TO_HARVEST. Only standing crop blocks.
+        from companion.executor import OPERATIONS, crop_problem
+        cut = FieldCoverage(ground=(("HARVEST_READY", 1.0),), spray=(), total_m2=4000.0,
+                            fruit=(("WHEAT", 5),), sampled=5, cut=5)
+        self.assertIsNone(crop_problem(OPERATIONS["plow"], field(7, 0.4, cut)))
+        self.assertIsNone(crop_problem(OPERATIONS["sow"], field(7, 0.4, cut)))
+        self.assertEqual(crop_problem(OPERATIONS["plow"], field(7, 0.4, self.READY)), "CROP_READY_TO_HARVEST")
 
     def test_the_plan_stops_before_hitching(self):
         from companion import coordinator as coordination
@@ -780,6 +871,37 @@ class WorkerTests(unittest.TestCase):
     def unit(self, world, unit_id):
         return next(i for i in world.snapshot() if i.id == unit_id)
 
+    def test_worker_watch_survives_a_stale_game_snapshot(self):
+        from companion.coordinator import Coordinator
+
+        class World:
+            reads = 0
+
+            def snapshot(self):
+                self.reads += 1
+                if self.reads == 1:
+                    raise StepUnverified("STALE_SNAPSHOT")
+                return ()
+
+        world = World()
+        coordinator = Coordinator(world, None, lambda *_: None, lambda: "farm-a", lambda: "s1")
+        coordinator.WATCH_S = 0
+        coordinator._watch()
+        self.assertEqual(world.reads, 2)
+
+        world.reads = 1
+        reads = [0]
+
+        def farm():
+            reads[0] += 1
+            if reads[0] == 1:
+                raise StepUnverified("STALE_SNAPSHOT")
+            return "farm-a"
+
+        coordinator.farm = farm
+        coordinator._watch()
+        self.assertEqual(reads[0], 2)
+
     def test_the_helper_works_on_and_its_equipment_comes_back_once_it_is_done(self):
         world = self.world("plow")
         c, notices = coordinated(world)
@@ -826,6 +948,162 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"))
         self.assertEqual(sorted(w.tractor for w in c.workers), ["t-1", "t-2"])
         self.assertEqual(notices.count("WORKER_STARTED"), 2)
+
+    def test_an_implement_unreachable_where_it_stands_is_teleported_to_the_field_and_hitched(self):
+        # The user, 2026-10-31: the seeder's drawbar against a tree ("can farmhand teleport it to
+        # the field when stuck?"). Once, when teleport recovery is on, to the field's edge.
+        from companion.executor import Executor as _E
+        from protocol.model import Destination, Result as _R
+        world = self.world("plow")
+        seeder = Equipment("i-9", "implement", "farm-a", (160.0, 100.0), kinds=frozenset({"sowing_machine", "ai_implement"}),
+                           heading=0.0, fill_units=(FillUnit(1, "SEEDS", 500.0, 4000.0, role="seed"),),
+                           input_joints=(InputJoint(1, "implement", (160.0, 102.0), True),), required_pto_torque=0.0)
+        world.items["i-9"] = seeder
+        world.items["t-2"] = replace(world.items["t-1"], id="t-2", position=(170.0, 120.0), attached_to=None,
+                                     ai_root=Pose(170.0, 120.0, 0.0),
+                                     output_joints=(OutputJoint(1, "implement", 0.0, -2.0, True),))
+        outline = ((150.0, 250.0), (250.0, 250.0), (250.0, 350.0), (150.0, 350.0))
+        world.mock_field_places = (Destination("field-7", (200.0, 300.0), "Field 7", outline),)
+        teleports = []
+        world.teleport_recovery = True
+        world.reserve_rig = lambda ids, owner, loose=False: loose and ids == ("i-9",)
+        world.release = (lambda release: lambda owner: None if owner.endswith("-tp") else release(owner))(world.release)
+
+        def teleport(vehicle_id, owner, min_m=0.0, at=None):
+            teleports.append((vehicle_id, (at.x, at.z)))
+            world.items["i-9"] = replace(world.items["i-9"], position=(at.x, at.z),
+                                         input_joints=(InputJoint(1, "implement", (at.x, at.z + 2.0), True),))
+        world.teleport = teleport
+        c, notices = coordinated(world)
+        real = c.executor.execute
+        refused = []
+
+        def execute(intent, **kw):
+            if intent["task"] == "hitch_pair" and intent.get("implement") == "sowing_machine" and not teleports:
+                refused.append(intent["request_id"])
+                return _R("FAILED", "LOCAL_PATH_OBSTRUCTED", ("t-2", "i-9"), ("FIND", "RESERVE"))
+            return real(intent, **kw)
+        c.executor.execute = execute
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["sow"]})
+        c.wait(15)
+        self.assertEqual(len(refused), 1)
+        self.assertEqual(teleports, [("i-9", (160.0, 250.0))])                  # the edge nearest it
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"), c.last)
+
+    def test_a_worker_blocked_by_a_dropped_implement_has_it_teleported_aside(self):
+        # Live 2026-10-31: the seeder's worker stopped at field 3's corner by the implement Farmhand
+        # dropped there to free the MT600; GIANTS' helper waits for an obstacle it knows.
+        world = self.world("plow")
+        world.items["i-7"] = Equipment("i-7", "implement", "farm-a", (104.0, 96.0), kinds=frozenset({"cultivator"}),
+                                       heading=0.0)
+        moved = []
+        world.teleport_recovery = True
+        world.reserve_rig = lambda ids, owner, loose=False: loose and ids == ("i-7",)
+        world.release = (lambda release: lambda owner: None if "-clear" in owner else release(owner))(world.release)
+        world.teleport = lambda vehicle_id, owner, min_m=0.0, at=None: moved.append((vehicle_id, round(math.dist(
+            (at.x, at.z), (104.0, 96.0)))))
+        c, notices = coordinated(world)
+        c.WORKER_BLOCKED_S = 0.0
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["plow"]})
+        c.wait(10)
+        self.assertEqual([w.tractor for w in c.workers], ["t-1"])
+        world.items["t-1"] = replace(world.items["t-1"], ai_blocked=True)
+        self.assertTrue(until(lambda: moved, 15))
+        self.assertEqual(moved, [("i-7", 40)])                                 # 40 m away from the rig
+        self.assertIn("WORKER_BLOCKED", notices)
+
+    def test_loose_implements_on_the_field_are_set_down_beside_it_before_the_hand_off(self):
+        # The user, 2026-10-31: "when farmhand hands off the controls to giant worker it needs to scan
+        # the field and remove any loose blockers before they become an issue".
+        from companion.standalone import StandaloneMove
+        from protocol.model import Destination
+        world = self.world("plow")
+        world.place_list = (Destination("p-2", (-700.0, 60.0), "Grain Bin"), Destination("p-3", (-698.0, 88.0), "Petrol"))
+        outline = ((150.0, 250.0), (250.0, 250.0), (250.0, 350.0), (150.0, 350.0))
+        for iid, at in (("i-7", (200.0, 300.0)), ("i-8", (200.0, 245.0)), ("i-9", (200.0, 200.0))):
+            world.items[iid] = Equipment(iid, "implement", "farm-a", at, kinds=frozenset({"cultivator"}), heading=0.0)
+        moved = []
+        world.teleport_recovery = True
+        world.reserve_rig = lambda ids, owner, loose=False: loose
+        world.release = lambda owner: None
+        world.teleport = lambda vehicle_id, owner, min_m=0.0, at=None: moved.append((vehicle_id, (at.x, at.z)))
+        n = StandaloneMove(world).clear_field(outline, ("t-1", "i-1"), "farm-a", "job-1")
+        self.assertEqual(n, 2)                                   # on the field and on its headland, not 50 m off
+        self.assertEqual(sorted(m[0] for m in moved), ["i-7", "i-8"])
+        # They stay at the field (the user: "some may need to stay at a field"): just outside its
+        # edge, beyond the headland, never the farm yard.
+        from companion.standalone import _edge_point, _inside
+        for _, at in moved:
+            self.assertFalse(_inside(outline, at))
+            self.assertTrue(10.0 < _edge_point(outline, at)[1] <= 20.0, at)
+        world.teleport_recovery = False                          # teleporting off in Settings: nothing moves
+        self.assertEqual(StandaloneMove(world).clear_field(outline, ("t-1",), "farm-a", "job-2"), 0)
+
+    def test_a_loose_blocker_goes_to_the_farm_yard(self):
+        # The user, 2026-10-31: "i am going to end up with equipment all over the map, send it to
+        # the farm yard": the farm building with the most other farm buildings around it.
+        from companion.standalone import StandaloneMove
+        from protocol.model import Destination
+        world = self.world("plow")
+        world.place_list = (Destination("p-1", (900.0, 900.0), "Small Shed"),
+                            Destination("p-2", (-700.0, 60.0), "Grain Bin"),
+                            Destination("p-3", (-698.0, 88.0), "Petrol Tank"),
+                            Destination("p-4", (-660.0, 79.0), "Silo"))
+        loose = Equipment("i-7", "implement", "farm-a", (104.0, 96.0), kinds=frozenset({"cultivator"}), heading=0.0)
+        spot = StandaloneMove(world)._yard_spot(loose, (100.0, 100.0))
+        self.assertIn((spot.x, spot.z), [(-700.0, 60.0), (-698.0, 88.0)])     # in the cluster, not the far shed
+
+    def test_seeding_a_mostly_sown_field_skips_its_cultivating_and_sows_the_rest(self):
+        # Live 2026-10-31: field 3 82 % sown, 18 % plowed; "seed field 3 with wheat" (cultivate,
+        # sow) was refused CROP_GROWING at its cultivate step.
+        world = self.world("sowing_machine")
+        f = world.field_map[7]
+        world.field_map[7] = replace(f, coverage=replace(f.coverage, ground=(("SOWN", 0.82), ("PLOWED", 0.18))))
+        c, notices = coordinated(world)
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["cultivate", "sow"]})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"), c.last)
+        self.assertIn("cultivate:SOWN_ALREADY", c.last.states)
+        self.assertEqual([w.operation for w in c.workers], ["sow"])
+
+    def test_a_helper_kept_through_a_save_and_blocked_has_its_way_cleared(self):
+        # Live 2026-10-31: GIANTS kept the seeder's helper through the save and reload; blocked by
+        # an implement, it was not Farmhand's worker after the companion restarted.
+        world = self.world("plow")
+        world.items["t-1"] = replace(world.items["t-1"], busy=True, busy_reason="AI_ACTIVE", ai_blocked=True)
+        world.items["i-7"] = Equipment("i-7", "implement", "farm-a", (104.0, 96.0), kinds=frozenset({"cultivator"}),
+                                       heading=0.0)
+        moved = []
+        world.teleport_recovery = True
+        world.reserve_rig = lambda ids, owner, loose=False: loose and ids == ("i-7",)
+        world.release = (lambda release: lambda owner: None if "-clear" in owner else release(owner))(world.release)
+        world.teleport = lambda vehicle_id, owner, min_m=0.0, at=None: moved.append(vehicle_id)
+        c, notices = coordinated(world)
+        c.WORKER_BLOCKED_S = 0.0
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["sow"]})
+        self.assertTrue(until(lambda: moved, 15))
+        self.assertEqual(moved, ["i-7"])
+
+    def test_a_request_while_busy_waits_its_turn(self):
+        # The user, 2026-10-31: "farmhand needs a queue (waiting list) for field work".
+        import threading as _t
+        world = self.world("plow")
+        c, notices = coordinated(world)
+        release, started = _t.Event(), []
+        real = c.executor.execute
+
+        def execute(intent, **kw):
+            started.append(intent["task"])
+            if intent["task"] == "save_game" and len(started) == 1:
+                release.wait(5)
+            return real(intent, **kw)
+        c.executor.execute = execute
+        c.submit({"version": 1, "command": "save_game"})
+        self.assertTrue(until(lambda: started == ["save_game"]))
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["plow"]})
+        self.assertIn("QUEUED", notices)
+        release.set()
+        self.assertTrue(until(lambda: "field_work" in started, 10))
 
     def test_with_one_tractor_the_next_implement_waits_for_it_to_come_back(self):
         world = self.world("plow")
@@ -1021,16 +1299,20 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertIn("NO_UNLOADER", notices)
         self.assertEqual([w.tractor for w in c.workers], ["c-1"])
 
-    def test_a_harvest_not_said_to_be_sold_never_sends_autodrives_selling_unloader(self):
-        # AutoDrive's combine unloader drives its load to a sell point: never unless selling.
+    def test_a_harvest_not_said_to_be_sold_is_unloaded_on_the_move_and_the_grain_kept(self):
+        # The user, 2026-10-31: "i need farmhand to be able to do this while harvesting at speed".
+        # AutoDrive's combine unloader follows the combine whatever the grain is for; not to be
+        # sold, a full trailer parks at the field's marker with the grain (never a sell point).
         world = self.world()
         c, notices = coordinated(world)
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
         c.wait(10)
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"))
-        self.assertEqual([(w.tractor, w.operation) for w in c.workers], [("c-1", "harvest")])
-        self.assertNotIn("UNLOADER_STARTED", notices)
-        self.assertNotIn("NO_UNLOADER", notices)
+        self.assertEqual(sorted((w.tractor, w.operation) for w in c.workers), [("c-1", "harvest"), ("t-5", "unload")])
+        self.assertIn("UNLOADER_STARTED", notices)
+        self.assertEqual(world.mock_unload_to, {"t-5": "keep"})
+        w5 = world.items["w-5"]                                                # grain in its trailer
+        world.items["w-5"] = replace(w5, fill_units=(replace(w5.fill_units[0], fill_type="WHEAT", level=5000.0),))
         world.finish_worker("c-1")
         self.assertTrue(until(lambda: c.workers == [] and not c._after and c.current is None))
         self.assertEqual(world.farm().money, FARM.money)                       # nothing sold
@@ -1272,6 +1554,25 @@ class UnloadAndSellTests(unittest.TestCase):
         c.wait(10)
         self.assertEqual(world.items["w-5"].fill_units[0].level, 9000.0)
         self.assertEqual(world.farm().money, FARM.money)
+
+    def test_unload_does_not_claim_success_when_native_fill_change_is_unaccounted(self):
+        # Live fill transfers balanced within 1 L at logged precision. Opposite
+        # signs alone would accept a large loss between combine and trailer.
+        class Unaccounted(CoordinatedWorld):
+            def overload(self, combine_id, trailer_id, owner):
+                result = super().overload(combine_id, trailer_id, owner)
+                trailer = self.items[trailer_id]
+                unit = trailer.fill_units[0]
+                self.items[trailer_id] = replace(trailer, fill_units=(replace(unit, level=unit.level - 1000.0),)
+                                                 + trailer.fill_units[1:])
+                return result
+
+        world = self.full_combine_world()
+        world.__class__ = Unaccounted
+        c, _ = coordinated(world)
+        c.submit({"version": 1, "command": "unload_combine"})
+        c.wait(10)
+        self.assertEqual((c.last.state, c.last.reason), ("UNVERIFIED", "GRAIN_UNACCOUNTED"), c.last)
 
     def test_the_players_own_words_unload_the_combine_and_sell_the_grain_in_one_go(self):
         # Live d0b10ed974a1467f-1: "the harvester still has wheat in it, unload it and sell it" as a
@@ -1859,3 +2160,169 @@ class StrawTests(unittest.TestCase):
                 got = rules.interpret(words)
                 self.assertEqual((got["command"], got["field"], got["operations"], got.get("destination")),
                                  ("field_work", 7, ["collect"], destination))
+
+
+class JoinFieldsTests(unittest.TestCase):
+    """The user, 2026-10-31: "add field 4 to field 5 with create fields enabled": the strip
+    between them plowed with field creation on (GIANTS' field work then takes them as one)."""
+
+    def world(self):
+        from protocol.model import Destination
+        events = []
+
+        class Joining(MockWorld):
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                events.append(("drive", tuple(round(c, 1) for c in target)))
+                for unit, behind in (("t-1", 0.0), ("i-1", 4.0)):
+                    self.items[unit] = replace(self.items[unit], position=(target[0], target[1] - behind))
+                if yaw is not None:
+                    self.items["t-1"] = replace(self.items["t-1"], heading=yaw)
+
+            def worktool(self, tractor_id, lower, owner):
+                events.append(("lower" if lower else "raise",))
+                return "LOWERED" if lower else "RAISED"
+
+        world = Joining(rig("plow", at=(90.0, 30.0)), PLAYERS, fields=(field(4, 0.6), field(5, 0.5)), farm=FARM)
+        world.items["i-1"] = replace(world.items["i-1"], work_width=3.0)
+        world.mock_field_places = (
+            Destination("field-4", (50.0, 30.0), "Field 4", ((0.0, 0.0), (100.0, 0.0), (100.0, 60.0), (0.0, 60.0))),
+            Destination("field-5", (156.0, 30.0), "Field 5", ((112.0, 0.0), (200.0, 0.0), (200.0, 60.0), (112.0, 60.0))))
+        return world, events
+
+    def test_each_lane_is_driven_raised_to_its_start_and_plowed_lowered_to_its_end(self):
+        world, events = self.world()
+        result = Executor(world).execute({"version": 1, "request_id": "j-1", "farm_id": "farm-a", "task": "join_fields",
+                                          "target": "player_at_acceptance", "field": 4, "into_field": 5})
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "FIELDS_JOINED"), result)
+        kinds = [e[0] for e in events]
+        self.assertEqual(kinds[:4], ["drive", "lower", "drive", "raise"])          # beside it: onto the line, plow
+        self.assertEqual(kinds.count("lower"), kinds.count("raise"))
+        self.assertGreaterEqual(kinds.count("lower"), 5)                           # the whole 18 m strip
+        self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
+
+    def test_a_drive_ending_a_few_metres_short_of_a_lane_point_has_arrived(self):
+        # Live 1e27b06900b64385-6: 1.9 m from the lane start, OBSTACLE_AHEAD with nothing there.
+        for short, outcome in ((1.9, "COMPLETE"), (6.0, "FAILED")):
+            with self.subTest(short=short):
+                world, events = self.world()
+                base = type(world).farm_drive
+
+                def farm_drive(vehicle_id, target, owner, area=0.0, yaw=None, base=base, world=world, short=short):
+                    # Short along the lane (on its line): arrived; the lanes run along z here.
+                    along = math.copysign(short, math.cos(yaw)) if yaw is not None else short
+                    base(world, vehicle_id, (target[0], target[1] - along), owner, area, yaw)
+                    raise StepFailed("OBSTACLE_AHEAD")
+                world.farm_drive = farm_drive
+                result = Executor(world).execute({"version": 1, "request_id": "j-4", "farm_id": "farm-a",
+                                                  "task": "join_fields", "target": "player_at_acceptance",
+                                                  "field": 4, "into_field": 5})
+                self.assertEqual(result.status, outcome, result)
+
+    def test_never_lowered_unless_lined_up_on_the_lane(self):
+        # Live 41701e68ab: lowered 2 m off and turned, it plowed a curve ("a boomerang").
+        world, events = self.world()
+        base = type(world).farm_drive
+
+        def farm_drive(vehicle_id, target, owner, area=0.0, yaw=None, base=base, world=world):
+            base(world, vehicle_id, target, owner, area, None if yaw is None else yaw + math.radians(20))
+        world.farm_drive = farm_drive
+        result = Executor(world).execute({"version": 1, "request_id": "j-7", "farm_id": "farm-a",
+                                          "task": "join_fields", "target": "player_at_acceptance",
+                                          "field": 4, "into_field": 5})
+        self.assertEqual((result.status, result.reason), ("FAILED", "LANE_NOT_LINED_UP"))
+        self.assertNotIn("lower", [e[0] for e in events])               # never lowered
+
+    def test_a_lane_whose_run_up_is_out_of_reach_is_plowed_from_its_other_end(self):
+        world, events = self.world()
+        base, refused = type(world).farm_drive, []
+
+        def farm_drive(vehicle_id, target, owner, area=0.0, yaw=None, base=base, world=world):
+            if not refused:
+                refused.append(target)
+                raise StepFailed("NO_ROUTE")
+            base(world, vehicle_id, target, owner, area, yaw)
+        world.farm_drive = farm_drive
+        result = Executor(world).execute({"version": 1, "request_id": "j-8", "farm_id": "farm-a",
+                                          "task": "join_fields", "target": "player_at_acceptance",
+                                          "field": 4, "into_field": 5})
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertIn("lower", [e[0] for e in events])
+
+    def test_standing_on_the_lane_it_plows_from_where_it_stands(self):
+        # Live 2026-10-31: the user placed the Series 9 on the strip; it drove off to a run-up instead.
+        world, events = self.world()
+        world.items["i-1"] = replace(world.items["i-1"], work_width=15.0)       # one lane
+        lane = transport.strip_lanes(tuple(p.outline for p in world.mock_field_places)[0],
+                                     tuple(p.outline for p in world.mock_field_places)[1], 15.0 * 0.9)[0]
+        (ax, az), (bx, bz) = lane
+        mid = ((ax + bx) / 2 + 0.8, (az + bz) / 2)
+        yaw = math.atan2(bx - ax, bz - az)
+        world.items["t-1"] = replace(world.items["t-1"], position=mid, heading=yaw)
+        result = Executor(world).execute({"version": 1, "request_id": "j-9", "farm_id": "farm-a",
+                                          "task": "join_fields", "target": "player_at_acceptance",
+                                          "field": 4, "into_field": 5})
+        self.assertEqual(result.status, "COMPLETE", result)
+        kinds = [e[0] for e in events]
+        self.assertEqual(kinds[:3], ["lower", "drive", "raise"])                # plowed at once, no run-up
+        self.assertEqual(kinds.count("lower"), 2)                                # then the half behind it
+
+    def test_turned_across_the_strip_it_drives_onto_the_line_ahead_and_plows(self):
+        world, events = self.world()
+        world.items["i-1"] = replace(world.items["i-1"], work_width=15.0)
+        lane = transport.strip_lanes(tuple(p.outline for p in world.mock_field_places)[0],
+                                     tuple(p.outline for p in world.mock_field_places)[1], 15.0 * 0.9)[0]
+        (ax, az), (bx, bz) = lane
+        yaw = math.atan2(bx - ax, bz - az)
+        world.items["t-1"] = replace(world.items["t-1"], position=(ax + (bx - ax) * 0.2, az + (bz - az) * 0.2),
+                                     heading=yaw + math.radians(68))
+        result = Executor(world).execute({"version": 1, "request_id": "j-10", "farm_id": "farm-a",
+                                          "task": "join_fields", "target": "player_at_acceptance",
+                                          "field": 4, "into_field": 5})
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual([e[0] for e in events][:4], ["drive", "lower", "drive", "raise"])   # onto the line, plow
+
+    def test_at_an_end_of_the_strip_it_plows_straight_from_where_it_stands(self):
+        world, events = self.world()
+        world.items["i-1"] = replace(world.items["i-1"], work_width=15.0)
+        lane = transport.strip_lanes(tuple(p.outline for p in world.mock_field_places)[0],
+                                     tuple(p.outline for p in world.mock_field_places)[1], 15.0 * 0.9)[0]
+        (ax, az), (bx, bz) = lane
+        at = (ax + 3.0, az - 4.0)
+        world.items["t-1"] = replace(world.items["t-1"], position=at,
+                                     heading=math.atan2(bx - at[0], bz - at[1]) + math.radians(10))
+        result = Executor(world).execute({"version": 1, "request_id": "j-11", "farm_id": "farm-a",
+                                          "task": "join_fields", "target": "player_at_acceptance",
+                                          "field": 4, "into_field": 5})
+        self.assertEqual(result.status, "COMPLETE", result)
+        self.assertEqual(events[:3], [("lower",), ("drive", tuple(round(c, 1) for c in (bx, bz))), ("raise",)])
+
+    def test_lanes_go_by_the_plows_working_width(self):
+        # Live 2026-10-31: a 10 m plow's size box said 1.67 m and nine lanes were planned for one
+        # narrow strip; the user: "always go by working width". 12 m between the fields here.
+        for width, lanes in ((15.0, 1), (8.0, 2)):          # 13 m to cover, passes 0.9 widths apart
+            with self.subTest(width=width):
+                world, events = self.world()
+                world.items["i-1"] = replace(world.items["i-1"], work_width=width)
+                result = Executor(world).execute({"version": 1, "request_id": "j-5", "farm_id": "farm-a",
+                                                  "task": "join_fields", "target": "player_at_acceptance",
+                                                  "field": 4, "into_field": 5})
+                self.assertEqual(result.status, "COMPLETE", result)
+                self.assertIn([e[0] for e in events].count("lower"), (lanes, lanes + 1))   # + the part behind
+        world, events = self.world()
+        world.items["i-1"] = replace(world.items["i-1"], work_width=None)
+        result = Executor(world).execute({"version": 1, "request_id": "j-6", "farm_id": "farm-a",
+                                          "task": "join_fields", "target": "player_at_acceptance",
+                                          "field": 4, "into_field": 5})
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "WORK_WIDTH_UNKNOWN"))
+        self.assertEqual(events, [])
+
+    def test_fields_far_apart_or_no_plow_move_nothing(self):
+        world, events = self.world()
+        result = Executor(world).execute({"version": 1, "request_id": "j-2", "farm_id": "farm-a", "task": "join_fields",
+                                          "target": "player_at_acceptance", "field": 4, "into_field": 9})
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "FIELD_NOT_FOUND"))
+        world.items["i-1"] = replace(world.items["i-1"], kinds=frozenset({"cultivator", "ai_implement"}))
+        result = Executor(world).execute({"version": 1, "request_id": "j-3", "farm_id": "farm-a", "task": "join_fields",
+                                          "target": "player_at_acceptance", "field": 4, "into_field": 5})
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "NO_PLOW_HITCHED"))
+        self.assertEqual(events, [])

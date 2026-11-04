@@ -115,6 +115,10 @@ class LuaLoadTests(unittest.TestCase):
     def setUp(self):
         self.lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
         self.hitch = self.lua.execute((ROOT / "mod/FarmhandHitch.lua").read_text())
+        # Behaviour tests run at the 3 km/h they were tuned for; production limits: SpeedLimitTests.
+        for limits in (self.hitch.LOAD_LIMITS, self.hitch.BACKOFF, self.hitch.ALONGSIDE, self.hitch.UNPARK_LIMITS,
+                       self.hitch.PULL_LIMITS):
+            limits.maxSpeedKmh = 3
         self.W = self.lua.execute(STUBS, self.hitch)
         self.transport = self.lua.eval("function(src, H, W, w, o) return load(src)(H, W, w, o) end") \
             if self.runtime is lua54 else self.lua.eval("function(src, H, W, w, o) return loadstring(src)(H, W, w, o) end")
@@ -726,3 +730,16 @@ class Lua51LoadTests(LuaLoadTests):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpeedLimitTests(unittest.TestCase):
+    """The user, 2026-10-31: "5 mph on straights/runs when the path is clear, maybe 3 mph on the rest"."""
+
+    def test_straight_moves_8_kmh_ramps_and_curves_4_8(self):
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        hitch = lua.execute((ROOT / "mod/FarmhandHitch.lua").read_text())
+        for limits in (hitch.PULL_LIMITS, hitch.UNPARK_LIMITS, hitch.BACKOFF, hitch.ALONGSIDE):
+            self.assertEqual(limits.maxSpeedKmh, 8)
+        self.assertEqual(hitch.LOAD_LIMITS.maxSpeedKmh, 4.8)        # up and down the ramps
+        self.assertEqual(hitch.DEFAULTS.maxSpeedKmh, 4.8)           # LOCAL_MANEUVER, ALIGN_REVERSE
+        self.assertLessEqual(hitch.DEFAULTS.maxSpeedKmh, hitch.LIMITS.maxSpeedKmh)

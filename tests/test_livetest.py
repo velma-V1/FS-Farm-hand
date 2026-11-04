@@ -910,6 +910,31 @@ class HostRunnerLifecycleTests(RunnerCase):
             self.assertEqual(self.send("screen")["code"], "SCREEN")          # looking never interferes
         self.assertEqual(len([c for c in self.system.calls if c[0] in ("click", "key")]), 2)
 
+    def test_background_screen_uses_game_frame_without_activating_window(self):
+        self.system.fs25 = [999]
+        self.system.screen = lambda pid, path: (_ for _ in ()).throw(host.Refused("GAME_NOT_FOREGROUND"))
+        self.targets.settings.mkdir(parents=True)
+        marker = self.targets.settings / ".fhScreen"
+        captured = self.targets.settings / ".fhScreen.png"
+        png = (b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x0dIHDR"
+               + (1280).to_bytes(4, "big") + (720).to_bytes(4, "big")
+               + b"\x00\x00\x00\x00IEND\xaeB`\x82")
+        def game_capture():
+            wait_for(marker.exists)
+            captured.write_bytes(png[:-12])
+            marker.unlink()
+            time.sleep(0.15)
+            captured.write_bytes(png)
+        worker = threading.Thread(target=game_capture)
+        worker.start()
+        try:
+            answer = self.send("screen")
+        finally:
+            worker.join(timeout=2)
+        self.assertEqual(answer["code"], "SCREEN")
+        self.assertEqual(answer["result"]["source"], "game")
+        self.assertEqual(answer["result"]["window"], [1280, 720])
+
     def test_dismiss_signin_answers_only_that_dialog(self):
         self.assertEqual(self.send("dismiss-signin")["code"], "NONE")
         self.system.dialog = "DISMISSED WerFault=GamingServices.exe"
@@ -938,6 +963,10 @@ class HostRunnerLifecycleTests(RunnerCase):
         self.assertIn("Get-Process -Id 4242", text)
         self.assertIn("$w * 0.25", text)
         self.assertIn("MapVirtualKey(13, 0)", text)
+        self.assertIn("SetForegroundWindow($h)", calls[0][-1])
+        self.assertIn("SetForegroundWindow($h)", calls[1][-1])
+        self.assertIn("if ([FH]::GetForegroundWindow() -ne $h)", calls[2][-1])
+        self.assertNotIn("SetForegroundWindow($h) | Out-Null", calls[2][-1])
         with self.assertRaises(host.Refused):
             system.screen(4242, "C:\\x'; Remove-Item C:\\ -Recurse; '")
 
@@ -1062,8 +1091,10 @@ class EndToEndTests(CompanionCase):
         # Refused unmoved; the fake game's STAGE ends where the first did, so no further
         # aim moves the tractor (nor Farmhand's own drive: no route) and the maneuver is
         # not repeated; never reversed.
-        self.assertEqual([c["op"] for c in game.commands],
-                         ["stage", "maneuver"] + ["stage", "farm_drive"] * 6 + ["stop"])
+        ops = [c["op"] for c in game.commands]
+        self.assertEqual((ops[:2], ops[-1], ops.count("maneuver"), ops.count("stage")),
+                         (["stage", "maneuver"], "stop", 1, 11))
+        self.assertTrue(set(ops[2:-1]) <= {"stage", "farm_drive"})
 
     def test_without_a_runner_the_client_says_so(self):
         with unittest.mock.patch.object(client, "HOST", self.tmp / "nowhere"):

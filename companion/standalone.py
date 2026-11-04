@@ -16,10 +16,19 @@ from protocol.model import Result
 
 log = logging.getLogger("farmhand")
 
+def lab_own_nav_only():
+    """Temporary local proof toggle, absent during normal play and tests."""
+    from companion.ai import data_dir
+    return (data_dir() / "nav_proof.flag").is_file()
+
 # Farmhand's own drive found no way, or could not move the rig: GIANTS' GOTO is tried.
 # Parked vehicles this near the rig that is boxed in are driven out of the way, at most this many.
 # Measured between roots: a vehicle touching a 20 m rig's trailer stands ~20 m from its root.
 BLOCK_RADIUS_M, MAX_BLOCKERS = 25.0, 2
+LOOSE_ASIDE_M = 40.0          # without a farm yard: a loose implement in the way goes this far from the rig
+YARD_RADIUS_M = 100.0         # the farm yard: the farm building with the most others this near
+FIELD_CLEAR_MARGIN_M = 10.0   # before a hand-off, loose implements this near a field's edge go too (its headland)
+FIELD_SET_DOWN_M = 6.0        # and are set down this far beyond that margin, outside the field
 MOVED_ENOUGH_M = 3.0          # a blocker this far from where it stood counts as moved
 # Trips longer than this go to GIANTS' navigation (or AutoDrive) first; what is left after it,
 # by the job's own arrival rule (``reached``), is Farmhand's own drive.
@@ -60,6 +69,19 @@ def _edge_point(outline, point, avoid=()):
     return best, best_d
 
 
+def _beside_field(outline, point, distance):
+    """A pose ``distance`` outside the field's edge, out from the edge point nearest ``point``
+    (away from the field's centre), facing along the way out."""
+    from protocol.model import Pose
+    edge = _edge_point(outline, point)[0] or point
+    cx = sum(p[0] for p in outline) / len(outline)
+    cz = sum(p[1] for p in outline) / len(outline)
+    dx, dz = edge[0] - cx, edge[1] - cz
+    d = math.hypot(dx, dz) or 1.0
+    ux, uz = dx / d, dz / d
+    return Pose(edge[0] + ux * distance, edge[1] + uz * distance, math.atan2(ux, uz))
+
+
 def _inside(outline, point):
     x, z = point
     inside = False
@@ -80,8 +102,15 @@ def reached(goal_outline, target, root, rig_positions, area=0.0):
 
 
 class StandaloneMove:
-    def __init__(self, world):
+    def __init__(self, world, route_memory=None):
         self.world = world
+        if route_memory is None:
+            from companion.ai import data_dir
+            from companion.route_memory import RouteMemory
+            route_memory = RouteMemory(data_dir() / "routes.json")
+        self.route_memory = route_memory
+        self._route_used = None
+        self._route_failed = set()
         self._wanted = None                     # the command's target, for AutoDrive's marker
         self._outline, self._area = (), 0.0     # the target's field outline / approach radius
 
@@ -175,9 +204,73 @@ class StandaloneMove:
         minutes to find no route across the river), then Farmhand's own drive for what is left
         of it. A short one, or one GIANTS cannot do: Farmhand's own drive; with no route of its
         own (live 6d9dfa2f4a6e453c-1), GIANTS' GOTO for the long leg (``_long_leg``)."""
-        here = next((i.position for i in self.world.snapshot() if i.id == goal.vehicle_id), None)
+        if lab_own_nav_only():
+            log.info("navigation proof: Farmhand-owned drive only to %s", goal.target)
+            self.world.farm_drive(goal.vehicle_id, goal.target, owner, area)
+            return
+        items = self.world.snapshot()
+        here = next((i.position for i in items if i.id == goal.vehicle_id), None)
+        loaded = any(i.belted_to in goal.rig_ids for i in items)
         rest = None
-        marker = self._loaded_marker(goal) if here is not None and math.dist(here, goal.target) > LONG_LEG_M else None
+        marker = None
+        giants_failed = False
+        start_contact = False
+        route_done = False
+        if here is not None and hasattr(self.world, "map_id") and hasattr(self.world, "farm"):
+            farm = self.world.farm()
+            scope = (f"{farm.savegame_dir}#{farm.savegame}" if farm is not None
+                     and farm.savegame_dir and farm.savegame else None)
+            chosen = self.route_memory.choose(self.world.map_id(), scope, here, goal.target) if scope else None
+            if chosen is not None and chosen[0] in self._route_failed:
+                chosen = None
+            log.info("learned route lookup path=%s map=%s scope=%s start=%s target=%s selected=%s",
+                     self.route_memory.path, self.world.map_id(), scope, here, goal.target,
+                     chosen[0] if chosen else None)
+            if chosen is not None:
+                route_id, points = chosen
+                try:
+                    # Walking samples describe a centre line, not parking poses.
+                    # Stop once at its far end; the game-side driver refines the
+                    # entire line for the current rig and can make a wide turn.
+                    via = points[:-1]
+                    self.world.farm_drive(goal.vehicle_id, points[-1], owner, via=via)
+                    observed = next((i.position for i in self.world.snapshot() if i.id == goal.vehicle_id), None)
+                    if observed is None or math.dist(observed, points[-1]) > ARRIVE_M:
+                        raise GoalError("LEARNED_ROUTE_UNVERIFIED")
+                    here = observed
+                    self._route_used = route_id
+                    route_done = True
+                    rest = self._rest_of_leg(goal)
+                    if rest is None:
+                        return
+                    log.info("drove learned farm route %s; %.0f m remain", route_id, math.dist(here, rest))
+                except Exception as failure:
+                    if getattr(failure, "code", None) in {"STOPPED", "CANCELLED"}:
+                        raise
+                    self._route_failed.add(route_id)
+                    self.route_memory.reject(route_id)
+                    log.info("learned farm route %s ended at %s; replanning", route_id,
+                             getattr(failure, "code", failure))
+        if loaded and not route_done and hasattr(self.world, "navigate"):
+            # GIANTS' own navigation first: the mod takes the belted cargo out of its AI obstacles
+            # while it drives (RELEASE_BACKLOG "Loaded transport standalone"); AutoDrive only if
+            # GIANTS cannot do it.
+            try:
+                log.info("DRIVE with belted cargo: GIANTS' navigation first")
+                self._long_leg(goal.vehicle_id, goal.target, owner)
+                rest = self._rest_of_leg(goal)
+                if rest is None:
+                    return
+                # GIANTS took it most of the way: the rest below is a local drive.
+            except Exception as failure:
+                giants_failed = True
+                start_contact = getattr(failure, "code", None) in {
+                    "NAVIGATE_START_CONTACT", "NAVIGATE_STUCK_AT_START"}
+                log.info("GIANTS' navigation with belted cargo: %s; trying another route",
+                         getattr(failure, "code", failure))
+        if loaded and giants_failed and not start_contact and here is not None \
+                and math.dist(here, goal.target) > LONG_LEG_M:
+            marker = self._loaded_marker(goal)
         if marker is not None:
             log.info("DRIVE %.0f m with belted cargo: AutoDrive to marker %s", math.dist(here, goal.target), marker)
             self._onto_ad_network(goal, here, marker, owner)
@@ -186,7 +279,8 @@ class StandaloneMove:
             if rest is None:
                 return
             log.info("AutoDrive ended short; Farmhand's own drive for the rest, to %s", rest)
-        elif here is not None and math.dist(here, goal.target) > LONG_LEG_M and hasattr(self.world, "navigate"):
+        elif not loaded and here is not None and math.dist(here, goal.target) > LONG_LEG_M \
+                and hasattr(self.world, "navigate"):
             try:
                 log.info("DRIVE %.0f m: GIANTS' navigation for the long leg", math.dist(here, goal.target))
                 self._long_leg(goal.vehicle_id, goal.target, owner)
@@ -206,7 +300,8 @@ class StandaloneMove:
         try:
             self.world.farm_drive(goal.vehicle_id, target, owner, area)
         except Exception as failure:
-            if getattr(failure, "code", None) not in FALLBACK_CODES or not hasattr(self.world, "navigate"):
+            if start_contact or getattr(failure, "code", None) not in FALLBACK_CODES \
+                    or not hasattr(self.world, "navigate"):
                 raise
             log.info("DRIVE by Farmhand's own drive: %s; GIANTS GOTO to %s", failure.code, target)
             self._long_leg(goal.vehicle_id, target, owner)
@@ -221,9 +316,16 @@ class StandaloneMove:
         def near(i):
             return min(math.dist(i.position, p) for p in mine)
 
+        loose_ok = getattr(self.world, "teleport_recovery", False) and hasattr(self.world, "teleport")
+
+        def loose(i):
+            # A loose implement (dropped, hitched to nothing) is teleported aside when the player
+            # allows teleporting (live 2026-10-31: one Farmhand dropped blocked its own worker).
+            return i.category not in DRIVEN and i.attached_to is None and loose_ok
+
         def why_not(i):
             return [reason for reason, bad in (
-                ("not driven", i.category not in DRIVEN), ("another farm's", i.farm_id != farm_id),
+                ("not driven", i.category not in DRIVEN and not loose(i)), ("another farm's", i.farm_id != farm_id),
                 # A driven vehicle's attached_to names what it tows (live 00:27: the 3650 and its
                 # trailer passed over as "attached"); belted onto a transport it is cargo.
                 ("belted onto a transport", i.belted_to is not None),
@@ -237,6 +339,20 @@ class StandaloneMove:
         blockers = [i for i in nearby if not why_not(i)]
         moved = 0
         for n, blocker in enumerate(blockers[:MAX_BLOCKERS]):
+            if loose(blocker):
+                other = f"{owner}-clear{n}"
+                if not self.world.reserve_rig((blocker.id,), other, loose=True):
+                    continue
+                try:
+                    spot = self._yard_spot(blocker, mine[0])
+                    log.info("the %s (loose) blocks the way: teleported to (%.1f, %.1f)", blocker.name, spot.x, spot.z)
+                    self.world.teleport(blocker.id, other, 0.0, spot)
+                    moved += 1
+                except Exception as failure:
+                    log.info("the %s could not be teleported: %s", blocker.name, getattr(failure, "code", failure))
+                finally:
+                    self.world.release(other)
+                continue
             ids, by_id = [blocker.id], {i.id: i for i in items}
             while True:
                 # Hitched either way (attached_to names the other unit on both sides), or belted on.
@@ -269,25 +385,101 @@ class StandaloneMove:
                     self.world.release(other)
         return moved
 
+    def clear_field(self, outline, keep_ids, farm_id, owner, margin=FIELD_CLEAR_MARGIN_M) -> int:
+        """Before a field is handed to GIANTS' helper (the user, 2026-10-31: "it needs to scan the
+        field and remove any loose blockers before they become an issue"): every loose implement on
+        the field or within ``margin`` of its edge is set down just outside it, beyond the headland,
+        when the player allows teleporting; it stays at the field ("some may need to stay at a field
+        to complete the field work"). How many moved."""
+        if len(outline) < 3 or not getattr(self.world, "teleport_recovery", False) or not hasattr(self.world, "teleport"):
+            return 0
+        items = list(self.world.snapshot())
+        keep = set(keep_ids)
+        loose = [i for i in items if i.id not in keep and i.category not in DRIVEN and i.attached_to is None
+                 and i.belted_to is None and i.farm_id == farm_id and i.reserved_by is None and i.position is not None
+                 and (_inside(outline, i.position) or (_edge_point(outline, i.position)[1] or 1e9) <= margin)]
+        moved = 0
+        for n, item in enumerate(loose):
+            other = f"{owner}-field{n}"
+            if not self.world.reserve_rig((item.id,), other, loose=True):
+                continue
+            try:
+                spot = _beside_field(outline, item.position, margin + FIELD_SET_DOWN_M)
+                log.info("field scan: the %s lies on the field; set down beside it (%.1f, %.1f)",
+                         item.name, spot.x, spot.z)
+                self.world.teleport(item.id, other, 0.0, spot)
+                moved += 1
+            except Exception as failure:
+                log.info("field scan: the %s could not be moved: %s", item.name, getattr(failure, "code", failure))
+            finally:
+                self.world.release(other)
+        return moved
+
+    def _yard_spot(self, item, rig_position):
+        """Where a loose implement in the way goes: the farm yard (the user, 2026-10-31: "i am
+        going to end up with equipment all over the map, send it to the farm yard"), the farm
+        building with the most other farm buildings within YARD_RADIUS_M; without one, LOOSE_ASIDE_M
+        from the rig on the far side. Any open spot near there (the game picks it)."""
+        from protocol.model import Pose
+        places = [p for p in (self.world.places() if hasattr(self.world, "places") else ()) if p.position]
+        if places:
+            yard = max(places, key=lambda p: (sum(math.dist(p.position, q.position) <= YARD_RADIUS_M for q in places),
+                                              -places.index(p)))
+            return Pose(yard.position[0], yard.position[1], 0.0)
+        rx, rz = rig_position
+        bx, bz = item.position
+        d = math.dist((rx, rz), (bx, bz)) or 1.0
+        ux, uz = (bx - rx) / d, (bz - rz) / d
+        return Pose(bx + ux * LOOSE_ASIDE_M, bz + uz * LOOSE_ASIDE_M, math.atan2(ux, uz))
+
     def _long_leg(self, vehicle_id, target, owner):
         """GIANTS' own GOTO for the long leg: it plans on the game's navigation map (roads,
         bridges) for the attached rig. Started from a cramped spot it is blocked at its start
         (live 7069876416d14b6d-1: the GMC beside the 3650, NAVIGATE_BLOCKED_AT_START), so the rig
         is first driven onto the nearest open ground by Farmhand's own drive, then GOTO again."""
         from protocol.model import Pose
+        from adapters.world import StepFailed
 
         def goto():
             # Standing first (live 21a5e70740024850-2: GOTO straight after its own drive, NOT_STOPPED).
             if hasattr(self.world, "await_stopped"):
                 self.world.await_stopped(vehicle_id)
             here = next(i for i in self.world.snapshot() if i.id == vehicle_id).position
-            yaw = math.atan2(target[0] - here[0], target[1] - here[1])
-            self.world.navigate(vehicle_id, Pose(target[0], target[1], yaw), owner)
+            candidates = [target]
+            if self._area > 0:
+                # A building's reported centre can be inside its collision box.
+                # The arrival rule already accepts a clear approach nearby.
+                dx, dz = here[0] - target[0], here[1] - target[1]
+                angle = math.atan2(dx, dz)
+                radius = self._area * 0.75
+                candidates = [(target[0] + math.sin(angle + offset) * radius,
+                               target[1] + math.cos(angle + offset) * radius)
+                              for offset in (0, math.pi/4, -math.pi/4, math.pi/2, -math.pi/2,
+                                             3*math.pi/4, -3*math.pi/4, math.pi)]
+            invalid = None
+            for point in candidates:
+                yaw = math.atan2(point[0] - here[0], point[1] - here[1])
+                try:
+                    self.world.navigate(vehicle_id, Pose(point[0], point[1], yaw), owner)
+                    now = next(i for i in self.world.snapshot() if i.id == vehicle_id).position
+                    if (math.dist(now, target) > self._area + ARRIVE_M
+                            and math.dist(now, here) < MOVED_ENOUGH_M):
+                        invalid = StepFailed("GOTO_ENDED")
+                        continue
+                    return
+                except Exception as failure:
+                    if getattr(failure, "code", None) != "NAVIGATE_GOTO_INVALID":
+                        raise
+                    invalid = failure
+            if invalid is not None:
+                raise invalid
 
         try:
             goto()
         except Exception as failure:
-            if getattr(failure, "code", None) not in GOTO_START_CODES or not hasattr(self.world, "reposition"):
+            if (getattr(failure, "code", None) not in GOTO_START_CODES
+                    or getattr(failure, "code", None) == "NAVIGATE_GOTO_INVALID"
+                    or not hasattr(self.world, "reposition")):
                 raise
             log.info("GIANTS GOTO %s: the rig to open ground first", failure.code)
             self.world.reposition(vehicle_id, owner)
@@ -344,6 +536,8 @@ class StandaloneMove:
                 on_state(state)
 
         owner, farm_id = command["request_id"], command["farm_id"]
+        self._route_used = None
+        self._route_failed = set()
         self._wanted = command.get("target") if isinstance(command.get("target"), dict) else None
         ids = ()
         reserved = attempted = False
@@ -378,6 +572,8 @@ class StandaloneMove:
                 try:
                     self._drive(goal, owner, area)
                 except Exception as failure:
+                    if lab_own_nav_only():
+                        raise
                     # Boxed in by parked vehicles (live 140a6b52320b4587-1: the GMC rig against the
                     # 3650 and its trailer; no route, GIANTS blocked at its start, no way onto open
                     # ground): each is driven out of the way and the move resumes (the user, 2026-10-30:
@@ -447,4 +643,6 @@ class StandaloneMove:
                     self.world.release(owner)
                 except Exception as error:
                     status, reason = "UNVERIFIED", getattr(error, "code", type(error).__name__)
+        if status == "COMPLETE" and self._route_used is not None:
+            self.route_memory.promote(self._route_used)
         return Result(status, reason, ids, tuple(states))

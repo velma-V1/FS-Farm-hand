@@ -38,6 +38,18 @@ MAX_STAGING_DISTANCE_M = 10.0
 # LOCAL_MANEUVER lines up (mod/FarmhandHitch.lua Hitch.chooseCurve, empty yard:
 # 13-22 m at a 4.8 m planning radius; the first also at 6.6 m). Aims only.
 APPROACHES = ((-2.0, 10.0, 45.0), (2.0, 12.0, 90.0), (-6.0, 15.0, 0.0))
+# First, as a driver does it (the user, 2026-10-31: "pull up in front of the item, turn 90 degrees
+# and be pretty close to 0 degrees from the item and within 5 m of the hitch"): across the front
+# of the implement, square to its axis, so one 90-degree forward arc of radius r (each of
+# PERPENDICULAR_RADII_M, the tractor's own is not known here) after PERPENDICULAR_RUN_M straight
+# ends on the axis facing away, the planned joint PERPENDICULAR_END_M ahead of the implement's.
+# Live 2026-10-31: from the 45-degree aim every line-up curve met the implement's box
+# (LOCAL_PATH_HITS_WAGON) and the re-approach circled for 3 min.
+# Replayed through Hitch.chooseCurve for tractors 1.5-3.5 m joint-to-root, 4-8.5 m radius, GIANTS
+# ending 2 m / 10 degrees off: r = 9 m with an 8 m run-in left a short line-up in every case.
+PERPENDICULAR_RADII_M = (9.0, 7.0)
+PERPENDICULAR_END_M = 5.0
+PERPENDICULAR_RUN_M = 8.0
 APPROACH_CLEARANCE_M = 10.0         # an aim this close to other equipment is tried after the clear ones
 
 # A tractor standing with one of its joints on a loose implement's input joint (live
@@ -131,6 +143,15 @@ def plan_hitch(tractor: Equipment, wagon: Equipment,
     return HitchPlan(joint.index, inp.index, joint.joint_type, target, final, staging)
 
 
+def approach_families(plan: HitchPlan) -> tuple[tuple[float, float, float], ...]:
+    """(ahead, aside, turn) of the planned joint for each aim family, in order: the square
+    ones across the implement's front (PERPENDICULAR_*), then APPROACHES."""
+    reach = math.dist((plan.final.x, plan.final.z), plan.target)      # planned joint behind the AI root
+    square = tuple((PERPENDICULAR_END_M + reach - r, r + PERPENDICULAR_RUN_M + reach, 90.0)
+                   for r in PERPENDICULAR_RADII_M)
+    return square + APPROACHES
+
+
 def approach_poses(plan: HitchPlan, origin, others) -> tuple[Pose, ...]:
     """GOTO's aims for ``plan``: the AI root pose for each APPROACHES entry on each
     side of the implement. Aims clear of every position in ``others`` (other
@@ -142,7 +163,7 @@ def approach_poses(plan: HitchPlan, origin, others) -> tuple[Pose, ...]:
     fx, fz = math.sin(heading), math.cos(heading)
     others = [tuple(p) for p in others]
     ranked = []
-    for rank, (ahead, aside, turn) in enumerate(APPROACHES):
+    for rank, (ahead, aside, turn) in enumerate(approach_families(plan)):
         for side in (1, -1):
             jx = plan.target[0] + ahead * fx + side * aside * fz
             jz = plan.target[1] + ahead * fz - side * aside * fx
@@ -607,3 +628,83 @@ def ad_route_start(graph: "ADGraph", position, target_position, max_m: float = A
         nx, nz = graph.points[nxt]
         return point, math.atan2(nx - point[0], nz - point[1]), wp
     return None
+
+
+# ------------------------------------------------------------ joining two fields
+# The user (2026-10-31): "add field 4 to field 5 with create fields enabled". GIANTS' field
+# work finds a field's boundary from the worked ground around where its helper starts
+# (FieldCourseField:detectAtPosition -> BoundaryDetectionTask), so once the strip between two
+# fields is plowed with field creation on, its helper works them as one. The strip: between
+# the two outlines' nearest points, over the length both fields share, reaching STRIP_INTO_M
+# into each field; covered by straight lanes along that length, one plow width apart,
+# alternating direction (back and forth, as a player plows a headland strip).
+STRIP_INTO_M = 0.5              # each lane set reaches this far into both fields (just touching them)
+STRIP_MAX_GAP_M = 60.0          # fields farther apart than this are not joined
+
+
+def _nearest_on_segment(p, a, b):
+    ax, az = a
+    dx, dz = b[0] - ax, b[1] - az
+    n = dx * dx + dz * dz
+    t = 0.0 if n == 0 else max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - az) * dz) / n))
+    return ax + dx * t, az + dz * t
+
+
+def _nearest_on_outline(p, outline):
+    best = None
+    for i, a in enumerate(outline):
+        q = _nearest_on_segment(p, a, outline[(i + 1) % len(outline)])
+        d = math.dist(p, q)
+        if best is None or d < best[0]:
+            best = (d, q)
+    return best
+
+
+def strip_lanes(outline_a, outline_b, width: float):
+    """The straight lanes (start, end) that plow the strip joining field A to field B, or ()
+    when they are not near each other. ``width``: the plow's working width."""
+    if len(outline_a) < 3 or len(outline_b) < 3 or not width or width <= 0:
+        return ()
+    pairs = [(d, p, q) for p in outline_a for d, q in [_nearest_on_outline(p, outline_b)]]
+    pairs += [(d, q, p) for p in outline_b for d, q in [_nearest_on_outline(p, outline_a)]]
+    gap, pa, pb = min(pairs, key=lambda x: x[0])
+    if gap > STRIP_MAX_GAP_M:
+        return ()
+    if gap > 1e-6:
+        nx, nz = (pb[0] - pa[0]) / gap, (pb[1] - pa[1]) / gap
+    else:                                           # touching: across the shared edge
+        cx = sum(x for x, _ in outline_b) / len(outline_b) - sum(x for x, _ in outline_a) / len(outline_a)
+        cz = sum(z for _, z in outline_b) / len(outline_b) - sum(z for _, z in outline_a) / len(outline_a)
+        n = math.hypot(cx, cz) or 1.0
+        nx, nz = cx / n, cz / n
+    tx, tz = -nz, nx
+
+    def facing(poly, other):
+        """Where the boundary of ``poly`` faces ``other`` across the gap: its points (every metre)
+        no farther from ``other`` than the gap plus a metre, as positions along the strip."""
+        out = []
+        for i, a in enumerate(poly):
+            b = poly[(i + 1) % len(poly)]
+            steps = max(1, int(math.dist(a, b)))
+            for k in range(steps + 1):
+                q = (a[0] + (b[0] - a[0]) * k / steps, a[1] + (b[1] - a[1]) * k / steps)
+                if _nearest_on_outline(q, other)[0] <= gap + 1.0:
+                    out.append((q[0] - pa[0]) * tx + (q[1] - pa[1]) * tz)
+        return out
+
+    fa, fb = facing(outline_a, outline_b), facing(outline_b, outline_a)
+    if not fa or not fb:
+        return ()
+    lo, hi = max(min(fa), min(fb)), min(max(fa), max(fb))
+    if hi - lo < width:
+        return ()
+    depth = gap + 2 * STRIP_INTO_M
+    count = max(1, math.ceil(depth / width))
+    lanes = []
+    for k in range(count):
+        o = -STRIP_INTO_M + (k + 0.5) * depth / count
+        bx, bz = pa[0] + nx * o, pa[1] + nz * o
+        a = (bx + tx * lo, bz + tz * lo)
+        b = (bx + tx * hi, bz + tz * hi)
+        lanes.append((a, b) if k % 2 == 0 else (b, a))
+    return tuple(lanes)

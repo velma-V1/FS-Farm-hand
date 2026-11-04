@@ -137,6 +137,43 @@ end
 local gateCandidates          -- (open_gates) also read by unpark
 Bridge.pendingGoto = {}       -- tractor -> ms left to watch an aborted, unseen GOTO
 
+-- GIANTS WheelDestruction:update uses WheelDestruction.isCareWheel to decide
+-- whether a contacting wheel destroys fruit (installed FS25 1.25). During a
+-- Farmhand transport drive, give only this rig's wheels that native care-wheel
+-- behavior; restore every original value on completion, failure, or STOP.
+function Bridge.protectTransportCrops(root)
+    local saved, seen = {}, {}
+    local function visit(v)
+        if v == nil or seen[v] then return end
+        seen[v] = true
+        for _, wheel in ipairs(v.spec_wheels ~= nil and v.spec_wheels.wheels or {}) do
+            local destruction = wheel.destruction
+            if destruction ~= nil and type(wheel.setIsCareWheel) == "function" then
+                saved[#saved + 1] = { wheel, destruction.isCareWheel }
+                wheel:setIsCareWheel(true)
+            end
+        end
+        for _, implement in ipairs(type(v.getAttachedImplements) == "function" and v:getAttachedImplements() or {}) do
+            visit(implement.object)
+        end
+        local belts = v.spec_tensionBelts
+        for _, data in pairs(belts ~= nil and belts.objectsToJoint or {}) do visit(data.object) end
+    end
+    visit(root)
+    log("transport crop protection active on %d wheel(s)", #saved)
+    return saved
+end
+
+function Bridge.restoreTransportCrops(saved)
+    local restored = 0
+    for _, state in ipairs(saved or {}) do
+        local ok = pcall(state[1].setIsCareWheel, state[1], state[2])
+        if ok and state[1].destruction ~= nil
+                and state[1].destruction.isCareWheel == state[2] then restored = restored + 1 end
+    end
+    if saved ~= nil then log("transport crop protection restored %d/%d wheel(s)", restored, #saved) end
+end
+
 -- Farmhand's own point-to-point drive. It searches from the observed collision
 -- world and steers the rig itself; no marker or provider job is required.
 function starters.farm_drive(env, spec)
@@ -144,16 +181,19 @@ function starters.farm_drive(env, spec)
     if denied ~= nil then return nil, denied end
     local session, reason = Bridge.Drive.begin(env, {
         tractor = spec.tractor, x = spec.x, z = spec.z, area = spec.area, yaw = spec.yaw,
+        via = spec.via,
         farmId = spec.farmId, isReserved = spec.owned,
     }, Bridge.Hitch)
     if session == nil then Bridge.Hitch.disarm(spec.tractor); return nil, reason end
     Bridge.lastDrive = session
-    return { session = session }
+    return { session = session, cropWheels = Bridge.protectTransportCrops(spec.tractor) }
 end
 
 function steppers.farm_drive(env, task, dt)
     local code = Bridge.Drive.step(env, task.session, dt, Bridge.Hitch)
     if code == "CONTINUE" then return nil end
+    Bridge.restoreTransportCrops(task.cropWheels)
+    task.cropWheels = nil
     if not task.endLogged then
         task.endLogged = true
         logMotionEnd("farm_drive", code, task.session, function(s)
@@ -166,6 +206,8 @@ end
 
 function aborts.farm_drive(env, task)
     Bridge.Drive.abort(env, task.session, Bridge.Hitch)
+    Bridge.restoreTransportCrops(task.cropWheels)
+    task.cropWheels = nil
 end
 
 -- ------------------------------------------------------------------ drive
@@ -212,8 +254,9 @@ function starters.drive(env, spec)
     local saved = Bridge.capAdSpeed(v)
     v.ad.stateModule:setMode(AD.MODE_DRIVETO)
     AD:StartDriving(v, spec.marker, spec.marker)
+    local cropWheels = Bridge.protectTransportCrops(v)
     return { seen = false, startAt = okAt and finite(x) and finite(z) and { x, z } or nil,
-             onEnd = function() Bridge.restoreAdSpeed(v, saved) end }
+             onEnd = function() Bridge.restoreAdSpeed(v, saved); Bridge.restoreTransportCrops(cropWheels) end }
 end
 
 -- Farmhand's travel speed cap (the user, 2026-10-22: 40 mph; AutoDrive took the loaded GMC at
@@ -544,6 +587,11 @@ local function stepGoto(env, task, timeoutMs, timeoutCode, endCode, progress, pr
                 end)
                 return "FAILED", driving and "NAVIGATE_STUCK" or "NAVIGATE_STALLED"
             end
+            if task.cargo ~= nil and #task.cargo > 0 and not task.leftStart
+                    and task.fromAt ~= nil and task.elapsed - task.fromAt > 6000 then
+                log("navigate: loaded rig did not leave its start in 6 s; Farmhand departs it")
+                return "FAILED", "NAVIGATE_STUCK_AT_START"
+            end
         end
         return nil
     end
@@ -593,11 +641,100 @@ function steppers.stage(env, task)
 end
 aborts.stage = abortGoto
 
-function starters.navigate(env, spec) return startGoto(env, spec, "NAVIGATE_") end
-function steppers.navigate(env, task)
-    return stepGoto(env, task, Bridge.DRIVE_TIMEOUT_MS, "TIMEOUT", "GOTO_ENDED", true, "NAVIGATE_")
+-- Belted cargo out of GIANTS' AI obstacles while Farmhand's GOTO drives the loaded rig: a
+-- vehicle strapped on the towed trailer registers its own components as AI obstacles
+-- (AIVehicleObstacle:createAIVehicleObstacle -> aiSystem:addObstacle per component), so the
+-- towing agent is BLOCKED from its first frame (live d14230aa9fb24d30-3, abe8eb41ca6f4b5f-1).
+-- AIVehicleObstacle:removeAIVehicleObstacle takes them out (re-applied each frame, in case GIANTS
+-- re-creates them); setAIVehicleObstacleStateDirty lets GIANTS restore them by its own rules on
+-- every end, stop or abort.
+function Bridge.beltedCargo(v)
+    local out, seen = {}, {}
+    local function add(u)
+        local belts = u.spec_tensionBelts
+        for _, data in pairs(belts ~= nil and belts.objectsToJoint or {}) do
+            local o = data.object
+            if o ~= nil and not seen[o] and type(o.removeAIVehicleObstacle) == "function" then
+                seen[o] = true
+                out[#out + 1] = o
+            end
+        end
+        for _, implement in ipairs(type(u.getAttachedImplements) == "function" and u:getAttachedImplements() or {}) do
+            add(implement.object)
+        end
+    end
+    add(v)
+    return out
 end
-aborts.navigate = abortGoto
+
+local function cargoObstaclesOff(task)
+    for _, o in ipairs(task.cargo or {}) do pcall(o.removeAIVehicleObstacle, o) end
+end
+
+local function cargoObstaclesBack(task)
+    for _, o in ipairs(task.cargo or {}) do
+        if type(o.setAIVehicleObstacleStateDirty) == "function" then pcall(o.setAIVehicleObstacleStateDirty, o) end
+    end
+    task.cargo = nil
+end
+
+function starters.navigate(env, spec)
+    -- A rig already pressed against fixed scenery needs a Farmhand departure
+    -- maneuver before GIANTS GOTO. Starting its agent here just drives into
+    -- the contact until the 90 s stall watchdog fires.
+    if stopped(spec.tractor) and Bridge.Hitch ~= nil
+            and type(Bridge.Hitch.rigContacts) == "function" then
+        local ok, contacts = pcall(Bridge.Hitch.rigContacts, env, spec.tractor)
+        if ok and type(contacts) == "string" and contacts:find("standing", 1, true) then
+            log("navigate: fixed contact at start (%s); Farmhand must depart first", contacts)
+            return nil, "NAVIGATE_START_CONTACT"
+        end
+    end
+    local task, code = startGoto(env, spec, "NAVIGATE_")
+    if task ~= nil then
+        task.cropWheels = Bridge.protectTransportCrops(spec.tractor)
+        task.cargo = Bridge.beltedCargo(spec.tractor)
+        if #task.cargo > 0 then
+            cargoObstaclesOff(task)
+            log("navigate: %d belted cargo vehicle(s) out of GIANTS' AI obstacles while it drives", #task.cargo)
+        end
+    end
+    return task, code
+end
+local function traceNavigateSurface(env, task)
+    if task.elapsed < (task.surfaceAt or 0) then return end
+    task.surfaceAt = task.elapsed + 5000
+    local ok, foot = pcall(Bridge.Hitch.routeFootprint, env, task.spec.tractor)
+    if not ok or foot == nil then return end
+    local parts, counts = {}, { NON_FIELD = 0, FIELD = 0, CROP = 0 }
+    for _, unit in ipairs(foot.units) do
+        local at, x, _, z = pcall(env.getWorldTranslation, unit.rootNode)
+        if at and finite(x) and finite(z) then
+            local ground = Bridge.Hitch.routeSurface(env, x, z) or "NON_FIELD"
+            counts[ground] = (counts[ground] or 0) + 1
+            parts[#parts + 1] = string.format("%.1f,%.1f:%s", x, z, ground)
+        end
+    end
+    log("navigate surface rig %s (non-field=%d field=%d crop=%d)", table.concat(parts, " "),
+        counts.NON_FIELD, counts.FIELD, counts.CROP)
+end
+function steppers.navigate(env, task)
+    pcall(traceNavigateSurface, env, task)
+    cargoObstaclesOff(task)
+    local status, code = stepGoto(env, task, Bridge.DRIVE_TIMEOUT_MS, "TIMEOUT", "GOTO_ENDED", true, "NAVIGATE_")
+    if status ~= nil then
+        cargoObstaclesBack(task)
+        Bridge.restoreTransportCrops(task.cropWheels)
+        task.cropWheels = nil
+    end
+    return status, code
+end
+aborts.navigate = function(env, task)
+    cargoObstaclesBack(task)
+    Bridge.restoreTransportCrops(task.cropWheels)
+    task.cropWheels = nil
+    return abortGoto(env, task)
+end
 
 -- --------------------------------------------------------------- maneuver
 -- A hitch step with buildings within its reach: the tractor's collision with them off first,
@@ -1008,9 +1145,20 @@ function Bridge.laneSpot(env, foot, x, z, yaw)
     return nil
 end
 
+-- A loose implement (no seat: a seeder, a trailer) for the teleport recovery: owned, standing,
+-- hitched to nothing (the user, 2026-10-31: "can farmhand teleport it to the field when stuck?",
+-- the seeder's drawbar against a tree).
+local function looseIdle(v, farmId)
+    if v.ownerFarmId ~= farmId then return "NOT_OWNED" end
+    if type(v.getAttacherVehicle) == "function" and v:getAttacherVehicle() ~= nil then return "ATTACHED" end
+    if not stopped(v) then return "NOT_STOPPED" end
+    return nil
+end
+
 function starters.teleport(env, spec)
     local v = spec.tractor
-    local denied = idle(env, v, spec.farmId)
+    local denied
+    if v.spec_enterable ~= nil then denied = idle(env, v, spec.farmId) else denied = looseIdle(v, spec.farmId) end
     if denied ~= nil then return nil, denied end
     local H = Bridge.Hitch
     local units = {}
@@ -1561,7 +1709,29 @@ local function cargoFillType(v)
     return nil
 end
 
--- ad_unload (tractor, marker, field): AutoDrive's own combine unloader
+-- The farm's own silo for a fill type and the AutoDrive marker at it: the silo station as the
+-- store delivery picks it (GIANTS' Deliver job's unloading stations, deliverStation direction
+-- -1), then getMarkerAtStation as for selling. Returns the marker id or nil, why.
+function Bridge.storeMarker(env, v, fillType, farmId)
+    local AD, triggers, graph = adManagers(env)
+    if AD == nil then return nil, "AD_SELL_UNSUPPORTED" end
+    local ok, marker, why = pcall(function()
+        local job = env.g_currentMission.aiJobTypeManager:createJob(env.AIJobType.DELIVER)
+        if job == nil then return nil, "NO_DELIVER_JOB" end
+        local station = Bridge.deliverStation(env, { direction = -1, farmId = farmId }, job, fillType, v)
+        if station == nil then return nil, "NO_FARM_SILO" end
+        local wp = triggers:getMarkerAtStation(station, v)
+        if wp == nil or wp < 0 then return nil, "AD_NO_MARKER_AT_SILO" end
+        for id, m in pairs(graph:getMapMarkers()) do
+            if m.id == wp then return id end
+        end
+        return nil, "AD_NO_MARKER_AT_SILO"
+    end)
+    if not ok then return nil, "AD_STORE_ERROR" end
+    return marker, why
+end
+
+-- ad_unload (tractor, marker, field, direction): AutoDrive's own combine unloader
 -- (CombineUnloaderMode, MODE_UNLOAD 5, Specialization.lua:212) for the rig: it waits at
 -- `marker` (the field's), is called by AutoDrive's harvest manager to the combines that
 -- need it (HarvestManager.lua 239-300, GIANTS helpers included), and empties its trailer at
@@ -1579,7 +1749,13 @@ function starters.ad_unload(env, spec)
     if type(spec.marker) ~= "number" or AD:GetAvailableDestinations()[spec.marker] == nil then return nil, "UNKNOWN_MARKER" end
     local ok, fillType = pcall(fieldFillType, env, spec.field)
     if not ok or fillType == nil then return nil, "FIELD_CROP_UNKNOWN" end
-    local unload, why = Bridge.bestSellMarker(env, v, fillType)
+    -- Where a full trailer goes, as the harvest's destination (the user, 2026-10-31: unloading
+    -- while harvesting at speed, whatever the grain is for): the best paid sell point (1), the
+    -- farm's silo (-1), or parked at the field's own marker with the grain kept (0).
+    local unload, why
+    if spec.direction == 0 then unload = spec.marker
+    elseif spec.direction == -1 then unload, why = Bridge.storeMarker(env, v, fillType, spec.farmId)
+    else unload, why = Bridge.bestSellMarker(env, v, fillType) end
     if unload == nil then return nil, why end
     Bridge.capAdSpeed(v)              -- handed on to AutoDrive: it keeps Farmhand's cap
     v.ad.stateModule:setMode(AD.MODE_UNLOAD)
@@ -1639,6 +1815,92 @@ aborts.ad_sell = aborts.drive
 -- (onUpdate 552-611 stops it there); which end is "down" is the companion's to know.
 Bridge.FOLD_TIMEOUT_MS = 20000
 
+-- worktool (tractor, direction): the tractor's implements set to work outside a field (1) or
+-- back (-1), for plowing the strip that joins two fields (the user, 2026-10-31: "add field 4 to
+-- field 5 with create fields enabled"). 1: a plow's field limit off (Plow:setPlowLimitToField
+-- false: the ALLOW CREATE FIELDS toggle, Plow.lua 316), refused where the game forbids creating
+-- fields (getPlowForceLimitToField; the farm's createFields permission, Plow.lua 576-581), then
+-- each AI implement lowered as GIANTS' AI starts a line (AIImplement:aiImplementStartLine
+-- 831-838, its action controller lowers it). -1: raised as GIANTS' AI ends a line
+-- (aiImplementEndLine 839-846) and the field limit back on. DONE once each says it is lowered
+-- or raised (Attachable:getIsLowered), or after WORKTOOL_SETTLE_MS without that getter.
+Bridge.WORKTOOL_SETTLE_MS = 4000
+Bridge.WORKTOOL_TIMEOUT_MS = 15000
+
+local function workTools(v)
+    local out = {}
+    local function add(u)
+        for _, implement in ipairs(type(u.getAttachedImplements) == "function" and u:getAttachedImplements() or {}) do
+            out[#out + 1] = implement.object
+            add(implement.object)
+        end
+    end
+    add(v)
+    return out
+end
+
+function starters.worktool(env, spec)
+    if spec.owned() ~= true or spec.tractor.ownerFarmId ~= spec.farmId then return nil, "RESERVATION_LOST" end
+    local direction = (spec.direction == 1 and 1) or (spec.direction == -1 and -1) or nil
+    if direction == nil then return nil, "INVALID_DIRECTION" end
+    local tools = workTools(spec.tractor)
+    local plows = 0
+    for _, u in ipairs(tools) do
+        if u.spec_plow ~= nil and type(u.setPlowLimitToField) == "function" then plows = plows + 1 end
+    end
+    if plows == 0 then return nil, "NO_PLOW_HITCHED" end
+    local mission = env.g_currentMission
+    if direction == 1 then
+        for _, u in ipairs(tools) do
+            if u.spec_plow ~= nil and type(u.getPlowForceLimitToField) == "function" and u:getPlowForceLimitToField() then
+                return nil, "FIELD_CREATION_DISABLED"
+            end
+        end
+        if type(mission.getHasPlayerPermission) == "function"
+                and not mission:getHasPlayerPermission("createFields", nil, nil, true) then
+            return nil, "FIELD_CREATION_NOT_PERMITTED"
+        end
+    end
+    for _, u in ipairs(tools) do
+        if direction == 1 then
+            if u.spec_plow ~= nil and type(u.setPlowLimitToField) == "function" then u:setPlowLimitToField(false) end
+            if type(u.aiImplementStartLine) == "function" then u:aiImplementStartLine() end
+        else
+            if type(u.aiImplementEndLine) == "function" then u:aiImplementEndLine() end
+            if u.spec_plow ~= nil and type(u.setPlowLimitToField) == "function" then u:setPlowLimitToField(true) end
+        end
+    end
+    log("worktool %s: %d implement(s) %s", tostring(env.NetworkUtil.getObjectId(spec.tractor)), #tools,
+        direction == 1 and "lowered, field creation on" or "raised, field limit on")
+    return { tools = tools, lower = direction == 1 }
+end
+
+function steppers.worktool(_env, task)
+    if task.spec.owned() ~= true then return "FAILED", "RESERVATION_LOST" end
+    local known, all = false, true
+    for _, u in ipairs(task.tools) do
+        if type(u.getIsLowered) == "function" then
+            known = true
+            local ok, lowered = pcall(u.getIsLowered, u)
+            if not ok or (lowered == true) ~= task.lower then all = false end
+        end
+    end
+    local code = task.lower and "LOWERED" or "RAISED"
+    if known and all and task.elapsed >= 500 then return "DONE", code end
+    if not known and task.elapsed >= Bridge.WORKTOOL_SETTLE_MS then return "DONE", code end
+    if task.elapsed > Bridge.WORKTOOL_TIMEOUT_MS then return "FAILED", "WORKTOOL_TIMEOUT" end
+    return nil
+end
+
+function aborts.worktool(_env, task)
+    for _, u in ipairs(task.tools or {}) do
+        pcall(function()
+            if type(u.aiImplementEndLine) == "function" then u:aiImplementEndLine() end
+            if u.spec_plow ~= nil and type(u.setPlowLimitToField) == "function" then u:setPlowLimitToField(true) end
+        end)
+    end
+end
+
 function starters.fold(env, spec)
     if spec.owned() ~= true or spec.tractor.ownerFarmId ~= spec.farmId then return nil, "RESERVATION_LOST" end
     local v = spec.tractor
@@ -1682,7 +1944,7 @@ function aborts.fold() end          -- GIANTS finishes the fold it started; noth
 Bridge.DELIVER_TIMEOUT_MS = 14400000    -- a safety bound (as DRIVE_TIMEOUT_MS); progress is DELIVER_STALL_MS
 Bridge.DELIVER_STALL_MS = 600000        -- GIANTS' helper running but unmoved 2 m for 10 min (tipping included)
 
-local function deliverStation(env, spec, job, fillType, v)
+function Bridge.deliverStation(env, spec, job, fillType, v)
     local store = spec.direction == -1
     local best, bestScore, vx, vz = nil, nil, nil, nil
     if store then vx, _, vz = env.getWorldTranslation(v.rootNode) end
@@ -1719,7 +1981,7 @@ function starters.deliver(env, spec)
         if job == nil then return "NO_DELIVER_JOB" end
         if job:getIsAvailableForVehicle(v) ~= true then return "DELIVER_UNAVAILABLE" end
         job:applyCurrentState(v, mission, spec.farmId, false)
-        local best, score = deliverStation(env, spec, job, fillType, v)
+        local best, score = Bridge.deliverStation(env, spec, job, fillType, v)
         if best == nil then return spec.direction == -1 and "NO_STORAGE" or "NO_SELL_POINT" end
         job.unloadingStationParameter:setUnloadingStation(best)
         job.loopingParameter:setIsLooping(false)
@@ -2132,6 +2394,10 @@ function steppers.fieldwork(env, task, dt)
     if active ~= false then
         if active ~= true then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
         if task.elapsed > Bridge.FIELDWORK_TIMEOUT_MS then return "FAILED", "TIMEOUT" end
+        -- GIANTS' agent BLOCKED and the tractor never left its start, as navigate (live
+        -- 9f1e101ef8da48d7-1: the Series 9 unloaded behind the GMC's deck, blocked 5 min).
+        local stuck = blockedAtStart(env, task, v, "FIELDWORK_")
+        if stuck ~= nil then return "FAILED", stuck end
         local x, _, z = env.getWorldTranslation(v.rootNode)
         if not (finite(x) and finite(z)) then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
         -- Handed off (hand 1, the user 2026-10-21: workers go on while Farmhand does something
@@ -2159,6 +2425,12 @@ function steppers.fieldwork(env, task, dt)
         end
         if task.fromX == nil or math.sqrt((x - task.fromX) ^ 2 + (z - task.fromZ) ^ 2) >= Bridge.NAVIGATE_PROGRESS_M then
             task.fromX, task.fromZ, task.fromAt = x, z, task.elapsed
+        elseif task.elapsed - task.fromAt > Bridge.BLOCKED_START_MS and agentBlocked(env, v) then
+            -- Unmoved with GIANTS' agent BLOCKED on its way: it waits for an obstacle it knows,
+            -- and a parked vehicle never leaves (live 5eb1005df58446f7-1: the MT600 22 m from the
+            -- GMC left on the road, 8 min); the companion moves what stands near it.
+            logAgent(env, v, "fieldwork blocked on its way")
+            return "FAILED", "FIELDWORK_BLOCKED"
         elseif task.elapsed - task.fromAt > Bridge.FIELDWORK_STALL_MS then
             logAgent(env, v, "fieldwork stalled")
             Bridge.logFieldWork(env, v, "stalled")
@@ -2963,7 +3235,7 @@ function Bridge:pollCommand()
         local xml = env.XMLFile.loadIfExists("fhAc001Command", path)
         if xml == nil then return end
         cmd = { session = xml:getString("command#session"), id = tonumber(xml:getString("command#id")),
-                op = xml:getString("command#op") }
+                op = xml:getString("command#op"), via = xml:getString("command#via") }
         for key, attr in pairs(ATTRS) do cmd[key] = tonumber(xml:getString("command#" .. attr)) end
         xml:delete()
     end)
@@ -2991,6 +3263,7 @@ function Bridge:handle(cmd)
     for key in pairs(ATTRS) do
         if key ~= "tractor" and key ~= "wagon" then spec[key] = cmd[key] end
     end
+    if cmd.op == "farm_drive" then spec.via = cmd.via end
     if Bridge.NEEDS_WAGON[cmd.op] then spec.wagon = object(cmd.wagon) end
     if (spec.tractor == nil and not Bridge.NO_VEHICLE[cmd.op]) or (Bridge.NEEDS_WAGON[cmd.op] and spec.wagon == nil) then
         return self:result(cmd.session, cmd.id, cmd.op, "REJECTED", "UNKNOWN_VEHICLE")
@@ -3028,6 +3301,30 @@ end
 function Bridge:update(dt)
     if self.env == nil then return end
     self.clock = self.clock + dt
+    self.screenPollMs = (self.screenPollMs or 0) + dt
+    if self.screenPollMs >= 1000 then
+        self.screenPollMs = 0
+        if self.dir ~= nil and type(self.env.fileExists) == "function" then
+            local reload = self.dir .. ".fhReload"
+            if self.env.fileExists(reload) then
+                if not self.reloadMarkerSeen and self.active == nil and self.env.FarmhandProbe ~= nil then
+                    self.reloadMarkerSeen = true
+                    self.env.deleteFile(reload)
+                    log("%s", self.env.FarmhandProbe:consoleReload())
+                end
+            else
+                self.reloadMarkerSeen = nil
+            end
+            local marker = self.dir .. ".fhScreen"
+            if self.env.fileExists(marker) then
+                if type(self.env.saveScreenshot) == "function" then
+                    local ok, saved = pcall(self.env.saveScreenshot, self.dir .. ".fhScreen.png")
+                    if not ok or not saved then log("background screenshot unavailable") end
+                end
+                self.env.deleteFile(marker)
+            end
+        end
+    end
     Bridge.watchGoto(self.env, dt)
     Bridge.keepHandedAwake()
     if Bridge.lastDetach ~= nil then Bridge.lastDetach.age = Bridge.lastDetach.age + dt end
@@ -3080,6 +3377,9 @@ Bridge.NOTICES = {
     TELEPORTED = "Farmhand: the rig could not move, so it was teleported to open ground nearby",
     ACCEPTED = "Farmhand: fetching a tractor and the implement",
     BUSY = "Farmhand: already working on a request",
+    QUEUED = "Farmhand: busy; your request is next in line",
+    ACCEPTED_JOIN_FIELDS = "Farmhand: joining the fields; plowing the strip between them with field creation on",
+    COMPLETE_JOIN_FIELDS = "Farmhand: the fields are joined",
     COMPLETE = "Farmhand: tractor and implement delivered",
     ACCEPTED_MOVE = "Farmhand: on my way",
     ACCEPTED_HITCH = "Farmhand: hitching a tractor to the implement",
@@ -3125,6 +3425,8 @@ Bridge.NOTICES = {
     COMBINE_FULL = "Farmhand: the combine is full; emptying it into a trailer, then harvesting on",
     COMBINE_FULL_NO_TRAILER = "Farmhand: the combine is full and no trailer has room; say sell the grain or store the grain, then continue",
     WAGON_FULL = "Farmhand: the forage wagon is full; delivering the load, then collecting on",
+    WORKER_BLOCKED = "Farmhand: a worker is blocked; moving what stands in its way",
+    COMPLETE_CLEAR_WORKER = "Farmhand: the worker's way is clear",
     WAGON_FULL_NO_DESTINATION = "Farmhand: the forage wagon is full; say sell it or store it, then continue",
     ACCEPTED_STORE = "Farmhand: taking the load to the farm's storage",
     COMPLETE_STORE = "Farmhand: stored; the load is in the farm's storage",
@@ -3405,6 +3707,8 @@ Bridge.REASONS = {
     FIELD_NOT_OBSERVED = "the field's state could not be read",
     FIELDWORK_UNAVAILABLE = "the helper cannot work with this tractor and implement",
     FIELDWORK_STALLED = "the helper got stuck on the field",
+    FIELDWORK_BLOCKED_AT_START = "the helper cannot start from where it stands",
+    FIELDWORK_BLOCKED = "something stands in the helper's way",
     NO_PLOW_CULTIVATING = "the farm has no plow",
     CROP_READY_TO_HARVEST = "the crop on that field is ready to harvest; harvest it first",
     CROP_GROWING = "a crop is growing on that field; soil work would destroy it",
@@ -3663,5 +3967,6 @@ Bridge.Hitch = FarmhandHitch
 if type(FarmhandHitch) == "table" then FarmhandHitch.onJobStart = Bridge.farmhandJob end   -- its GOTO jobs too
 Bridge.Drive = FarmhandDrive
 FarmhandBridge = Bridge
-if type(addModEventListener) == "function" then addModEventListener(Bridge) end
+-- fhReload (FarmhandProbe) re-reads this file into the running game: registered once only.
+if type(addModEventListener) == "function" and not FarmhandReloading then addModEventListener(Bridge) end
 return Bridge

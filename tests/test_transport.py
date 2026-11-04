@@ -211,6 +211,34 @@ class TractorTransportTests(unittest.TestCase):
     ramps down and verified, GIANTS GOTO right behind them, LOAD, belts verified holding the
     tractor, ramps up and verified; UNLOAD the reverse. Mock-only fold, belt and LOAD state."""
 
+    def test_loaded_rig_tries_giants_without_an_autodrive_marker_even_nearby(self):
+        from types import SimpleNamespace
+        from companion.drive_goal import DriveGoal
+        from companion.standalone import StandaloneMove
+
+        class World:
+            def __init__(self):
+                self.units = [SimpleNamespace(id="truck", position=(0.0, 0.0), belted_to=None),
+                              SimpleNamespace(id="deck", position=(-8.0, 0.0), belted_to=None),
+                              SimpleNamespace(id="cargo", position=(-8.0, 0.0), belted_to="deck")]
+                self.navigated = False
+
+            def snapshot(self):
+                return self.units
+
+            def navigate(self, vehicle_id, pose, owner):
+                self.navigated = True
+                for unit in self.units:
+                    unit.position = (unit.position[0] + pose.x, unit.position[1] + pose.z)
+
+            def farm_drive(self, *args):
+                raise AssertionError("loaded rig should try GIANTS first")
+
+        world = World()
+        StandaloneMove(world)._drive(DriveGoal("truck", ("truck", "deck", "cargo"), (40.0, 0.0), "cargo"),
+                                     "job", 0.0)
+        self.assertTrue(world.navigated)
+
     def test_named_trucks_trailer_means_its_attached_deck(self):
         world, tractor, deck, truck = transport_world()
         # A pickup bed can also fold and carry belts. Its trailer remains the deck
@@ -555,6 +583,23 @@ class TractorTransportTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("BLOCKED", "LOADED_NO_DRIVER"), result)
         self.assertNotIn("RESERVE", result.states)
         self.assertEqual(world.snapshot(), before)
+
+    def test_a_loaded_rig_with_farmhands_drive_goes_a_long_trip_by_autodrive(self):
+        # Live e738799ee3be4904-1: the GMC with the Series 9 from field 90 toward field 3 by
+        # Farmhand's own drive, still searching after 4 minutes. AutoDrive drives a loaded rig.
+        world, truck, deck, series9 = haul_world(loaded=True)
+        drives = []
+
+        class WithOwnDrive(type(world)):
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                drives.append(target)
+                raise AssertionError("Farmhand's own drive over the whole trip")
+
+        world.__class__ = WithOwnDrive
+        result = Executor(world).execute({"version": 1, "request_id": "h-1", "farm_id": "farm-a", "task": "move_pair",
+                                          "target": {"type": "field_entrance", "field": 3}, "cargo_name": "series 9"})
+        self.assertNotIn("FAILED", result.status, result)
+        self.assertEqual(drives, [])
 
     def test_what_is_chosen(self):
         # Named: the deutz; a tractor towing something, or one the player rides away, is never loaded.

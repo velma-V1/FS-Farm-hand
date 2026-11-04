@@ -34,6 +34,9 @@ function stubs.vehicle(world, t)
     local v = { ownerFarmId = t.farm or 1, rootNode = node(t.x or 0, t.z or 0, t.yaw),
                 configFileName = t.file }
     world.ids[v] = t.id
+    if t.displayName then
+        function v:getName() return t.displayName end
+    end
     function v:getLastSpeed() return t.speed or 0 end
     function v:getIsEntered() return t.entered == true end
     function v:getIsControlled() return t.controlled == true end
@@ -422,6 +425,20 @@ class LuaContractTests(unittest.TestCase):
         record, item = self.vehicle_record('{ id = 43, file = "STUB_WAGONS", forageWagon = false, specs = { "spec_pallet" } }')
         self.assertEqual((record["kinds"], item.category), (["pallet"], "unknown"))   # pallets are not implements
 
+    def test_owned_vehicle_name_uses_configured_giants_name(self):
+        record, item = self.vehicle_record(
+            '{ id = 44, file = "STUB_TRACTORS", motorized = true, displayName = "MT635" }')
+        self.assertEqual(record["name"], "MT635 (Store STUB_TRACTORS)")
+        self.assertEqual(item.name, "MT635 (Store STUB_TRACTORS)")
+        from companion.drive_goal import driven_by_words
+        self.assertTrue(driven_by_words(item, "MT635"))
+        self.assertTrue(driven_by_words(item, "Store"))
+        nickname, _ = self.vehicle_record(
+            '{ id = 46, file = "STUB_TRACTORS", motorized = true, displayName = "Boss Hoss" }')
+        self.assertEqual(nickname["name"], "Boss Hoss (Store STUB_TRACTORS)")
+        fallback, _ = self.vehicle_record('{ id = 45, file = "STUB_TRACTORS" }')
+        self.assertEqual(fallback["name"], "Store STUB_TRACTORS")
+
     def test_fill_units_are_read_from_giants_fill_unit_getters(self):
         spec = ('{ id = 44, file = "STUB_WAGONS", inputs = { "IMPLEMENT" }, forageWagon = false,'
                 '  specs = { "spec_sowingMachine", "spec_sprayer", "spec_fillUnit" }, seedUnit = 1, sprayUnit = 2,'
@@ -471,6 +488,26 @@ class LuaContractTests(unittest.TestCase):
         self.assertEqual(items["62"].belt_markers, ((10, 1.2, 4, 13, 1.2, 4), (10, 1.2, -2, 13, 1.2, -2)))
         self.assertEqual(items["61"].belted_to, "62")
         self.assertEqual((items["64"].fold, items["64"].belts_fastened, items["64"].belted_to), (None, None, None))
+
+    def test_working_width_is_read_from_giants_ai_markers(self):
+        # The user, 2026-10-31: "always go by working width" (a 10 m plow's size box said 1.67 m).
+        world = self.stubs.world()
+        for spec in ('{ id = 71, file = "STUB_WAGONS", forageWagon = false }',
+                     '{ id = 72, file = "STUB_WAGONS", forageWagon = false }'):
+            self.stubs.vehicle(world, self.lua.eval(spec))
+        self.lua.execute("""local w = ...
+            local v = w.byId[71]
+            local left, right = {}, {}
+            for k, value in pairs(v.rootNode) do left[k] = value; right[k] = value end
+            left.x, right.x = v.rootNode.x - 5, v.rootNode.x + 5
+            function v.getAIMarkers() return left, right, v.rootNode end""", world)
+        frame = self.snapshot(world)
+        records = {r["id"]: r for r in frame["vehicles"]}
+        self.assertAlmostEqual(records[71]["work_width"], 10.0, places=6)
+        self.assertIsNone(records[72]["work_width"])                 # no AI markers: unknown
+        items = {i.id: i for i in observation_from_snapshot(frame, CATEGORIES).equipment}
+        self.assertAlmostEqual(items["71"].work_width, 10.0, places=6)
+        self.assertIsNone(items["72"].work_width)
 
     def test_autodrive_scratch_table_on_a_towed_wagon_is_not_an_autodrive_driver(self):
         # Live 2026-10-18: after one attach/detach with an AutoDrive tractor the wagon

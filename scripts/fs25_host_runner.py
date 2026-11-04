@@ -94,7 +94,8 @@ MOD_FILES = ("modDesc.xml", "FarmhandObserve.lua", "FarmhandHitch.lua", "Farmhan
 APP_FILES = ("adapters/fs25.py", "adapters/world.py", "companion/ai.py", "companion/bridge.py",
              "companion/buildinfo.py", "companion/coordinator.py", "companion/drive_goal.py", "companion/executor.py", "companion/hitch.py",
              "companion/language.py", "companion/livetest.py", "companion/model.py", "companion/run.py",
-             "companion/service.py", "companion/setup.py", "companion/standalone.py", "companion/voice.py", "protocol/command.schema.json",
+             "companion/service.py", "companion/setup.py", "companion/standalone.py", "companion/route_memory.py",
+             "companion/voice.py", "protocol/command.schema.json",
              "protocol/frame.schema.json", "protocol/intent.schema.json", "protocol/ipc.py", "protocol/model.py")
 BUILD_FILES = tuple(f"mod/{MOD_NAME}/{n}" for n in MOD_FILES) + tuple(f"app/{n}" for n in APP_FILES)
 MAX_BUILD_FILE_BYTES = 2_000_000
@@ -248,13 +249,15 @@ class System:
         """taskkill of FS25's own image name, the only process the runner ever ends."""
         self._run(["taskkill.exe", *(["/F"] if force else []), "/IM", FS25_IMAGE])
 
-    def window(self, pid: int, script: str) -> dict:
+    def window(self, pid: int, script: str, activate: bool = False) -> dict:
         """Run the fixed window script for FS25's process ``pid`` plus one fixed action."""
+        focus = _FOCUS_ACTIVE_PS if activate else _FOCUS_GUARD_PS
         done = self._run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-                          _WINDOW_PS.replace("{pid}", str(int(pid))) + script], timeout=30.0)
+                          _WINDOW_PS.replace("{pid}", str(int(pid))).replace("{focus}", focus) + script], timeout=30.0)
         out = (done.stdout or "").strip().splitlines()
         if done.returncode != 0 or not out:
-            raise Refused("NO_WINDOW" if out and out[-1] == "NO_WINDOW" else "WINDOW_ACTION_FAILED",
+            code = out[-1] if out and out[-1] in ("NO_WINDOW", "GAME_NOT_FOREGROUND") else "WINDOW_ACTION_FAILED"
+            raise Refused(code,
                           stderr=(done.stderr or "")[-300:])
         width, height = (int(v) for v in out[-1].split())
         return {"window": [width, height]}
@@ -263,10 +266,10 @@ class System:
         return self.window(pid, _SCREEN_PS.replace("{width}", str(SCREEN_WIDTH)).replace("{path}", _plain(path)))
 
     def click(self, pid: int, x: float, y: float) -> dict:
-        return self.window(pid, _CLICK_PS.replace("{x}", repr(float(x))).replace("{y}", repr(float(y))))
+        return self.window(pid, _CLICK_PS.replace("{x}", repr(float(x))).replace("{y}", repr(float(y))), activate=True)
 
     def key(self, pid: int, name: str) -> dict:
-        return self.window(pid, _KEY_PS.replace("{vk}", str(int(KEYS[name]))))
+        return self.window(pid, _KEY_PS.replace("{vk}", str(int(KEYS[name]))), activate=True)
 
     def dismiss_signin(self) -> str:
         owners = ", ".join(f"'{_plain(o)}'" for o in SIGNIN_OWNERS)
@@ -302,14 +305,16 @@ class System:
 
 
 # The fixed PowerShell for the game window: DPI-aware, finds FS25's main window by its
-# process id, brings it to the front, and works in its client area. {pid} and every
-# other value are numbers or a _plain fixed path, never request text.
+# process id and works in its client area. Screenshots leave focus alone;
+# deliberate key/click actions restore the previous activation behavior.
+# {pid} and every other value are numbers or a _plain fixed path, never request text.
 _WINDOW_PS = r"""
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System; using System.Runtime.InteropServices;
 public static class FH {
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
@@ -325,14 +330,16 @@ public static class FH {
 [FH]::SetProcessDPIAware() | Out-Null
 $h = (Get-Process -Id {pid}).MainWindowHandle
 if ($h -eq [IntPtr]::Zero) { Write-Output 'NO_WINDOW'; exit 3 }
-[FH]::ShowWindow($h, 9) | Out-Null
-[FH]::SetForegroundWindow($h) | Out-Null
-Start-Sleep -Milliseconds 400
+{focus}
 $r = New-Object FH+RECT; [FH]::GetClientRect($h, [ref]$r) | Out-Null
 $o = New-Object FH+POINT; [FH]::ClientToScreen($h, [ref]$o) | Out-Null
 $w = $r.R - $r.L; $hh = $r.B - $r.T
 if ($w -le 0 -or $hh -le 0) { Write-Output 'NO_WINDOW'; exit 3 }
 """
+_FOCUS_GUARD_PS = "if ([FH]::GetForegroundWindow() -ne $h) { Write-Output 'GAME_NOT_FOREGROUND'; exit 4 }"
+_FOCUS_ACTIVE_PS = """[FH]::ShowWindow($h, 9) | Out-Null
+[FH]::SetForegroundWindow($h) | Out-Null
+Start-Sleep -Milliseconds 400"""
 _SCREEN_PS = r"""
 Add-Type -AssemblyName System.Drawing
 $bmp = New-Object System.Drawing.Bitmap $w, $hh
@@ -1188,8 +1195,32 @@ class Runner:
         folder.mkdir(parents=True, exist_ok=True)
         _no_link(folder)
         windows = str(PureWindowsPath(self.targets.data) / "host" / SCREEN_FILE)
-        result = self.system.screen(self._game_pid(), windows)
-        return True, "SCREEN", {**result, "file": str(folder / SCREEN_FILE)}
+        try:
+            result = self.system.screen(self._game_pid(), windows)
+            return True, "SCREEN", {**result, "file": str(folder / SCREEN_FILE)}
+        except Refused as error:
+            if error.code != "GAME_NOT_FOREGROUND":
+                raise
+        # The development probe calls GIANTS' saveScreenshot from its own update.
+        # It captures the game frame without activating the FS25 window.
+        marker = self.targets.settings / ".fhScreen"
+        captured = self.targets.settings / ".fhScreen.png"
+        captured.unlink(missing_ok=True)
+        marker.write_text("screen\n", encoding="ascii")
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if captured.is_file() and not marker.exists():
+                data = captured.read_bytes()
+                if (len(data) >= 36 and data[:8] == b"\x89PNG\r\n\x1a\n"
+                        and data[-12:] == b"\x00\x00\x00\x00IEND\xaeB`\x82"):
+                    width = int.from_bytes(data[16:20], "big")
+                    height = int.from_bytes(data[20:24], "big")
+                    (folder / SCREEN_FILE).write_bytes(data)
+                    return True, "SCREEN", {"window": [width, height], "file": str(folder / SCREEN_FILE),
+                                            "source": "game"}
+            time.sleep(0.1)
+        marker.unlink(missing_ok=True)
+        raise Refused("BACKGROUND_SCREEN_UNAVAILABLE")
 
     def op_click(self, x: float, y: float):
         self._no_job()

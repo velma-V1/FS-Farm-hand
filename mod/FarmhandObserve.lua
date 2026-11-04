@@ -459,6 +459,17 @@ function Observe.vehicle(env, v)
         local item = env.g_storeManager:getItemByXMLFilename(v.configFileName)
         return item and item.name
     end)
+    -- Vehicle:getName resolves the installed configuration (including motor model);
+    -- the store item names the whole series. Both matter: live, MT635 is the
+    -- configured MT600 Series, while Beast Mode and Boss Hoss are configuration
+    -- names whose store names still identify the GMC and Series 9.
+    local vehicleName = try(function() return v:getName() end)
+    local observedName = text(storeName)
+    local configuredName = text(vehicleName)
+    if configuredName ~= nil then
+        observedName = observedName ~= nil and configuredName ~= observedName
+            and (configuredName .. " (" .. observedName .. ")") or configuredName
+    end
     -- Its brand as the store lists it (brandNameRaw, as Observe.storeItem): live, the
     -- Series 9 2019 is DEUTZFAHR's, and the player calls it "the deutz".
     local brand = try(function()
@@ -495,6 +506,14 @@ function Observe.vehicle(env, v)
     local aiActive = false
     if type(v.getIsAIActive) == "function" then
         aiActive = observedBool(v, "getIsAIActive")
+    end
+    -- GIANTS' agent for an AI-active vehicle reports BLOCKED (AIDrivable lastState, as the
+    -- bridge's agentBlocked reads it): it waits for an obstacle it knows (a worker's helper).
+    local aiBlocked = nil
+    if aiActive == true and v.spec_aiDrivable ~= nil and env.AIDrivable ~= nil then
+        aiBlocked = try(function()
+            return tostring(env.AIDrivable.STATES[v.spec_aiDrivable.lastState]):upper() == "BLOCKED"
+        end)
     end
 
     -- vehicle.ad is AutoDrive's own presence test (ExternalInterface.lua:116).
@@ -641,6 +660,17 @@ function Observe.vehicle(env, v)
         assert(finite(px) and finite(pz))
         return { out = spec.unloadingStates[state] ~= nil, x = px, z = pz }
     end)
+    -- Working width: GIANTS' AI markers, left to right (AIImplement:getAIMarkers 427-).
+    local workWidth = try(function()
+        if type(v.getAIMarkers) ~= "function" then return nil end
+        local left, right = v:getAIMarkers()
+        if left == nil or right == nil then return nil end
+        local lx, ly, lz = env.getWorldTranslation(left)
+        local rx, ry, rz = env.getWorldTranslation(right)
+        local w = math.sqrt((lx - rx) ^ 2 + (ly - ry) ^ 2 + (lz - rz) ^ 2)
+        assert(w == w and w > 0 and w < 100)
+        return w
+    end)
     local beltedTo = try(function()
         if v.tensionMountObject == nil then return nil end
         local mountId = env.NetworkUtil.getObjectId(v.tensionMountObject)
@@ -658,13 +688,15 @@ function Observe.vehicle(env, v)
         size = nullable(size),
         kinds = Observe.kinds(v),
         fill_units = Observe.fillUnits(env, v),
-        name = nullable(text(storeName)),
+        name = nullable(observedName),
         brand = nullable(text(brand)),
         seeds = nullable(seeds),
         pipe = nullable(pipe),
         -- How GIANTS ended its last AI job, as the bridge's onAIJobStopped listener recorded it
         -- (Observe.aiStop is set by FarmhandBridge; the message class, e.g. FINISHED).
         ai_stop = nullable(token(Observe.aiStop and try(function() return Observe.aiStop(v) end))),
+        ai_blocked = nullable(aiBlocked),
+        work_width = nullable(workWidth),
         x = x,
         z = z,
         speed_kmh = nullable(speed),

@@ -1,124 +1,282 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Claude Code works under `AGENTS.md`. Read it first. If this file conflicts with `AGENTS.md`, `AGENTS.md` wins.
 
-**Read `AGENTS.md` (authoritative rules for every agent) and `BUILD_SPEC.md` before editing.**
-This file adds only orientation; where they differ, AGENTS.md wins. Report conflicts
-with the user's request instead of silently changing scope.
+`BUILD_SPEC.md` is historical foundation documentation. Do not let its AC-001 scope or provider-era non-goals override the current standalone Farmhand mission.
+
+There is no handoff file. Do not create or depend on one.
+
+## Current engineering objective
+
+Use the current repository as a laboratory to identify and live-prove the **smallest reusable systems needed for the final standalone Farmhand product**.
+
+Do not make "repair the legacy planner" the goal.
+
+Do not make one command such as GMC → silo the goal. Specific commands are fixtures used to prove or disprove primitives.
+
+For every change:
+1. identify the first wrong runtime decision;
+2. identify the smallest underlying primitive responsible;
+3. change only that primitive;
+4. prove it live under normal physics;
+5. preserve the evidence;
+6. move on when the primitive is established.
+
+Apply the mandatory **small / dependency / whole-product review** in `AGENTS.md` before selecting work, whenever live evidence reveals a new cause, and before extracting a permanent component. Preempt a downstream feature to correct its broken shared prerequisite, then resume the original end-to-end task. Never build around a false observation, collision box or ineffective actuator while a correct simple shared fix exists.
+
+Workarounds are not substitutes for fixing causes. Reuse existing Farmhand primitives, GIANTS mechanics and the smallest proven adapters before adding a controller or subsystem. Measure request-to-first-action and request-to-verified-completion time; minimize detours, waits, retries, and background cost without bypassing safety or verification.
+
+## Navigation reference — verified regressions and remaining dependencies
+
+Accurate local physical geometry for articulated rigs remains a critical reusable foundation. Choose the next experiment from live dependency evidence rather than automatically repeating this older navigation case.
+
+Live evidence already established:
+- the aggregate whole-rig rectangle can reject usable space;
+- a 2 m right-turn candidate was blocked by the aggregate box while separate observed-unit boxes were clear;
+- a short reverse-left candidate showed the same disagreement;
+- the aggregate box spans empty space beside an angled trailer;
+- the footprint previously omitted an implement attached to belted vehicle cargo; the generic traversal fix now covers the nested plow in focused tests;
+- powered-vehicle next-state prediction must advance from the truck's observed heading, not substitute the trailer heading;
+- Deckover hitch-to-active-wheel-group geometry was measured at 9.111 m for the current live configuration;
+- that number is a rig measurement, not a universal constant;
+- separate rigid unit boxes are not yet a proven future-motion model;
+- background/minimized GIANTS screenshots have been verified to show the same scene closely enough for development evidence.
+
+The oversized whole-rig rectangle was a **bad upstream clearance decision**, not evidence that routing required more recovery branches. Correct measured swept geometry before tuning route recovery.
+
+## Existing physical proof — retain, do not repeat without regression cause
+
+- The loaded GMC four-unit rig passed the 2 m right turn and short reverse-left under normal physics after articulated clearance replaced aggregate-box vetoes.
+- A materially different two-unit rig passed related forward/reverse movement, but tighter-space generality was only PARTIALLY PROVEN.
+- Subsequent measured steering-reference work improved a GMC forward-turn endpoint estimate; see current `adapters/EVIDENCE.md` for exact numbers and build evidence.
+- These are **short-motion proofs**, not proof of complete destination-directed navigation, field operation, or universal collision clearance.
+
+Next navigation work, when its dependencies make it the highest-value choice: establish representative full-route global/local transitions, accurate geometry for new rigs, measured motion supervision, bounded recovery, and request-to-completion responsiveness. Use the qualification ladder in `AGENTS.md`, not a stale fixed candidate list.
+
+For any new predicted-clear maneuver, record observed rig geometry, actual collision/physics state, predicted-versus-actual poses, and physical outcome. No scenery ghosting, AutoDrive/Courseplay/GIANTS GOTO ownership, teleport, or hidden fallback is accepted as standalone-navigation qualification. GIANTS sensors, controls, joints and physics remain valid building blocks.
+
+If a candidate cannot be executed safely, diagnose its first incorrect physical assumption. Do not loosen tolerances or add retries to manufacture a pass.
+
+## What earns a place in the clean build
+
+Candidate systems must be independently justified by live evidence.
+
+The current candidate set is:
+1. measured world/rig geometry;
+2. short-horizon articulated predictor;
+3. precise local candidate clearance;
+4. cheap global destination corridor;
+5. closed-loop motion supervisor;
+6. bounded local recovery/replan;
+7. task/world coordinator.
+
+Do not assume all seven are required.
+
+Navigation remains a major release blocker, but new evidence may justify proving a lower-level shared component through forestry, earthmoving, loading or another domain first. The final clean product should reuse the same small substrate across domains. Map proven work into five cross-product foundations; do not wait for every navigation scenario to finish before identifying a generalizable foundation:
+- authoritative world/object graph;
+- physical geometry/interaction model;
+- verified bounded action contract;
+- goal executor with STOP/resume/recovery;
+- natural-language/status interface with no physical authority in the model.
+
+Fieldwork, commerce, loading, forestry and heavy equipment should consume those foundations rather than create parallel planners/state systems. Add a new foundation only after a real end-product task proves the existing substrate insufficient.
+
+For each system record:
+- observed failure requiring it;
+- smallest implementation;
+- proof case;
+- measured benefit;
+- remaining limitations;
+- classification: PROVEN / PARTIALLY PROVEN / FAILED / NOT REQUIRED / UNVERIFIED.
+
+## Physical geometry rules
+
+Do not use one long whole-rig rectangle as authoritative local clearance.
+
+Do not replace it with another guessed rectangle.
+
+Prefer:
+1. actual loaded collision/physical shapes and live transforms;
+2. live joint/wheel/active-wheel-group geometry;
+3. observed motion calibration;
+4. I3D geometry;
+5. XML/store/AI dimensions only as fallback/bootstrap.
+
+Traverse the complete attachment/cargo graph recursively and guard against duplicates/cycles.
+
+A broad aggregate envelope may remain only if it demonstrably saves work as a coarse broad-phase check. It cannot veto a locally clear maneuver.
+
+## Prediction rules
+
+Treat articulated units separately.
+
+Advance the powered vehicle from its own observed pose.
+
+Predict trailer state from its own heading, hitch geometry, effective wheel-group location and short commanded motion.
+
+Use trailer heading as steering/control feedback, not as a replacement vehicle heading.
+
+Prefer short-horizon:
+`predict → execute → observe → compare → correct`
+
+Do not build a large vehicle-dynamics model unless live error proves the smaller kinematic predictor insufficient.
+
+## Route architecture rules
+
+Long-distance planning must be cheap enough to begin useful motion quickly.
+
+Preferred shape:
+`goal → coarse corridor → start moving → validate near-future → precise local maneuver only where needed → rejoin goal-directed corridor → arrive`
+
+Do not perform full-map high-resolution search before movement.
+
+Do not accept a locally clear corridor as success if it keeps moving away from the destination without a verified connection back.
+
+## Motion supervision
+
+Always distinguish:
+- predicted future obstruction;
+- confirmed current contact;
+- genuine no-progress;
+- normal segment stopping tolerance;
+- completed arrival.
+
+Compare command with actual pose/speed/heading/articulation changes.
+
+Do not simply shorten timers until the reason for a stop is known.
+
+## Physics policy
+
+Ordinary Farmhand navigation must work with normal scenery collision enabled.
+
+A movement performed with ghosted scenery is not ordinary-navigation proof.
+
+If any temporary physics override is used diagnostically, restore it on every exit path.
+
+## Live-run discipline
+
+Only one movement request may be active.
+
+Before issuing another:
+- prior request terminal state confirmed;
+- rig observed idle;
+- no stale queued request remains.
+
+Never infer movement solely from planner logs. Confirm from live pose deltas.
+
+Do not steal the user's foreground except when a menu operation genuinely requires focus. Use the verified background screenshot path otherwise.
+
+## Development workflow
+
+Use:
+`DIAGNOSE → IMPLEMENT → QUALIFY`
+
+During DIAGNOSE:
+- reproduce;
+- capture the first wrong decision;
+- measure live state;
+- identify the bad assumption;
+- add the smallest regression/instrumentation necessary.
+
+During IMPLEMENT:
+- change one general primitive;
+- avoid downstream workarounds;
+- if hypothesis fails, revert the experimental behavior and return to diagnosis.
+
+During QUALIFY:
+- exact original case;
+- second/generalization case;
+- focused tests;
+- full gate only after the live primitive works.
+
+Do not run broad audits or unrelated cleanup while the causal chain is unresolved.
 
 ## Commands
 
-Python 3.12 with pinned deps (`.venv/` exists locally):
+Repository:
+`/home/xxthatguyxx/projects/FS-Farm-hand`
 
+Python:
+`/home/xxthatguyxx/projects/FS-Farm-hand/.venv/bin/python`
+
+Useful checks:
 ```sh
-python -m pip install -r requirements-dev.txt   # once
-python scripts/check.py                          # the single gate; run before proposing any change
-python -m unittest tests.test_hitch -v           # one module
-python -m unittest tests.test_farmhand.ExplicitDestinationTests.<test_name>   # one test
-python scripts/package_probe.py --build dist/FS25_Farmhand   # build the mod folder as CI does
-luacheck mod                                     # Lua lint (CI job; config in .luacheckrc)
-python scripts/fs25_live_test.py status          # live FS25 via the user's host runner (mod/README.md)
+.venv/bin/python -m unittest tests.test_lua_drive tests.test_lua_hitch tests.test_lua_bridge -q
+.venv/bin/python scripts/check.py
+git diff --check
+git status --short
 ```
 
-Optional voice: `pip install -r requirements-voice.txt`, `python -m companion.voice --install`,
-then `FARMHAND_WHISPER_DIR=~/FS25Farmhand/whisper-base.en python -m unittest tests.test_voice`
-runs real speech-to-text on the fixtures (skipped otherwise; CI job "voice").
+Live interface:
+```sh
+.venv/bin/python scripts/fs25_live_test.py status
+.venv/bin/python scripts/fs25_live_test.py request '<natural player command>'
+```
 
-`check.py` runs all unittests (Lua tests run the real `mod/*.lua` under Lua 5.1 and
-5.4 via Lupa), compiles Python and Lua, validates the mod and companion package
-layouts (the bundle must import on its own), and runs
-`git diff --check HEAD`. Also inspect `git diff --check` and the final tree yourself.
-CI (`.github/workflows/ci.yml`) runs it on Ubuntu and Windows; Windows named-pipe
-tests only execute on Windows. CodeQL must report zero findings.
+Use the existing install/reload flow. Preserve the running FS25 process when possible.
 
-Normal operation is `companion/service.py` (windowless, logon-started by the package's
-`Setup.cmd` → `companion/setup.py`) answering the in-game keys; `python
-scripts/package_probe.py --build-package <dir>` builds that package (needs network; CI
-job "package" installs it for real on Windows). Never build or label a release ZIP
-without the user's explicit release approval; the diagnostic runner
-(`python -m companion.run here|marker|marker-id|field`) runs one request. Both only work on
-the user's Windows PC beside FS25 — see `mod/README.md`. The optional, gitignored
-`farmhand.json` (`--config`; template `farmhand.example.json`) is needed only for
-field targets or a tractor category override.
+## FS25 source/reference requirement
 
-## Architecture
+Before guessing about engine physics, joints, wheels, transforms, collision, AI behavior or providers, inspect:
 
-Single task (AC-001): pick an available compatible tractor + forage wagon, hitch
-them, deliver them to the requester. Pipeline: FIND → RESERVE → MOVE (HITCH) →
-ATTACH → VERIFY → DELIVER, each physical step re-validated from a fresh snapshot.
+`/mnt/c/Users/Matt/Desktop/FS25 Modding Toolkit`
 
-- `protocol/` — pure contracts: frozen types (`model.py`), intent and IPC frame
-  JSON Schemas, and the untrusted frame decoder/encoder (`ipc.py`). Not an FS25 API.
-- `adapters/world.py` — the `World` port the executor depends on; `StepFailed` /
-  `StepUnverified` distinguish confirmed failure from unknown outcome.
-  `adapters/fs25.py` maps game snapshot frames into `Equipment` and fails closed on
-  anything unknown. `adapters/EVIDENCE.md` is the authoritative record of every
-  upstream GIANTS/mod call (pinned commits, PROVEN/UNVERIFIED/GAP); never call an
-  API that isn't recorded there.
-- `companion/executor.py` — deterministic `Executor(world).execute(intent) -> Result`
-  (COMPLETE / BLOCKED / FAILED / UNVERIFIED). Destination resolution and hitch
-  planning (`companion/hitch.py`, pure) happen before RESERVE so failures there
-  are BLOCKED with nothing moved. Replay is cached per executor instance.
-- `companion/bridge.py` — the real adapter `FS25World` plus the local IPC:
-  game → companion JSON lines over a Windows named pipe hosted by the companion;
-  companion → game one command at a time in `modSettings/FS25_Farmhand/command.xml`
-  (atomic rename) plus a `session.xml` heartbeat that also carries player notices.
-  The ops are fixed (protocol/ipc.py COMMAND_ARGS): `drive` (AutoDrive), `navigate` (GIANTS GOTO), `stage`,
-  `maneuver`, `align`, `attach`, `detach` (GIANTS' own, where it allows it), `pull_clear` (straight after that detach),
-  `unpark` (straight out of a building GIANTS cannot start from), `fold` (GIANTS Foldable: tailgates, ramps), `belts`
-  (GIANTS TensionBelts), `load` (a tractor alone straight onto a transport's deck or back off it), `ad_marker`
-  (an AutoDrive destination for a field, AutoDrive's own call, after a backup of its network), `follow`
-  (FollowMe, only on the player's "follow me"), `fieldwork` (optionally the crop to sow), `contract` (take or
-  collect a GIANTS field contract), `pipe` / `overload` / `alongside` (a standing combine's pipe out, the trailer straight under it, GIANTS'
-  own discharge into it), `deliver` (GIANTS' Deliver helper to the best paid selling station, or to a silo the farm owns),
-  `open_gates`, `block`, `buy`, `save`, `stop`. ACCEPTED/DONE is never success; the game stops a
-  session's motion if the heartbeat is lost for 10 s. Player key presses arrive as
-  `request` frames (a fixed `action` or typed `text`).
-- `companion/language.py` (deterministic rules; a local model may sit behind them)
-  turns words into a command proposal (`protocol/command.schema.json`, no
-  authority); `companion/coordinator.py` validates it, runs one job at a time on a
-  worker thread, answers STOP/STATUS immediately (STOP cancels before the next step
-  and pre-empts the running bridge op); `companion/service.py` is the windowless
-  process wiring it together. Optional layers, both off unless installed:
-  `companion/ai.py` (the user's model choice among their own Ollama or llama.cpp models,
-  validated, saved in `%LOCALAPPDATA%/FS25Farmhand/settings.json`; never auto-picked,
-  never downloaded), `companion/model.py` (finds the user's llama-server and GGUF models;
-  CPU-only, schema-constrained, behind the rules)
-  and `companion/voice.py` (push-to-talk → faster-whisper → the text path).
-- `mod/` — FS25 Lua mod `FS25_Farmhand` (load order in `modDesc.xml`):
-  `FarmhandObserve` (read-only snapshots), `FarmhandHitch` (GIANTS GOTO staging,
-  bounded LOCAL_MANEUVER and ALIGN_REVERSE, GIANTS attach), `FarmhandBridge` (executes companion
-  commands, the player key and notifications; server only), `FarmhandProbe`
-  (`fhHitch*` console diagnostics). Each
-  file sets one global; game globals come in as `env`, so tests load them with stubs
-  that implement only evidenced calls.
-- Development only: `companion/livetest.py` (on with `companion.service --live-test`)
-  lets the host runner `scripts/fs25_host_runner.py` (started by the user outside the
-  sandbox) ask for the production `hitch_pair` and STOP; `scripts/fs25_live_test.py`
-  is Claude's client. Neither bridge takes paths, programs or code.
-- `simulator/world.py` — in-memory `MockWorld` for tests. Never import it from
-  `companion/` or `mod/`.
+Priority is exact installed dataS first, then LUADOC/reference material, then provider source for algorithm study.
 
-Cross-language invariants: constants and the hitch plan are mirrored between
-`companion/hitch.py` / `companion/bridge.py` and the Lua files (comments like
-`= mod/FarmhandBridge.lua Bridge.MOD_DIR`); `tests/test_lua_probe.py` asserts they
-match. Change shared schemas, both sides, and all consumers together.
+Do not copy an entire provider architecture when one small algorithm or geometric primitive is enough.
 
-`tests/ACCEPTANCE.md` maps each acceptance clause to specific tests — update it
-when behavior changes. Write the behavior test first; vary IDs and inventory order
-rather than asserting fixture IDs.
+## Repository preservation
 
-## Status and limits
+The worktree is intentionally dirty.
 
-Nothing has run inside FS25. Passing CI does not prove mod loading, physics, attach
-alignment, routing, IPC on Windows, or game integration — say so when reporting.
-The only self-driven motion allowed is HITCH's capped LOCAL_MANEUVER (forward, inside
-25 m of the wagon's joint), ALIGN_REVERSE (the final reverse), DETACH's PULL_CLEAR
-(straight forward, at most 8 m at 3 km/h, straight after Farmhand's own detach) and UNPARK
-(straight, at most 20 m at 3 km/h, only after GIANTS could not start a vehicle and no closed
-door is near it; AGENTS.md exception 4) and LOAD / UNLOAD (a tractor alone, straight along a
-transport trailer's axis up its verified-down ramps or back off, at most 3 km/h and the ramps
-plus the deck, and BACKOFF straight back from the ramps at most 8 m; AGENTS.md exception 5) and ALONGSIDE (a tractor's towed trailer straight forward
-under a standing combine's pipe, at most 3 km/h and 25 m; exception 6), every one governed under its speed limit (OVERSPEED) and the new ones watched for envelope contact; all other travel is
-delegated to AutoDrive (optional; marker destinations only; it also drives a loaded transport) or GIANTS GOTO
-(`navigate`, `stage`), whose navigation agent plans for the attached wagon.
+Do not:
+- reset;
+- stash;
+- clean;
+- discard unrelated work;
+- rewrite unrelated source;
+- commit unrelated changes together.
+
+A successful local proof does not validate unrelated dirty changes.
+
+## Durable state
+
+Do not create a chronological handoff file.
+
+Put durable facts in the narrowest correct place:
+- engine/provider facts → `adapters/EVIDENCE.md`;
+- behavioral acceptance → tests;
+- code invariants → code/tests/comments;
+- short expensive-to-rediscover product facts → `PRODUCT_WORKING_MEMORY.md`;
+- deferred release work → `RELEASE_BACKLOG.md`;
+- source history → git.
+
+## Final deliverable of the proving-ground phase
+
+Produce an evidence-backed list:
+
+```text
+PROVEN MINIMUM FARMHAND SYSTEMS
+
+1. <primitive>
+   Required because:
+   Minimum implementation:
+   Live proof:
+   Generalization:
+   Player benefit:
+
+...
+```
+
+And:
+
+```text
+DO NOT MIGRATE
+
+- legacy mechanisms that add complexity without proven value
+- geometry representations proven false
+- provider dependencies not required by the final standalone product
+- recovery/ghosting/workaround behavior made unnecessary by correct primitives
+```
+
+Only after the minimum set is proven should a clean Farmhand navigation implementation be designed.

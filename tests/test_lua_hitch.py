@@ -191,6 +191,7 @@ class LuaHitchTests(unittest.TestCase):
     def setUp(self):
         self.lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
         self.hitch = self.lua.execute((ROOT / "mod/FarmhandHitch.lua").read_text())
+        self.hitch.DEFAULTS.maxSpeedKmh = 3      # tuned at 3 km/h; production 4.8: test_lua_load SpeedLimitTests
         self.W = self.lua.execute(STUBS, self.hitch)
 
     def world(self, **opts):
@@ -537,7 +538,7 @@ class LuaHitchTests(unittest.TestCase):
 
     def test_speed_default_is_bounded_and_not_two(self):
         limits = self.hitch.LIMITS
-        self.assertEqual((self.hitch.DEFAULTS.maxSpeedKmh, limits.minSpeedKmh, limits.maxSpeedKmh), (3, 1, 5))
+        self.assertEqual((limits.minSpeedKmh, limits.maxSpeedKmh), (1, 5))
         for speed in (1, 4, 5):
             w = self.world()
             session, _ = self.align(w, maxSpeedKmh=speed)

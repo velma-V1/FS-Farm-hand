@@ -12,7 +12,7 @@ from dataclasses import replace
 
 from companion.hitch import (ALIGN_MAX_HEADING_RAD, ALIGN_MAX_LATERAL_M, ALIGN_REACH_M, APPROACH_CLEARANCE_M,
                             APPROACHES, LOCAL_WORK_RADIUS_M, STAGING_DISTANCE_M,
-                            align_problem, approach_poses, joint_error, plan_hitch)
+                            align_problem, approach_families, approach_poses, joint_error, plan_hitch)
 from protocol.model import Equipment, InputJoint, OutputJoint, Pose
 
 
@@ -176,16 +176,18 @@ class ApproachTests(unittest.TestCase):
                         (joint,))
             plan = plan_hitch(t, w)
             aims = approach_poses(plan, t.position, ())
-            self.assertEqual(len(aims), 2 * len(APPROACHES))
+            families = approach_families(plan)
+            self.assertEqual(families[len(families) - len(APPROACHES):], APPROACHES)
+            self.assertEqual(len(aims), 2 * len(families))
             seen = set()
             for pose in aims:
                 error = joint_error(replace(t, ai_root=pose), w, plan)
                 side = math.copysign(1, error.lateral)
                 key = (round(error.ahead, 6), round(abs(error.lateral), 6), round(-side * math.degrees(error.heading), 6))
-                self.assertIn(key, {(a, s, h) for a, s, h in APPROACHES})
+                self.assertIn(key, {(round(a, 6), round(s, 6), h) for a, s, h in families})
                 self.assertLess(error.gap, LOCAL_WORK_RADIUS_M)       # LOCAL_MANEUVER takes over
                 seen.add((key, side))
-            self.assertEqual(len(seen), 2 * len(APPROACHES))          # each family on each side
+            self.assertEqual(len(seen), 2 * len(families))            # each family on each side
 
     def test_order_clear_aims_then_the_family_then_the_nearer_side(self):
         t, w = tractor(Pose(0.0, 0.0, 0.0)), wagon((10.0, 20.0), 0.0)
@@ -313,3 +315,27 @@ class GooseneckJointTests(unittest.TestCase):
         self.assertEqual(plan.tractor_joint, 1)
         front = replace(truck, output_joints=(OutputJoint(2, "semitrailerCar", 0.0, 3.0, True),))
         self.assertIsNone(plan_hitch(front, trailer))                       # a front hitch: never
+
+
+class StripLaneTests(unittest.TestCase):
+    """Joining two fields (the user, 2026-10-31: "add field 4 to field 5 with create fields
+    enabled"): the straight lanes that plow the strip between them."""
+
+    A = ((0.0, 0.0), (100.0, 0.0), (100.0, 60.0), (0.0, 60.0))
+
+    def test_lanes_cover_the_gap_and_reach_into_both_fields_back_and_forth(self):
+        from companion.hitch import STRIP_INTO_M, strip_lanes
+        b = ((112.0, 0.0), (200.0, 0.0), (200.0, 60.0), (112.0, 60.0))
+        lanes = strip_lanes(self.A, b, 4.0)
+        xs = [lane[0][0] for lane in lanes]
+        self.assertLessEqual(min(xs) - 2.0, 100.0 - STRIP_INTO_M + 0.5)        # into field A
+        self.assertGreaterEqual(max(xs) + 2.0, 112.0 + STRIP_INTO_M - 0.5)     # into field B
+        self.assertTrue(all(b2 - a2 <= 4.0 + 1e-6 for a2, b2 in zip(xs, xs[1:])))   # no gap between passes
+        self.assertEqual([lane[0][1] for lane in lanes[:2]], [0.0, 60.0])      # back and forth
+        self.assertTrue(all(abs(lane[0][1] - lane[1][1]) == 60.0 for lane in lanes))   # the shared length
+
+    def test_fields_far_apart_or_side_by_side_without_shared_length_are_not_joined(self):
+        from companion.hitch import strip_lanes
+        self.assertEqual(strip_lanes(self.A, ((500.0, 0.0), (600.0, 0.0), (600.0, 60.0), (500.0, 60.0)), 4.0), ())
+        corner_only = ((110.0, 70.0), (200.0, 70.0), (200.0, 130.0), (110.0, 130.0))
+        self.assertEqual(strip_lanes(self.A, corner_only, 4.0), ())

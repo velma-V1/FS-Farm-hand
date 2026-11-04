@@ -128,6 +128,7 @@ COMMAND_ARGS = {
     "pay": ("direction", "area"),                 # Farmhand's pay: mode (0 none, 1 per hour, 2 per job, 3 per day, 4 the game's own wages), amount (0: GIANTS' rate)
     "charge": ("area",),                          # per-job pay: this amount for a completed request
     "fold": ("tractor", "direction"),            # the vehicle's own Foldable parts to one end
+    "worktool": ("tractor", "direction"),        # the plow lowered with field creation on (1), raised and limited again (-1)
     "belts": ("tractor", "direction"),           # a transport's TensionBelts fastened (1) or released (-1)
     "load": ("tractor", "wagon", "direction"),   # the tractor alone onto the trailer's deck (1) or off it (-1)
     "ad_marker": ("field", "x", "z"),            # an AutoDrive destination: "Field N" by field N's edge, or (field 0) the farm building at (x, z) by its name
@@ -135,7 +136,7 @@ COMMAND_ARGS = {
     "follow": ("tractor",),                      # FollowMe: the vehicle follows the one the player drives
     "contract": ("field", "direction"),          # the field's contract taken (1) or its reward collected (-1)
     "land": ("field", "direction"),              # the field's farmland parcel bought (1) or sold (-1), GIANTS' FarmlandStateEvent
-    "ad_unload": ("tractor", "marker", "field"),  # AutoDrive's combine unloader: waits at the marker, sells the field's crop
+    "ad_unload": ("tractor", "marker", "field", "direction"),  # AutoDrive's combine unloader: waits at the marker; a full trailer to the best paid sell point (1), the farm's silo (-1) or parked at the marker (0)
     "ad_sell": ("tractor",),                      # AutoDrive delivers the rig's cargo to the best paid sell point
     "pipe": ("tractor", "direction"),            # a combine's pipe out (1) or in (-1), GIANTS Pipe
     "overload": ("tractor", "wagon"),            # a standing combine discharges into the trailer under its pipe
@@ -160,8 +161,16 @@ def encode_command(session: str, command_id: int, op: str, args: dict) -> str:
         raise ValueError("INVALID_SESSION")
     if type(command_id) is not int or not 1 <= command_id <= MAX_COMMAND_ID:
         raise ValueError("INVALID_COMMAND_ID")
-    if op not in COMMAND_ARGS or set(args) != set(COMMAND_ARGS[op]):
+    via = args.get("via") if op == "farm_drive" else None
+    expected = set(COMMAND_ARGS.get(op, ()))
+    if via is not None:
+        expected.add("via")
+    if op not in COMMAND_ARGS or set(args) != expected:
         raise ValueError("INVALID_COMMAND")
+    if via is not None and (not isinstance(via, str) or len(via) > 2048 or
+                            not re.fullmatch(r"-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?(?:;-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?)*", via) or
+                            len(via.split(";")) > 128):
+        raise ValueError("INVALID_ARGUMENT")
     parts = [f'session="{session}"', f'id="{command_id}"', f'op="{op}"']
     for name in COMMAND_ARGS[op]:
         value = args[name]
@@ -174,6 +183,8 @@ def encode_command(session: str, command_id: int, op: str, args: dict) -> str:
                 raise ValueError("INVALID_ARGUMENT")
             text = repr(float(value))
         parts.append(f'{_ATTRIBUTE[name]}="{text}"')
+    if via is not None:
+        parts.append(f'via="{via}"')
     return '<?xml version="1.0" encoding="utf-8" standalone="no" ?>\n<command ' + " ".join(parts) + " />\n"
 
 

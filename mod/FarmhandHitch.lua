@@ -24,7 +24,7 @@ Hitch.DEFAULTS = {
     -- GIANTS driveToPoint stops accelerating whenever maxSpeed * (1 - fac^0.25) < 1
     -- km/h, fac = steering error share (AIVehicleUtil 69-73): at 2 km/h any error
     -- above ~6% stalls it, at 3 km/h above ~20%; below 1 km/h it never moves.
-    maxSpeedKmh = 3,
+    maxSpeedKmh = 4.8,       -- 3 mph on the curved and reversing moves (the user, 2026-10-31)
     timeoutMs = 30000,       -- hard timeout for the whole reverse
     wagonToleranceM = 0.25,  -- the wagon's input joint may not move more than this
     stallMs = 4000,          -- no progress for this long means stalled
@@ -346,7 +346,7 @@ end
 -- The shares since live 1b18d8f457ce42fe-1 (0.85 / 0.9 / 0.97 until then): LOAD's run-in hunted
 -- +-0.5 km/h about its target (0.25 s readings 1.58-2.79) and touched 3.03 just after the soft start.
 Hitch.SPEED = { windowMs = 250, commandShare = 0.65, coastShare = 0.8, brakeShare = 0.9,
-                overHoldMs = 300, overHardShare = 1.2,
+                overHoldMs = 500, overHardShare = 1.2,
                 traceMs = 500, traceMax = 240,
                 -- Downhill in the direction of travel (live c696741383fe4388-1: UNLOAD rolling off
                 -- the ramps' foot backwards went 2.88 -> 3.04 km/h while only coasting): it brakes
@@ -1075,9 +1075,15 @@ function Hitch.releaseGhosts(env, busy)
     end
 end
 
-function Hitch.rigContacts(env, vehicle)
+-- Proxy-envelope overlap, not a native physics contact event. In particular a
+-- long moving-tool box can retain a tree hit while the vehicle backs away.
+function Hitch.rigContacts(env, vehicle, foot)
     local E = Hitch.ENVELOPE
-    local units, excluded = rigUnits(vehicle)
+    -- A drive footprint also contains belted cargo and its mounted equipment;
+    -- observe those same units for contact instead of only the hitch chain.
+    local units, excluded
+    if foot ~= nil then units, excluded = foot.units, foot.excluded
+    else units, excluded = rigUnits(vehicle) end
     for _, unit in ipairs(units) do
         local belts = unit.spec_tensionBelts
         for _, data in pairs(belts ~= nil and belts.objectsToJoint or {}) do
@@ -1121,7 +1127,7 @@ function Hitch.envelope(env, s)
         local hits = unitEnvelope(env, excluded, unit, E.contactM, s.masks.obstacles)
         if hits == nil then return "UNKNOWN_OBSERVATION" end
         if s.pushedOnly and #hits > 0 then
-            -- LOAD / UNLOAD / BACKOFF: another vehicle's size box is no contact (the user, 2026-10-31:
+            -- LOAD / UNLOAD / BACKOFF / ALONGSIDE: another vehicle's size box is no contact (the user, 2026-10-31:
             -- the MT635 parked beside the GMC "is not in the way", its box met the Series 9's duals
             -- near the ground only); that vehicle pushed more than pushedM is.
             local kept = {}
@@ -1878,7 +1884,8 @@ end
 -- GIANTS driveToPoint and the same safety model as LOCAL_MANEUVER, until the joints
 -- are clearM apart. The implement is never made passable; GIANTS' collision
 -- handling is not touched.
-Hitch.PULL_LIMITS = { maxDistanceM = 8, maxSpeedKmh = 3, timeoutMs = 30000, maxClearM = 6 }
+-- Straight moves 5 mph when their path is clear (the user, 2026-10-31: 3 km/h "sometimes too slow").
+Hitch.PULL_LIMITS = { maxDistanceM = 8, maxSpeedKmh = 8, timeoutMs = 30000, maxClearM = 6 }
 Hitch.PULL = {
     -- Joint separation that ends it (CLEAR): the companion's verified 4 m plus 0.5 m, as
     -- the two measures of a three-point joint differ (live 8d1f4ada61c14239-3: 4.01 m
@@ -2107,7 +2114,7 @@ end
 -- to above its top. Only the rig's own collision nodes and the terrain are excluded;
 -- an unreadable or unproven query is never clear. Nothing is made passable.
 -- 60 s: 20 m at the governor's 1.95 km/h is 37 s plus the 1.5 s soft start.
-Hitch.UNPARK_LIMITS = { maxDistanceM = 20, maxSpeedKmh = 3, timeoutMs = 60000 }
+Hitch.UNPARK_LIMITS = { maxDistanceM = 20, maxSpeedKmh = 8, timeoutMs = 60000 }
 Hitch.UNPARK = {
     lateralMarginM = 0.5,     -- either side of the rig over the whole swept volume
     floorClearanceM = 0.3,    -- boxes start this far above the terrain under them
@@ -2191,16 +2198,22 @@ function Hitch.routeFootprint(env, tractor)
             local belts = units[index].spec_tensionBelts
             for _, data in pairs(belts ~= nil and belts.objectsToJoint or {}) do
                 if data.object ~= nil and not excluded[data.object] then
-                    assert(#units < Hitch.MAX_RIG_UNITS)
-                    excluded[data.object] = true
-                    units[#units + 1] = data.object
+                    -- Belt cargo may itself carry implements; they move with the rig too.
+                    local carried = rigUnits(data.object)
+                    for _, unit in ipairs(carried) do
+                        if not excluded[unit] then
+                            assert(#units < Hitch.MAX_RIG_UNITS)
+                            excluded[unit] = true
+                            units[#units + 1] = unit
+                        end
+                    end
                 end
             end
         end
         local x, _, z = world(env, tractor.rootNode)
         local fx, _, fz = env.localDirectionToWorld(tractor.rootNode, 0, 0, 1)
         assert(finite(fx) and finite(fz))
-        local towLength, towed = 0, nil
+        local towLength, towed, towMeasured = 0, nil, false
         for index = 2, initial do
             local unit = units[index]
             local ux, _, uz = world(env, unit.rootNode)
@@ -2214,8 +2227,40 @@ function Hitch.routeFootprint(env, tractor)
                 end
             end
         end
+        if towed ~= nil and type(towed.getActiveInputAttacherJoint) == "function" then
+            local joint = readOr(function() return towed:getActiveInputAttacherJoint() end)
+            local wheels = readOr(function() return towed.spec_wheels.wheels end) or {}
+            if joint ~= nil and joint.node ~= nil and #wheels >= 2 then
+                local okJoint, jx, _, jz = pcall(world, env, joint.node)
+                local ax, az, count = 0, 0, 0
+                for _, wheel in ipairs(wheels) do
+                    if wheel.repr ~= nil then
+                        local okWheel, wx, _, wz = pcall(world, env, wheel.repr)
+                        if okWheel and finite(wx) and finite(wz) then
+                            ax, az, count = ax + wx, az + wz, count + 1
+                        end
+                    end
+                end
+                if okJoint and finite(jx) and finite(jz) and count >= 2 then
+                    ax, az = ax / count, az / count
+                    local measured = math.sqrt((jx - ax) ^ 2 + (jz - az) ^ 2)
+                    if measured > 0.5 then towLength, towMeasured = measured, true end
+                end
+            end
+        end
+        local hitchLimit = math.rad(35)
+        if towed ~= nil and type(towed.getActiveInputAttacherJoint) == "function" then
+            local joint = readOr(function() return towed:getActiveInputAttacherJoint() end)
+            if joint ~= nil and env.AttacherJoints ~= nil
+                    and (joint.jointType == env.AttacherJoints.JOINTTYPE_SEMITRAILERCAR
+                         or joint.jointType == env.AttacherJoints.JOINTTYPE_SEMITRAILER) then
+                hitchLimit = math.rad(90)
+            end
+        end
         local frame = { last = { wx = x, wz = z }, dirX = fx, dirZ = fz }
         local aMin, aMax, lMin, lMax, height = math.huge, -math.huge, math.huge, -math.huge, 0
+        local unitRects = {}
+        local startYaw = atan2(fx, fz)
         for _, unit in ipairs(units) do
             local box = unitBox(env, frame, unit)
             -- A unit behind at an angle to the tractor (a trailer left jackknifed, its
@@ -2235,19 +2280,231 @@ function Hitch.routeFootprint(env, tractor)
             aMin, aMax = math.min(aMin, box.aMin), math.max(aMax, box.aMax)
             lMin, lMax = math.min(lMin, box.lMin), math.max(lMax, box.lMax)
             height = math.max(height, box.height)
+            local ux, _, uz = world(env, unit.rootNode)
+            local ufx, _, ufz = env.localDirectionToWorld(unit.rootNode, 0, 0, 1)
+            local dx, dz = ux - x, uz - z
+            unitRects[#unitRects + 1] = {
+                ahead = dx * math.sin(startYaw) + dz * math.cos(startYaw),
+                side = dx * math.cos(startYaw) - dz * math.sin(startYaw),
+                yaw = atan2(ufx, ufz) - startYaw,
+                size = unit.size,
+                height = box.height,
+            }
         end
         assert(height > 0 and aMax > aMin and lMax > lMin)
         return { tractor = tractor, units = units, excluded = excluded, masks = collisionMasks(env),
-                 towLength = towLength, towed = towed,
-                 aMin = aMin, aMax = aMax, lMin = lMin, lMax = lMax, height = height }
+                 towLength = towLength, towed = towed, towMeasured = towMeasured,
+                 hitchLimit = hitchLimit,
+                 aMin = aMin, aMax = aMax, lMin = lMin, lMax = lMax, height = height,
+                 unitRects = unitRects }
     end)
     return ok and footprint or nil
+end
+
+-- Read-only inventory for the geometry experiment. A rigid-body AABB is a
+-- measurement of loaded physics, not an oriented clearance footprint: an
+-- angled body can still leave empty space inside this world-axis box.
+function Hitch.physicalInventory(env, tractor)
+    local foot = Hitch.routeFootprint(env, tractor)
+    if foot == nil then return nil end
+    local out = {}
+    for _, unit in ipairs(foot.units) do
+        local entry = { unit = unit, rootNode = unit.rootNode, bodies = {}, shapes = {}, size = unit.size }
+        local seen = {}
+        local function visit(node, depth)
+            if node == nil or seen[node] or depth > 32 then return end
+            seen[node] = true
+            local collides = nil
+            if type(env.getHasCollision) == "function" then
+                local okCollision, value = pcall(env.getHasCollision, node)
+                if okCollision then collides = value end
+            end
+            if env.ClassIds ~= nil and type(env.getHasClassId) == "function"
+                    and type(env.getShapeBoundingSphere) == "function" then
+                local okShape, shape = pcall(env.getHasClassId, node, env.ClassIds.SHAPE)
+                if okShape and shape and collides == true then
+                    local okSphere, sx, sy, sz, radius, geometry = pcall(env.getShapeBoundingSphere, node)
+                    if okSphere and finite(sx) and finite(sy) and finite(sz)
+                            and finite(radius) and radius > 0 then
+                        local group = nil
+                        if type(env.getCollisionFilterGroup) == "function" then
+                            local okGroup, value = pcall(env.getCollisionFilterGroup, node)
+                            if okGroup then group = value end
+                        end
+                        local wx, wy, wz = env.localToWorld(node, sx, sy, sz)
+                        entry.shapes[#entry.shapes + 1] = {
+                            node = node, localX = sx, localY = sy, localZ = sz,
+                            worldX = wx, worldY = wy, worldZ = wz,
+                            radius = radius, usesGeometry = geometry, hasCollision = collides,
+                            group = group,
+                        }
+                    end
+                end
+            end
+            if collides ~= false and type(env.getRigidBodyAABB) == "function" then
+                local ok, minX, maxX, minY, maxY, minZ, maxZ = pcall(env.getRigidBodyAABB, node)
+                if ok and finite(minX) and finite(maxX) and finite(minY) and finite(maxY)
+                        and finite(minZ) and finite(maxZ) then
+                    entry.bodies[#entry.bodies + 1] = {
+                        node = node, minX = minX, maxX = maxX, minY = minY, maxY = maxY,
+                        minZ = minZ, maxZ = maxZ,
+                    }
+                end
+            end
+            if type(env.getNumOfChildren) == "function" and type(env.getChildAt) == "function" then
+                local ok, count = pcall(env.getNumOfChildren, node)
+                if ok and type(count) == "number" then
+                    for i = 0, math.min(count, 128) - 1 do
+                        local childOk, child = pcall(env.getChildAt, node, i)
+                        if childOk then visit(child, depth + 1) end
+                    end
+                end
+            end
+        end
+        for _, component in ipairs(unit.components or {}) do visit(component.node, 0) end
+        out[#out + 1] = entry
+    end
+    return out
+end
+
+-- Laboratory predictor: propagate an observed truck/root displacement through
+-- one measured hitch and wheel group. The caller supplies the truck endpoint;
+-- this does not predict steering, contact, or an independently articulated
+-- second trailer. A short chord is split so reverse uses its actual direction.
+function Hitch.predictFromRootPose(env, foot, endX, endZ, endYaw)
+    if foot == nil or foot.tractor == nil or foot.towed == nil or foot.towMeasured ~= true
+            or not (finite(endX) and finite(endZ) and finite(endYaw))
+            or not (finite(foot.towLength) and foot.towLength > 0.5) then return nil end
+    local truck, trailer = foot.tractor, foot.towed
+    local belted = {}
+    for _, unit in ipairs(foot.units) do
+        local belts = unit.spec_tensionBelts
+        for _, data in pairs(belts ~= nil and belts.objectsToJoint or {}) do
+            if data.object ~= nil then belted[data.object] = true end
+        end
+    end
+    for _, unit in ipairs(foot.units) do
+        if unit ~= truck and unit ~= trailer and not belted[unit]
+                and type(unit.getActiveInputAttacherJoint) == "function"
+                and #(readOr(function() return unit.spec_wheels.wheels end) or {}) >= 2 then
+            return nil -- another articulated wheel group needs another measured segment
+        end
+    end
+    if type(trailer.getActiveInputAttacherJoint) ~= "function" then return nil end
+    local joint = readOr(function() return trailer:getActiveInputAttacherJoint() end)
+    if joint == nil or joint.node == nil then return nil end
+    local tx, _, tz = world(env, truck.rootNode)
+    if (endX - tx)^2 + (endZ - tz)^2 > 25 then return nil end
+    local fx, _, fz = env.localDirectionToWorld(truck.rootNode, 0, 0, 1)
+    local startYaw = atan2(fx, fz)
+    local hx, _, hz = world(env, joint.node)
+    local rx, _, rz = world(env, trailer.rootNode)
+    local rfx, _, rfz = env.localDirectionToWorld(trailer.rootNode, 0, 0, 1)
+    local trailerYaw = atan2(rfx, rfz)
+    local function offset(ox, oz, yaw, x, z)
+        local dx, dz = x - ox, z - oz
+        return dx * math.cos(yaw) - dz * math.sin(yaw),
+               dx * math.sin(yaw) + dz * math.cos(yaw)
+    end
+    local function at(x, z, yaw, side, ahead)
+        return x + math.cos(yaw) * side + math.sin(yaw) * ahead,
+               z - math.sin(yaw) * side + math.cos(yaw) * ahead
+    end
+    local truckSide, truckAhead = offset(tx, tz, startYaw, hx, hz)
+    local hitchSide, hitchAhead = offset(rx, rz, trailerYaw, hx, hz)
+    local steps = math.max(1, math.ceil(math.sqrt((endX - tx)^2 + (endZ - tz)^2) / 0.25))
+    local lastHx, lastHz = hx, hz
+    for i = 1, steps do
+        local share = i / steps
+        local x, z = tx + (endX - tx) * share, tz + (endZ - tz) * share
+        local yaw = startYaw + (endYaw - startYaw) * share
+        local nextHx, nextHz = at(x, z, yaw, truckSide, truckAhead)
+        local lateral = (nextHx - lastHx) * math.cos(trailerYaw)
+                      - (nextHz - lastHz) * math.sin(trailerYaw)
+        trailerYaw = trailerYaw + lateral / foot.towLength
+        lastHx, lastHz = nextHx, nextHz
+    end
+    local trailerX, trailerZ = at(lastHx, lastHz, trailerYaw, -hitchSide, -hitchAhead)
+    local poses = { { unit = truck, x = endX, z = endZ, yaw = endYaw },
+                    { unit = trailer, x = trailerX, z = trailerZ, yaw = trailerYaw } }
+    for _, unit in ipairs(foot.units) do
+        if unit ~= truck and unit ~= trailer then
+            local ux, _, uz = world(env, unit.rootNode)
+            local ufx, _, ufz = env.localDirectionToWorld(unit.rootNode, 0, 0, 1)
+            local side, ahead = offset(rx, rz, atan2(rfx, rfz), ux, uz)
+            local px, pz = at(trailerX, trailerZ, trailerYaw, side, ahead)
+            poses[#poses + 1] = { unit = unit, x = px, z = pz,
+                                  yaw = trailerYaw + atan2(ufx, ufz) - atan2(rfx, rfz),
+                                  rigidFollower = true }
+        end
+    end
+    return poses
+end
+
+-- A commanded short arc starts at the powered vehicle's observed heading.
+-- Each sample propagates the articulation from that same observation; the
+-- measured trailer length is the average of the exposed wheel representations,
+-- not a verified active wheel-group centre.
+function Hitch.predictShortMotion(env, foot, length, curvature)
+    if foot == nil or foot.tractor == nil or not finite(length) or not finite(curvature)
+            or math.abs(length) > 3 or math.abs(curvature) > 0.3 then return nil end
+    local x, _, z = world(env, foot.tractor.rootNode)
+    local fx, _, fz = env.localDirectionToWorld(foot.tractor.rootNode, 0, 0, 1)
+    local yaw = atan2(fx, fz)
+    local samples = {}
+    for i = 1, math.max(1, math.ceil(math.abs(length) / 0.25)) do
+        local d = length * i / math.max(1, math.ceil(math.abs(length) / 0.25))
+        local eyaw = yaw + d * curvature
+        local ex, ez
+        if math.abs(curvature) < 0.00001 then
+            ex, ez = x + math.sin(yaw) * d, z + math.cos(yaw) * d
+        else
+            ex = x + (math.cos(yaw) - math.cos(eyaw)) / curvature
+            ez = z + (math.sin(eyaw) - math.sin(yaw)) / curvature
+        end
+        local poses = Hitch.predictFromRootPose(env, foot, ex, ez, eyaw)
+        if poses == nil then return nil end
+        samples[#samples + 1] = { distance = d, poses = poses }
+    end
+    return samples
+end
+
+-- Local experimental clearance of the predicted connected units. Unlike
+-- routePoseClear, no empty whole-rig rectangle can veto this motion.
+function Hitch.predictedUnitsClear(env, foot, samples)
+    if foot == nil or samples == nil then return nil, "PREDICTION_UNREADABLE" end
+    local ok, clear, reason, hits = pcall(function()
+        for _, sample in ipairs(samples) do
+            for index, pose in ipairs(sample.poses) do
+                local size = pose.unit.size
+                if size == nil or not (finite(size.width) and finite(size.length)) then
+                    return nil, "UNIT_SIZE_UNREADABLE"
+                end
+                local bx = pose.x + math.sin(pose.yaw) * (size.lengthOffset or 0)
+                           + math.cos(pose.yaw) * (size.widthOffset or 0)
+                local bz = pose.z + math.cos(pose.yaw) * (size.lengthOffset or 0)
+                           - math.sin(pose.yaw) * (size.widthOffset or 0)
+                local query = boxQuery(env, foot.excluded, bx, bz, pose.yaw,
+                    size.width / 2 + 0.5, size.length / 2 + 0.5,
+                    0.3, (size.height or foot.height) + 0.5,
+                    foot.masks.obstacles, terrainAt(env, bx, bz))
+                if query == nil then return nil, "COLLISION_UNREADABLE" end
+                if #query.hits > 0 then
+                    return false, string.format("unit%d@%.2fm OBSTACLE %s", index,
+                        sample.distance, hitNames(env, query.hits)), query.hits
+                end
+            end
+        end
+        return true
+    end)
+    if not ok then return nil, "QUERY_ERROR " .. tostring(clear) end
+    return clear, reason, hits
 end
 
 -- true only when GIANTS' overlapBox can read the entire proposed rig pose,
 -- including the supporting terrain. Buildings, vehicles, trees and objects all
 -- block; neither the rig nor its belted cargo blocks itself. Nothing is passable.
-function Hitch.routePoseClear(env, foot, x, z, yaw, curvature)
+function Hitch.routePoseClear(env, foot, x, z, yaw, curvature, reversing)
     if foot == nil or not (finite(x) and finite(z) and finite(yaw)) then return nil end
     local ok, clear, reason, hits = pcall(function()
         local side, ahead = (foot.lMin + foot.lMax) / 2, (foot.aMin + foot.aMax) / 2
@@ -2259,8 +2516,14 @@ function Hitch.routePoseClear(env, foot, x, z, yaw, curvature)
             local radius = 1 / math.abs(curvature)
             local inside = math.sqrt(math.max(0, radius * radius - foot.towLength * foot.towLength))
             local offtrack = math.min(foot.towLength, radius - inside)
-            halfW = halfW + offtrack / 2
-            side = side + (curvature > 0 and 1 or -1) * offtrack / 2
+            if reversing then
+                -- The trailer's observed articulation can shift its swept
+                -- volume to either side while backing around a bend.
+                halfW = halfW + offtrack
+            else
+                halfW = halfW + offtrack / 2
+                side = side + (curvature > 0 and 1 or -1) * offtrack / 2
+            end
         end
         local cx = x + math.sin(yaw) * ahead + math.cos(yaw) * side
         local cz = z + math.cos(yaw) * ahead - math.sin(yaw) * side
@@ -2304,9 +2567,37 @@ function Hitch.routePoseClear(env, foot, x, z, yaw, curvature)
         end
         -- The centre sample; on a deck the ray that read it is the support (no terrain there).
         local base, deck = samples[5], decks[5]
-        local body = boxQuery(env, foot.excluded, cx, cz, yaw, halfW, halfL, 0.3,
-                              foot.height + 0.5, foot.masks.obstacles, base)
-        local ground = boxQuery(env, foot.excluded, cx, cz, yaw, halfW * 0.8, halfL * 0.8,
+        -- Leaving what it started against (Drive.begin): that object left out near the start.
+        local excluded = foot.excluded
+        local leaving = foot.leaving
+        if leaving ~= nil and math.sqrt((x - leaving.x) ^ 2 + (z - leaving.z) ^ 2) < leaving.radius then
+            excluded = leaving.excluded
+        end
+        local body
+        if leaving ~= nil and foot.unitRects ~= nil
+                and math.sqrt((x - leaving.x) ^ 2 + (z - leaving.z) ^ 2) < leaving.radius then
+            -- The long rig's one bounding rectangle contains empty yard beside
+            -- the trailer. For a short departure, probe each observed unit at
+            -- its proposed pose; keep the whole-rig terrain/grade checks above.
+            body = { hits = {} }
+            for _, rect in ipairs(foot.unitRects) do
+                local rx = x + math.sin(yaw) * rect.ahead + math.cos(yaw) * rect.side
+                local rz = z + math.cos(yaw) * rect.ahead - math.sin(yaw) * rect.side
+                local uyaw, size = yaw + rect.yaw, rect.size
+                local bx = rx + math.sin(uyaw) * size.lengthOffset + math.cos(uyaw) * size.widthOffset
+                local bz = rz + math.cos(uyaw) * size.lengthOffset - math.sin(uyaw) * size.widthOffset
+                local margin = foot.departureNudge and 0.05 or 0.5
+                local one = boxQuery(env, excluded, bx, bz, uyaw, size.width / 2 + margin,
+                                     size.length / 2 + margin, 0.3, rect.height + 0.5,
+                                     foot.masks.obstacles, terrainAt(env, bx, bz))
+                if one == nil then return nil, "COLLISION_UNREADABLE" end
+                for _, hit in ipairs(one.hits) do body.hits[#body.hits + 1] = hit end
+            end
+        else
+            body = boxQuery(env, excluded, cx, cz, yaw, halfW, halfL, 0.3,
+                            foot.height + 0.5, foot.masks.obstacles, base)
+        end
+        local ground = boxQuery(env, excluded, cx, cz, yaw, halfW * 0.8, halfL * 0.8,
                                 -0.5, 0.5, foot.masks.terrain, base)
         if body == nil or ground == nil or (ground.terrain == 0 and not deck) then
             return nil, "COLLISION_UNREADABLE"
@@ -2316,6 +2607,27 @@ function Hitch.routePoseClear(env, foot, x, z, yaw, curvature)
     end)
     if not ok then return nil, "QUERY_ERROR " .. tostring(clear) end
     return clear, reason, hits
+end
+
+-- Installed FS25 FSDensityMapUtil reads FieldDensityMap.GROUND_TYPE at a world
+-- point. Painted yard and road ground has no field ground type; cultivated and
+-- sown land does. Fruit is a stronger reason to keep transport on the lane.
+-- This is a route preference, never a collision or a refusal of field work.
+function Hitch.routeSurface(env, x, z)
+    local util = env.FSDensityMapUtil
+    if util == nil or type(util.getFieldDataAtWorldPosition) ~= "function" then return nil end
+    local ok, field = pcall(util.getFieldDataAtWorldPosition, x, 0, z)
+    if not ok or field ~= true then return nil end
+    if type(util.getFruitTypeIndexAtWorldPos) == "function" then
+        local fruitOk, index = pcall(util.getFruitTypeIndexAtWorldPos, x, z)
+        if fruitOk and index ~= nil then
+            local manager = env.g_fruitTypeManager
+            local desc = manager ~= nil and manager:getFruitTypeByIndex(index) or nil
+            local name = desc ~= nil and type(desc.name) == "string" and string.upper(desc.name) or ""
+            if name ~= "GRASS" and name ~= "MEADOW" then return "CROP" end
+        end
+    end
+    return "FIELD"
 end
 
 -- Diagnostics: the surface (surfaceAt) along a line from x, z at yaw, every metre for
@@ -2720,7 +3032,7 @@ end
 -- followed by GIANTS' driveToPoint, and every exit restoring the vehicle-control state.
 -- Nothing is teleported, no collision is disabled, and the truck and trailer must not move.
 -- 90 s: up to 12 m of run-in, 3 m of ramps and a 15 m deck at the governor's 1.95 km/h is 55 s.
-Hitch.LOAD_LIMITS = { maxSpeedKmh = 3, timeoutMs = 90000, rampM = 3 }
+Hitch.LOAD_LIMITS = { maxSpeedKmh = 4.8, timeoutMs = 90000, rampM = 3 }
 Hitch.LOAD = {
     rampM = 3,                -- the ramps on the ground: the tractor's leading end at most this behind the trailer
     lateralStartM = 0.5,      -- the steering node this close to the trailer's axis at the start
@@ -3147,7 +3459,7 @@ end
 Hitch.BACKOFF = {
     -- nearM 10 (8 until live 95b84283873043d7-1): LOAD's turned run-in needs 6 m behind the
     -- ramps' foot, 9 m behind the rear; a tractor nearer backs off into it.
-    maxSpeedKmh = 3, timeoutMs = 30000, travelM = 8, nearM = 10,
+    maxSpeedKmh = 8, timeoutMs = 30000, travelM = 8, nearM = 10,
     divergeM = 0.3, lookaheadM = 3,
     lateralMarginM = 0.3, floorClearanceM = 0.3, topMarginM = 0.3, stepM = 0.5, aheadEndM = 0.5,
     minLookaheadM = 2, reactionS = 1, decelMs2 = 1, movedM = 0.25,
@@ -3352,7 +3664,7 @@ end
 -- vehicle (the combine and its header aside) or person near the path; it stops on any of
 -- LOAD's guards, and if the combine moves. Nothing is teleported, no collision is disabled.
 Hitch.ALONGSIDE = {
-    maxSpeedKmh = 3, timeoutMs = 90000, maxTravelM = 25,
+    maxSpeedKmh = 8, timeoutMs = 90000, maxTravelM = 25,
     startLateralM = 2.5,      -- the steering node at most this far off the pipe's line at the start
     headingStartDeg = 15,     -- the tractor at most this far off the line's heading (live 75ef60d7f5ad4735-1:
                               -- GIANTS reached the aim 0.3 m off but turned about 7 deg, the pipe 1.9 m aside)
@@ -3404,7 +3716,8 @@ end
 -- A session, or nil, a reason and the half-built session (for the log).
 function Hitch.newAlongside(env, args)
     local D = Hitch.ALONGSIDE
-    local s = { tractor = args.tractor, wagon = args.combine, combine = args.combine, farmId = args.farmId, pass = args.pass == true,
+    local s = { tractor = args.tractor, wagon = args.combine, combine = args.combine, farmId = args.farmId, pushedOnly = true,
+                pass = args.pass == true,
                 isReserved = args.isReserved, maxSpeedKmh = D.maxSpeedKmh, timeoutMs = D.timeoutMs, sign = 1,
                 elapsed = 0, sinceProgress = 0, best = -math.huge, result = nil, others = {} }
     if type(args.isReserved) ~= "function" then return nil, "INVALID_LIMITS" end
