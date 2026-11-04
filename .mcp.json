@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "farmhand-live-lab": {
+      "type": "http",
+      "url": "https://catalogs-donor-sand-shine.trycloudflare.com/mcp",
+      "timeout": 60000
+    }
+  }
+}
