@@ -286,6 +286,9 @@ class FS25World:
         # player's opt-in, default off; companion/service.py sets it): only then does a motion
         # command carry ghost=1 (protocol.ipc GHOST_OPS). Off, every motion keeps all collisions.
         self.scenery_ghosting = False
+        # The most one purchase may cost (Settings.spending_limit, the player's; None: no limit
+        # beyond the farm's money), checked before every store and land purchase (executor).
+        self.spending_limit = None
         # Farmhand's pay (mode, amount) reader (Settings.pay; companion/service.py), sent once per
         # game session; None: the game's default in the mod.
         self.pay = None

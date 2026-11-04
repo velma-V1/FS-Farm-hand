@@ -45,6 +45,34 @@ class ChoiceTests(unittest.TestCase):
         self.assertEqual(choose_store_item(CATALOG, {"kind": "plow", "size": "large"}, 5000, 340),
                          (None, "NOT_ENOUGH_MONEY"))
 
+    def test_the_spending_limit_narrows_the_choice_and_says_when_nothing_fits(self):
+        # AGENTS.md settings contract / ACCEPTANCE C11: the player's limit on one purchase.
+        self.assertEqual(choose_store_item(CATALOG, {"kind": "plow", "size": "large"}, 1e6, 600, 50000)[0].id, 2)
+        self.assertEqual(choose_store_item(CATALOG, {"kind": "plow", "size": "large"}, 1e6, 600, None)[0].id, 3)
+        self.assertEqual(choose_store_item(CATALOG, {"kind": "plow"}, 1e6, 340, 9000)[0].id, 1)    # exactly at it
+        self.assertEqual(choose_store_item(CATALOG, {"kind": "tractor", "name": "series 9"}, 1e6, None, 100000),
+                         (None, "OVER_SPENDING_LIMIT"))
+        # Money first: what the farm cannot pay is said so, whatever the limit.
+        self.assertEqual(choose_store_item(CATALOG, {"kind": "plow"}, 5000, 340, 1000), (None, "NOT_ENOUGH_MONEY"))
+
+    def test_a_named_item_is_matched_by_whole_words_never_by_pieces_of_them(self):
+        # "9" was found inside "1988-93": "buy a series 9" chose the 20,000 K-Series pickup.
+        self.assertEqual(choose_store_item(CATALOG, {"kind": "tractor", "name": "series 9"}, 1e6, None)[0].id, 6)
+        self.assertEqual(choose_store_item(CATALOG, {"kind": "tractor", "name": "k-series"}, 1e6, None)[0].id, 10)
+        self.assertEqual(choose_store_item(CATALOG, {"kind": "truck", "name": "gmc 3500"}, 1e6, None)[0].id, 4)
+        self.assertEqual(choose_store_item(CATALOG, {"kind": "tractor", "name": "series 93"}, 1e6, None)[0].id, 10)
+        self.assertEqual(choose_store_item(CATALOG, {"kind": "tractor", "name": "series 7"}, 1e6, None),
+                         (None, "NOT_IN_STORE"))
+
+    def test_a_named_item_the_farm_cannot_pay_is_refused_not_swapped_for_a_weaker_match(self):
+        # The GMC Sierra is the truck the words name; at 60,000 it was swapped for the brand-only
+        # K-Series the farm could pay. AGENTS.md: exact named equipment means that equipment.
+        self.assertEqual(choose_store_item(CATALOG, {"kind": "truck", "name": "gmc"}, 60000, None),
+                         (None, "NOT_ENOUGH_MONEY"))
+        self.assertEqual(choose_store_item(CATALOG, {"kind": "truck", "name": "gmc"}, 1e6, None, 60000),
+                         (None, "OVER_SPENDING_LIMIT"))
+        self.assertEqual(choose_store_item(CATALOG, {"kind": "truck", "name": "gmc"}, 1e6, None)[0].id, 4)
+
     def test_named_vehicles_by_their_name(self):
         self.assertEqual(choose_store_item(CATALOG, {"kind": "truck", "name": "gmc"}, 1e6, None)[0].id, 4)
         self.assertEqual(choose_store_item(CATALOG, {"kind": "trailer", "name": "gooseneck"}, 1e6, None)[0].id, 5)
@@ -113,6 +141,29 @@ class PurchaseTests(unittest.TestCase):
         result = Executor(world).execute(buy({"kind": "plow"}))
         self.assertEqual((result.status, result.reason), ("BLOCKED", "NOT_ENOUGH_MONEY"))
         self.assertEqual(len(world.items), 3)
+
+    def test_nothing_over_the_players_spending_limit_is_bought(self):
+        world = self.world()
+        world.spending_limit = 50000.0
+        bought = []
+        world.buy = lambda *args: bought.append(args)
+        result = Executor(world).execute(buy({"kind": "truck", "name": "gmc"}))        # the 90,000 GMC
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "OVER_SPENDING_LIMIT"), result)
+        self.assertEqual(bought, [])
+        self.assertEqual(world.farm().money, 1e6)
+        self.assertEqual(result.states, ("FIND",))
+
+    def test_within_the_limit_the_purchase_goes_ahead(self):
+        world = self.world()
+        world.spending_limit = 50000.0
+        result = Executor(world).execute(buy({"kind": "plow", "size": "large"}))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "BOUGHT"), result)
+        self.assertEqual(world.items[result.equipment_ids[0]].name, "Big Plow")     # the widest within it
+        for odd in (0, -1, "50", True, float("nan"), None):                           # no usable limit: none
+            world = self.world()
+            world.spending_limit = odd
+            result = Executor(world).execute(buy({"kind": "plow", "size": "large"}))
+            self.assertEqual(world.items[result.equipment_ids[0]].name, "Big Plow", odd)
 
 
 class EngineOptionTests(unittest.TestCase):
@@ -324,6 +375,19 @@ class LandTests(unittest.TestCase):
                 result = Executor(world).execute(self.land(action, field))
                 self.assertEqual((result.status, result.reason), ("BLOCKED", reason), result)
                 self.assertEqual(world.farm().money, money)
+
+    def test_land_over_the_spending_limit_is_not_bought_and_selling_is_never_limited(self):
+        from companion.executor import Executor
+        world = self.world()
+        world.spending_limit = 40000.0                                           # the parcel costs 48,000
+        result = Executor(world).execute(self.land("buy"))
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "OVER_SPENDING_LIMIT"), result)
+        self.assertEqual(world.farm().money, 100000.0)
+        self.assertEqual(next(p for p in world.land() if p.field == 12).owner, "none")
+        world.spending_limit = 48000.0                                           # at the limit: bought
+        self.assertEqual(Executor(world).execute(self.land("buy")).reason, "LAND_BOUGHT")
+        world.spending_limit = 1.0
+        self.assertEqual(Executor(world).execute(self.land("sell")).reason, "LAND_SOLD")
 
     def test_an_owner_change_without_the_money_is_not_complete(self):
         from companion.executor import Executor

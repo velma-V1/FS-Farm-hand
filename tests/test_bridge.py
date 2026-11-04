@@ -1001,22 +1001,28 @@ class ServiceTests(unittest.TestCase):
         from companion import ai
         folder = Path(tmp.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(folder, ignore_errors=True))
+
+        def line(lines, start):
+            return next(n for n, text in enumerate(lines, start=1) if text.startswith(start))
+
         with unittest.mock.patch.dict(os.environ, {"LOCALAPPDATA": str(folder)}):
             game, notices = self.start(autodrive=False)
             game.say(1, "settings")                                     # typed in the command window
             self.wait_for(lambda: "MENU" in notices)
             menu_id, lines = self.menu(game)
             self.assertEqual(lines[0], "Pay: per hour at GIANTS' rate")
-            self.assertEqual(lines[1], "Teleport a stuck rig: on")
-            game.pick(2, menu_id, 2)                                    # teleport recovery: off
+            self.assertIn("Teleport a stuck rig: on", lines)
+            self.assertIn("Pass through scenery in tight spots: off", lines)
+            self.assertIn("Spending limit: none", lines)
+            self.assertFalse(game.link_world.scenery_ghosting)             # off until the player says
+            self.assertIsNone(game.link_world.spending_limit)
+            game.pick(2, menu_id, line(lines, "Teleport"))              # teleport recovery: off
             self.wait_for(lambda: notices.count("MENU") == 2)
             self.assertFalse(ai.Settings().teleport_recovery())
             self.wait_for(lambda: game.link_world.teleport_recovery is False)  # the running world too
             menu_id, lines = self.menu(game)
-            self.assertEqual(lines[1], "Teleport a stuck rig: off")
-            self.assertEqual(lines[2], "Pass through scenery in tight spots: off")
-            self.assertFalse(game.link_world.scenery_ghosting)             # off until the player says
-            game.pick(3, menu_id, 1)                                    # Pay
+            self.assertIn("Teleport a stuck rig: off", lines)
+            game.pick(3, menu_id, line(lines, "Pay"))
             self.wait_for(lambda: notices.count("MENU") == 3)
             menu_id, lines = self.menu(game)
             game.pick(4, menu_id, lines.index("per day") + 1)
@@ -1027,11 +1033,20 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(ai.Settings().pay(), (3, 1000.0))
             menu_id, lines = self.menu(game)
             self.assertEqual(lines[0], "Pay: 1,000 per day")
-            game.pick(6, menu_id, 3)                                    # pass through scenery: on
+            game.pick(6, menu_id, line(lines, "Pass through scenery"))   # pass through scenery: on
             self.wait_for(lambda: notices.count("MENU") == 6)
             self.assertTrue(ai.Settings().scenery_ghosting())
             self.wait_for(lambda: game.link_world.scenery_ghosting is True)  # applied to the running world
-            self.assertEqual(self.menu(game)[1][2], "Pass through scenery in tight spots: on")
+            menu_id, lines = self.menu(game)
+            self.assertIn("Pass through scenery in tight spots: on", lines)
+            game.pick(7, menu_id, line(lines, "Spending limit"))
+            self.wait_for(lambda: notices.count("MENU") == 7)
+            menu_id, lines = self.menu(game)
+            game.pick(8, menu_id, lines.index("25,000") + 1)
+            self.wait_for(lambda: notices.count("MENU") == 8)
+            self.assertEqual(ai.Settings().spending_limit(), 25000.0)
+            self.wait_for(lambda: game.link_world.spending_limit == 25000.0)  # every purchase from now on
+            self.assertIn("Spending limit: 25,000 a purchase", self.menu(game)[1])
 
     def test_the_ai_menu_is_offered_once_then_on_request_and_a_pick_is_validated(self):
         import tempfile as tmp

@@ -156,6 +156,8 @@ Acceptance:
 - preference affects equipment selection without hardcoded save/map IDs;
 - buying remains only when explicitly instructed unless product policy is changed.
 
+2026-11-04: nothing saved or read preferences, so the settings screen's "Preferred equipment: N saved" entry was removed (only implemented settings are listed). Re-add it with the feature. The per-purchase spending limit (settings `spending_limit`) is implemented and applies to every store and land purchase.
+
 ## Shortest sensible routes
 Status: OPEN
 Priority: RELEASE-BLOCKER

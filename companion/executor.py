@@ -548,10 +548,43 @@ BUY_MONEY_TOLERANCE = 0.99        # the money must fall by at least this share o
 CATALOG_WAIT_S = 90.0             # the game builds the catalog after a load (25 items per snapshot)
 
 
+def _tokens(text: str | None) -> list[str]:
+    """The whole words of a store name or brand, casefolded ("2024 GMC Sierra Denali 2500 - 3500HD":
+    2024, gmc, sierra, denali, 2500, 3500hd)."""
+    return [t for t in re.split(r"[^0-9A-Za-z]+", (text or "").casefold()) if t]
+
+
+def _word_in(word: str, tokens: list[str]) -> bool:
+    """One of the player's words is a whole word of the item, several of its words run together
+    ("deutzfahr" is DEUTZ-FAHR, "k-series" is K-Series), or the start of one that does not cut a
+    number short: "deutz" of the brand DEUTZFAHR (as the store has it, live), "3500" of 3500HD.
+    Never a piece inside one: "9" is not in "1988" or "93", so "series 9" is the Series 9, not a
+    1988-93 K-Series."""
+    key = "".join(c for c in word.casefold() if c.isalnum())
+    if not key:
+        return True
+    for i in range(len(tokens)):
+        run = ""
+        for token in tokens[i:]:
+            run += token
+            if run == key:
+                return True
+            if len(run) >= len(key):
+                break
+    for token in tokens:
+        if len(token) > len(key) and token.startswith(key):
+            rest = token[len(key)]
+            if key.isdigit() and rest.isalpha():                  # a whole number: 3500 of 3500HD
+                return True
+            if key[0].isalpha() and len(key) >= 3 and not (key[-1].isdigit() and rest.isdigit()):
+                return True                                       # a word's start: deutz of DEUTZFAHR
+    return False
+
+
 def _matches(item: StoreItem, want: dict) -> bool:
-    words = [w for w in (want.get("name") or "").upper().split() if w]
-    text = f"{item.name or ''} {item.brand or ''}".upper()
-    if words and not all(w in text for w in words):
+    words = [w for w in (want.get("name") or "").split() if w]
+    tokens = _tokens(f"{item.name or ''} {item.brand or ''}")
+    if words and not all(_word_in(w, tokens) for w in words):
         return False
     if want["kind"] in STORE_KINDS_EXACT:
         # A grain trailer by what the store says it is and takes (live c83d16674c7645cc-1: the
@@ -624,12 +657,29 @@ def choose_options(item: StoreItem, want: dict) -> tuple[int, ...] | None:
     return tuple(chosen)
 
 
-def choose_store_item(catalog, want: dict, money: float | None, tractor_power: float | None):
+def spending_limit(world) -> float | None:
+    """The player's limit on any one purchase (Settings.spending_limit; companion/service.py sets
+    world.spending_limit), or None when there is none. Anything but a positive number is none."""
+    limit = getattr(world, "spending_limit", None)
+    return float(limit) if type(limit) in (int, float) and limit > 0 and math.isfinite(limit) else None
+
+
+def choose_store_item(catalog, want: dict, money: float | None, tractor_power: float | None,
+                      limit: float | None = None):
     """(item, None) or (None, why). Large: the widest the farm's strongest tractor can
-    power (needed power known and within it); else the cheapest that matches."""
+    power (needed power known and within it); else the cheapest that matches. Only what the
+    farm can pay and, with the player's spending limit (Settings.spending_limit), what costs
+    no more than it: the choice is made among those (OVER_SPENDING_LIMIT when the farm could
+    pay for one but none is within the limit)."""
     candidates = [i for i in catalog if _matches(i, want)]
     if not candidates:
         return None, "NOT_IN_STORE"
+    if want.get("name"):
+        # What the words name best, before money and the limit: an item named by the player
+        # that the farm cannot pay is refused, never swapped for a weaker match it can
+        # (AGENTS.md: exact named equipment means that equipment).
+        best = max(_name_fit(i, want) for i in candidates)
+        candidates = [i for i in candidates if _name_fit(i, want) == best]
     if want["kind"] == "plow":
         candidates = [i for i in candidates if i.needed_power is not None and tractor_power is not None
                       and i.needed_power <= tractor_power]
@@ -640,6 +690,11 @@ def choose_store_item(catalog, want: dict, money: float | None, tractor_power: f
         if not affordable:
             return None, "NOT_ENOUGH_MONEY"
         candidates = affordable
+    if limit is not None:
+        within = [i for i in candidates if i.price <= limit]
+        if not within:
+            return None, "OVER_SPENDING_LIMIT"
+        candidates = within
     if want.get("size") == "large":
         return max(candidates, key=lambda i: ((i.width or 0), -i.price, -i.id)), None
     if want["kind"] in STORE_KINDS_EXACT:
@@ -656,11 +711,11 @@ def _name_fit(item: StoreItem, want: dict) -> int:
     """For a named want: 2 when the item's own name has the words and the kind word
     ("Gooseneck Trailer" over "Gooseneck Forestry", live), 1 when its name has the
     words (over a brand-only match), else 0."""
-    words = (want.get("name") or "").upper().split()
-    name = (item.name or "").upper()
-    if not words or not all(w in name for w in words):
+    words = (want.get("name") or "").split()
+    tokens = _tokens(item.name)
+    if not words or not all(_word_in(w, tokens) for w in words):
         return 0
-    return 2 if want["kind"].upper() in name else 1
+    return 2 if _word_in(want["kind"], tokens) else 1
 
 
 def named_trailer(item: Equipment, name: str | None) -> bool:
@@ -1100,10 +1155,11 @@ class Executor:
                          if e.category == "tractor" and e.name and e.name == c.name and c.power
                          and any("implement" in (j.joint_type or "").lower() for j in e.output_joints)),
                         default=None)
-            item, failure = choose_store_item(catalog, want, money, power)
+            limit = spending_limit(self.world)
+            item, failure = choose_store_item(catalog, want, money, power, limit)
             if item is None:
-                log.info("buy %s: %s (tractor power %s, money %s, %d named items)", want, failure, power, money,
-                         len(names))
+                log.info("buy %s: %s (tractor power %s, money %s, spending limit %s, %d named items)", want, failure,
+                         power, money, limit, len(names))
                 return Result("BLOCKED", failure, states=tuple(states))
             log.info("buy %s: %s %r (%s) for %.0f, width %s, needs %s of %s", want, item.id, item.name, item.brand,
                      item.price, item.width, item.needed_power, power)
@@ -1374,6 +1430,10 @@ class Executor:
                     return Result("BLOCKED", "LAND_PRICE_UNKNOWN", states=tuple(states))
                 if money < parcel.price:
                     return Result("BLOCKED", "NOT_ENOUGH_MONEY", states=tuple(states))
+                limit = spending_limit(self.world)
+                if limit is not None and parcel.price > limit:
+                    log.info("land: field %d costs %s, over the spending limit %s", field, parcel.price, limit)
+                    return Result("BLOCKED", "OVER_SPENDING_LIMIT", states=tuple(states))
             elif parcel.owner != "mine":
                 return Result("BLOCKED", "LAND_NOT_OWNED", states=tuple(states))
             log.info("land: field %d farmland %d %s for %s (balance %s)", field, parcel.farmland,

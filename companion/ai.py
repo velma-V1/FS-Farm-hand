@@ -124,6 +124,27 @@ class Settings:
         data["pay"] = {"mode": mode, "amount": float(amount)}
         self.save(data)
 
+    MAX_SPENDING_LIMIT = 100_000_000
+
+    def spending_limit(self) -> float | None:
+        """The most Farmhand may spend on any one purchase it makes (store items and land, told
+        or for a job), or None: no limit beyond the farm's money (the default). Only a positive
+        number up to MAX_SPENDING_LIMIT is a limit; the settings screen writes only its presets."""
+        value = self.load().get("spending_limit")
+        if type(value) in (int, float) and 0 < value <= self.MAX_SPENDING_LIMIT:
+            return float(value)
+        return None
+
+    def set_spending_limit(self, amount: float | None) -> None:
+        if amount is not None and not (type(amount) in (int, float) and 0 < amount <= self.MAX_SPENDING_LIMIT):
+            raise ValueError("INVALID_SPENDING_LIMIT")
+        data = self.load()
+        if amount is None:
+            data.pop("spending_limit", None)
+        else:
+            data["spending_limit"] = float(amount)
+        self.save(data)
+
     HARVEST_DESTINATIONS = ("sell", "store", "keep")
 
     def harvest_destination(self) -> str | None:
@@ -478,6 +499,8 @@ PAY_LABELS = (("hour", "per hour"), ("job", "per job"), ("day", "per day"), ("no
 PAY_AMOUNTS = {"hour": (0, 500, 1000, 2000, 3000, 5000), "job": (100, 250, 500, 1000, 2500),
                "day": (500, 1000, 2500, 5000, 10000)}
 DESTINATIONS = (("sell", "sell it"), ("store", "store it on the farm"), ("keep", "keep it in the trailer"))
+# The most one purchase may cost (Settings.spending_limit); None is no limit.
+SPENDING_LIMITS = (None, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000)
 
 
 def _money(amount: float) -> str:
@@ -501,18 +524,24 @@ class SettingsMenu:
             return "per hour at GIANTS' rate"
         return f"{_money(amount)} {dict(PAY_LABELS)[name]}"
 
+    @staticmethod
+    def limit_text(limit: float | None) -> str:
+        return "none" if limit is None else f"{_money(limit)} a purchase"
+
     def main_entries(self) -> list[tuple[str, str]]:
-        """The main list as (entry, label), in its shown order; a pick is dispatched by entry."""
+        """The main list as (entry, label), in its shown order, grouped: money, the harvest,
+        recovery, the AI. A pick is dispatched by entry, never by position. Only settings
+        Farmhand implements are listed."""
         s = self.settings
         data = s.load()
         buy = "buys only when told" if not data.get("buy_when_needed", False) else "buys what a job needs"
         return [
             ("pay", f"Pay: {self.pay_text()}"),
+            ("buying", f"Buying: {buy}"),
+            ("limit", f"Spending limit: {self.limit_text(s.spending_limit())}"),
+            ("harvest", f"Harvest: {dict(DESTINATIONS).get(s.harvest_destination() or 'keep')}"),
             ("teleport", f"Teleport a stuck rig: {'on' if s.teleport_recovery() else 'off'}"),
             ("ghosting", f"Pass through scenery in tight spots: {'on' if s.scenery_ghosting() else 'off'}"),
-            ("buying", f"Buying: {buy}"),
-            ("harvest", f"Harvest: {dict(DESTINATIONS).get(s.harvest_destination() or 'keep')}"),
-            ("preferences", f"Preferred equipment: {len(data.get('preferences', []))} saved"),
             ("ai", "AI model"),
             ("close", "Close"),
         ]
@@ -520,6 +549,9 @@ class SettingsMenu:
     def open(self, key: str) -> tuple[str, list[str]]:
         if key == "main":
             return "Farmhand settings", [label for _, label in self.main_entries()]
+        if key == "limit":
+            return "Most Farmhand may spend on one purchase", [
+                "No limit" if amount is None else _money(amount) for amount in SPENDING_LIMITS] + ["Back"]
         if key == "pay":
             return "Farmhand's pay", [label for _, label in PAY_LABELS] + ["Back"]
         if key == "pay_amount":
@@ -528,10 +560,6 @@ class SettingsMenu:
             return f"Pay {dict(PAY_LABELS)[self._pay_mode]}", labels + ["Back"]
         if key == "harvest":
             return "What happens to the harvest", [label for _, label in DESTINATIONS] + ["Back"]
-        if key == "preferences":
-            items = self.settings.load().get("preferences", [])
-            labels = [str(p.get("text", "?"))[:60] for p in items][:MAX_MENU - 2]
-            return "Preferred equipment", labels + ["Clear all", "Back"]
         raise KeyError(key)
 
     # ------------------------------------------------------------ picks
@@ -561,13 +589,10 @@ class SettingsMenu:
             self.settings.set_harvest_destination(DESTINATIONS[index - 1][0])
             self.on_change()
             return "main"
-        if key == "preferences":
-            if label == "Clear all":
-                data = self.settings.load()
-                data["preferences"] = []
-                self.settings.save(data)
-                self.on_change()
-            return "preferences" if label != "Clear all" else "main"
+        if key == "limit":
+            self.settings.set_spending_limit(SPENDING_LIMITS[index - 1])
+            self.on_change()
+            return "main"
         return None
 
     def _main(self, index: int) -> str | None:
@@ -590,4 +615,4 @@ class SettingsMenu:
             return None
         if entry == "close":
             return None
-        return entry                                      # pay, harvest, preferences: their own lists
+        return entry                                      # pay, limit, harvest: their own lists

@@ -3636,6 +3636,7 @@ Bridge.REASONS = {
     NOT_IN_STORE = "the store does not sell that",
     NO_PLOW_FOR_OUR_TRACTORS = "no plow in the store that our tractors can pull",
     NOT_ENOUGH_MONEY = "the farm cannot afford it",
+    OVER_SPENDING_LIMIT = "it costs more than your spending limit (Farmhand settings)",
     NO_SLOTS = "the farm has no free vehicle slots",
     UNKNOWN_STORE_ITEM = "that store item is gone",
     BUY_ERROR = "the store refused the purchase",
