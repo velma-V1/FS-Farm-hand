@@ -13,6 +13,23 @@ not enabled in this save.
 Status: PASS (the required outcome, observed), REFUSED-OK (a correct safe
 refusal), FAIL (a defect; see the row), OPEN (not yet run).
 
+## Production branch checks (2026-11-04, branch `claude/fs25-farmhand-agent-jy2ds2`)
+
+Made in a cloud session without the game: every row is OPEN until run. Install the
+branch build the usual way and load the save. Rows 1-5 need no driving and no
+money; run them first. "Log" means the game's `log.txt` `[Farmhand]` lines.
+
+| # | Check | Player action | PASS when | Result |
+| --- | --- | --- | --- | --- |
+| 1 | Settings list | Left Alt + N | Eight lines: Pay, Buying, Spending limit: none, Harvest, Teleport a stuck rig, Pass through scenery in tight spots: off, AI model, Close; no "Preferred equipment" | OPEN |
+| 2 | Refusal in words | On foot, Left Alt + K: "follow me" | "Farmhand: could not start - get into the vehicle it should follow first" (before: the raw code PLAYER_NOT_IN_VEHICLE) | OPEN |
+| 3 | Spending limit | Settings, Spending limit, 25,000; then "buy a series 9" (the farm able to pay for it; otherwise the answer is "cannot afford") | "could not start - it costs more than your spending limit (Farmhand settings)"; money and vehicles unchanged; companion.log `buy ... OVER_SPENDING_LIMIT`. Set "No limit" again after | OPEN |
+| 4 | Named store item | With the limit off and enough money (optional; it spends): "buy a series 9" | The Series 9 is bought, never another item whose name merely contains "series" or a "9" | OPEN |
+| 5 | Unaffordable named item | With less money than the item costs: "buy the gmc truck" | "could not start - the farm cannot afford it"; nothing cheaper of another model is bought | OPEN |
+| 6 | No ghosting by default | Any hitch near a building (the original posts / loading-structure cases if available), setting off | No `near buildings: the rig's collision` or `collision with ... scenery obstacle(s) off` log lines and no ghosting notification. Record whether the hitch completed or which worded reason ended it: this decides RELEASE_BACKLOG "Scenery ghosting: prove the need or remove the option" | OPEN |
+| 7 | Opt-in ghosting disclosed | Turn "Pass through scenery in tight spots" on, repeat row 6 | One notification "passing through scenery beside the rig (your setting)..."; a later `collision with buildings restored` log line once the rig is clear; turn the setting off after | OPEN |
+| 8 | Follower reference (navigation) | Existing logs first: `drive track ... error E` lines while a rig drove a steady bend | E near a²/(2R) outward (GMC ≈ 0.2 m, 379 ≈ 0.5-0.7 m) supports adapters/EVIDENCE.md "2026-11-04 production follower reference mismatch"; near zero disproves it (path points are 4 m chords: allow ≈0.2 m chord error at mid-segment) | OPEN |
+
 ## Hitch / attachment
 
 | Case | Test id | Build | Result | Observed |
