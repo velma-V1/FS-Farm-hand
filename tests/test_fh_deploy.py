@@ -23,6 +23,60 @@ class FailingStart(fh_deploy.RehearsalHost):
         return 1
 
 
+class RewritesSettingsOnStart(fh_deploy.RehearsalHost):
+    """The companion rewrites its settings while it starts: expected, not a failure."""
+
+    def __init__(self, data):
+        super().__init__()
+        self.data = data
+
+    def start_companion(self, build):
+        (self.data / "settings.json").write_text('{"pay": 10, "scenery_ghosting": false}', encoding="utf-8")
+        return super().start_companion(build)
+
+
+class ChangesBuildOnStart(fh_deploy.RehearsalHost):
+    """Something alters an installed build file after the start: the final check must fail."""
+
+    def __init__(self, data):
+        super().__init__()
+        self.data, self.first = data, True
+
+    def start_companion(self, build):
+        if self.first:
+            self.first = False
+            (self.data / "app" / "companion" / "ai.py").write_bytes(b"# altered\n")
+        return super().start_companion(build)
+
+
+class ReloadAlwaysFails(fh_deploy.RehearsalHost):
+    def reload(self):
+        self.events.append("reload")
+        return False, "fhReload: a Farmhand command is running; stop it first"
+
+
+class FakeCompanion:
+    def __init__(self, answer):
+        self.answer = answer
+
+    def ask(self, command):
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+class FakeRunner:
+    def __init__(self, pid, answer, game):
+        self.pid, self.companion, self.game = pid, FakeCompanion(answer), game
+        self.system = self
+
+    def _companion_pid(self):
+        return self.pid
+
+    def processes(self, image):
+        return [7] if self.game else []
+
+
 class DeployTest(unittest.TestCase):
     def setUp(self):
         self.base = Path(tempfile.mkdtemp(prefix="fh-deploy-test-"))
@@ -90,6 +144,61 @@ class DeployTest(unittest.TestCase):
         with self.assertRaises(fh_deploy.DeployError) as caught:
             deployer.load_snapshot(snap.name)
         self.assertEqual(caught.exception.code, "SNAPSHOT_CORRUPT")
+
+    def test_companion_rewriting_state_after_start_is_not_a_failure(self):
+        deployer = self.deployer(RewritesSettingsOnStart(self.data))
+        deployer.switch("abc1234")
+        self.assertEqual(deployer._active()["build"], "abc1234")
+        self.assertNotIn("pending", deployer._active())
+        self.assertEqual(fh_deploy.build_of(deployer.installed().app), "abc1234")
+
+    def test_final_verification_failure_rolls_back_inside_the_transaction(self):
+        deployer = self.deployer(ChangesBuildOnStart(self.data))
+        before = deployer.installed().digest()
+        with self.assertRaises(fh_deploy.DeployError) as caught:
+            deployer.switch("abc1234")
+        self.assertEqual(caught.exception.code, "ROLLED_BACK")
+        self.assertEqual(caught.exception.detail["failed"], "INSTALLED_MISMATCH")
+        self.assertTrue(caught.exception.detail["restored"]["ok"])
+        self.assertEqual(deployer.installed().digest(), before)
+        self.assertIsNone(deployer._active())
+
+    def test_incomplete_rollback_is_reported_and_restore_stays_possible(self):
+        host = ReloadAlwaysFails()
+        deployer = self.deployer(host)
+        before = deployer.installed().digest()
+        with self.assertRaises(fh_deploy.DeployError) as caught:
+            deployer.switch("abc1234")
+        self.assertEqual(caught.exception.code, "ROLLBACK_INCOMPLETE")
+        restored = caught.exception.detail["restored"]
+        self.assertFalse(restored["ok"])
+        self.assertTrue(any(p.startswith("reload") for p in restored["problems"]))
+        active = deployer._active()
+        self.assertEqual(active["incomplete"], "ROLLBACK_INCOMPLETE")
+        self.assertIn("baseline", active)
+        # Once the game reloads again, restore reaches the lab's exact bytes.
+        healthy = self.deployer(fh_deploy.RehearsalHost())
+        healthy.restore()
+        self.assertEqual(healthy.installed().digest(), before)
+        self.assertIsNone(healthy._active())
+
+    def test_uncertain_job_status_never_authorizes(self):
+        host = object.__new__(fh_deploy.Host)
+        idle = {"result": {"job": {"running": None}, "test_active": False}}
+        cases = [(FakeRunner(None, idle, game=False), False),
+                 (FakeRunner(5, idle, game=True), False),
+                 (FakeRunner(5, {"result": {"job": {"running": {"owner": "x"}}, "test_active": False}}, True), True)]
+        for fake, expected in cases:
+            host.runner = fake
+            self.assertIs(host.job_running(), expected)
+        for fake in (FakeRunner(None, idle, game=True),                          # game up, companion down
+                     FakeRunner(5, runner.Refused("COMPANION_NO_ANSWER"), True),
+                     FakeRunner(5, {"result": {}}, True),
+                     FakeRunner(5, {}, True)):
+            host.runner = fake
+            with self.assertRaises(fh_deploy.DeployError) as caught:
+                host.job_running()
+            self.assertEqual(caught.exception.code, "JOB_STATUS_UNKNOWN")
 
     def test_this_checkout_builds_a_deployable_build(self):
         out = self.base / "real"

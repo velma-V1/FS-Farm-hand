@@ -133,7 +133,20 @@ class Host:
         return bool(self.runner.system.processes(runner.FS25_IMAGE))
 
     def job_running(self) -> bool:
-        return self.runner._job_running()
+        """True only when the companion says no job or test runs; an answer that cannot be
+        had or read is unknown and refuses (unlike the runner's own, more lenient check)."""
+        if self.runner._companion_pid() is None:
+            if not self.fs25_running():
+                return False                                  # no game, no companion: nothing can drive
+            raise DeployError("JOB_STATUS_UNKNOWN", hint="the companion is not running; start it or close FS25")
+        try:
+            result = self.runner.companion.ask("status").get("result")
+        except runner.Refused as error:
+            raise DeployError("JOB_STATUS_UNKNOWN", companion=error.code) from None
+        job = result.get("job") if isinstance(result, dict) else None
+        if not isinstance(job, dict) or "running" not in job or "test_active" not in result:
+            raise DeployError("JOB_STATUS_UNKNOWN", companion="unreadable status")
+        return bool(result["test_active"] or job["running"])
 
     def reload_pending(self) -> bool:
         return (self.targets.settings / ".fhReload").exists()
@@ -188,6 +201,13 @@ class Deployer:
     def _active(self) -> dict | None:
         path = self.state_dir / "active.json"
         return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+    def _set_active(self, value: dict | None) -> None:
+        path = self.state_dir / "active.json"
+        if value is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_text(json.dumps(value), encoding="utf-8")
 
     def installed(self) -> Install:
         state = {}
@@ -266,13 +286,32 @@ class Deployer:
             raise DeployError("JOB_RUNNING", hint="wait for the test to end or STOP it")
         return self.host.fs25_running()
 
+    def _write_state(self, state: dict) -> None:
+        for name, data in state.items():
+            path = self.targets.local_data / name
+            if data is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(data)
+
+    def _check(self, expected: Install, with_state: bool) -> None:
+        """The build files must match exactly; the mutable state only before the companion
+        starts (it may rewrite settings.json, goal.json and routes.json once running)."""
+        now = self.installed().digest()
+        want = expected.digest()
+        for part in ("mod", "app") + (("state",) if with_state else ()):
+            if now[part] != want[part]:
+                raise DeployError("INSTALLED_MISMATCH", part=part,
+                                  files=sorted(set(now[part].items()) ^ set(want[part].items()))[:6])
+
     def _apply(self, target: Install, running: bool, rollback: Install) -> dict:
-        """Install target; on any failure put rollback back and report both."""
+        """Install target and verify it, all inside one transaction: any failure, the final
+        verification included, puts rollback back and says whether that fully worked."""
         build = build_of(target.app)
         if build is None:
             raise DeployError("COMPANION_BUILD_UNSTAMPED")
         done = {"build": build, "reloaded": None}
-        self.host.stop_companion()
+        self.host.stop_companion()                            # nothing is changed before this succeeds
         try:
             write_tree(self.mod_dir, target.mod)
             if running:
@@ -281,43 +320,43 @@ class Deployer:
                 if not ok:
                     raise DeployError("RELOAD_FAILED", line=line)
             write_tree(self.app_dir, target.app)
-            for name, data in target.state.items():
-                path = self.targets.local_data / name
-                if data is None:
-                    path.unlink(missing_ok=True)
-                else:
-                    path.write_bytes(data)
+            self._write_state(target.state)
+            self._check(target, with_state=True)
             done["companion_pid"] = self.host.start_companion(build)
+            self._check(target, with_state=False)
         except Exception as error:
             code = getattr(error, "code", type(error).__name__)
             self._log("apply_failed", build=build, code=code, detail=getattr(error, "detail", str(error)))
             back = self._put_back(rollback, running)
-            raise DeployError("ROLLED_BACK", failed=code, restored=back) from error
-        if self.installed().digest() != target.digest():
-            raise DeployError("INSTALLED_MISMATCH", build=build)
+            raise DeployError("ROLLED_BACK" if back["ok"] else "ROLLBACK_INCOMPLETE",
+                              failed=code, restored=back) from error
         return done
 
     def _put_back(self, previous: Install, running: bool) -> dict:
-        try:
-            self.host.stop_companion()
-        except Exception:                                     # it may never have started
-            pass
-        write_tree(self.mod_dir, previous.mod)
-        result = {"build": build_of(previous.app)}
+        """Every step is attempted; ok only when the files and state are identical again,
+        the game reloaded them (if running) and the previous companion started."""
+        result, problems = {"build": build_of(previous.app)}, []
+
+        def step(name, action):
+            try:
+                return action()
+            except Exception as error:
+                problems.append(f"{name}: {getattr(error, 'code', error)}")
+                return None
+
+        step("stop", self.host.stop_companion)
+        step("mod", lambda: write_tree(self.mod_dir, previous.mod))
         if running:
-            result["reload"] = self.host.reload()
-        write_tree(self.app_dir, previous.app)
-        for name, data in previous.state.items():
-            path = self.targets.local_data / name
-            if data is None:
-                path.unlink(missing_ok=True)
-            else:
-                path.write_bytes(data)
-        try:
-            result["companion_pid"] = self.host.start_companion(result["build"])
-        except Exception as error:
-            result["companion"] = getattr(error, "code", str(error))
-        result["identical"] = self.installed().digest() == previous.digest()
+            reload = step("reload", self.host.reload)
+            result["reload"] = reload
+            if reload is not None and not reload[0]:
+                problems.append(f"reload: {reload[1]}")
+        step("app", lambda: write_tree(self.app_dir, previous.app))
+        step("state", lambda: self._write_state(previous.state))
+        step("verify", lambda: self._check(previous, with_state=True))
+        result["companion_pid"] = step("start", lambda: self.host.start_companion(result["build"]))
+        result["problems"], result["ok"] = problems, not problems
+        self._log("put_back", **result)
         return result
 
     def switch(self, build: str | None = None) -> dict:
@@ -332,8 +371,17 @@ class Deployer:
             self.snapshot("pretest")                          # the previous test build's state, kept too
         current = self.installed()
         target.state = dict(current.state)                    # the player's settings, goal and routes carry over
-        done = self._apply(target, running, rollback=current)
-        (self.state_dir / "active.json").write_text(json.dumps({"baseline": baseline, "build": build}), encoding="utf-8")
+        # Recorded first: whatever happens next, restore knows the way back to the baseline.
+        self._set_active({"baseline": baseline, "build": build, "pending": True})
+        try:
+            done = self._apply(target, running, rollback=current)
+        except DeployError as error:
+            if error.code == "ROLLED_BACK":
+                self._set_active(active)                       # exactly as before this switch
+            else:
+                self._set_active({"baseline": baseline, "build": build, "incomplete": error.code})
+            raise
+        self._set_active({"baseline": baseline, "build": build})
         self._log("switched", baseline=baseline, fs25_running=running, **done)
         return done
 
@@ -346,10 +394,13 @@ class Deployer:
         running = self._preflight()
         self.snapshot("posttest")                             # what the test build left, kept for evidence
         current = self.installed()
-        done = self._apply(baseline, running, rollback=current)
-        if self.installed().digest() != baseline.digest():
-            raise DeployError("RESTORE_NOT_IDENTICAL", snapshot=sid)
-        (self.state_dir / "active.json").unlink(missing_ok=True)
+        try:
+            done = self._apply(baseline, running, rollback=current)
+        except DeployError as error:
+            if error.code != "ROLLED_BACK" and active is not None:
+                self._set_active({**active, "incomplete": error.code})
+            raise
+        self._set_active(None)
         self._log("restored", snapshot=sid, identical=True, fs25_running=running, **done)
         return {**done, "snapshot": sid, "identical": True}
 
