@@ -2785,3 +2785,115 @@ class GhostTests(unittest.TestCase):
             target[cb](target, 5, x, 6.0, z, 1) return 1 end""")
         self.env.CollisionFlag.ROAD = 8192
         self.assertIsNone(self.hitch.openSpot(self.env, self.lua.table(), 0.0, 0.0, 0.0))
+
+
+class RootArcFollowingTests(unittest.TestCase):
+    """One controlled path: the follower holds the root on the planned root arcs that the
+    planner, the preview and the clearance probe assume (live 0390b41df0e14112-2: pure pursuit
+    on chords ran 1.2-1.7 m inside minimum-radius bends and met two objects in that band)."""
+    runtime = lua54
+
+    def setUp(self):
+        self.lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
+        self.lua.globals().print = lambda *a: None
+        self.drive = self.lua.execute(SOURCE.read_text())
+        self.open = self.lua.eval("function() return true end")
+
+    def arc_path(self, radius, steps):
+        # A left-turning arc of `steps` 4 m steps from the origin heading +z (yaw 0).
+        points, yaw, x, z = [(0.0, 0.0, 0.0)], 0.0, 0.0, 0.0
+        for _ in range(steps):
+            nyaw = yaw + 4.0 / radius
+            x += radius * (math.cos(yaw) - math.cos(nyaw))
+            z += radius * (math.sin(nyaw) - math.sin(yaw))
+            yaw = nyaw
+            points.append((x, z, yaw))
+        return self.lua.table_from([self.lua.table_from(p) for p in points])
+
+    def test_the_nearest_point_is_on_the_arc_not_its_chord(self):
+        radius = 3.73
+        path = self.arc_path(radius, 3)
+        # The mid-point of the first arc lies ~0.5 m off its chord.
+        mid = 2.0 / radius
+        x, z = radius * (1 - math.cos(mid)), radius * math.sin(mid)
+        d, ox, oz, yaw, curve, gear = self.drive.arcNearest(path, 2, x, z)
+        self.assertLess(d, 0.02)
+        self.assertAlmostEqual(curve, 1 / radius, places=3)
+        self.assertAlmostEqual(yaw, mid, places=1)
+        self.assertEqual(gear, 1)
+        chord = abs(x * math.cos(4 / radius / 2) - z * math.sin(4 / radius / 2))  # off the straight chord
+        self.assertGreater(chord, 0.3)
+
+    def test_on_the_arc_the_command_is_the_reference_curvature_for_that_root_circle(self):
+        radius, behind = 11.0, 2.226                                   # the GMC's measured offset
+        path = self.arc_path(radius, 4)
+        mid = 6.0 / radius
+        x, z = radius * (1 - math.cos(mid)), radius * math.sin(mid)
+        yaw = mid - math.atan(behind / math.sqrt(radius ** 2 - behind ** 2))   # the body's yaw there
+        k, feed, lateral = self.drive.trackCurvature(path, 2, x, z, yaw, behind)
+        self.assertAlmostEqual(feed, 1 / math.sqrt(radius ** 2 - behind ** 2), places=4)
+        self.assertAlmostEqual(k, feed, places=3)
+        self.assertLess(abs(lateral), 0.02)
+        # Off to the outside the command turns tighter, inside it opens.
+        out = self.drive.trackCurvature(path, 2, x * 1.1, z * 1.0, yaw, behind)[0]
+        self.assertNotAlmostEqual(out, k, places=3)
+        # Never beyond what the vehicle can steer.
+        capped = self.drive.trackCurvature(self.arc_path(2.5, 3), 2, 0.3, 1.0, 0.3, 2.226, 1 / 4.0)[1]
+        self.assertLessEqual(abs(capped), 0.25 + 1e-9)
+
+    def test_the_actuator_point_gives_exactly_that_curvature(self):
+        for k in (0.0, 0.01, -0.05, 0.12, -0.256, 0.3):
+            lx, lz = self.drive.curvaturePoint(k)
+            self.assertGreater(lz, 0)
+            self.assertAlmostEqual(2 * lx / (lx * lx + lz * lz), k, places=6)
+
+    def test_closed_loop_the_root_stays_on_planned_arcs_where_pursuit_left_them(self):
+        # Kinematic bicycle, the reference `behind` m behind the root, steering rate-limited
+        # to the live 0.889 s to full lock, 3 km/h; on a real Drive.plan path at the rig's
+        # drivable root radius (Drive.begin: sqrt(R^2 + behind^2)).
+        behind, own = 2.2, 3.9
+        radius = math.sqrt(own * own + behind * behind)
+        start, goal = self.lua.table_from((0.0, 0.0, 1.24)), self.lua.table_from((16.9, 23.0))
+        path = self.drive.plan(start, goal, radius, self.open, None, 2.0004, True, 6000)[0]
+        self.assertIsNotNone(path)
+        pts = [(path[i][1], path[i][2], path[i][3]) for i in range(1, len(path) + 1)]
+        truth = [pts[0]]
+        for i in range(2, len(path) + 1):
+            m = 0.25
+            while True:
+                sample = self.drive.routeSample(path, i, min(m, 4.0))
+                truth.append(sample[:3])
+                if m >= min(sample[4], 4.0):
+                    break
+                m = min(m + 0.25, sample[4], 4.0)
+
+        def off(x, z):
+            return min(math.hypot(x - px, z - pz) for px, pz, _ in truth)
+
+        x, z, yaw = pts[0]
+        k, v, dt, kmax, nxt, worst = 0.0, 3.0 / 3.6, 0.02, 1 / own, 2, 0.0
+        for _ in range(int(90 / dt)):
+            while nxt < len(pts):
+                px, pz = pts[nxt - 1][0], pts[nxt - 1][1]
+                ahead = (px - x) * math.sin(yaw) + (pz - z) * math.cos(yaw)
+                if ahead >= 0 and math.hypot(x - px, z - pz) >= 2:
+                    break
+                nxt += 1
+            want = self.drive.trackCurvature(path, nxt, x, z, yaw, behind, kmax)[0]
+            lx, lz = self.drive.curvaturePoint(max(-kmax, min(kmax, want)))
+            want = 2 * lx / (lx * lx + lz * lz)
+            rate = 2 * kmax / 0.889 * dt
+            k += max(-rate, min(rate, want - k))
+            sx, sz = x - math.sin(yaw) * behind, z - math.cos(yaw) * behind
+            sx, sz = sx + math.sin(yaw) * v * dt, sz + math.cos(yaw) * v * dt
+            yaw += k * v * dt
+            x, z = sx + math.sin(yaw) * behind, sz + math.cos(yaw) * behind
+            worst = max(worst, off(x, z))
+            if math.hypot(x - goal[1], z - goal[2]) < 2:
+                break
+        self.assertLess(math.hypot(x - goal[1], z - goal[2]), 2.5)
+        self.assertLess(worst, 0.4)
+
+
+class Lua51RootArcFollowingTests(RootArcFollowingTests):
+    runtime = lua51

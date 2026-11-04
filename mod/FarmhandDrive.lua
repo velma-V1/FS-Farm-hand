@@ -1067,38 +1067,97 @@ function Drive.routeSample(path, index, metres)
     return x, z, yaw, curvature, length
 end
 
-function Drive.pathError(path, nextIndex, x, z)
+-- The nearest point of the planned path, on its arcs (Drive.routeSample: each step is a
+-- constant-curvature arc, not the chord between its end points; a 4 m step at the 3.7 m
+-- minimum radius bows ~0.5 m off its chord). Returns distance, offset (rig minus path point),
+-- the path's heading and curvature there, and the gear of that step; math.huge when unreadable.
+Drive.ARC_SAMPLE_M = 0.5
+function Drive.arcNearest(path, nextIndex, x, z)
     if path == nil or #path < 2 then return math.huge end
-    local nearest = math.huge
-    for i = math.max(2,nextIndex-2), math.min(#path,nextIndex+2) do
-        local a,b = path[i-1],path[i]
-        local dx,dz = b[1]-a[1],b[2]-a[2]
-        local length2 = dx*dx+dz*dz
-        if length2 > 0 then
-            local t = math.max(0,math.min(1,((x-a[1])*dx+(z-a[2])*dz)/length2))
-            nearest = math.min(nearest,distance(x,z,a[1]+dx*t,a[2]+dz*t))
+    local best, bx, bz, byaw, bcurve, bgear = math.huge, nil, nil, nil, 0, 1
+    local function consider(ax, az, ayaw, cx, cz, cyaw, curve, gear)
+        local dx, dz = cx - ax, cz - az
+        local length2 = dx*dx + dz*dz
+        local t = length2 > 0 and math.max(0, math.min(1, ((x-ax)*dx + (z-az)*dz) / length2)) or 0
+        local nx, nz = ax + dx*t, az + dz*t
+        local d = distance(x, z, nx, nz)
+        if d < best then
+            best, bx, bz, bcurve, bgear = d, nx, nz, curve, gear
+            byaw = ayaw + ((cyaw - ayaw + pi) % (2*pi) - pi) * t
         end
     end
-    return nearest
+    for i = math.max(2,nextIndex-2), math.min(#path,nextIndex+3) do
+        local from, to = path[i-1], path[i]
+        local gear = to[4] == -1 and -1 or 1
+        local _, _, _, curve, length = Drive.routeSample(path, i, 0)
+        if length == nil then
+            consider(from[1], from[2], from[3], to[1], to[2], to[3], 0, gear)
+        else
+            local px, pz, pyaw = from[1], from[2], from[3]
+            local m = 0
+            while m < math.min(length, STEP) do
+                m = math.min(m + Drive.ARC_SAMPLE_M, length, STEP)
+                local qx, qz, qyaw = Drive.routeSample(path, i, m)
+                if qx == nil then break end
+                consider(px, pz, pyaw, qx, qz, qyaw, curve, gear)
+                px, pz, pyaw = qx, qz, qyaw
+            end
+        end
+    end
+    if bx == nil then return math.huge end
+    return best, x - bx, z - bz, byaw, bcurve, bgear
+end
+
+function Drive.pathError(path, nextIndex, x, z)
+    return (Drive.arcNearest(path, nextIndex, x, z))
 end
 
 -- The rig's observed offset from its path: the vector from the nearest path point to (x, z)
 -- (the same nearest point as Drive.pathError). Zero when there is no path.
 function Drive.pathOffset(path, nextIndex, x, z)
-    if path == nil or #path < 2 then return 0, 0 end
-    local best, ox, oz = math.huge, 0, 0
-    for i = math.max(2,nextIndex-2), math.min(#path,nextIndex+2) do
-        local a,b = path[i-1],path[i]
-        local dx,dz = b[1]-a[1],b[2]-a[2]
-        local length2 = dx*dx+dz*dz
-        if length2 > 0 then
-            local t = math.max(0,math.min(1,((x-a[1])*dx+(z-a[2])*dz)/length2))
-            local nx, nz = a[1]+dx*t, a[2]+dz*t
-            local d = distance(x,z,nx,nz)
-            if d < best then best, ox, oz = d, x-nx, z-nz end
+    local d, ox, oz = Drive.arcNearest(path, nextIndex, x, z)
+    if d == math.huge then return 0, 0 end
+    return ox, oz
+end
+
+-- The follower's steering (live 0390b41df0e14112-2: pure pursuit 6-12 m ahead on the chords
+-- of minimum-radius arcs ran 1.2-1.7 m inside the bends; offline, the same follower on the
+-- planner's own paths: 1.6-3.2 m). The root is held on the planned root arcs that the
+-- planner, the preview and the clearance probe assume: the steering reference (GIANTS'
+-- steeringCenterNode, `behind` m behind the root, as collected/proven_systems
+-- measured_short_motion) is given the curvature that puts the root on that arc, plus
+-- feedback on the root's lateral and heading error. Returns the curvature to command.
+Drive.TRACK_GAIN_LATERAL = 0.25     -- 1/m^2 per m off the path
+Drive.TRACK_GAIN_HEADING = 0.8      -- 1/m per radian off the arc's heading
+function Drive.trackCurvature(path, nextIndex, x, z, yaw, behind, maxCurvature)
+    local d, ox, oz, pathYaw, curve, gear = Drive.arcNearest(path, nextIndex, x, z)
+    if d == math.huge or gear ~= 1 or not finite(pathYaw) then return nil end
+    behind = finite(behind) and behind > 0 and behind or 0
+    local feed = 0
+    if math.abs(curve) > 1e-6 then
+        local radius = 1 / math.abs(curve)
+        local inner = radius * radius - behind * behind
+        feed = (curve > 0 and 1 or -1) / math.sqrt(math.max(inner, 0.25))
+        -- Never more than the vehicle itself can steer (an arc tighter than that is not
+        -- followed by asking for more; the error feedback then brings it back).
+        if finite(maxCurvature) and maxCurvature > 0 and math.abs(feed) > maxCurvature then
+            feed = (feed > 0 and 1 or -1) * maxCurvature
         end
     end
-    return ox, oz
+    -- Signed toward local +x (the side of increasing yaw): the path point minus the root.
+    local lateral = -ox * math.cos(yaw) + oz * math.sin(yaw)
+    local want = pathYaw - math.atan(behind * feed)
+    local headingError = (want - yaw + pi) % (2*pi) - pi
+    return feed + Drive.TRACK_GAIN_LATERAL * lateral + Drive.TRACK_GAIN_HEADING * headingError, feed, lateral
+end
+
+-- A target point in the steering node's frame that GIANTS' driveToPoint turns into this
+-- curvature (its 2 lx / (lx^2 + lz^2)): the native actuator stays the only control input.
+function Drive.curvaturePoint(curvature)
+    if not finite(curvature) or math.abs(curvature) < 1e-4 then return 0, 4 end
+    local lz = math.min(4, 0.95 / math.abs(curvature))
+    local lx = (1 - math.sqrt(math.max(0, 1 - curvature * curvature * lz * lz))) / curvature
+    return lx, lz
 end
 
 -- Above this observed offset the preview also checks the path where the rig actually tracks it.
@@ -1170,6 +1229,11 @@ local function pose(env, tractor)
 end
 
 local function stopped(tractor)
+    local observe = FarmhandObserve
+    local bridge = FarmhandBridge
+    if type(observe) == "table" and type(observe.atRest) == "function" then
+        return observe.atRest(type(bridge) == "table" and bridge.env or nil, tractor)
+    end
     local speed = tractor:getLastSpeed()
     return finite(speed) and math.abs(speed) < 1
 end
@@ -1499,6 +1563,19 @@ end
 
 -- Start only from an observed, reserved, stopped rig. The planner uses a
 -- conservative whole-rig collision box; execution checks the live rig again.
+-- How far GIANTS' steering reference (spec_wheels.steeringCenterNode, the node
+-- getSteeringRotTimeByCurvature steers about) lies behind the root; 0 when unreadable.
+function Drive.referenceBehind(env, v)
+    local ok, behind = pcall(function()
+        local center = v.spec_wheels and v.spec_wheels.steeringCenterNode
+        if center == nil then return 0 end
+        local cx, cy, cz = env.getWorldTranslation(center)
+        local _, _, ahead = env.worldToLocal(v.rootNode, cx, cy, cz)
+        return finite(ahead) and math.max(0, -ahead) or 0
+    end)
+    return ok and behind or 0
+end
+
 function Drive.begin(env, args, Hitch)
     if type(args) ~= "table" or type(args.isReserved) ~= "function" or args.isReserved() ~= true then
         return nil, "RESERVATION_LOST"
@@ -1519,9 +1596,15 @@ function Drive.begin(env, args, Hitch)
         if x == nil then return nil, "UNKNOWN_OBSERVATION" end
         local radius = v:getAITurningRadius(v.maxTurningRadius)
         if not finite(radius) or radius < 3 then return nil, "TURNING_RADIUS_UNKNOWN" end
+        local ownRadius = radius                                  -- the vehicle's own, before its tow
         local foot = Hitch.routeFootprint(env, v)
         if foot == nil then return nil, "RIG_GEOMETRY_UNKNOWN" end
-        radius = Drive.turnRadius(radius, foot.towLength or 0)
+        -- Root arcs the vehicle can actually drive: its steering reference turns at no less
+        -- than its own radius, so the root (`behind` ahead of it) at sqrt(R^2 + behind^2).
+        -- Planned tighter, the follower saturates and the rig leaves the cleared arc (offline,
+        -- the live 0390b41df0e14112-2 geometry: 1.06 m off at 3.9 m planned, 0.20 m at 4.48 m).
+        local behind = Drive.referenceBehind(env, v)
+        radius = Drive.turnRadius(math.sqrt(radius * radius + behind * behind), foot.towLength or 0)
         if radius == nil then return nil, "TURNING_RADIUS_UNKNOWN" end
         if args.via ~= nil and Drive.learnedCorridor({x,z,yaw}, {args.x,args.z}, args.via) == nil then
             return nil, "INVALID_DESTINATION"
@@ -1675,7 +1758,7 @@ function Drive.begin(env, args, Hitch)
                     placeX = args.x, placeZ = args.z,
                     -- yaw: the heading to arrive at (a staging pose); beyond +-2 pi none.
                     goalYaw = goals == nil and finite(args.yaw) and abs(args.yaw) <= 2 * pi and args.yaw or nil,
-                    path = nil, next = 2, foot = foot, egress = egress, radius = radius,
+                    path = nil, next = 2, foot = foot, egress = egress, radius = radius, behind = behind, maxCurvature = 1 / ownRadius,
                     sectionAttempt = 1, navHint = navHint,
                     result = nil, movedAt = 0,
                     lastMovedX = x, lastMovedZ = z, replans = 0, ghostedHere = ghostedAtStart,
@@ -2370,6 +2453,15 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
         s.recovering = true
         Hitch.halt(env,s,dt)
         return "CONTINUE"
+    end
+    local curvature, feed, lateral = Drive.trackCurvature(s.path, s.next, x, z, yaw, s.behind, s.maxCurvature)
+    if curvature ~= nil then
+        lx, lz = Drive.curvaturePoint(curvature)
+        if s.elapsed >= (s.lawAt or 0) then
+            s.lawAt = s.elapsed + 1000
+            say(string.format("[Farmhand] drive steer curvature %.3f (arc %.3f, %.2f m off) behind %.2f",
+                              curvature, feed, lateral, s.behind or 0))
+        end
     end
     local v = s.tractor
     if not v:getIsMotorStarted() then

@@ -608,6 +608,27 @@ class ObserveTravelTests(unittest.TestCase):
         self.assertEqual(self.sample(500), 0.0)
 
 
+    def test_at_rest_is_one_definition_a_jittering_reading_on_an_unmoved_root_is_rest(self):
+        # Live 1d948e6151604c5b-1: tractor 615 unmoved to 0.1 mm for 35 min against the object it
+        # touched; GIANTS' reading stayed over 1 km/h, so every op and STOP itself said NOT_STOPPED.
+        reading = {"kmh": 2.0}
+        self.v.getLastSpeed = lambda _self: reading["kmh"]
+        self.sample(0)
+        self.observe.clockMs = self.observe.clockMs + 1000          # a snapshot sample 1 s old
+        self.assertTrue(self.observe.atRest(self.env, self.v))       # jitter, root unmoved
+        self.env.p.x = self.env.p.x + 1.0                            # 1 m in 1 s: moving
+        self.assertFalse(self.observe.atRest(self.env, self.v))
+        self.env.p.x = self.env.p.x - 1.0
+        reading["kmh"] = 5.0                                         # over the jitter bound
+        self.assertFalse(self.observe.atRest(self.env, self.v))
+        reading["kmh"] = 0.5                                         # GIANTS' own rest
+        self.assertTrue(self.observe.atRest(None, self.v))
+        reading["kmh"] = 2.0
+        self.observe.clockMs = self.observe.clockMs + 5000           # sample too old to judge
+        self.assertFalse(self.observe.atRest(self.env, self.v))
+        self.assertFalse(self.observe.atRest(None, self.v))          # nothing to judge by
+
+
 class Lua51ObserveTravelTests(ObserveTravelTests):
     runtime = lua51
 

@@ -440,6 +440,33 @@ function Observe.travelKmh(env, v)
     return kmh
 end
 
+-- Read only (never moves the snapshot sample): km/h of root travel since this vehicle's last
+-- snapshot sample, when that sample is RESTING_MIN_MS..RESTING_MAX_MS old; else nil.
+Observe.RESTING_MIN_MS, Observe.RESTING_MAX_MS = 200, 2000
+function Observe.restingTravelKmh(env, v)
+    local last = Observe.roots[v]
+    if last == nil or v.rootNode == nil then return nil end
+    local span = Observe.clockMs - last.t
+    if span < Observe.RESTING_MIN_MS or span > Observe.RESTING_MAX_MS then return nil end
+    local x, y, z = env.getWorldTranslation(v.rootNode)
+    if not (finite(x) and finite(y) and finite(z)) then return nil end
+    return math.sqrt((x - last.x) ^ 2 + (y - last.y) ^ 2 + (z - last.z) ^ 2) / span * 3600
+end
+
+-- At rest, one definition for the mod (Bridge, Drive) as for the snapshot: GIANTS' reading
+-- under 1 km/h, or (live 1d948e6151604c5b-1: tractor 615 unmoved to 0.1 mm for 35 min against
+-- the object it touched, refused NOT_STOPPED by every op and by STOP itself) a reading that
+-- only jitters (under JITTER_KMH) while the root's own travel is under 1 km/h.
+Observe.JITTER_KMH = 3
+function Observe.atRest(env, v)
+    local speed = v:getLastSpeed()
+    if not finite(speed) then return false end
+    if math.abs(speed) < 1 then return true end
+    if math.abs(speed) >= Observe.JITTER_KMH or env == nil then return false end
+    local ok, travelled = pcall(Observe.restingTravelKmh, env, v)
+    return ok and travelled ~= nil and travelled < 1
+end
+
 function Observe.vehicle(env, v)
     local id = try(function() return env.NetworkUtil.getObjectId(v) end)
     local farmId = try(function() return v.ownerFarmId end)

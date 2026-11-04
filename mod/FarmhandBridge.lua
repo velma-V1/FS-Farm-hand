@@ -83,6 +83,8 @@ end
 local atan2 = math.atan2 or math.atan   -- Lua 5.1 (FS25) / 5.4 (tests)
 
 local function stopped(v)
+    local observe, env = Bridge.Observe, FarmhandBridge and FarmhandBridge.env
+    if observe ~= nil and type(observe.atRest) == "function" then return observe.atRest(env, v) end
     local speed = v:getLastSpeed()
     return finite(speed) and math.abs(speed) < 1
 end

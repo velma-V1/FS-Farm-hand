@@ -771,6 +771,28 @@ the two rigs, logging planned root pose, observed root and steering-node pose
 at the same along-path distance; a lateral residual near a²/(2R) confirms this,
 near zero disproves it. Not changed in production until that run.
 
+### 2026-11-04 follower error measured: pursuit look-ahead and chords dominate (live + offline replay)
+
+Live 0390b41df0e14112-2 (build 8a992a7, tractor 615 solo, planning radius 3.9 m): the
+`drive track` lines show the root 1.2-1.7 m off the planned path for seconds through
+bends, and both ENVELOPE_CONTACTs occurred in that band. Offline, the production
+follower (`Drive.goalPoint` 6-12 m ahead on the **chords** between planned arc ends,
+`2 lx / L^2` at the steering node, steering rate-limited to the trace's 0.889 s to full
+lock, 3 km/h) on paths from the real `Drive.plan` for the live geometries gives max
+1.45-1.86 m with the reference at the root (a = 0) and 3.1-3.4 m at a = 2.2 m. So the
+look-ahead/chord term is the larger one; the a^2/(2R) reference term above is real and
+adds to it, and root arcs planned at the vehicle's own radius need a reference radius
+sqrt(R^2 - a^2) below what it can steer. Change made (66ea022 successor, UNVERIFIED live):
+one path geometry and one controlled point. `Drive.arcNearest` reads the planned **arcs**
+(`routeSample`) for the follower, path error and preview offset; `Drive.trackCurvature`
+commands the steering reference the curvature that holds the **root** on its planned arc
+(feed-forward 1/sqrt(1/k^2 - a^2), capped at the vehicle's own 1/R, plus lateral and
+heading feedback), through the same `driveToPoint` (`Drive.curvaturePoint`); `Drive.begin`
+plans root arcs at sqrt(R^2 + a^2), a = `steeringCenterNode` behind the root as in
+`collected/proven_systems/measured_short_motion`. Offline on the same paths: max
+0.14-0.82 m (0.07-0.40 m for GMC-/379-like radii 11-14 m). The planner, preview and
+clearance probe already model the root on those arcs; they are unchanged.
+
 ## 2026-11-03 resource-accounting dependency check
 
 **UNVERIFIED as a Farmhand mechanism; source-inspected only.** Installed FS25
