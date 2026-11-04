@@ -592,6 +592,12 @@ class Coordinator:
         self.running: str | None = None
         self.kept: Kept | None = self._load_goal()  # the goal "continue" resumes
         self._then = None                         # a destination to resume with once this job ends
+        # Stops so far. Whatever a job's end starts by itself (the next queued request, a
+        # retargeted goal) starts only if no stop came after it was taken: STOP invalidates
+        # stale queued movement (AGENTS.md 17), with no window between taking and starting.
+        # _then_stops: the count right after a retarget's own stop; a later stop is the player's.
+        self._stops = 0
+        self._then_stops = None
         self.workers: list[Worker] = []           # GIANTS' helpers working on (handed off)
         self._harvest_rigs: dict[int, str] = {}   # field -> the rig (tractor words) its grain was transferred into
         self._bought_for: set[str] = set()         # jobs that already bought what they needed (never twice)
@@ -689,12 +695,17 @@ class Coordinator:
             return False
 
     # -------------------------------------------------------------------- stop
-    def stop(self, spoken: bool = False) -> None:
+    def stop(self, spoken: bool = False, retarget: bool = False) -> None:
         """Deterministic and immediate; never waits for an interpreter or the job.
         One requester stop per job, never during its own cleanup: a second stop
-        command would pre-empt the job's confirming stop. The waiting list is emptied."""
+        command would pre-empt the job's confirming stop. The waiting list is emptied;
+        after the player's STOP nothing drives on by itself, even to a destination given
+        just before (kept for "continue"); ``retarget``: the stop a new destination makes."""
         with self._lock:
             self._queue.clear()
+            self._stops += 1
+            if retarget:
+                self._then_stops = self._stops
             job = self.current
             send = False
             if job is not None:
@@ -969,8 +980,13 @@ class Coordinator:
 
     # -------------------------------------------------------------------- jobs
     def start(self, command: str, target, spoken: bool = False, implement: str | None = None,
-              work: dict | None = None) -> Job | None:
+              work: dict | None = None, stops: int | None = None) -> Job | None:
+        """``stops``: a start a job's end makes by itself (the next queued request, a retargeted
+        goal) passes the stop count it saw; a stop since then drops it."""
         with self._lock:
+            if stops is not None and stops != self._stops:
+                log.info("%s not started: a stop came after it was taken", command)
+                return None
             queued = False
             if self.current is not None:
                 busy = True
@@ -1037,24 +1053,34 @@ class Coordinator:
                     self.kept = None if job.state == "COMPLETE" else Kept(command, target, implement, work)
                     self._save_goal()
                 then, self._then = self._then, None
+                stops = self._stops
+                # Resumed by itself only when no stop came after the retarget's own.
+                resume_then = then is not None and stops == self._then_stops
             notice = result_notice(job.state, job.reason or "", complete)
-            if command in GOALS and job.state != "COMPLETE" and then is None:
+            if command in GOALS and job.state != "COMPLETE" and not resume_then:
                 notice = "PAUSED" if job.state == "CANCELLED" else notice
             self.notify(notice, job.spoken)
             if then is not None and self.kept is not None:
-                self._retarget_kept(then)
-                self.resume(job.spoken)
+                self._retarget_kept(then)          # the player's latest destination, kept for "continue"
+                if resume_then:
+                    self.resume(job.spoken, stops=stops)
             else:
                 with self._lock:
                     following = self._queue.pop(0) if self._queue and self.current is None else None
+                    stops = self._stops
                 if following is not None:
-                    self.start(*following)
+                    self.start(*following, stops=stops)
 
     # ---------------------------------------------------------- resume / retarget
-    def resume(self, spoken: bool = False) -> Job | None:
-        """Continue the kept goal from the observed state (nothing completed repeats)."""
+    def resume(self, spoken: bool = False, stops: int | None = None) -> Job | None:
+        """Continue the kept goal from the observed state (nothing completed repeats).
+        ``stops``: as ``start`` (a retargeted goal resumed by the job's own end)."""
         with self._lock:
             kept, busy = self.kept, self.current is not None
+            stale = stops is not None and stops != self._stops
+        if stale:
+            log.info("resume not started: a stop came after the retarget")
+            return None
         if busy:
             self.notify("BUSY", spoken)
             return None
@@ -1063,7 +1089,7 @@ class Coordinator:
             return None
         log.info("resuming %s to %s with %s", kept.command, kept.target, kept.work)
         self.notify("RESUMING", spoken)
-        return self.start(kept.command, kept.target, spoken, kept.implement, kept.work)
+        return self.start(kept.command, kept.target, spoken, kept.implement, kept.work, stops=stops)
 
     def retarget(self, target, spoken: bool = False) -> Job | None:
         """A new destination for the goal: a running one is stopped and resumed with it
@@ -1075,7 +1101,7 @@ class Coordinator:
                 self._then = target
         if running_goal:
             self.notify("RETARGETED", spoken)
-            self.stop(spoken)
+            self.stop(spoken, retarget=True)
             return None
         if job is not None:
             self.notify("BUSY", spoken)

@@ -1201,6 +1201,59 @@ class ResumeTests(unittest.TestCase):
         self.assertIn("RETARGETED", notices)
         self.assertIn("RETARGETED", notices)
 
+    def test_stop_after_a_new_destination_drives_nowhere_and_continue_goes_there(self):
+        # AGENTS.md 17: STOP invalidates stale queued movement. "Take it to field 2 instead",
+        # then STOP: the job's own end resumed the goal to field 2 anyway, as if never stopped.
+        from protocol.model import Destination, Result
+        world, truck, deck, series9 = haul_world(loaded=True)
+        world.destination_map = {**world.destination_map, "m-2": Destination("m-2", (-600.0, 300.0), "Field 2")}
+        started, release = [], __import__("threading").Event()
+
+        def interrupt(intent, cancel):
+            if intent["task"] == "move_pair" and not started:
+                started.append(intent["target"])
+                cancel.wait(5)                          # driving until the retarget's stop arrives
+                release.wait(5)                         # its cleanup still running when STOP comes
+                return Result("CANCELLED", "CANCELLED_BY_REQUESTER", (truck.id, deck.id), ("FIND", "RESERVE", "DELIVER"))
+            return None
+
+        c, ran, notices, _ = self.coordinator(world, interrupt)
+        self.haul(c)
+        for _ in range(100):
+            if started:
+                break
+            c.wait(0.05)
+        c.submit({"version": 1, "command": "retarget", "target": {"type": "field_entrance", "field": 2}})
+        c.submit({"version": 1, "command": "stop"})                 # the player's STOP
+        release.set()
+        self.wait_idle(c)
+        self.assertEqual(c.last.state, "CANCELLED")
+        self.assertEqual(len(ran), 1)                                # nothing started by itself
+        self.assertNotIn("RESUMING", notices)
+        self.assertEqual(notices[-1], "PAUSED")
+        self.assertEqual(c.kept.target, {"type": "field_entrance", "field": 2})   # the latest destination
+        c.resume()                                                   # "continue": to field 2
+        self.wait_idle(c)
+        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "HAULED_AND_UNLOADED"), c.last.states)
+        self.assertEqual(ran[1]["target"], {"type": "field_entrance", "field": 2})
+
+    def test_a_stop_between_taking_and_starting_a_queued_request_drops_it(self):
+        # The window between a finished job taking the next queued request and starting it:
+        # a STOP there must still win (live: a queued request once ran behind STOP).
+        from protocol.model import Result
+        world, truck, deck, series9 = haul_world(loaded=True)
+        c, ran, notices, threading = self.coordinator(world, lambda intent, cancel: Result(
+            "COMPLETE", "SAVED", (), ("SAVE",)) if intent["task"] == "save_game" else None)
+        taken = c.start("save_game", "here")
+        self.assertIsNotNone(taken)
+        stops = c._stops
+        c.stop()                                                     # after the request was taken
+        self.assertIsNone(c.start("save_game", "here", stops=stops))
+        self.wait_idle(c)
+        self.assertEqual(sum(1 for i in ran if i["task"] == "save_game"), 1)
+        self.assertIsNotNone(c.start("save_game", "here", stops=c._stops))   # no stop since: it starts
+        self.wait_idle(c)
+
     def test_a_new_destination_for_a_kept_goal_and_nothing_to_continue(self):
         from protocol.model import Destination, Result
         world, truck, deck, series9 = haul_world(loaded=True)
