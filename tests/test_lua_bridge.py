@@ -534,6 +534,82 @@ class LuaBridgeTests(unittest.TestCase):
             if '"result"' in line:
                 parse_frame((line + "\n").encode())
 
+    def agent(self, script):
+        """GIANTS' navigation agent on the tractor (AIDrivable createAgent/deleteAgent, the engine's
+        setVehicleNavigationAgentTarget / getVehicleNavigationAgentNextCurvature); `script` gives
+        each frame's (curvature, m/s, state) until it runs out, then the last one."""
+        return self.lua.execute(r"""
+            local w, script = ...
+            local env, t = w.env, w.tractor
+            env.AIDrivable = { STATES = { [1] = "driving", [2] = "blocked", [3] = "planning",
+                                          [4] = "not_reachable", [5] = "target_reached" } }
+            t.spec_aiDrivable = { agentInfo = { isValid = true }, poseData = {} }
+            t.spec_drivable = { cruiseControl = { speed = 30 } }
+            t.lastSpeedReal = 0
+            function t:createAgent() table.insert(w.calls, "createAgent"); self.spec_aiDrivable.agentId = 7 end
+            function t:deleteAgent() table.insert(w.calls, "deleteAgent"); self.spec_aiDrivable.agentId = nil end
+            function t:updateAIAgentPoseData() end
+            function t:getIsMotorStarted() return true end
+            function t:setCruiseControlMaxSpeed(v) table.insert(w.calls, "cruise:" .. v) end
+            function t:setCruiseControlState() end
+            env.getTerrainHeightAtWorldPos = function() return 0 end
+            env.g_currentMission.terrainRootNode = 1
+            env.setVehicleNavigationAgentTarget = function(id, x, y, z, dx, dy, dz)
+                table.insert(w.calls, string.format("target:%d:%.0f,%.0f", id, x, z)) end
+            local n = 0
+            env.getVehicleNavigationAgentNextCurvature = function()
+                n = n + 1
+                local f = script[math.min(n, #script)]
+                return f[1], f[2], f[3]
+            end
+            env.AIVehicleUtil = env.AIVehicleUtil or {}
+            env.AIVehicleUtil.driveAlongCurvature = function(v, dt, k, kmh)
+                w.drove = (w.drove or 0) + 1; w.kmh = kmh
+                w.z = w.z + (w.moves and 0.05 or 0)
+            end
+            env.AIVehicleUtil.driveToPoint = env.AIVehicleUtil.driveToPoint or function() end
+        """, self.w, self.lua.table_from([self.lua.table_from(f) for f in script]))
+
+    def test_navigate_drives_giants_agent_itself_and_ends_where_it_says(self):
+        self.adopt()
+        self.agent([(0.01, 20.0, 1)] * 30 + [(0, 0, 5)])
+        self.w.moves = True
+        self.send(1, "navigate", self.POSE)
+        self.W.run(self.w, 4000)
+        calls = self.calls()
+        self.assertIn("createAgent", calls)
+        self.assertTrue(any(c.startswith("target:7:") for c in calls), calls)
+        self.assertNotIn("startJob", calls)                       # no GIANTS job, no hired helper
+        self.assertGreater(self.w.drove, 20)
+        self.assertLessEqual(self.w.kmh, 30)                      # the vehicle's own cruise speed caps it
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "GOTO_ENDED"))
+        self.assertIn("deleteAgent", calls)
+        self.assertIn("cruise:30", calls)
+
+    def test_navigate_on_the_agent_ends_stuck_when_driven_but_unmoved_or_blocked(self):
+        for script, moves, code in (([(0.0, 10.0, 1)], False, "NAVIGATE_STUCK_AT_START"),
+                                    ([(0.0, 0.0, 2)], False, "NAVIGATE_BLOCKED_AT_START")):
+            with self.subTest(code=code):
+                self.w = self.W.new()
+                self.adopt()
+                self.agent(script)
+                self.w.moves = moves
+                self.send(1, "navigate", self.POSE)
+                self.beating(25000)
+                self.assertEqual(self.results(1)[-1], (1, "FAILED", code))
+                self.assertIn("deleteAgent", self.calls())
+
+    def test_a_stop_ends_farmhands_drive_on_the_agent(self):
+        self.adopt()
+        self.agent([(0.0, 10.0, 1)])
+        self.w.moves = True
+        self.send(1, "navigate", self.POSE)
+        self.W.run(self.w, 1000)
+        self.send(2, "stop", {"tractor": 11})
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(2)[-1], (2, "DONE", "STOPPED"))
+        self.assertIn("deleteAgent", self.calls())
+
     def test_an_ended_goto_logs_why_giants_ended_it_and_is_still_only_ended(self):
         # 5304adc live: STAGE_ENDED 14 m off. GIANTS leaves the agent's last state
         # (AIDrivable:onUpdate 317-325) for the log; the result stays "ended".
@@ -2879,7 +2955,7 @@ class ReasonWordingTests(unittest.TestCase):
     # Codes that are never a failure reason the player is shown: success and phase codes, the
     # route probe's own reasons, ghosting's internal answers, and codes the companion handles.
     INTERNAL = frozenset({
-        "ARRIVED", "LINED_UP", "CANDIDATE", "CONTINUE", "PENDING", "ATTACH_REQUESTED", "ATTACH_IN_PROGRESS",
+        "ARRIVED", "NO_AGENT", "LINED_UP", "CANDIDATE", "CONTINUE", "PENDING", "ATTACH_REQUESTED", "ATTACH_IN_PROGRESS",
         "BACKED_OFF", "PASSED", "UNDER_PIPE", "CLEAR", "ALREADY_CLEAR", "ALONGSIDE_ALREADY_CLEAR",
         "UNPARK_NOT_BOXED", "NO_CANDIDATE", "LOCAL_TURN", "LOCAL_APPROACH", "LOCAL_LINEUP",
         "CROP", "FIELD", "GRADE", "WATER", "UNKNOWN", "PREDICTION_UNREADABLE", "UNIT_SIZE_UNREADABLE",

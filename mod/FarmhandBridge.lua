@@ -727,6 +727,136 @@ local function cargoObstaclesBack(task)
     task.cargo = nil
 end
 
+-- ------------------------------------------------- navigate: GIANTS' agent, Farmhand's drive
+-- GIANTS' engine navigation agent plans over the map's navigation mesh for the whole rig
+-- (createVehicleNavigationAgent with its trailers' data, AIDrivable:createAgent) and gives one
+-- curvature, a speed and a state per frame (getVehicleNavigationAgentNextCurvature). GIANTS' own
+-- controller (AIDrivable:onUpdate) applies it only while an AI job runs and gives up on its own
+-- terms. Farmhand runs that loop itself: no job or hired helper, its speed limit, its watch for
+-- a rig that is commanded yet does not move (live 47e8e973c13140c0-2: GIANTS' job crept 0.3 m
+-- in 80 s against scenery until its 90 s watchdog), and its own end on every exit path.
+Bridge.AGENT = { maxKmh = 64, stuckMs = 8000, stuckM = 1.0, blockedMs = 20000, planningMs = 30000 }
+local function agentState(env, state)
+    local names = env.AIDrivable and env.AIDrivable.STATES
+    return tostring(names and names[state] or state):upper()
+end
+
+local function agentEnd(env, task, dt)
+    local v = task.spec.tractor
+    pcall(Bridge.Hitch.halt, env, task.drive, dt or 0)
+    if task.agentMade then pcall(v.deleteAgent, v); task.agentMade = nil end
+    if task.cruiseBefore ~= nil then
+        pcall(v.setCruiseControlMaxSpeed, v, task.cruiseBefore)
+        task.cruiseBefore = nil
+    end
+end
+
+local function startAgent(env, spec)
+    local v = spec.tractor
+    local denied = idle(env, v, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    local ai = v.spec_aiDrivable
+    if ai == nil or type(v.createAgent) ~= "function" or type(env.getVehicleNavigationAgentNextCurvature) ~= "function"
+            or not (ai.agentInfo ~= nil and ai.agentInfo.isValid) or ai.agentId ~= nil then
+        return nil, "NO_AGENT"
+    end
+    local task = { seen = true, started = true, drive = { tractor = v, maxSpeedKmh = 0 } }
+    local ok, why = pcall(function()
+        local cruise = v.spec_drivable and v.spec_drivable.cruiseControl
+        task.cruiseBefore = cruise and cruise.speed
+        v:createAgent()
+        task.agentMade = true
+        local mission = env.g_currentMission
+        local y = env.getTerrainHeightAtWorldPos(mission.terrainRootNode, spec.x, 0, spec.z)
+        local dx, dz = 0, 0
+        if finite(spec.yaw) and math.abs(spec.yaw) <= 2 * math.pi then dx, dz = math.sin(spec.yaw), math.cos(spec.yaw) end
+        env.setVehicleNavigationAgentTarget(ai.agentId, spec.x, y, spec.z, dx, 0, dz)
+    end)
+    if not ok then
+        log("navigate: GIANTS' agent could not be made (%s)", tostring(why))
+        agentEnd(env, task, 0)
+        return nil, "NO_AGENT"
+    end
+    return task
+end
+
+-- One frame of Farmhand's drive along GIANTS' agent. Codes as GIANTS' GOTO had them: DONE
+-- GOTO_ENDED when the agent reaches its target or finds it NOT_REACHABLE (the companion judges
+-- the arrival), NAVIGATE_BLOCKED_AT_START / NAVIGATE_STALLED for a BLOCKED agent, NAVIGATE_STUCK
+-- for a rig commanded to drive that does not move.
+local function stepAgent(env, task, dt)
+    local v = task.spec.tractor
+    local status, code = stillOurs(task.spec)
+    if status ~= nil then agentEnd(env, task, dt); return status, code end
+    if task.ended then return settle(task, task.ended) end
+    if v:getIsAIActive() ~= false then agentEnd(env, task, dt); return "FAILED", "AI_ACTIVE" end
+    if task.elapsed > Bridge.DRIVE_TIMEOUT_MS then agentEnd(env, task, dt); return "FAILED", "TIMEOUT" end
+    local ai = v.spec_aiDrivable
+    local x, _, z = env.getWorldTranslation(v.rootNode)
+    if not (finite(x) and finite(z)) then agentEnd(env, task, dt); return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
+    if task.startX == nil then task.startX, task.startZ = x, z end
+    if not task.leftStart and math.sqrt((x - task.startX) ^ 2 + (z - task.startZ) ^ 2) >= Bridge.NAVIGATE_PROGRESS_M then
+        task.leftStart = true
+    end
+    v:updateAIAgentPoseData()
+    local speed = math.abs((v.lastSpeedReal or 0) * 1000)
+    local curvature, curveMps, state = env.getVehicleNavigationAgentNextCurvature(ai.agentId, ai.poseData, speed)
+    ai.lastState = state                                   -- the diagnostics (logAgent) read it here
+    local name = agentState(env, state)
+    if name ~= task.lastName then
+        log("navigate: GIANTS' agent %s at %.1f,%.1f", name:lower(), x, z)
+        task.lastName, task.stateSince = name, task.elapsed
+    end
+    local function finish(endCode)
+        agentEnd(env, task, dt)
+        task.ended = endCode
+        return settle(task, endCode)
+    end
+    if name == "DRIVING" and finite(curvature) then
+        local cap = math.min(Bridge.AGENT.maxKmh, task.cruiseBefore or Bridge.AGENT.maxKmh)
+        local kmh = math.min(finite(curveMps) and curveMps * 3.6 or cap, cap)
+        if not v:getIsMotorStarted() then
+            if not v:getCanMotorRun() then return finish("MOTOR_UNAVAILABLE") end
+            v:startMotor()
+        end
+        Bridge.Hitch.holdActive(task.drive)
+        v:raiseActive()
+        env.AIVehicleUtil.driveAlongCurvature(v, dt, curvature, kmh, 1)
+        -- Commanded to move, yet the root does not: something physical holds it.
+        if kmh > 1 and (task.fromX == nil or math.sqrt((x - task.fromX) ^ 2 + (z - task.fromZ) ^ 2) >= Bridge.AGENT.stuckM) then
+            task.fromX, task.fromZ, task.fromAt = x, z, task.elapsed
+        elseif kmh > 1 and task.elapsed - (task.fromAt or task.elapsed) > Bridge.AGENT.stuckMs then
+            local contacts = "?"
+            pcall(function() contacts = Bridge.Hitch.rigContacts(env, v) end)
+            log("navigate: driven along GIANTS' agent but unmoved %.0f s at %.1f,%.1f (contacts %s)",
+                Bridge.AGENT.stuckMs / 1000, x, z, tostring(contacts))
+            agentEnd(env, task, dt)
+            return "FAILED", task.leftStart and "NAVIGATE_STUCK" or "NAVIGATE_STUCK_AT_START"
+        elseif kmh <= 1 then
+            task.fromAt = task.elapsed
+        end
+        return nil
+    end
+    Bridge.Hitch.halt(env, task.drive, dt)
+    task.fromAt = task.elapsed
+    if name == "TARGET_REACHED" or name == "NOT_REACHABLE" then
+        logAgent(env, v, "navigate ended")
+        return finish("GOTO_ENDED")
+    end
+    local waited = task.elapsed - (task.stateSince or task.elapsed)
+    if name == "BLOCKED" and waited > Bridge.AGENT.blockedMs then
+        logAgent(env, v, "navigate blocked")
+        agentEnd(env, task, dt)
+        return "FAILED", task.leftStart and "NAVIGATE_STALLED" or "NAVIGATE_BLOCKED_AT_START"
+    end
+    if name ~= "BLOCKED" and waited > Bridge.AGENT.planningMs then
+        logAgent(env, v, "navigate planning")
+        agentEnd(env, task, dt)
+        return "FAILED", "NAVIGATE_STALLED"
+    end
+    return nil
+end
+
 function starters.navigate(env, spec)
     -- A rig already pressed against fixed scenery needs a Farmhand departure
     -- maneuver before GIANTS GOTO. Starting its agent here just drives into
@@ -739,7 +869,12 @@ function starters.navigate(env, spec)
             return nil, "NAVIGATE_START_CONTACT"
         end
     end
-    local task, code = startGoto(env, spec, "NAVIGATE_")
+    local task, code = startAgent(env, spec)
+    if task == nil and code == "NO_AGENT" then
+        task, code = startGoto(env, spec, "NAVIGATE_")         -- no agent of its own: GIANTS' GOTO
+    else
+        if task ~= nil then task.agent = true end
+    end
     if task ~= nil then
         task.cropWheels = Bridge.protectTransportCrops(spec.tractor)
         task.cargo = Bridge.beltedCargo(spec.tractor)
@@ -767,10 +902,21 @@ local function traceNavigateSurface(env, task)
     log("navigate surface rig %s (non-field=%d field=%d crop=%d)", table.concat(parts, " "),
         counts.NON_FIELD, counts.FIELD, counts.CROP)
 end
-function steppers.navigate(env, task)
+function steppers.navigate(env, task, dt)
     pcall(traceNavigateSurface, env, task)
     cargoObstaclesOff(task)
-    local status, code = stepGoto(env, task, Bridge.DRIVE_TIMEOUT_MS, "TIMEOUT", "GOTO_ENDED", true, "NAVIGATE_")
+    local status, code
+    if task.agent then
+        local ok, s1, c1 = pcall(stepAgent, env, task, dt or 0)
+        if ok then status, code = s1, c1
+        else
+            log("navigate: agent step error %s", tostring(s1))
+            agentEnd(env, task, dt or 0)
+            status, code = "UNVERIFIED", "UNKNOWN_OBSERVATION"
+        end
+    else
+        status, code = stepGoto(env, task, Bridge.DRIVE_TIMEOUT_MS, "TIMEOUT", "GOTO_ENDED", true, "NAVIGATE_")
+    end
     if status ~= nil then
         cargoObstaclesBack(task)
         Bridge.restoreTransportCrops(task.cropWheels)
@@ -782,6 +928,7 @@ aborts.navigate = function(env, task)
     cargoObstaclesBack(task)
     Bridge.restoreTransportCrops(task.cropWheels)
     task.cropWheels = nil
+    if task.agent then return agentEnd(env, task, 0) end
     return abortGoto(env, task)
 end
 
