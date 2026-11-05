@@ -99,6 +99,7 @@ cloud gateway's runner, no PC input. Positions are the companion's final observa
 | "plow a small test area of field 5" (bounded 400 m2) | fb3522a3e1d64f75-1 / f5c50ab7 / 057826b2bbb9485c-1 | 008f4c5 → b93df2c | **FAIL** 1245, 120, then (counted) 8934 m2 | the trace: 0 m2 at 9.0 s, 1244 at 12.0 s, the plow ~400-476 m2/s, a 3 s check cannot bound it (fixed d6936f1, b93df2c); then the companion's "before" unmeasured right after a reload (fixed 45b7de3) |
 | Same words | 2484aa8876c64fda-1 | 45b7de3 | **PASS** COMPLETE AREA_WORK_OBSERVED, 408 m2 of 400 | light checks every 250 ms, every frame near the request, stopped at the first reading >= 97 %; the companion waited for the field's reading after the reload |
 | Same words | 4ac73dd5aacd4c4a-1 | 300b0b0 | **PASS** COMPLETE AREA_WORK_OBSERVED, 411 m2 of 400 | stop and acceptance by one measure (changed_area), the plow share agreeing (+411 m2) |
+| "use the gmc to take the deutz to the farm barn and unload it" (from field 5) | 68b5a27bd59246c5-1 | 1d9a87f | **PASS** COMPLETE HAULED_AND_UNLOADED, 5 min 22 s | the Series 9 + mounted plow now a rigid rig: approach by own drive 86 s (5.5 min before ae86dff), LOADED, own drive to the barn, UNLOADED |
 
 ## Hitch / attachment
 

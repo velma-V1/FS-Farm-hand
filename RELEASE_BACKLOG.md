@@ -18,11 +18,12 @@ Found: 2026-11-04 (live f460004990284cd1-1)
 
 Implemented (bcc2c60, rigid-rig fix ae86dff): within 40 m, rigs with no towed unit are searched with reverse moves from the start. Unit-tested; the next near-goal live drive should log "turns round in place" instead of a loop.
 
-## Reposition "open ground" arrives at any heading
+## Reposition heading: live confirmation
 Status: OPEN
+Priority: LOW
 Found: 2026-11-04 (live 8611351ac09e4a1b-1)
 
-starters.reposition proves a spot clear for the rig at `tyaw` but sends anything but a combine there at any heading; the GMC rig ARRIVED 18 m on with the truck's nose touching LOD0(-985,-12). Candidate: arrive at `tyaw` (the exact goal shot now plans a heading without lattice loops) or prove the spot at the heading the drive will arrive with. 21a5e70740024850-1 (heading correction at arrival under the old planner) must be re-checked first.
+1d9a87f: every reposition now arrives at the heading its spot was found clear at (the exact goal curve plans it). Confirm on the next live reposition: arrival at that heading, no contact.
 
 ## Scenery ghosting: prove the need or remove the option
 Status: OPEN
