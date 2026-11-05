@@ -636,7 +636,7 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
         end
         return node.gear < 0 and k .. ":r" or k
     end
-    local found, expanded, blocked = resumable(signature("plan", sx, sz, syaw, gx, gz, radius, goalYaw, limit,
+    local found, expanded, blocked, examples = resumable(signature("plan", sx, sz, syaw, gx, gz, radius, goalYaw, limit,
                                                 guide and #guide or 0, switches, steeredReverse and 1 or 0,
                                                 sty or "-"), function()
         local heap = {}
@@ -709,6 +709,9 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
                         -- What rejected it, by the reason's first word (the exhausted log).
                         local why = pass == true and "AREA" or tostring(surface):match("^[%w_]+") or "?"
                         job.blocked[why] = (job.blocked[why] or 0) + 1
+                        job.example = job.example or {}
+                        job.example[why] = job.example[why] or string.format("%s at %.1f,%.1f",
+                            tostring(surface):sub(1, 90), x, z)
                     else
                         surfaceCost = surfaceCost + (surface == "CROP" and 40
                                                      or surface == "FIELD" and 8 or 0)
@@ -735,7 +738,7 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
             end
         end
     end
-    job.result = pack(nil, job.expanded, job.blocked)
+    job.result = pack(nil, job.expanded, job.blocked, job.example)
     return true
     end)
     if found ~= nil then return found, nil end
@@ -797,7 +800,9 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
     end
     if localOnly then
         local reasons = {}
-        for why, count in pairs(blocked or {}) do reasons[#reasons+1] = why .. ":" .. count end
+        for why, count in pairs(blocked or {}) do
+            reasons[#reasons+1] = why .. ":" .. count .. (examples and examples[why] and (" (" .. examples[why] .. ")") or "")
+        end
         table.sort(reasons)
         say(string.format("[Farmhand] drive local search exhausted expanded=%d start=(%.1f,%.1f,%.2f) goal=(%.1f,%.1f) radius=%.1f goalYaw=%s guide=%d blocked %s",
                             expanded,sx,sz,syaw,gx,gz,radius,tostring(goalYaw),guide and #guide or 0,
