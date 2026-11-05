@@ -29,6 +29,24 @@ Acceptance:
 - every retained clean-build primitive is backed by a specific observed failure and live proof;
 - legacy mechanisms without proven player benefit are explicitly left behind.
 
+## Articulated route search: live proof and tight-space recovery
+Status: OPEN
+Priority: RELEASE-BLOCKER (loaded/towed rigs by Farmhand's own drive)
+Found: 2026-11-04 (live 48192ed2fe274fc3-1, 8611351ac09e4a1b-1)
+
+159896e/f8355da carry the trailer's heading in Drive.plan, the preview and the straightening reverse, judged by each unit's box (Hitch.rigModel / modelPoses, Drive.trailerStep, matching predictFromRootPose within 2 cm). Live, the search now reports per-unit blocks (`unit1:6`) instead of the rectangle's phantom scenery, but no Farmhand-driven move of a towed rig has yet been planned and completed by it: the qualifying GMC haul (5d29c5999c864530-1) was driven by GIANTS' navigation.
+
+Next:
+- A towed rig by Farmhand's own drive (navigation-test mode on) over a bend and into a field entrance: planned vs observed trailer heading along the path, contacts, frame cost of four unit queries a metre.
+- Towed rigs plan no reverse moves: with the nose against an object and the trailer behind (the GMC at (-980,-14)), only the bounded straightening reverse can leave. Decide from live evidence whether planned towed reverses (the reverse kinematics are the same step) are needed.
+- The Dubins goal shot (757f4bd) is unit-tested and its steps rebuild as follower arcs; a live hitch approach by Farmhand's own drive with it is still to be observed.
+
+## Reposition "open ground" arrives at any heading
+Status: OPEN
+Found: 2026-11-04 (live 8611351ac09e4a1b-1)
+
+starters.reposition proves a spot clear for the rig at `tyaw` but sends anything but a combine there at any heading; the GMC rig ARRIVED 18 m on with the truck's nose touching LOD0(-985,-12). Candidate: arrive at `tyaw` (the exact goal shot now plans a heading without lattice loops) or prove the spot at the heading the drive will arrive with. 21a5e70740024850-1 (heading correction at arrival under the old planner) must be re-checked first.
+
 ## One controlled point for planning, clearance and following
 Status: OPEN
 Priority: RELEASE-BLOCKER (narrow-gap navigation)

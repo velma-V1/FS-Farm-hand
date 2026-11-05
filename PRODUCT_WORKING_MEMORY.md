@@ -128,6 +128,13 @@ These facts are current evidence for the proving-ground program; they are not a 
 - Ordinary navigation proof excludes scenery ghosting. Predicted obstruction, confirmed contact, no-progress and stopping tolerance must remain separate states.
 - Single-flight live requests are mandatory; a queued request previously ran behind STOP and contaminated route evidence.
 
+## 2026-11-04 evening live findings (production builds 5613bd1 → f8355da)
+- NOT_STOPPED deadlock cleared live (87ec310879a546ea-1): one at-rest rule (Observe.atRest) with the sample's real age.
+- Drive.plan lattice turns heading in STEP/radius steps (1 rad at r=4); a goal heading within pi/12 was met only by luck or a near-2pi loop. Fixed with an exact Dubins goal shot (757f4bd).
+- GIANTS' field helper (AICollisionTriggerHandler) holds for the player on foot; AIFieldWorker:getAIFieldWorkerIsBlocked() exposes it. In save 1 the player often stands AFK in field 4 near (-703,237): expect person refusals there.
+- The whole-rig rectangle also falsely blocked the search and the straightening reverse of a bent towed rig; the search now carries the trailer heading (159896e, f8355da). See RELEASE_BACKLOG "Articulated route search".
+- Loaded GMC haul to field 5 PASS by GIANTS' navigation from (-980,-14) (5d29c5999c864530-1); from (-875,-60) GIANTS crept and AutoDrive had no route.
+
 ## Routing and movement lessons already learned
 - 2026-11-01 Save 1: exact natural command `take the GMC to the farm barn` physically COMPLETE (`d7e14850a1a34a21-1`) with GMC 611 + Deckover 620 + belted Series 9 622 + plow 621 stopped near the barn. It used native GIANTS navigation and final Farmhand arrival; the walked gate route did not qualify. That route remains in `routes.json` as `c996ab0558084c21aea35b93aa026fbc`, `verified=false`, `failures=2`, so selection skips it without deleting the user-taught line. The game log showed crop care-wheel restoration 13/13 at native end and own-drive handoff. Full `scripts/check.py` then passed 1,363 tests (6 skips) after the stale AutoDrive-first test was corrected. Native transport surface preference is still unproven; see backlog.
 - Farmhand has/has had a frame-budgeted resumable route search so route planning does not freeze FS25.
