@@ -1,3 +1,9 @@
+## AUTHORITATIVE FINAL PRODUCT SCOPE — OWNER DIRECTIVE, 2026-11-05
+
+Read [FINAL_FARMHAND_PRODUCT_SPEC.md](FINAL_FARMHAND_PRODUCT_SPEC.md) before any substantive work. It records the complete requested target including multiple simultaneous physical workers, moving-combine unloading as a release gate, live fields/contracts/world awareness, specialist vehicles/forestry/earthmoving/building operations, full farm/animal/production goals, fast precise navigation and recovery, natural character roles, and no AutoDrive execution. These are REQUIREMENTS, not claims of existing functionality.
+
+The explicit current owner direction and final product requirements supersede old experimental/lab-only mission statements, narrow release definitions and historical AutoDrive-first behavior anywhere in this repository. This is PRODUCTION DEVELOPMENT, not an alternate-planner proving exercise. Keep qualified functionality, isolate relevant diagnostic experiments, and deliver the complete target with physical evidence.
+
 ## Claude Cloud ↔ FS25 lab reference (2026-11-04)
 
 The production branch has a separate private MCP service `farmhand-live-lab`; see `CLOUD_LAB_ACCESS.md` for the current connection and verified non-focus-stealing hot-reload workflow. An MCP entry existing in `.mcp.json` does NOT prove this particular cloud session is authenticated. Verify with `toolkit_list("notes")` and `live_status()` before citing live/toolkit access. No arbitrary host shell, GUI input, game restarts, or cloud-code deployment is available through the gateway. Source access is for private research; do not publish GIANTS/provider code. Lab test successes are not proof that cloud changes ran in FS25. Preserve Codex's separate laboratory and the player's foreground.
@@ -79,25 +85,9 @@ Farmhand owns:
 
 Only one controller owns a machine at a time.
 
-# 3. Current repository mission: prove the minimum system
+# 3. Current repository mission: complete the production product
 
-The current repository is an **experimental proving ground**.
-
-Its job is not to make the legacy planner elegant or to preserve every old navigation branch.
-
-Its job is to discover and live-prove the **smallest set of reusable primitives** required for the final Farmhand product.
-
-After those primitives are proven, the current repo may be frozen and a clean Farmhand navigation implementation built from the proven pieces.
-
-For every proposed subsystem ask:
-1. What observed failure requires it?
-2. Can a smaller existing primitive solve that failure?
-3. What is the smallest implementation that can prove or disprove it?
-4. What player benefit does it create?
-
-If no demonstrated failure requires it, do not build it.
-
-Do not make silo completion, a specific field, one map, or one rig the product goal. They are test fixtures.
+This repository is the active Farmhand product, not an experimental navigation proving ground. Implement, integrate, qualify and release the complete owner requirements in FINAL_FARMHAND_PRODUCT_SPEC.md. Historical standalone-navigation experiments are a targeted diagnostic tool only, not a mandatory alternate-planner release milestone. Each useful primitive must improve a real end-to-end objective; preserve existing working navigation and integrations. Judge success by actual physics, full player goals and concurrent multi-machine tasks.
 
 # 4. Required end-product capabilities
 
@@ -230,7 +220,7 @@ Validation:
 
 Prediction quality is judged by actual pose/heading/clearance error, not by metadata agreement.
 
-# 8. Minimum navigation architecture to prove
+# 8. Historical navigation proof methodology (only for relevant diagnostic cases)
 
 Do not assume every item below is needed. Prove each from observed failures.
 
@@ -362,7 +352,7 @@ A movement performed with ghosted scenery does not prove ordinary physical navig
 
 One rig/map/destination never proves universality.
 
-# 13. Minimum qualification ladder
+# 13. Historical navigation qualification ladder (not a product release gate)
 
 Prove in this order unless evidence requires a different dependency:
 
@@ -415,7 +405,7 @@ Use the existing 2 m right-turn and short reverse-left cases:
 - replan count;
 - no frame/heartbeat starvation.
 
-Only after these primitives are proven should a clean navigation build be designed around them.
+Use these historical checks selectively for actual observed navigation failures; they do not delay implementation or release qualification of other product capabilities.
 
 # 14. Player-value optimization
 
@@ -542,4 +532,4 @@ Courseplay/AutoDrive/etc. may be studied for algorithms and geometry, but copy o
 
 Farmhand is complete when it behaves like a reliable additional worker and companion:
 
-**The player tells Farmhand what needs done. Farmhand observes the real FS25 world, determines the smallest correct plan, physically performs the work, verifies the result, and recovers when reality differs from prediction.**
+**The player tells Farmhand what needs done. Farmhand observes the real FS25 world, deploys and coordinates multiple concurrent workers when useful, physically performs complete farming and specialist objectives with the smallest correct plan, verifies the results, and recovers quickly when reality differs from prediction. Full release scope is in FINAL_FARMHAND_PRODUCT_SPEC.md.**

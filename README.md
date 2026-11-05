@@ -10,24 +10,9 @@ Core product loop:
 
 ## Current engineering phase
 
-This repository is currently being used as an **experimental proving ground** for the smallest standalone systems Farmhand needs.
+Active production development of the complete autonomous FS25 product. The authoritative target is [FINAL_FARMHAND_PRODUCT_SPEC.md](FINAL_FARMHAND_PRODUCT_SPEC.md), read with [AGENTS.md](AGENTS.md). Farmhand must be able to deploy multiple workers at once; moving combine unloading while harvesting is a release gate. Scope includes world/field/contracts observation, every supported equipment category, full farming/forestry/construction/earthmoving objectives, animals, production, logistics, voice/characters, high accuracy and fast planning/execution/recovery. These are TARGET REQUIREMENTS, not claims of current implementation.
 
-The mission is to prove the **smallest reusable foundations for the complete Farmhand product**, not endlessly repair the legacy architecture. Standalone navigation remains a major unresolved dependency, especially:
-
-- live physical object/rig measurement;
-- complete recursive attachment/cargo understanding;
-- articulated short-horizon motion prediction;
-- accurate local clearance without oversized whole-rig false rejections;
-- cheap destination-directed global routing;
-- closed-loop motion/no-progress/contact supervision;
-- bounded local recovery and replan;
-- reliable handoff between local maneuvering and destination travel.
-
-For every experiment, review the **immediate physical cause**, **broken upstream dependencies**, and **whole-product benefit**. Repair shared prerequisites before downstream workarounds; reuse the simplest correct mechanism across workflows. Measure request-to-first-useful-action and request-to-verified-completion time. Experimental machine control (including forestry and heavy equipment where GIANTS has no complete worker workflow) may establish reusable foundations without completing every specialized job.
-
-The authoritative rules, mandatory three-scale review and proof ladder are in [AGENTS.md](AGENTS.md). Agent-specific operating guidance is in [CLAUDE.md](CLAUDE.md).
-
-`BUILD_SPEC.md` is retained as historical foundation documentation and is not current engineering authority where it conflicts with AGENTS.md.
+Navigation experiments are tools for correcting real gaps, not the product mission. Historical BUILD_SPEC.md does not narrow final scope. Claude engineering guidance: [CLAUDE.md](CLAUDE.md).
 
 ## Standalone definition
 
@@ -35,23 +20,22 @@ Farmhand owns the player objective and core worker behavior.
 
 GIANTS FS25 remains the engine and supplies the real world, physics, transforms, collisions, terrain, wheels, joints, attachments, vehicle controls, fields, economy, store and machine systems.
 
-AutoDrive, Courseplay, FollowMe, Universal Autoload and other gameplay mods may be studied or supported as optional accelerators, but advertised core Farmhand capability must not require them.
+AutoDrive does not participate in Farmhand execution, even as fallback, and independently installed settings remain untouched. Other gameplay mods may be researched or supported by specific verified capability adapters where needed, but the core cannot require them.
 
 ## End product
 
-Farmhand is intended to autonomously combine:
+Farmhand is intended to complete as many actual supported FS25 objectives as possible with **multiple independently controlled workers running simultaneously**, efficiently coordinated. User requirements are authoritative in [FINAL_FARMHAND_PRODUCT_SPEC.md](FINAL_FARMHAND_PRODUCT_SPEC.md), including:
 
-- navigation and driving;
-- hitching/detaching/configuration;
-- loading, securing, hauling and unloading;
-- field work;
-- buying/leasing/selling and logistics;
-- storage, productions and sell-point delivery;
-- heavy equipment, construction and forestry workflows where FS25 supports them;
-- natural conversation, status and optional voice;
-- persistent task state, STOP, recovery and resume.
+- live field, weather, crop, contract, animal, production, fleet and world awareness;
+- fast, resilient navigation, hitching, equipment selection, loading, hauling, unloading and precise real-world operation;
+- individual field operations and autonomous full farm processes, including needed stone removal, rolling, fertilizer, weed control and harvest;
+- **moving combine unloading while harvesting**, a required live-proven release gate;
+- forestry cutting, selectable log lengths, practical stacking, transport and stump outcome selection;
+- mining/quarries, earthmoving, excavators, dozers, cranes, forklifts and sensible construction/placement where available mechanics permit;
+- multi-machine logistics, contracts with rented/leased equipment, buying/selling/storage, animals and production;
+- interpreting badly structured commands, goal-driven autonomy modes, optional local AI character roles, voices, settings and real game verification.
 
-The player should not need internal IDs, provider knowledge, route-network setup, console commands, or routine developer intervention.
+The player should not need internal IDs, provider knowledge, route-network setup, console commands, or routine intervention. No claims of implementation or release qualification are implied by this intended scope.
 
 ## Development and verification
 

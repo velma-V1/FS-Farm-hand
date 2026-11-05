@@ -4,6 +4,13 @@ Temporary files (RELEASE_BACKLOG.md, PRODUCT_WORKING_MEMORY.md, AGENT_MEMORY_NOT
 
 Purpose: preserve only high-value facts that would be expensive to rediscover after chat/session compaction. This is not a chronological log. Current git/live evidence overrides stale historical notes.
 
+## Final product directive (2026-11-05)
+
+- FINAL_FARMHAND_PRODUCT_SPEC.md now preserves the owner's complete desired end-product; AGENTS.md points to it. Do not shrink the objective to a proving-ground subsystem.
+- Mandatory concurrent physical workers, moving combine unloading as release gate, live field/contract/world awareness, full farming cycles, forestry, chainsaw/stump policies, 15–20-second suitable-tree handling target, excavators/dozers/quarries, sensible construction, animals/production/economy, natural language even badly structured, optional role-based characters, all autonomy modes and rapid recovery. Aim at measurable 99% intent/location/outcome accuracy and minimal end-to-end time.
+- AutoDrive cannot execute Farmhand operations; only permitted read-only ownership observation avoids taking over independently player-driven AD.
+- Player's latest reported seat: Boss Hoss Series 9, but live observation must take precedence on every current job.
+
 ## Authority and context recovery
 - Read AGENTS.md first; it is authoritative.
 - Read CLAUDE.md for the current proving-ground operating method.

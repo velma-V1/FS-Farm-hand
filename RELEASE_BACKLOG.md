@@ -4,6 +4,23 @@ Temporary files (RELEASE_BACKLOG.md, PRODUCT_WORKING_MEMORY.md, AGENT_MEMORY_NOT
 
 Purpose: capture work that must be fixed, verified, polished, or explicitly scoped before first production release without derailing the current active task. Remove completed entries instead of accumulating history.
 
+## Complete final-product release contract — owner directive 2026-11-05
+
+Status: REQUIRED / NOT FULLY QUALIFIED
+Priority: AUTHORITATIVE FINAL RELEASE CONTRACT — refer to FINAL_FARMHAND_PRODUCT_SPEC.md.
+
+No narrow navigation-only build counts as the finished product. Required:
+- Concurrent independently controlled workers and coordinated fleet/resource/space scheduling with named/all STOP, persistence, fast autonomous recovery and performance scaling.
+- Moving combine unloading WHILE harvesting, synchronized pipe and cart, multiple carts and outgoing storage/sale logistics. Stationary unload alone does NOT pass.
+- Owned field observation including growth, stones, rolling, weeds, fertilizer and ready-to-harvest; contracts listing/accepting/completing with leased/owned equipment and payment.
+- One-command individual field tasks and complete farm/field/animal/production workflows, including buy/sell/lease/refill/repair and full material handling.
+- Forestry/trees/selectable log lengths, functional fast stacking, chainsaw/stump disposition; 15–20 s target on suitable equipment/timber.
+- Specialist vehicles and attachments, Lizard 379/lowboy/Cat 395 logistics, loader/quarry/mines, dozers/excavators/landscaping, sensible structures/placement where real game mechanics permit.
+- Short/poorly structured commands, goal-driven Full/Semi/Advisory/Manual modes, optional multiple character roles, fast planning/first action/recovery, 99% measurable task/location precision goals.
+- No AutoDrive participation in Farmhand jobs, ordinary standalone operations, truthful physical verification and good frame/CPU performance.
+
+Track REQUIRED, IMPLEMENTED, AUTOMATED-TESTED, LIVE-PROVEN or BLOCKED BY VERIFIED ENGINE/MAP CAPABILITY separately. Do not remove required scope merely to pass tests; use practical engineering and live evidence.
+
 ## Towed-rig tight-space recovery
 Status: OPEN
 Priority: MEDIUM

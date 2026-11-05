@@ -1,3 +1,9 @@
+## Current authoritative owner target — 2026-11-05
+
+Read FINAL_FARMHAND_PRODUCT_SPEC.md and AGENTS.md first. The owner-defined production target is a complete, high-performance FS25 world operator: simultaneous deployed workers, moving combine unloading as a RELEASE GATE, world/field/contract awareness, complete farming, forestry, excavation, construction and economy tasks, fast intent/action/recovery, character roles, and no AutoDrive execution.
+
+Historical lab-only and alternate-planner sections below are supporting research methodology; they do not shrink the product mission or impose substitute release gates. Preserve actual working mechanics and verify new capabilities in real gameplay. No claim that the requirements are already implemented.
+
 ## Claude Cloud ↔ FS25 lab reference (2026-11-04)
 
 The production branch has a separate private MCP service `farmhand-live-lab`; see `CLOUD_LAB_ACCESS.md` for the current connection and verified non-focus-stealing hot-reload workflow. An MCP entry existing in `.mcp.json` does NOT prove this particular cloud session is authenticated. Verify with `toolkit_list("notes")` and `live_status()` before citing live/toolkit access. No arbitrary host shell, GUI input, game restarts, or cloud-code deployment is available through the gateway. Source access is for private research; do not publish GIANTS/provider code. Lab test successes are not proof that cloud changes ran in FS25. Preserve Codex's separate laboratory and the player's foreground.
@@ -14,7 +20,7 @@ Claude Code works under `AGENTS.md`. Read it first. If this file conflicts with 
 
 There is no handoff file. Do not create or depend on one.
 
-## Current engineering objective
+## Historical proving-ground technique (not current product scope)
 
 Use the current repository as a laboratory to identify and live-prove the **smallest reusable systems needed for the final standalone Farmhand product**.
 
@@ -259,7 +265,7 @@ Put durable facts in the narrowest correct place:
 - deferred release work → `RELEASE_BACKLOG.md`;
 - source history → git.
 
-## Final deliverable of the proving-ground phase
+## Historical lab deliverable (not the current product release)
 
 Produce an evidence-backed list:
 
