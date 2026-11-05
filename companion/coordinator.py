@@ -1773,6 +1773,8 @@ class Coordinator:
         return self._execute(job, cancel, entered, "cd", task="detach_pair", tractor_name=tractor_name)
 
     GRAIN_CART_LOADS = 50            # loads one grain cart job takes away at most
+    GRAIN_CART_WAIT_S = 10.0         # between looks for its combine at work (its helper starting, on its way)
+    GRAIN_CART_WAITS = 180
 
     def _harvesting(self, field_id=None) -> bool:
         with self._lock:
@@ -1837,12 +1839,20 @@ class Coordinator:
         field = work.get("field")
         destination = self._destination(work.get("destination"))
         made, result = False, Result("COMPLETE", "HARVEST_ENDED")
-        for n in range(self.GRAIN_CART_LOADS):
+        waited, n = 0, 0
+        while n < self.GRAIN_CART_LOADS:
             if cancel.is_set():
                 return Result("CANCELLED", "CANCELLED_BY_REQUESTER")
             if not self._harvesting(field):
                 return result
-            result = self._execute(job, cancel, entered, f"e{n}", task="escort", field=field)
+            result = self._execute(job, cancel, entered, f"e{n}w{waited}", task="escort", field=field)
+            if result.status == "BLOCKED" and result.reason in ("NO_COMBINE_HARVESTING", "COMBINE_NOT_AT_THE_FIELD") \
+                    and waited < self.GRAIN_CART_WAITS:
+                # GIANTS' helper is still taking the combine, or on its way: the cart waits for it.
+                waited += 1
+                cancel.wait(self.GRAIN_CART_WAIT_S)
+                continue
+            n += 1
             if result.status == "BLOCKED" and result.reason == "NO_TRAILER_FOR_THE_GRAIN" and not made:
                 made = True
                 rig = self._make_grain_rig(job, cancel, entered)
