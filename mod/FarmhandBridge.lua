@@ -98,7 +98,14 @@ local function idle(env, v, farmId)
     if entered ~= true and entered ~= false then return "UNKNOWN_OBSERVATION" end
     local ai = v:getIsAIActive()
     if ai ~= false then return ai == true and "AI_ACTIVE" or "UNKNOWN_OBSERVATION" end
-    if not stopped(v) then return "NOT_STOPPED" end
+    if not stopped(v) then
+        local observe = Bridge.Observe
+        if observe ~= nil and type(observe.atRest) == "function" then
+            local _, reading, travelled = observe.atRest(env, v)
+            log("not at rest: GIANTS reads %s km/h, root travel %s km/h", tostring(reading), tostring(travelled))
+        end
+        return "NOT_STOPPED"
+    end
     Bridge.Hitch.watchDriver(env, v)
     return nil
 end

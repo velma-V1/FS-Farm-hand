@@ -442,7 +442,7 @@ end
 
 -- Read only (never moves the snapshot sample): km/h of root travel since this vehicle's last
 -- snapshot sample, when that sample is RESTING_MIN_MS..RESTING_MAX_MS old; else nil.
-Observe.RESTING_MIN_MS, Observe.RESTING_MAX_MS = 200, 2000
+Observe.RESTING_MIN_MS, Observe.RESTING_MAX_MS = 50, 2000
 function Observe.restingTravelKmh(env, v)
     local last = Observe.roots[v]
     if last == nil or v.rootNode == nil then return nil end
@@ -453,18 +453,21 @@ function Observe.restingTravelKmh(env, v)
     return math.sqrt((x - last.x) ^ 2 + (y - last.y) ^ 2 + (z - last.z) ^ 2) / span * 3600
 end
 
--- At rest, one definition for the mod (Bridge, Drive) as for the snapshot: GIANTS' reading
--- under 1 km/h, or (live 1d948e6151604c5b-1: tractor 615 unmoved to 0.1 mm for 35 min against
--- the object it touched, refused NOT_STOPPED by every op and by STOP itself) a reading that
--- only jitters (under JITTER_KMH) while the root's own travel is under 1 km/h.
-Observe.JITTER_KMH = 3
+-- At rest, one definition for the mod (Bridge, Drive) as for the snapshot (Observe.vehicle):
+-- the root's own travel since the last snapshot sample when there is one, else GIANTS'
+-- reading, under 1 km/h. Live 1d948e6151604c5b-1 / d95cdea187f74154-1: tractor 615 unmoved
+-- to 0.1 mm for an hour against the object it touched, refused NOT_STOPPED by every op and
+-- by STOP itself on GIANTS' reading (a first fix trusted travel only under a 3 km/h reading:
+-- refused again). Returns the verdict, the reading and the travel (nil without a sample).
 function Observe.atRest(env, v)
     local speed = v:getLastSpeed()
-    if not finite(speed) then return false end
-    if math.abs(speed) < 1 then return true end
-    if math.abs(speed) >= Observe.JITTER_KMH or env == nil then return false end
-    local ok, travelled = pcall(Observe.restingTravelKmh, env, v)
-    return ok and travelled ~= nil and travelled < 1
+    local travelled = nil
+    if env ~= nil then
+        local ok, kmh = pcall(Observe.restingTravelKmh, env, v)
+        travelled = ok and kmh or nil
+    end
+    if travelled ~= nil then return travelled < 1, speed, travelled end
+    return finite(speed) and math.abs(speed) < 1, speed, nil
 end
 
 function Observe.vehicle(env, v)

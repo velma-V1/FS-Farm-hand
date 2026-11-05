@@ -615,18 +615,19 @@ class ObserveTravelTests(unittest.TestCase):
         self.v.getLastSpeed = lambda _self: reading["kmh"]
         self.sample(0)
         self.observe.clockMs = self.observe.clockMs + 1000          # a snapshot sample 1 s old
-        self.assertTrue(self.observe.atRest(self.env, self.v))       # jitter, root unmoved
-        self.env.p.x = self.env.p.x + 1.0                            # 1 m in 1 s: moving
-        self.assertFalse(self.observe.atRest(self.env, self.v))
-        self.env.p.x = self.env.p.x - 1.0
-        reading["kmh"] = 5.0                                         # over the jitter bound
-        self.assertFalse(self.observe.atRest(self.env, self.v))
-        reading["kmh"] = 0.5                                         # GIANTS' own rest
-        self.assertTrue(self.observe.atRest(None, self.v))
+        self.assertTrue(self.observe.atRest(self.env, self.v)[0])       # jitter, root unmoved
+        reading["kmh"] = 7.0                                         # any reading: the root decides
+        self.assertTrue(self.observe.atRest(self.env, self.v)[0])
         reading["kmh"] = 2.0
-        self.observe.clockMs = self.observe.clockMs + 5000           # sample too old to judge
-        self.assertFalse(self.observe.atRest(self.env, self.v))
-        self.assertFalse(self.observe.atRest(None, self.v))          # nothing to judge by
+        self.env.p.x = self.env.p.x + 1.0                            # 1 m in 1 s: moving
+        self.assertFalse(self.observe.atRest(self.env, self.v)[0])
+        self.env.p.x = self.env.p.x - 1.0
+        reading["kmh"] = 0.5                                         # GIANTS' own rest, no sample
+        self.assertTrue(self.observe.atRest(None, self.v)[0])
+        reading["kmh"] = 2.0
+        self.observe.clockMs = self.observe.clockMs + 5000           # sample too old: the reading
+        self.assertFalse(self.observe.atRest(self.env, self.v)[0])
+        self.assertFalse(self.observe.atRest(None, self.v)[0])
 
 
 class Lua51ObserveTravelTests(ObserveTravelTests):
