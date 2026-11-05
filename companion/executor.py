@@ -1851,6 +1851,113 @@ class Executor:
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, rig_ids + combine_ids[:1], tuple(states))
 
+    # The cart is driven up behind a combine farther than this first (ESCORT starts within 90 m),
+    # to its run-up ESCORT_RUN_UP_M behind the combine on its line, at its heading.
+    ESCORT_NEAR_M = 70.0
+    ESCORT_RUN_UP_M = 25.0
+
+    def _escort(self, command, enter, states) -> Result:
+        """A combine harvesting under GIANTS' helper unloaded on the move (FINAL_FARMHAND_PRODUCT_SPEC.md 5,
+        a release gate): FIND the harvesting combine (nearest the field said) and the nearest tractor
+        (tractor_name if said) towing a trailer with room for its crop -> RESERVE the rig ->
+        APPROACH (GIANTS' agent under Farmhand to the run-up behind the combine, only when farther
+        than ESCORT_NEAR_M) -> ESCORT (the trailer held under the pipe at the combine's speed, behind
+        it while it turns; GIANTS' helper swings the pipe and discharges) until the trailer is full
+        or the helper ends -> VERIFY (grain came into the trailer) -> STOP -> RELEASE. The combine
+        stays its helper's throughout; nothing of it is reserved or driven here."""
+        owner, farm_id = command["request_id"], command["farm_id"]
+        rig_ids, reserved, moved = (), False, False
+        status, reason = "BLOCKED", "NO_COMBINE_HARVESTING"
+        try:
+            enter("FIND")
+            items = sorted(self.world.snapshot(), key=lambda i: i.id)
+            observed = {i.id: i for i in items}
+            combines = [c for c in items if c.category == "harvester" and c.pipe is not None and c.farm_id == farm_id
+                        and c.busy and c.busy_reason == "AI_ACTIVE" and valid_position(c.position)]
+            field = command.get("field")
+            place = next((p for p in self.world.field_places() if p.id == f"field-{field}"), None) if field else None
+            if place is not None and valid_position(place.position):
+                combines.sort(key=lambda c: (math.dist(c.position, place.position), c.id))
+            if not combines:
+                return Result("BLOCKED", reason, states=tuple(states))
+            combine = combines[0]
+            grain = next((u.fill_type for u in combine.fill_units
+                          if (u.level or 0.0) > 0 and (u.fill_type or "UNKNOWN") not in self.NOT_CARGO), None)
+            rigs = []
+            for tractor in items:
+                trailer = observed.get(tractor.attached_to)
+                if not (tractor.category == "tractor" and trailer is not None and trailer.attached_to == tractor.id
+                        and "trailer" in trailer.kinds and trailer.fill_units and trailer.size is not None
+                        and not transport.is_transport(trailer) and named(tractor, command.get("tractor_name"))
+                        and all(usable(x, farm_id) and x.stopped for x in (tractor, trailer))):
+                    continue
+                room = sum((u.capacity or 0.0) - (u.level or 0.0) for u in trailer.fill_units
+                           if (grain in u.supported if grain else True)
+                           and (not u.level or (grain is not None and u.fill_type == grain)))
+                if room > 0:
+                    rigs.append((math.dist(tractor.position, combine.position), tractor.id, tractor, trailer))
+            if not rigs:
+                return Result("BLOCKED", "NO_TRAILER_FOR_THE_GRAIN", (combine.id,), tuple(states))
+            _, _, tractor, trailer = min(rigs, key=lambda r: (r[0], r[1]))
+            rig_ids = (tractor.id, trailer.id)
+            enter("RESERVE")
+            if not self.world.reserve(rig_ids, owner):
+                return Result("BLOCKED", "RESERVATION_CONFLICT", rig_ids, tuple(states))
+            reserved = True
+            self.active = rig_ids
+            before = sum(u.level or 0.0 for u in trailer.fill_units)
+            if math.dist(tractor.position, combine.position) > self.ESCORT_NEAR_M:
+                enter("APPROACH")
+                moved = True
+                now = next(i for i in self.world.snapshot() if i.id == combine.id)
+                yaw = now.heading or 0.0
+                aim = Pose(now.position[0] - math.sin(yaw) * self.ESCORT_RUN_UP_M,
+                           now.position[1] - math.cos(yaw) * self.ESCORT_RUN_UP_M, yaw)
+                self._navigate(tractor.id, aim, owner, free=False)
+            enter("ESCORT")
+            moved = True
+            try:
+                done = self.world.escort(tractor.id, combine.id, owner)
+            except StepFailed as failure:
+                # The helper ended and the watcher's stop of the combine ended the escort with it.
+                now = next((i for i in self.world.snapshot() if i.id == combine.id), None)
+                if failure.code != "STOPPED" or now is None or now.busy:
+                    raise
+                done = "COMBINE_STOPPED"
+            enter("VERIFY")
+            after = self._at_rest(rig_ids)
+            got = sum(u.level or 0.0 for u in after[trailer.id].fill_units) - before
+            log.info("ESCORT %s: trailer %.0f -> %.0f l", done, before, before + got)
+            if got <= 0 and done == "TRAILER_FULL":
+                raise ObservationMismatch("GRAIN_NOT_MOVED")
+            status, reason = "COMPLETE", "CART_FULL" if done == "TRAILER_FULL" else (
+                "HARVEST_ENDED" if got > 0 else "HARVEST_ENDED_NOTHING_TAKEN")
+        except Cancelled:
+            status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
+        except ObservationMismatch as error:
+            status, reason = "UNVERIFIED", str(error)
+        except StepUnverified as error:
+            status, reason = "UNVERIFIED", error.code
+        except StepFailed as error:
+            status, reason = "FAILED", error.code
+        except (RuntimeError, ValueError, KeyError) as error:
+            status, reason = "FAILED", getattr(error, "code", None) or type(error).__name__
+        finally:
+            try:
+                if moved:
+                    enter("STOP")
+                    if not self.world.stop(rig_ids[0], owner):
+                        raise ObservationMismatch("STOP_NOT_CONFIRMED")
+                if reserved:
+                    enter("RELEASE")
+                    self.world.release(owner)
+            except Exception as error:
+                log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
+                status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        self.active = ()
+        log.info("result %s %s states %s", status, reason, ",".join(states))
+        return Result(status, reason, rig_ids, tuple(states))
+
     PART_NEAR_M = 12.0        # a trailer rig this near a combine blocks GIANTS' agent for both
 
     def _part(self, command, enter, states) -> Result:
@@ -2439,6 +2546,8 @@ class Executor:
             return self._overload(command, enter, states)
         if command["task"] == "part":
             return self._part(command, enter, states)
+        if command["task"] == "escort":
+            return self._escort(command, enter, states)
         if command["task"] == "save_game":
             try:
                 enter("SAVE")

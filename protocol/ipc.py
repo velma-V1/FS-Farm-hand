@@ -136,6 +136,7 @@ COMMAND_ARGS = {
     "pipe": ("tractor", "direction"),            # a combine's pipe out (1) or in (-1), GIANTS Pipe
     "overload": ("tractor", "wagon"),            # a standing combine discharges into the trailer under its pipe
     "alongside": ("tractor", "wagon", "direction"),  # the trailer under the combine's pipe (1) or on past the combine (-1)
+    "escort": ("tractor", "wagon"),              # the trailer held under the pipe of the combine (wagon) harvesting under GIANTS' helper
     "deliver": ("tractor", "direction"),        # GIANTS' Deliver helper: the cargo to the best paid selling station (1) or the farm's storage (-1)
     "backoff": ("tractor", "wagon"),             # the tractor straight back from the transport's ramps it waits behind
     "stop": ("tractor",),

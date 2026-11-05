@@ -1600,6 +1600,51 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertEqual(self.results(1)[-1], (1, "REJECTED", "UNKNOWN_VEHICLE"))
         self.assertNotIn("newManeuver:4/1", self.calls())
 
+    def test_an_escort_runs_beside_other_machines_ops_and_only_its_own_machines_stop_it(self):
+        # FINAL_FARMHAND_PRODUCT_SPEC.md 4: many machines at once, one controller per machine. The grain
+        # cart (tractor 11) under the combine (12) runs on while a stop for another machine (14)
+        # runs and ends; an op on the cart is BUSY; a stop for the combine pre-empts the escort.
+        self.lua.execute("""local w, Hitch = ...
+            local function vehicle(id)
+                local v = { ownerFarmId = 1, rootNode = "root" .. id }
+                v.rootVehicle = v
+                function v:getLastSpeed() return 0 end
+                function v:getIsAIActive() return false end
+                function v:getIsEntered() return false end
+                return v
+            end
+            w.combine, w.other = vehicle(12), vehicle(14)
+            local get = w.env.NetworkUtil.getObject
+            w.env.NetworkUtil.getObject = function(id)
+                if id == 12 then return w.combine elseif id == 14 then return w.other end
+                return get(id)
+            end
+            w.escortSteps = 0
+            Hitch.newEscort = function(env, args)
+                table.insert(w.calls, "newEscort")
+                return { tractor = args.tractor, combine = args.combine }
+            end
+            Hitch.escortStep = function() w.escortSteps = w.escortSteps + 1; return "CONTINUE" end
+            Hitch.abort = function(env, s, code) table.insert(w.calls, "abort:" .. code) end
+        """, self.w, self.hitch)
+        self.adopt()
+        self.send(1, "escort", {"tractor": 11, "wagon": 12})
+        self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])
+        self.send(2, "navigate", {**self.POSE, "tractor": 11})
+        self.assertIn((2, "REJECTED", "BUSY"), self.results())
+        self.send(3, "stop", {"tractor": 14})
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(3), [(3, "ACCEPTED", "ACCEPTED"), (3, "DONE", "STOPPED")])
+        self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])          # still running
+        steps = self.w.escortSteps
+        self.W.run(self.w, 300)
+        self.assertGreater(self.w.escortSteps, steps)
+        self.send(4, "stop", {"tractor": 12})
+        self.assertIn((1, "FAILED", "STOPPED"), self.results())
+        self.assertIn("abort:STOPPED", self.calls())
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(4)[-1], (4, "DONE", "STOPPED"))
+
     def test_stop_pre_empts_a_maneuver_and_keeps_it_braked(self):
         self.adopt()
         self.scripted_maneuver(["CONTINUE"])

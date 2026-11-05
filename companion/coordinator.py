@@ -46,9 +46,9 @@ def token(text: str) -> str:
 # rest is visible on request (STATUS_WORKING_<step>).
 # Steps that move equipment: STATUS says "driving" only when it is observed moving.
 MOTION_STEPS = frozenset({"TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "PULL_CLEAR", "UNPARK",
-                          "DELIVER", "FIELD_WORK", "APPROACH", "LOAD", "UNLOAD", "FOLLOW"})
+                          "DELIVER", "FIELD_WORK", "APPROACH", "LOAD", "UNLOAD", "FOLLOW", "ESCORT"})
 MILESTONES = frozenset({"FIELD_WORK", "PULL_CLEAR", "WAIT_PERSON", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "DELIVER",
-                        "RAMPS_DOWN", "LOAD", "BELTS", "RAMPS_UP", "UNLOAD"})
+                        "RAMPS_DOWN", "LOAD", "BELTS", "RAMPS_UP", "UNLOAD", "ESCORT"})
 # The executor task and the player-facing notices of each job command.
 JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE"),
         "move_pair": ("move_pair", "ACCEPTED_MOVE", "COMPLETE_MOVE"),
@@ -69,6 +69,7 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "unload_combine": ("unload_harvester", "ACCEPTED_UNLOAD_COMBINE", "COMPLETE_UNLOAD_COMBINE"),
         "land": ("land", "ACCEPTED_LAND", "COMPLETE_LAND"),
         "combine_full": ("overload", "COMBINE_FULL", "COMPLETE_UNLOAD_COMBINE"),
+        "grain_cart": ("escort", "ACCEPTED_GRAIN_CART", "COMPLETE_GRAIN_CART"),
         "wagon_full": ("field_work", "WAGON_FULL", "COMPLETE_FIELD_WORK"),
         "clear_worker": ("clear_worker", "WORKER_BLOCKED", "COMPLETE_CLEAR_WORKER"),
         "join_fields": ("join_fields", "ACCEPTED_JOIN_FIELDS", "COMPLETE_JOIN_FIELDS")}
@@ -604,6 +605,9 @@ class Coordinator:
         # Buying a trailer a job needs without being told (the user, 2026-10-30: "the only time
         # farmhand should buy anything is under instructions"): off.
         self.buy_when_needed = False
+        # A grain cart follows each harvest the helper starts, unloading the combine on the move
+        # (FINAL_FARMHAND_PRODUCT_SPEC.md 5): on unless a test or a setting turns it off.
+        self.grain_cart = True
         # Farmhand's pay (mode, amount) from the player's settings, or None (the game's default):
         # read before each job (Settings.pay; companion/service.py sets the reader).
         self.pay = lambda: None
@@ -1152,6 +1156,8 @@ class Coordinator:
             return self._unload_combine(job, cancel, entered, work)
         if command == "combine_full":
             return self._combine_full(job, cancel, entered, work)
+        if command == "grain_cart":
+            return self._grain_cart(job, cancel, entered, work)
         if command == "wagon_full":
             return self._wagon_full(job, cancel, entered, work)
         if command == "clear_worker":
@@ -1525,6 +1531,11 @@ class Coordinator:
                         self._add_worker(worker)
                         started.append(worker)
                         self.notify("WORKER_STARTED", job.spoken)
+                        if step["operation"] == "harvest" and self.grain_cart:
+                            # Its grain cart, as soon as Farmhand is free (the watch starts it).
+                            with self._lock:
+                                self._after.append({"job": "grain_cart", "work": {
+                                    "field": field.id, "destination": work.get("destination")}})
                         break
                 if not retry:
                     break
@@ -1722,6 +1733,54 @@ class Coordinator:
             return back
         return self._execute(job, cancel, entered, "cd", task="detach_pair", tractor_name=tractor_name)
 
+    GRAIN_CART_LOADS = 50            # loads one grain cart job takes away at most
+
+    def _harvesting(self, field_id=None) -> bool:
+        with self._lock:
+            return any(w.operation == "harvest" and (field_id is None or w.field == field_id) for w in self.workers)
+
+    def _grain_cart(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
+        """A grain cart for the field's harvesting combine (FINAL_FARMHAND_PRODUCT_SPEC.md 5): its trailer
+        under the moving combine's pipe until full (executor escort), then the load where the harvest
+        goes (sold or stored: the request's words, else the saved policy) and back for more, while the
+        helper harvests. With no rig that has room, one is made (_make_grain_rig: a free tractor
+        hitched to the nearest trailer with room; bought only when allowed). Full with nowhere to take
+        it: said, and it ends there (the combine's own full stop is handled by the watch)."""
+        field = work.get("field")
+        destination = self._destination(work.get("destination"))
+        made, result = False, Result("COMPLETE", "HARVEST_ENDED")
+        for n in range(self.GRAIN_CART_LOADS):
+            if cancel.is_set():
+                return Result("CANCELLED", "CANCELLED_BY_REQUESTER")
+            if not self._harvesting(field):
+                return result
+            result = self._execute(job, cancel, entered, f"e{n}", task="escort", field=field)
+            if result.status == "BLOCKED" and result.reason == "NO_TRAILER_FOR_THE_GRAIN" and not made:
+                made = True
+                rig = self._make_grain_rig(job, cancel, entered)
+                if rig is None or rig.status != "COMPLETE":
+                    return rig or result
+                result = self._execute(job, cancel, entered, f"e{n}m", task="escort", field=field)
+            if cancel.is_set():
+                return Result("CANCELLED", "CANCELLED_BY_REQUESTER", result.equipment_ids, result.states)
+            if result.status != "COMPLETE":
+                return result
+            observed = {i.id: i for i in self.world.snapshot()}
+            cart = observed.get(result.equipment_ids[0]) if result.equipment_ids else None
+            name = _words(cart.name) if cart is not None else None
+            if name and field is not None:
+                self._harvest_rigs[field] = name       # what is left in it goes where the harvest goes
+            if result.reason != "CART_FULL":
+                return result                          # the harvest ended
+            if not destination:
+                self.notify("GRAIN_CART_FULL", job.spoken)
+                return result
+            delivered = self._execute(job, cancel, entered, f"d{n}", task=destination, tractor_name=name)
+            self.notify(result_notice(delivered.status, delivered.reason, f"COMPLETE_{destination.upper()}"), job.spoken)
+            if delivered.status != "COMPLETE":
+                return delivered
+        return result
+
     def _unload_combine(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """"Unload the combine": its grain transferred into a trailer, nothing more. With no
         helper harvesting, the standing combine (the one said, else the fullest) under its
@@ -1739,6 +1798,12 @@ class Coordinator:
         if field_id not in fields:
             return Result("BLOCKED", "NO_COMBINE_HARVESTING")
         worker = next(w for w in harvesting if w.field == field_id)
+        if self.grain_cart:
+            # On the move first (a release gate); stopping the combine is only the recovery.
+            moving = self._grain_cart(job, cancel, entered, {"field": field_id, "destination": worker.destination})
+            if moving.status in ("COMPLETE", "CANCELLED") or not self._harvesting(field_id):
+                return moving
+            log.info("job %d grain cart: %s %s; the combine paused instead", job.number, moving.status, moving.reason)
         combine = next((i for i in self.world.snapshot() if i.id == worker.tractor), None)
         if not self._pause_worker(worker):
             return Result("UNVERIFIED", "STOP_NOT_CONFIRMED")

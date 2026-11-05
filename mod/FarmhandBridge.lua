@@ -1352,6 +1352,55 @@ function aborts.alongside(env, task)
     abortMotion("alongside", env, task, Bridge.Hitch.describeAlongside)
 end
 
+-- ----------------------------------------------------------------- escort
+-- ESCORT: the reserved tractor's trailer held under the pipe of a combine harvesting under
+-- GIANTS' helper, at its speed, behind it on its trail while it turns (Hitch.newEscort): the
+-- combine unloaded on the move. DONE TRAILER_FULL or COMBINE_STOPPED (its helper ended), braked.
+-- It runs beside other operations (Bridge.CONCURRENT): only its own cart and combine conflict.
+Bridge.ESCORT_LOG_MS = 5000
+
+function starters.escort(env, spec)
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    if spec.tractor.ownerFarmId ~= spec.farmId then return nil, "NOT_OWNED" end
+    local session, reason, refused = Bridge.Hitch.newEscort(env, {
+        tractor = spec.tractor, combine = spec.wagon, farmId = spec.farmId, isReserved = spec.owned,
+    })
+    if session == nil then
+        log("escort refused %s: %s", tostring(reason), Bridge.Hitch.describeEscort(refused))
+        return nil, reason
+    end
+    log("escort start: %s", Bridge.Hitch.describeEscort(session))
+    return { session = session, logAt = 0 }
+end
+
+function steppers.escort(env, task, dt)
+    local code = Bridge.Hitch.escortStep(env, task.session, dt)
+    if task.elapsed >= task.logAt then
+        task.logAt = task.elapsed + Bridge.ESCORT_LOG_MS
+        log("escort %s", Bridge.Hitch.describeEscort(task.session))
+    end
+    if code == "CONTINUE" then return nil end
+    if not task.endLogged then
+        task.endLogged = true
+        logMotionEnd("escort", code, task.session, Bridge.Hitch.describeEscort)
+        for i, row in ipairs(task.session.rows or {}) do
+            if i % 5 == 1 then
+                log("escort row t=%d mode=%s vc=%.1f v=%s err=%s lat=%s pipe=%s level=%.0f", row.t, row.mode, row.vc,
+                    row.v and string.format("%.1f", row.v) or "?", row.err and string.format("%.2f", row.err) or "?",
+                    row.lat and string.format("%.2f", row.lat) or "?", tostring(row.pipe), row.level or 0)
+            end
+        end
+    end
+    if code ~= "TRAILER_FULL" and code ~= "COMBINE_STOPPED" then
+        return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code
+    end
+    return settle(task, code)
+end
+
+function aborts.escort(env, task)
+    abortMotion("escort", env, task, Bridge.Hitch.describeEscort)
+end
+
 -- ----------------------------------------------------------------- follow
 -- "Follow me", only when the player asks (AGENTS.md): FollowMe's own start, its registered
 -- vehicle function initiateFollowVehicle(leader) (FollowVehicle.lua 556-571: FollowMe's job
@@ -2739,7 +2788,10 @@ function aborts.stop() end
 -- --------------------------------------------------------------- runner
 
 Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true, load = true,
-                       overload = true, alongside = true, backoff = true }
+                       overload = true, alongside = true, backoff = true, escort = true }
+-- Ops that run beside the others (each keeps its own state on its task): one per machine, many
+-- machines at once. Every other op runs alone in the active slot, as before.
+Bridge.CONCURRENT = { escort = true, stop = true }
 Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true, contract = true,
                       land = true, pay = true, charge = true }   -- ops that act on no vehicle
 
@@ -2845,14 +2897,14 @@ end
 
 -- Drop the companion: stop whatever it started, release ownership.
 function Bridge:dropSession(code)
-    if self.active ~= nil then
-        Bridge.abort(self.env, self.active.task, code)
-        self:result(self.session, self.active.id, self.active.task.op, preempted(self.active.task), code)
-        for _, joined in ipairs(self.active.joined or {}) do
+    for _, entry in ipairs(self:entries()) do
+        Bridge.abort(self.env, entry.task, code)
+        self:result(self.session, entry.id, entry.task.op, preempted(entry.task), code)
+        for _, joined in ipairs(entry.joined or {}) do
             self:result(self.session, joined, "stop", "FAILED", code)
         end
-        self.active = nil
     end
+    self.active, self.side = nil, {}
     if self:companionOwner() then Bridge.owner = nil end
     -- What spans several of its ops ends with the session: the takeover watch (a later session's
     -- first job would end DRIVER_TOOK_OVER on a drive the player made meanwhile) and combines
@@ -2906,7 +2958,7 @@ function Bridge:checkSession()
     end
 end
 
-local ATTRS = { tractor = "tractor", wagon = "wagon", marker = "marker", x = "x", z = "z", yaw = "yaw",
+local ATTRS = { tractor = "tractor", wagon = "wagon", x = "x", z = "z", yaw = "yaw",
                 tractorJoint = "tj", wagonJoint = "wj", maxDistanceM = "dist", field = "field", area = "area", seed = "seed", hand = "hand", item = "item", hitch = "hitch", engine = "eng", opt1 = "o1", opt2 = "o2", opt3 = "o3", opt4 = "o4",
                 direction = "fd",
                 -- 1 only when the player's opt-in scenery setting is on (protocol.ipc GHOST_OPS)
@@ -2926,6 +2978,19 @@ function Bridge:pollCommand()
     if cmd == nil then return nil end
     pcall(env.deleteFile, path)     -- the file disappearing is receipt, never success
     return cmd
+end
+
+local function machines(spec)
+    local out = {}
+    for _, v in ipairs({ spec.tractor, spec.wagon }) do
+        if v ~= nil then out[v.rootVehicle or v] = true end
+    end
+    return out
+end
+
+local function shares(a, b)
+    for v in pairs(a) do if b[v] then return true end end
+    return false
 end
 
 function Bridge:handle(cmd)
@@ -2954,32 +3019,66 @@ function Bridge:handle(cmd)
     end
     local owner = "companion:" .. self.session
     spec.owned = function() return Bridge.owner == owner end
-    if self.active ~= nil then
-        -- Only a stop may pre-empt the running command: one for its vehicle, or for the rig its
-        -- wagon hangs on (overload runs on the combine, into the rig's trailer: the stop the
-        -- companion sends for that rig's tractor must end it).
-        local running = self.active.task.spec
-        local wagon = running.wagon
-        local ofRig = wagon ~= nil and spec.tractor ~= nil and (wagon.rootVehicle or wagon) == (spec.tractor.rootVehicle or spec.tractor)
-        if cmd.op ~= "stop" or (running.tractor ~= spec.tractor and not ofRig) then
-            return self:result(cmd.session, cmd.id, cmd.op, "REJECTED", "BUSY")
-        end
+    -- Only a stop may pre-empt what runs on the same machines (an op's tractor and wagon, each
+    -- with the rig it hangs on: overload runs on the combine, into the rig's trailer, so the stop
+    -- the companion sends for that rig's tractor ends it). Other machines' ops run on.
+    local mine, hit = machines(spec), {}
+    for _, entry in ipairs(self:entries()) do
+        if shares(machines(entry.task.spec), mine) then hit[#hit + 1] = entry end
+    end
+    if #hit > 0 then
+        if cmd.op ~= "stop" then return self:result(cmd.session, cmd.id, cmd.op, "REJECTED", "BUSY") end
         -- A stop while a stop runs joins it: both get its one observed outcome, so
         -- a second stop can never turn the first one's confirmation into FAILED.
-        if self.active.task.op == "stop" then
-            self:result(cmd.session, cmd.id, cmd.op, "ACCEPTED", "ACCEPTED")
-            self.active.joined = self.active.joined or {}
-            table.insert(self.active.joined, cmd.id)
-            return
+        for _, entry in ipairs(hit) do
+            if entry.task.op == "stop" then
+                self:result(cmd.session, cmd.id, cmd.op, "ACCEPTED", "ACCEPTED")
+                entry.joined = entry.joined or {}
+                table.insert(entry.joined, cmd.id)
+                return
+            end
         end
-        spec.target = self.active.task
-        self:result(self.session, self.active.id, self.active.task.op, preempted(self.active.task), "STOPPED")
-        self.active = nil
+        spec.target = hit[1].task                        -- aborted by the stop's start
+        for i, entry in ipairs(hit) do
+            if i > 1 then Bridge.abort(env, entry.task, "STOPPED") end
+            self:result(self.session, entry.id, entry.task.op, preempted(entry.task), "STOPPED")
+            self:remove(entry)
+        end
     end
+    local concurrent = Bridge.CONCURRENT[cmd.op] == true
+    if not concurrent and self.active ~= nil then return self:result(cmd.session, cmd.id, cmd.op, "REJECTED", "BUSY") end
     self:result(cmd.session, cmd.id, cmd.op, "ACCEPTED", "ACCEPTED")
     local task, code, status = Bridge.start(env, spec)
     if task == nil then return self:result(cmd.session, cmd.id, cmd.op, status, code) end
-    self.active = { id = cmd.id, task = task }
+    local entry = { id = cmd.id, task = task }
+    self.side = self.side or {}
+    if self.active == nil and cmd.op ~= "escort" then self.active = entry else self.side[cmd.id] = entry end
+end
+
+-- What runs now: the active op and those beside it.
+function Bridge:entries()
+    local out = {}
+    if self.active ~= nil then out[1] = self.active end
+    for _, entry in pairs(self.side or {}) do out[#out + 1] = entry end
+    return out
+end
+
+function Bridge:remove(entry)
+    if self.active == entry then self.active = nil end
+    if self.side ~= nil and self.side[entry.id] == entry then self.side[entry.id] = nil end
+end
+
+function Bridge:busy() return self.active ~= nil or next(self.side or {}) ~= nil end
+
+-- One step of a running op; true once it ended (its result and its joined stops' sent).
+function Bridge:stepEntry(entry, dt)
+    local status, code = Bridge.step(self.env, entry.task, dt)
+    if status == nil then return false end
+    self:result(self.session, entry.id, entry.task.op, status, code)
+    for _, joined in ipairs(entry.joined or {}) do
+        self:result(self.session, joined, "stop", status, code)
+    end
+    return true
 end
 
 function Bridge:update(dt)
@@ -2991,7 +3090,7 @@ function Bridge:update(dt)
         if self.dir ~= nil and type(self.env.fileExists) == "function" then
             local reload = self.dir .. ".fhReload"
             if self.env.fileExists(reload) then
-                if not self.reloadMarkerSeen and self.active == nil and self.env.FarmhandProbe ~= nil then
+                if not self.reloadMarkerSeen and not self:busy() and self.env.FarmhandProbe ~= nil then
                     self.reloadMarkerSeen = true
                     self.env.deleteFile(reload)
                     log("%s", self.env.FarmhandProbe:consoleReload())
@@ -3019,26 +3118,23 @@ function Bridge:update(dt)
     if self.sessionTimer >= Bridge.SESSION_CHECK_MS then self.sessionTimer = 0; self:checkSession() end
     local cmd = self:pollCommand()
     if cmd ~= nil then self:handle(cmd) end
-    if self.active ~= nil then
-        local status, code = Bridge.step(self.env, self.active.task, dt)
-        if status ~= nil then
-            self:result(self.session, self.active.id, self.active.task.op, status, code)
-            for _, joined in ipairs(self.active.joined or {}) do
-                self:result(self.session, joined, "stop", status, code)
-            end
-            self.active = nil
-        end
+    if self.active ~= nil and self:stepEntry(self.active, dt) then self.active = nil end
+    for id, entry in pairs(self.side or {}) do
+        if self:stepEntry(entry, dt) then self.side[id] = nil end
     end
-    pcall(Bridge.payTick, self.env, dt, self.active ~= nil or next(Bridge.handed) ~= nil,
+    pcall(Bridge.payTick, self.env, dt, self:busy() or next(Bridge.handed) ~= nil,
           self.env.g_currentMission:getFarmId())
     -- Rigs ghosted past buildings (Hitch.ghost) that no motion drives any more: their
     -- collision with buildings restored once each stands clear of them.
     self.ghostTimer = (self.ghostTimer or 0) + dt
     if self.ghostTimer >= 1000 and next(Bridge.Hitch.ghosted or {}) ~= nil then
         self.ghostTimer = 0
-        local active = self.active
+        local running = self:entries()
         pcall(Bridge.Hitch.releaseGhosts, self.env, function(tractor)
-            return active ~= nil and active.task ~= nil and active.task.spec ~= nil and active.task.spec.tractor == tractor
+            for _, entry in ipairs(running) do
+                if entry.task ~= nil and entry.task.spec ~= nil and entry.task.spec.tractor == tractor then return true end
+            end
+            return false
         end)
     end
     self.snapshotTimer = self.snapshotTimer + dt
@@ -3103,6 +3199,9 @@ Bridge.NOTICES = {
     STATUS_HELPERS_WORKING = "Farmhand: free; helpers are working the fields",
     ACCEPTED_UNLOAD_COMBINE = "Farmhand: emptying the combine into a trailer",
     COMPLETE_UNLOAD_COMBINE = "Farmhand: the combine is emptied into the trailer",
+    ACCEPTED_GRAIN_CART = "Farmhand: a grain cart is going to the combine to unload it while it harvests",
+    COMPLETE_GRAIN_CART = "Farmhand: the grain cart is done with the combine",
+    GRAIN_CART_FULL = "Farmhand: the grain cart is full; say sell the grain or store the grain",
     COMBINE_UNLOADED = "Farmhand: combine emptied into the trailer",
     COMBINE_FULL = "Farmhand: the combine is full; emptying it into a trailer, then harvesting on",
     COMBINE_FULL_NO_TRAILER = "Farmhand: the combine is full and no trailer has room; say sell the grain or store the grain, then continue",
@@ -3184,6 +3283,7 @@ Bridge.STEPS = {
     STORE = "driving the load to the farm's storage",
     OVERLOAD = "emptying the combine into the trailer",
     ALONGSIDE = "pulling the trailer under the combine's pipe",
+    ESCORT = "keeping the grain cart under the combine's pipe while it harvests",
     PIPE_OUT = "swinging the combine's pipe out",
     PIPE_IN = "folding the combine's pipe",
     PASS = "pulling on past the combine",
@@ -3399,6 +3499,17 @@ Bridge.REASONS = {
     ALONGSIDE_QUERY_UNKNOWN = "the way beside the combine could not be checked",
     ALONGSIDE_QUERY_UNVERIFIED = "the way beside the combine could not be checked reliably",
     ALONGSIDE_TOO_FAR = "the trailer is too far behind the combine's pipe",
+    COMBINE_NOT_HARVESTING = "the combine's helper is not harvesting",
+    COMBINE_NOT_OWNED = "the combine is not this farm's",
+    COMBINE_STOPPED = "the combine's helper stopped",
+    ESCORT_AHEAD_OF_COMBINE = "the grain cart is ahead of the combine",
+    ESCORT_GEOMETRY_UNKNOWN = "the combine's size could not be read",
+    ESCORT_NOT_ONE_TRAILER = "the grain cart tractor does not tow exactly one trailer",
+    ESCORT_QUERY_UNKNOWN = "the collision check could not run",
+    ESCORT_TOO_FAR = "the grain cart is too far from the combine",
+    NO_SAFE_SLOT = "there is no clear spot beside the combine under its pipe",
+    TRAILER_FULL = "the trailer is full",
+    TRAILER_WRONG_CROP = "the trailer holds or takes another crop",
     ARRIVAL_NOT_OBSERVED = "the rig was not seen arriving at the destination",
     ATTACHED = "it is hitched to something",
     ATTACHMENT_MISMATCH = "the equipment is not hitched as planned; check it",
@@ -3801,7 +3912,7 @@ function Bridge:open(env)
     self.requestId, self.noticeId, self.lastRequestAt = 0, 0, nil
     Bridge.pendingGoto = {}
     self.pipeTimer, self.sessionTimer, self.snapshotTimer = 0, 0, 0
-    self.session, self.active, self.pipe, self.dropped = nil, nil, nil, {}
+    self.session, self.active, self.side, self.pipe, self.dropped = nil, nil, {}, nil, {}
     local base = env.getUserProfileAppPath()
     self.dir = base .. Bridge.MOD_DIR
     pcall(env.createFolder, base .. "modSettings/")

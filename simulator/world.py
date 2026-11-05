@@ -1,6 +1,7 @@
 """Synthetic world only: coordinates change instantly; no game APIs or physics."""
 from dataclasses import replace
 import math
+import time
 from threading import RLock
 
 from adapters.world import StepFailed
@@ -422,6 +423,42 @@ class MockWorld:
                                              + trailer.fill_units[1:])
             return "EMPTIED" if moved == grain.level else "TRAILER_FULL"
 
+    def escort(self, tractor_id, combine_id, owner):
+        # Mock-only: the cart teleported beside the harvesting combine (MOCK_PIPE_REACH_M to its left)
+        # takes what its tank holds each poll, until the trailer is full, the helper ends or a stop.
+        with self._lock:
+            tractor = self._owned(tractor_id, owner)
+            if not self.items[combine_id].busy:
+                raise StepFailed("COMBINE_NOT_HARVESTING")
+            combine = self.items[combine_id]
+            x, z = Pose(*combine.position, combine.heading or 0.0).to_world(-MOCK_PIPE_REACH_M, 0.0)
+            self._carry(tractor, Pose(x, z, combine.heading or 0.0))
+            self.mock_escorting = getattr(self, "mock_escorting", frozenset()) | {tractor_id}
+        while True:
+            with self._lock:
+                if tractor_id not in self.mock_escorting:
+                    raise StepFailed("STOPPED")
+                combine = self.items[combine_id]
+                trailer = self.items[self.items[tractor_id].attached_to]
+                grain = next((u for u in combine.fill_units if u.fill_type not in ("DIESEL", "DEF", "AIR") and u.level),
+                             None)
+                unit = trailer.fill_units[0]
+                if grain is not None:
+                    moved = min(grain.level, unit.capacity - (unit.level or 0.0))
+                    self.items[combine_id] = combine = replace(combine, fill_units=tuple(
+                        replace(u, level=u.level - moved) if u is grain else u for u in combine.fill_units))
+                    self.items[trailer.id] = trailer = replace(trailer, fill_units=(replace(
+                        unit, fill_type=grain.fill_type, level=(unit.level or 0.0) + moved),) + trailer.fill_units[1:])
+                    self.mock_escorted = getattr(self, "mock_escorted", 0.0) + moved
+                unit = trailer.fill_units[0]
+                if (unit.level or 0.0) >= 0.98 * unit.capacity:
+                    self.mock_escorting = self.mock_escorting - {tractor_id}
+                    return "TRAILER_FULL"
+                if not combine.busy:
+                    self.mock_escorting = self.mock_escorting - {tractor_id}
+                    return "COMBINE_STOPPED"
+            time.sleep(0.01)
+
     def backoff(self, tractor_id, trailer_id, owner):
         # Mock-only teleport MOCK_BACKOFF_M straight back; the GOTO start block (boxed) lifted.
         with self._lock:
@@ -716,6 +753,7 @@ class MockWorld:
             if any(item is None or item.occupied or item.reserved_by != owner
                    or item.farm_id != reservation[0] for item in owned):
                 return False
+            self.mock_escorting = getattr(self, "mock_escorting", frozenset()) - {tractor_id}
             if tractor_id in self.mock_workers:          # a handed-off helper: its job ends
                 self.mock_workers = {k: v for k, v in self.mock_workers.items() if k != tractor_id}
                 self.items[tractor_id] = replace(self.items[tractor_id], busy=False, busy_reason=None)

@@ -75,6 +75,12 @@ class World(Protocol):
         combine (PASSED); AGENTS.md exception 6."""
         ...
 
+    def escort(self, tractor_id: str, combine_id: str, owner: str) -> str:
+        """ESCORT: the reserved tractor's trailer held under the pipe of the combine harvesting
+        under GIANTS' helper, at its speed, behind it while it turns, until TRAILER_FULL or
+        COMBINE_STOPPED (the helper ended); the combine is never driven. The caller checks the grain."""
+        ...
+
     def backoff(self, tractor_id: str, trailer_id: str, owner: str) -> str:
         """BACKOFF: the reserved tractor straight back from the reserved transport trailer's
         ramps it waits behind (AGENTS.md exception 5); BACKED_OFF at rest."""

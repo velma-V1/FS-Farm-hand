@@ -4065,6 +4065,407 @@ function Hitch.describeAlongside(s)
         s.elapsed or 0, tostring(s.pathHits or "-"), tostring(s.aheadHits or "-"))
 end
 
+-- ------------------------------------------------------------------ ESCORT
+-- A grain cart beside a combine that is harvesting under GIANTS' helper (FINAL_FARMHAND_PRODUCT_SPEC.md
+-- 5: unloading on the move is a release gate). GIANTS' own combine strategy swings the pipe out
+-- and discharges whenever a trailer that takes the grain is in the pipe's unloading trigger, and
+-- keeps harvesting with the pipe out where its turnOnAllowed states allow it
+-- (AIDriveStrategyCombine:getDriveData 79-176; Pipe:unloadingTriggerCallback 836-, its
+-- nearestObjectInTriggers). Farmhand only drives the cart: the trailer's middle held at the slot
+-- under the pipe (the unloading trigger until the pipe is out, then the discharge node), at the
+-- combine's speed, its tractor kept clear of the combine's and header's boxes; behind the combine
+-- on its own trail while it turns or is not yet straight. Never a teleport, never collision off.
+-- Ends braked: TRAILER_FULL, COMBINE_STOPPED (its helper ended), or a failure.
+Hitch.ESCORT = {
+    maxSpeedKmh = 20,           -- the cart's limit while it catches up
+    timeoutMs = 7200000,
+    startRangeM = 90,           -- the steering node at most this far from the combine at the start
+    lookaheadM = 6, lookaheadS = 1.2,
+    gainKmhPerM = 1.5,          -- above the combine's speed per metre the trailer is behind its target
+    catchUpKmh = 8,             -- at most this much above the combine's speed
+    onLineM = 1.5,              -- the cart this near the slot's line before it moves up beside the combine
+    clearanceM = 0.8,           -- kept between the cart's and the combine rig's boxes
+    followGapM = 8, turnGapM = 16,   -- the cart's front behind the combine rig's rear on its trail
+    trailStepM = 1, trailBackM = 60, trailMax = 900, trailSearch = 60,
+    lineDeg = 8, steadyMs = 2500,    -- the combine this straight this long before the cart comes alongside
+    alignDeg = 25,              -- the cart within this of the combine's heading to come alongside
+    spoutMarginM = 0.8,         -- the spout kept this far inside the trailer's box when the slot shifts
+    fullShare = 0.98,
+    idleAiMs = 3000,            -- the combine's helper off this long: COMBINE_STOPPED
+    noSlotMs = 30000,           -- no clear slot beside the combine this long: NO_SAFE_SLOT
+    stallMs = 30000, stallM = 1.0,
+    checkMs = 250, traceMs = 1000, traceMax = 900,
+}
+
+local function yawOf(env, node)
+    local x, _, z = env.localDirectionToWorld(node, 0, 0, 1)
+    assert(finite(x) and finite(z))
+    return atan2(x, z)
+end
+
+local function angleDiff(a, b) return (a - b + math.pi) % (2 * math.pi) - math.pi end
+
+-- The frame of inFrame/fromFrame on the combine's root: a ahead along its heading, l to its +x side.
+local function combineFrame(env, s)
+    local cx, _, cz = world(env, s.combine.rootNode)
+    local fx, _, fz = env.localDirectionToWorld(s.combine.rootNode, 0, 0, 1)
+    local n = math.sqrt(fx * fx + fz * fz)
+    assert(finite(cx) and finite(cz) and finite(n) and n > 0.1)
+    s.last, s.ox, s.oz = { wx = cx, wz = cz }, cx, cz
+    s.dirX, s.dirZ = fx / n, fz / n
+    s.yaw = atan2(s.dirX, s.dirZ)
+    return cx, cz
+end
+
+local function cartLevel(trailer)
+    local level, capacity = 0, 0
+    for i in ipairs(trailer:getFillUnits()) do
+        level = level + (trailer:getFillUnitFillLevel(i) or 0)
+        capacity = capacity + (trailer:getFillUnitCapacity(i) or 0)
+    end
+    assert(finite(level) and finite(capacity))
+    return level, capacity
+end
+
+-- The slot under the pipe in the combine's frame: the discharge node while the pipe is out (the
+-- last one seen while it is folded again), else the pipe's unloading trigger.
+local function escortSlot(env, s)
+    local px, pz = pipePoint(env, s.combine)
+    if px ~= nil then
+        s.slotA, s.slotL = inFrame(s, px, pz)
+        s.slotSource = "pipe"
+    elseif s.slotSource ~= "pipe" then
+        local x, _, z = world(env, s.trigger)
+        s.slotA, s.slotL = inFrame(s, x, z)
+        s.slotSource = "trigger"
+    end
+end
+
+local function boxesOf(env, s, units)
+    local out = {}
+    for _, unit in ipairs(units) do out[#out + 1] = unitBox(env, s, unit) end
+    return out
+end
+
+local function bandsMeet(b, a0, a1, l0, l1, margin)
+    return a0 < b.aMax + margin and a1 > b.aMin - margin and l0 < b.lMax + margin and l1 > b.lMin - margin
+end
+
+-- Where the trailer's middle goes: the slot, else the nearest spot with the spout still over the
+-- trailer where the straight cart (its band about its middle, s.cart) is clear of every box of the
+-- combine rig. nil when there is none.
+local function escortTarget(s)
+    local E, c = Hitch.ESCORT, s.cart
+    local side = s.slotL >= 0 and 1 or -1
+    for _, shift in ipairs(s.shifts) do
+        local a, l = s.slotA + shift[1], s.slotL + side * shift[2]
+        local clear = true
+        for _, b in ipairs(s.combineBoxes) do
+            if bandsMeet(b, a + c.rear, a + c.front, l - c.halfW, l + c.halfW, E.clearanceM) then
+                clear = false
+                break
+            end
+        end
+        if clear then return a, l end
+    end
+    return nil
+end
+
+-- The along/outward shifts a slot may take with the spout still inside the trailer, cheapest first.
+local function slotShifts(c)
+    local E, out = Hitch.ESCORT, {}
+    local maxA, maxL = math.max(0, c.trailerHalfLen - E.spoutMarginM), math.max(0, c.trailerHalfW - E.spoutMarginM)
+    for i = -math.floor(maxA / 0.5 + 1e-6), math.floor(maxA / 0.5 + 1e-6) do
+        for j = 0, math.floor(maxL / 0.25 + 1e-6) do
+            out[#out + 1] = { i * 0.5, j * 0.25 }
+        end
+    end
+    table.sort(out, function(p, q)
+        local cp, cq = math.abs(p[1]) + 2 * p[2], math.abs(q[1]) + 2 * q[2]
+        if cp ~= cq then return cp < cq end
+        if p[1] ~= q[1] then return p[1] < q[1] end    -- back before forward: the tractor away from the header
+        return p[2] < q[2]
+    end)
+    return out
+end
+
+-- `args`: tractor (towing one trailer), combine (harvesting under GIANTS' helper), farmId, isReserved.
+function Hitch.newEscort(env, args)
+    local E = Hitch.ESCORT
+    local s = { tractor = args.tractor, combine = args.combine, wagon = args.combine, farmId = args.farmId,
+                isReserved = args.isReserved, maxSpeedKmh = E.maxSpeedKmh, timeoutMs = E.timeoutMs,
+                pushedOnly = true, elapsed = 0, result = nil, mode = "follow", trail = {}, trailIdx = 1,
+                checkAt = 0, aiOffMs = 0, steadyMs = 0, noSlotMs = 0, stallMs = 0, rows = {}, traceAt = 0,
+                moved = 0, movingL = 0, standingL = 0, alongsideMs = 0, pipeOutMovingMs = 0,
+                brakes = { close = 0, person = 0, vehicle = 0, gap = 0, slow = 0 } }
+    if type(args.isReserved) ~= "function" then return nil, "INVALID_LIMITS" end
+    local ok, reason = pcall(function()
+        local tractor, combine = s.tractor, s.combine
+        Hitch.watchDriver(env, tractor)
+        local denied = unparkAuthority(s)
+        if denied ~= nil then return denied end
+        if combine.ownerFarmId ~= s.farmId then return "COMBINE_NOT_OWNED" end
+        local pipe = combine.spec_pipe
+        if type(pipe) ~= "table" or type(pipe.unloadingTriggers) ~= "table" or pipe.unloadingTriggers[1] == nil then
+            return "NO_PIPE"
+        end
+        s.trigger = pipe.unloadingTriggers[1].node
+        if combine:getIsAIActive() ~= true then return "COMBINE_NOT_HARVESTING" end
+        local units = rigUnits(tractor)
+        if #units ~= 2 then return "ESCORT_NOT_ONE_TRAILER" end
+        s.units, s.trailer = units, units[2]
+        local level, capacity = cartLevel(s.trailer)
+        if capacity <= 0 then return "ESCORT_NOT_ONE_TRAILER" end
+        if level >= E.fullShare * capacity then return "TRAILER_FULL" end
+        s.startLevel, s.lastLevel, s.capacity = level, level, capacity
+        local node = combine:getCurrentDischargeNode()
+        if node == nil then return "NO_DISCHARGE_NODE" end
+        local unknown = env.FillType ~= nil and env.FillType.UNKNOWN or 0
+        local crop = combine:getFillUnitFillType(node.fillUnitIndex)
+        if finite(crop) and crop ~= unknown then
+            local takes = false
+            for i in ipairs(s.trailer:getFillUnits()) do
+                local held = s.trailer:getFillUnitFillType(i)
+                if s.trailer:getFillUnitSupportsFillType(i, crop)
+                        and (held == crop or held == unknown or (s.trailer:getFillUnitFillLevel(i) or 0) <= 0) then
+                    takes = true
+                end
+            end
+            if not takes then return "TRAILER_WRONG_CROP" end
+        end
+        -- The straight cart about its trailer's middle (along the tractor's heading).
+        local mx, mz = middleOf(env, s.trailer)
+        local fx, _, fz = env.localDirectionToWorld(tractor.rootNode, 0, 0, 1)
+        local n = math.sqrt(fx * fx + fz * fz)
+        s.last, s.dirX, s.dirZ = { wx = mx, wz = mz }, fx / n, fz / n
+        local cart = { front = -math.huge, rear = math.huge, halfW = 0 }
+        for _, box in ipairs(boxesOf(env, s, units)) do
+            cart.front, cart.rear = math.max(cart.front, box.aMax), math.min(cart.rear, box.aMin)
+            cart.halfW = math.max(cart.halfW, -box.lMin, box.lMax)
+        end
+        local tb = unitBox(env, s, s.trailer)
+        cart.trailerHalfLen, cart.trailerHalfW = (tb.aMax - tb.aMin) / 2, (tb.lMax - tb.lMin) / 2
+        s.cart, s.shifts = cart, slotShifts(cart)
+        local okMasks, masks = pcall(collisionMasks, env)
+        if not okMasks then return "ESCORT_QUERY_UNKNOWN" end
+        s.masks = masks
+        -- Contact with the combine rig is the clearance rule's (it moves; a push watch would see it pushed).
+        local okC, cUnits = pcall(rigUnits, combine)
+        if not okC then return "ESCORT_GEOMETRY_UNKNOWN" end
+        s.combineUnits = cUnits
+        s.rig = { [tractor] = true, [s.trailer] = true }
+        for _, unit in ipairs(cUnits) do s.rig[unit] = true end
+        local cx, cz = combineFrame(env, s)
+        s.combineBoxes = boxesOf(env, s, cUnits)
+        local sx, _, sz = world(env, tractor:getAISteeringNode())
+        if distance(sx, sz, cx, cz) > E.startRangeM then return "ESCORT_TOO_FAR" end
+        local a = inFrame(s, sx, sz)
+        local front = -math.huge
+        for _, b in ipairs(s.combineBoxes) do front = math.max(front, b.aMax) end
+        if a >= front + E.clearanceM then return "ESCORT_AHEAD_OF_COMBINE" end
+        escortSlot(env, s)
+        -- The combine's trail: the line it came along (behind it), then where it is.
+        for d = E.trailBackM, 0, -E.trailStepM do
+            s.trail[#s.trail + 1] = { cx - s.dirX * d, cz - s.dirZ * d }
+        end
+        s.lineYaw = s.yaw
+        s.progressAt = { sx, sz }
+        return nil
+    end)
+    if not ok then return nil, "UNKNOWN_OBSERVATION", s end
+    if reason ~= nil then return nil, reason, s end
+    return s
+end
+
+local function brakeFrame(env, s, dt, why)
+    s.brakes[why] = (s.brakes[why] or 0) + 1
+    s.lastBrake = why
+    pcall(Hitch.measureSpeed, env, s)
+    pcall(env.AIVehicleUtil.driveToPoint, s.tractor, dt, 0, false, true, 0, 1, s.maxSpeedKmh)
+end
+
+local function trailAdd(s, cx, cz)
+    local E, t = Hitch.ESCORT, s.trail
+    local lastPt = t[#t]
+    if distance(lastPt[1], lastPt[2], cx, cz) < E.trailStepM then return end
+    t[#t + 1] = { cx, cz }
+    if #t > E.trailMax then
+        table.remove(t, 1)
+        s.trailIdx = math.max(1, s.trailIdx - 1)
+    end
+end
+
+-- The trail point nearest (x, z) at or after s.trailIdx (within trailSearch points), kept.
+local function trailNearest(s, x, z)
+    local E, t = Hitch.ESCORT, s.trail
+    local best, bestD = s.trailIdx, math.huge
+    for i = math.max(1, s.trailIdx - 5), math.min(#t, s.trailIdx + E.trailSearch) do
+        local d = distance(t[i][1], t[i][2], x, z)
+        if d < bestD then best, bestD = i, d end
+    end
+    s.trailIdx = best
+    return best, bestD
+end
+
+local function escortDrive(env, s, dt)
+    local E = Hitch.ESCORT
+    local denied = unparkAuthority(s)
+    if denied ~= nil then return denied end
+    local seat = s.tractor:getIsEntered(); if seat ~= true and seat ~= false then return "UNKNOWN_OBSERVATION" end
+    local units = rigUnits(s.tractor)
+    if #units ~= 2 or units[2] ~= s.trailer then return "RIG_CHANGED" end
+    if s.elapsed > s.timeoutMs then return "TIMEOUT" end
+    local combine = s.combine
+    if combine:getIsAIActive() ~= true then
+        s.aiOffMs = s.aiOffMs + dt
+        if s.aiOffMs >= E.idleAiMs then return "COMBINE_STOPPED" end
+    else
+        s.aiOffMs = 0
+    end
+    local cx, cz = combineFrame(env, s)
+    local vc = math.abs(combine:getLastSpeed() or 0)
+    assert(finite(vc))
+    local root = combine.rootVehicle or combine
+    local turning = (type(root.getAIFieldWorkerIsTurning) == "function" and root:getAIFieldWorkerIsTurning() == true)
+        or (combine.movingDirection ~= nil and combine.movingDirection < 0)
+    if math.abs(angleDiff(s.yaw, s.lineYaw)) > math.rad(E.lineDeg) or turning then
+        s.lineYaw, s.steadyMs = s.yaw, 0
+    else
+        s.steadyMs = s.steadyMs + dt
+    end
+    trailAdd(s, cx, cz)
+    -- The grain: what came into the trailer, and how much of it while the combine moved.
+    local level = cartLevel(s.trailer)
+    if level > s.lastLevel then
+        if vc > 1.5 then s.movingL = s.movingL + (level - s.lastLevel) else s.standingL = s.standingL + (level - s.lastLevel) end
+    end
+    s.lastLevel = level
+    if level >= E.fullShare * s.capacity then return "TRAILER_FULL" end
+    local node = s.tractor:getAISteeringNode()
+    local x, wy, z = world(env, node)
+    local ta, tl = inFrame(s, x, z)
+    local mx, mz = middleOf(env, s.trailer)
+    local ma, ml = inFrame(s, mx, mz)
+    s.ta, s.tl, s.ma, s.ml, s.vc, s.turning = ta, tl, ma, ml, vc, turning
+    if s.elapsed >= s.checkAt then
+        s.checkAt = s.elapsed + E.checkMs
+        escortSlot(env, s)
+        if s.slotSource == "pipe" and vc > 1.5 then s.pipeOutMovingMs = s.pipeOutMovingMs + E.checkMs end
+        s.combineBoxes = boxesOf(env, s, s.combineUnits)
+        s.cartBoxes = boxesOf(env, s, units)
+        s.rear, s.front = math.huge, -math.huge
+        for _, b in ipairs(s.combineBoxes) do s.rear, s.front = math.min(s.rear, b.aMin), math.max(s.front, b.aMax) end
+        s.tA, s.tL = escortTarget(s)
+        s.close = false
+        for _, cb in ipairs(s.cartBoxes) do
+            for _, b in ipairs(s.combineBoxes) do
+                if bandsMeet(b, cb.aMin, cb.aMax, cb.lMin, cb.lMax, E.clearanceM * 0.5) then s.close = true end
+            end
+        end
+        local others, player = surroundings(env, s)
+        s.others, s.player = others, player
+        s.conflict = pullConflict(s, { { ta, tl } }, Hitch.LOCAL.vehicleStopM, Hitch.LOCAL.playerStopM)
+    end
+    if s.tA == nil then s.noSlotMs = s.noSlotMs + dt else s.noSlotMs = 0 end
+    if s.noSlotMs > E.noSlotMs then return "NO_SAFE_SLOT" end
+    local cartYaw = yawOf(env, s.tractor.rootNode)
+    local aligned = math.abs(angleDiff(cartYaw, s.yaw)) < math.rad(E.alignDeg)
+    local wanted = s.tA ~= nil and not turning and s.steadyMs >= E.steadyMs and aligned
+    if s.mode == "alongside" and not wanted then s.mode = "follow" end
+    if s.mode == "follow" and wanted then s.mode = "alongside" end
+    local cartFront = -math.huge
+    for _, cb in ipairs(s.cartBoxes) do cartFront = math.max(cartFront, cb.aMax) end
+    local lookahead = math.max(E.lookaheadM, (s.measuredKmh or 0) / 3.6 * E.lookaheadS)
+    local gx, gz, desired
+    if s.mode == "alongside" then
+        s.alongsideMs = s.alongsideMs + dt
+        gx, gz = fromFrame(s, ta + lookahead, s.tL)
+        local err = s.tA - ma
+        if math.abs(s.tL - tl) > E.onLineM and math.abs(s.tL - ml) > E.onLineM then
+            -- Not on the slot's line yet: its front stays behind the combine rig while it gets there.
+            err = math.min(err, (s.rear - E.clearanceM - 2) - cartFront)
+        end
+        s.err = err
+        desired = vc + math.max(-vc, math.min(E.catchUpKmh, E.gainKmhPerM * err))
+    else
+        local i = trailNearest(s, x, z)
+        local j = math.min(#s.trail, i + math.ceil(lookahead / E.trailStepM))
+        gx, gz = s.trail[j][1], s.trail[j][2]
+        if j == #s.trail then gx, gz = fromFrame(s, s.rear - (turning and E.turnGapM or E.followGapM), 0) end
+        local gap = s.rear - cartFront                    -- beside or ahead of it: negative, it waits
+        local want = turning and E.turnGapM or E.followGapM
+        s.err = gap - want
+        desired = vc + math.max(-vc - 1, math.min(E.catchUpKmh, E.gainKmhPerM * (gap - want)))
+        if gap < want * 0.5 then desired = 0 end
+    end
+    s.desired = desired
+    if s.elapsed >= s.traceAt then
+        s.traceAt = s.elapsed + E.traceMs
+        if #s.rows < E.traceMax then
+            s.rows[#s.rows + 1] = { t = s.elapsed, mode = s.mode, vc = vc, v = s.measuredKmh, err = s.err,
+                                    lat = s.tL and (s.tL - ml) or nil, pipe = s.slotSource, level = level }
+        end
+    end
+    local moved = distance(x, z, s.progressAt[1], s.progressAt[2])
+    if moved >= E.stallM or desired < 1.5 then
+        s.progressAt, s.stallMs = { x, z }, 0
+    else
+        s.stallMs = s.stallMs + dt
+        if s.stallMs > E.stallMs then return "STALLED" end
+    end
+    if s.close then brakeFrame(env, s, dt, "close"); return "CONTINUE" end
+    if s.conflict == "PERSON_TOO_CLOSE" then brakeFrame(env, s, dt, "person"); return "CONTINUE" end
+    if s.conflict == "OTHER_VEHICLE_NEAR" then brakeFrame(env, s, dt, "vehicle"); return "CONTINUE" end
+    if desired < 1 then brakeFrame(env, s, dt, s.mode == "follow" and "gap" or "slow"); return "CONTINUE" end
+    local tractor = s.tractor
+    if not tractor:getIsMotorStarted() then
+        if not tractor:getCanMotorRun() then return "MOTOR_UNAVAILABLE" end
+        tractor:startMotor()
+    end
+    Hitch.holdActive(s)
+    tractor:raiseActive()
+    local touched = Hitch.envelope(env, s)
+    if touched ~= nil then return touched end
+    s.commandKmh = math.min(s.maxSpeedKmh * 0.95, desired)
+    local lx, _, lz = env.worldToLocal(node, gx, wy, gz)
+    local over = Hitch.drive(env, s, dt, true, lx, lz)
+    if over ~= nil then return over end
+    return "CONTINUE"
+end
+
+-- One update: "CONTINUE", TRAILER_FULL / COMBINE_STOPPED (braked) or a failure. Latched.
+function Hitch.escortStep(env, s, dt)
+    if s.result ~= nil then
+        Hitch.halt(env, s, dt)
+        return s.result
+    end
+    s.elapsed = s.elapsed + dt
+    local ok, code = pcall(escortDrive, env, s, dt)
+    if not ok then
+        s.error = tostring(code)
+        code = "UNKNOWN_OBSERVATION"
+    end
+    if code ~= "CONTINUE" then
+        s.result = code
+        Hitch.halt(env, s, dt)
+    end
+    return code
+end
+
+function Hitch.describeEscort(s)
+    if s == nil then return "-" end
+    local function f(n) return n and string.format("%.2f", n) or "?" end
+    local b = s.brakes or {}
+    return string.format("mode=%s slot=(%s,%s,%s) target=(%s,%s) trailer=(%s,%s) tractor=(%s,%s) err=%s vc=%s v=%s "
+        .. "desired=%s turning=%s steady=%dms alongside=%dms pipeOutMoving=%dms grain=%s->%s moving=%s standing=%s "
+        .. "brakes=close:%d,person:%d,vehicle:%d,gap:%d,slow:%d t=%dms%s",
+        tostring(s.mode), f(s.slotA), f(s.slotL), tostring(s.slotSource), f(s.tA), f(s.tL), f(s.ma), f(s.ml),
+        f(s.ta), f(s.tl), f(s.err), f(s.vc), f(s.measuredKmh), f(s.desired), tostring(s.turning), s.steadyMs or 0,
+        s.alongsideMs or 0, s.pipeOutMovingMs or 0, f(s.startLevel), f(s.lastLevel), f(s.movingL), f(s.standingL),
+        b.close or 0, b.person or 0, b.vehicle or 0, b.gap or 0, b.slow or 0, s.elapsed or 0,
+        s.error and (" error=" .. s.error) or "")
+end
+
 -- ------------------------------------------------------------------ ATTACH
 
 -- Attach only if GIANTS' fresh candidate is exactly the planned pair and GIANTS
