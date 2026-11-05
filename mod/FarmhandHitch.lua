@@ -1957,8 +1957,9 @@ Hitch.PULL = {
 
 -- The tractor's checked points at `along` metres on its starting line (x ahead,
 -- y lateral, in the start frame): its steering node and frontM ahead of it.
-local function pullPoints(along)
-    return { { along, 0 }, { along + Hitch.LOCAL.frontM, 0 } }
+local function pullPoints(along, reverse)
+    -- The end that leads: the front pulling forward, the rear backing straight off (a front implement).
+    return { { along, 0 }, { along + (reverse and -Hitch.LOCAL.frontM or Hitch.LOCAL.frontM), 0 } }
 end
 
 -- nil, "OTHER_VEHICLE_NEAR" or "PERSON_TOO_CLOSE" for the tractor's points
@@ -2038,9 +2039,13 @@ function Hitch.newPullClear(env, args)
         local o = observePull(env, s)
         s.implementX, s.implementZ, s.rootX, s.rootZ = o.ix, o.iz, o.rx, o.rz
         s.bestSeparation, s.startSeparation = o.separation, o.separation      -- away == separation here
-        -- Forward would drive into it.
-        if inFrame(s, o.ix, o.iz) > s.jointAhead + P.jointSlackM or inFrame(s, o.rx, o.rz) >= 0 then
-            return nil, "PULL_CLEAR_NOT_BEHIND"
+        -- Forward would drive into it: an implement hung in front (a combine's header) is backed straight
+        -- off instead (live 2026-11-05: the MF 8570 left touching its header after the detach); one that is
+        -- neither clearly behind nor clearly ahead is refused.
+        local jointA, rootA = inFrame(s, o.ix, o.iz), inFrame(s, o.rx, o.rz)
+        if jointA > s.jointAhead + P.jointSlackM or rootA >= 0 then
+            if not (jointA >= s.jointAhead - P.jointSlackM and rootA > 0) then return nil, "PULL_CLEAR_NOT_BEHIND" end
+            s.reverse = true
         end
         local okAround, others, player = pcall(surroundings, env, s)
         if not okAround then return nil, "LOCAL_AREA_UNKNOWN" end
@@ -2051,8 +2056,8 @@ function Hitch.newPullClear(env, args)
         -- The whole straight line, with the maneuver's planning clearances.
         local along = 0
         while along <= maxDistance do
-            local bad = pullConflict(s, pullPoints(along), Hitch.LOCAL.vehicleClearanceM,
-                                     Hitch.LOCAL.playerClearanceM)
+            local bad = pullConflict(s, pullPoints(s.reverse and -along or along, s.reverse),
+                                     Hitch.LOCAL.vehicleClearanceM, Hitch.LOCAL.playerClearanceM)
             if bad == "OTHER_VEHICLE_NEAR" then return nil, "PULL_CLEAR_BLOCKED" end
             if bad == "PERSON_TOO_CLOSE" then return nil, "PULL_CLEAR_PERSON" end
             along = along + Hitch.LOCAL.sampleM
@@ -2079,7 +2084,7 @@ local function pullDrive(env, s, dt)
     if o.separation >= s.clearM then return "CLEAR" end
     if o.away < s.bestSeparation - P.separationSlackM then return "SEPARATION_LOST" end
     if s.elapsed > s.timeoutMs then return "TIMEOUT" end
-    if o.x > s.maxDistanceM then return "DISTANCE_LIMIT" end
+    if (s.reverse and -o.x or o.x) > s.maxDistanceM then return "DISTANCE_LIMIT" end
     if math.abs(o.y) > P.divergeM then return "DIVERGED" end
     for _, other in ipairs(s.others) do
         local vx, _, vz = world(env, other.vehicle.rootNode)
@@ -2087,7 +2092,7 @@ local function pullDrive(env, s, dt)
     end
     local others, player = surroundings(env, s)
     s.others, s.player = others, player
-    local bad = pullConflict(s, pullPoints(o.x), D.vehicleStopM, D.playerStopM)
+    local bad = pullConflict(s, pullPoints(o.x, s.reverse), D.vehicleStopM, D.playerStopM)
     if bad ~= nil then return bad end
     -- Progress is separation gained: a collision with anything unobserved stalls it.
     if o.away > s.bestSeparation + D.stallProgressM then
@@ -2103,12 +2108,13 @@ local function pullDrive(env, s, dt)
     end
     Hitch.holdActive(s)
     tractor:raiseActive()
-    -- Steer at the starting line lookaheadM ahead (GIANTS driveToPoint, forward).
+    -- Steer at the starting line lookaheadM on (GIANTS driveToPoint, forward; backing off a front implement,
+    -- the point behind it in reverse).
     local node = tractor:getAISteeringNode()
     local _, wy = env.getWorldTranslation(node)
-    local ahead = o.x + P.lookaheadM
+    local ahead = o.x + (s.reverse and -P.lookaheadM or P.lookaheadM)
     local lx, _, lz = env.worldToLocal(node, s.last.wx + s.dirX * ahead, wy, s.last.wz + s.dirZ * ahead)
-    local over = Hitch.drive(env, s, dt, true, lx, lz)
+    local over = Hitch.drive(env, s, dt, not s.reverse, lx, lz)
     if over ~= nil then return over end
     return "CONTINUE"
 end

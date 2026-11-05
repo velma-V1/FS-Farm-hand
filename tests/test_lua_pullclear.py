@@ -60,6 +60,22 @@ class LuaPullClearTests(unittest.TestCase):
         self.assertEqual(events[-2:], ["brake", "cruise:0"])
         self.assertNotEqual(w.tractor.forceIsActive, True)
 
+    def test_an_implement_hung_in_front_is_backed_straight_off(self):
+        # Live 2026-11-05: the MF 8570 left touching its header after the detach (a front joint): forward
+        # would drive into it; it backs straight off instead, with the same bounds.
+        w = self.world(ahead=3.0, heading=math.pi)
+        session, why = self.start(w)
+        self.assertIsNotNone(session, why)
+        self.assertTrue(session.reverse)
+        drives = []
+        code = None
+        for _ in range(4000):
+            code = self.hitch.pullClearStep(w.env, session, 50)
+            if code != "CONTINUE":
+                break
+        moving = [dict(d) for d in w.drives.values() if d["allowed"]]
+        self.assertTrue(moving and all(not d["forwards"] for d in moving), moving[:3])
+
     def test_a_gooseneck_ball_over_the_axle_pulls_clear(self):
         # Live 31365e0476674ed6-4 (GMC 3500HD, Deckover): the ball sits 0.02 m from the
         # steering node, so the just-unhitched coupler was not behind that node and the
@@ -147,8 +163,6 @@ class LuaPullClearTests(unittest.TestCase):
             (dict(), lambda w: setattr(w, "speed", 2.0), "NOT_STOPPED"),
             (dict(), lambda w: setattr(w, "ai", True), "AI_ACTIVE"),
             (dict(), lambda w: setattr(w, "reserved", False), "RESERVATION_LOST"),
-            # The implement ahead of the tractor (a front joint): forward would drive into it.
-            (dict(ahead=3.0, heading=math.pi), lambda w: None, "PULL_CLEAR_NOT_BEHIND"),
             (dict(), lambda w: w.addVehicle(0.0, 12.0), "PULL_CLEAR_BLOCKED"),
             (dict(), lambda w: setattr(w.player, "x", w.eye.x + 1.0) or setattr(w.player, "z", w.eye.z + 14.0),
              "PULL_CLEAR_PERSON"),
