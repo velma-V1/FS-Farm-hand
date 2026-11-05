@@ -400,6 +400,18 @@ class StandaloneMoveTests(unittest.TestCase):
                                                 "tractor_name": "gmc", "target": {"type": "field_entrance", "field": 5}})
         self.assertEqual(result.status, "COMPLETE", result)
         self.assertEqual([c[2] for c in world.calls if c[0] == "drive"][-1], (-629.0, 200.0))
+        # AutoDrive has no route either (live 47e8e973c13140c0-2): Farmhand's own drive goes on.
+        from adapters.world import StepFailed
+        world = Loaded(rig((-100.0, 600.0)))
+        def no_route(vehicle_id, marker, owner):
+            world.calls.append(("travel", marker))
+            raise StepFailed("AD_NO_ROUTE")
+        world.travel = no_route
+        result = StandaloneMove(world).execute({"request_id": "g", "farm_id": "1", "task": "move_pair",
+                                                "tractor_name": "gmc", "target": {"type": "field_entrance", "field": 5}})
+        self.assertEqual(result.status, "COMPLETE", result)
+        names = [c[0] for c in world.calls]
+        self.assertLess(names.index("travel"), len(names) - 1 - names[::-1].index("drive"))
         # Without belted cargo it stays with GIANTS' navigation first.
         world = Loaded((replace(unit("611", "GMC Sierra", "tractor", position=(-100.0, 600.0)),
                                 capabilities=frozenset({"move", "stop", "autodrive"})),))

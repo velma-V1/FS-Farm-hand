@@ -275,8 +275,16 @@ class StandaloneMove:
             marker = self._loaded_marker(goal)
         if marker is not None:
             log.info("DRIVE %.0f m with belted cargo: AutoDrive to marker %s", math.dist(here, goal.target), marker)
-            self._onto_ad_network(goal, here, marker, owner)
-            self.world.travel(goal.vehicle_id, marker, owner)
+            try:
+                self._onto_ad_network(goal, here, marker, owner)
+                self.world.travel(goal.vehicle_id, marker, owner)
+            except Exception as failure:
+                # A provider's failure is not Farmhand's (live 47e8e973c13140c0-2: GIANTS stuck,
+                # then AD_NO_ROUTE, and the haul ended there): Farmhand's own drive goes on.
+                if getattr(failure, "code", None) in {"STOPPED", "CANCELLED"}:
+                    raise
+                log.info("AutoDrive with belted cargo: %s; Farmhand's own drive",
+                         getattr(failure, "code", failure))
             rest = self._rest_of_leg(goal)
             if rest is None:
                 return
