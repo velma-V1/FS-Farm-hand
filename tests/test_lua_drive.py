@@ -2528,6 +2528,38 @@ class TowedReverseTests(unittest.TestCase):
         self.lua.execute("local env = ...; env.raycastClosest = nil", self.env)
         self.assertEqual(self.hitch.routePoseClear(self.env, foot, 0, 0, 0, 0)[0], False)   # terrain alone
 
+    def test_a_vehicles_drivable_deck_is_no_road_but_a_bridge_under_a_vehicle_is(self):
+        # Live 058d1ca14df04245-2: the GMC under its unhitched Deckover's gooseneck read GRADE.
+        foot = self.footprint()
+        self.lua.execute("""
+            local env = ...
+            env.getTerrainHeightAtWorldPos = function() return 0 end
+            env.g_currentMission.environmentAreaSystem = {getWaterYAtWorldPosition=function() end}
+            local trailer = {rootNode = {}}
+            env.g_currentMission.getNodeObject = function(_, node) if node == 6 then return trailer end end
+            env.g_currentMission.terrainRootNode = "terrain"
+            env.overlapBox = function(x, y, z, rx, ry, rz, hw, hh, hl, cb, q)
+                q[cb](q, "terrain"); return 1 end
+            env.CollisionFlag.ROAD = 8192
+            env.raycastClosest = function(x, y, z, dx, dy, dz, length, cb, target)   -- the nearest only
+                if x > -20 and z > 1 then target[cb](target, 6, x, 6.0, z)
+                elseif x < -20 then target[cb](target, 6, x, 4.5, z) end
+                return 1
+            end
+            env.raycastAll = function(x, y, z, dx, dy, dz, length, cb, target, mask)
+                if x > -20 and z > 1 then           -- a trailer's deck 6 m up over the box's front
+                    target[cb](target, 6, x, 6.0, z)
+                elseif x < -20 then                 -- a vehicle on a bridge deck 3 m up
+                    if target[cb](target, 6, x, 4.5, z) ~= false then target[cb](target, 5, x, 3.0, z) end
+                end
+                return 1
+            end
+        """, self.env)
+        on = self.hitch.routePoseClear(self.env, foot, 0, 0, 0, 0)
+        self.assertEqual(on[0], True, on)
+        under = self.hitch.routePoseClear(self.env, foot, -50, 0, 0, 0)
+        self.assertEqual(under[0], True, under)
+
     def test_a_loose_sign_or_cone_is_driven_through_as_autodrive_does(self):
         # Live f4fb84d66f9e4191-1, 13f374b86b594744-2: traffic cones ended the 3650's drives.
         # AutoDrive's own rule (ADSensor:isElementBlockingVehicle): a shape with no object of

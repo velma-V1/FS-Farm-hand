@@ -1824,6 +1824,7 @@ function Drive.begin(env, args, Hitch)
         end
         local startClear, startReason, hits = Hitch.routePoseClear(env, foot, x, z, yaw)
         local egress, ghostedAtStart
+        if type(hits) ~= "table" then hits = nil end     -- GRADE's detail is text, not hits
         local straighten = startClear == false and hits ~= nil and #hits > 0
                            and Drive.planUnbend(env, foot, Hitch, v, x, z, yaw, clear, startReason) or nil
         if straighten ~= nil then -- luacheck: ignore 542

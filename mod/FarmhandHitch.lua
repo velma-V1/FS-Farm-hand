@@ -689,9 +689,19 @@ local function surfaceAt(env, x, z)
     local flag = env.CollisionFlag ~= nil and env.CollisionFlag.ROAD or nil
     if type(env.raycastClosest) ~= "function" or not finite(flag) then return ground, false end
     local hit = {}
-    function hit.onFarmhandSurface(_, _node, _, y) hit.y = y end
-    env.raycastClosest(x, ground + Hitch.DECK.aboveM, z, 0, -1, 0, Hitch.DECK.aboveM + 1,
-                       "onFarmhandSurface", hit, flag)
+    -- A vehicle's drivable deck is no road (live 058d1ca14df04245-2: the GMC under its own
+    -- just-unhitched Deckover's gooseneck read GRADE); only static decks (bridges) carry a route.
+    local mission = env.g_currentMission
+    function hit.onFarmhandSurface(_, node, _, y)
+        local object = mission ~= nil and type(mission.getNodeObject) == "function" and mission:getNodeObject(node) or nil
+        if object ~= nil and object.rootNode ~= nil then return true end      -- go on past it
+        if hit.y == nil then hit.y = y end
+        return false
+    end
+    -- Every hit, nearest first, where the engine offers it (raycastAll, FSBaseMission 2667): a
+    -- vehicle on a bridge does not hide the bridge's deck.
+    local cast = type(env.raycastAll) == "function" and env.raycastAll or env.raycastClosest
+    cast(x, ground + Hitch.DECK.aboveM, z, 0, -1, 0, Hitch.DECK.aboveM + 1, "onFarmhandSurface", hit, flag)
     if finite(hit.y) and hit.y > ground + Hitch.DECK.minM then return hit.y, true end
     return ground, false
 end
