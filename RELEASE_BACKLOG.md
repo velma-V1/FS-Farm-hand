@@ -211,14 +211,26 @@ Acceptance:
 - Farmhand can select/prepare/load/haul/unload the combine for a long trip without manual user work.
 
 ## Unload a combine on the move
-Status: OPEN
-Priority: MEDIUM
+Status: IMPLEMENTED / AUTOMATED-TESTED / NOT YET LIVE-PROVEN
+Priority: RELEASE GATE (FINAL_FARMHAND_PRODUCT_SPEC.md 5)
 Found: 2026-11-05
 
-AutoDrive's combine unloader was removed with AutoDrive (2026-11-05). A harvesting combine is now serviced natively: when it is full (or "unload the combine"), its helper is paused, Farmhand drives a trailer under the pipe, GIANTS' own discharge empties it, and the harvest goes on (tested; live overload proven earlier). The user asked (2026-10-31) for unloading "while harvesting at speed".
+ESCORT (mod/FarmhandHitch.lua Hitch.newEscort/escortStep) holds a tractor's trailer under the pipe of a combine harvesting under GIANTS' helper, at its speed, and behind it on its trail while it turns or is not threshing. It keeps the cart clear of the combine and header boxes, shifting the slot within the trailer, or NO_SAFE_SLOT. GIANTS' own combine strategy swings the pipe and discharges. The bridge runs escort beside other ops (one controller per machine). The coordinator sends a grain cart after every harvest it starts and for "unload the combine" while harvesting (pause + stationary transfer stays as recovery). A full cart's load goes where the harvest goes, then it returns; on a crop change it ends and another cart is made.
+
+Acceptance (live, still open):
+- The combine moving and threshing while grain flows into the cart (game log `escort end ... moving=<litres>` > 0, standing ~0), several lanes including headland turns, no contact, full cart delivered and back.
+- First live attempts (2026-11-05, save 1): field 7 was already harvested (Farmhand rightly refused). Field 90: GIANTS' helper could not leave because the MT635 + RZK 300H stood against the MF 8570's header; Farmhand's reposition only reversed it 4 m (see "Equipment left against a combine").
+
+## Equipment left against a combine
+Status: OPEN
+Priority: HIGH
+Found: 2026-11-05
+
+Live 33dfbf22977c4dfa-1: "harvest field 90" FIELDWORK_BLOCKED twice. The MT635 with its sprayer stood nose against the MF 8570 header in its path, and reposition's drive found only a 4 m rig-clear reverse. Earlier the same morning, the stationary under-pipe approach for that combine circled for 16 minutes (a static object at -840,170 and the header), which is exactly the circling the user rejected; it was stopped.
 
 Acceptance:
-- A tractor and trailer follow the harvesting combine under its pipe without stopping it, using GIANTS' agent/Farmhand's drive and GIANTS' discharge; a full trailer goes where the harvest goes.
+- What stands in a helper's way is moved far enough for GIANTS' agent to start (its own route, not only a fixed lane), or Farmhand says which machine blocks it.
+- A stationary unload gives up quickly with a reason, instead of repeating route searches beside the combine.
 
 ## Park dropped implements away from active work
 Status: OPEN

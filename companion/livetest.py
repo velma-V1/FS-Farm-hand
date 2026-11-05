@@ -466,6 +466,9 @@ class LiveTest:
                     "player": frame.get("player"), "info": frame.get("farm"), "fields": frame.get("fields"),
                     "places": [(p.get("name"), round(p.get("x")), round(p.get("z"))) for p in frame.get("places") or []][:60],
                     "contracts": frame.get("contracts"),
+                    # Every map field's own position (contract fields too): which ripe field a machine can reach.
+                    "field_places": [(p.get("id"), round(p.get("x") or 0), round(p.get("z") or 0))
+                                     for p in frame.get("field_places") or []][:200],
                     # Why a motorized vehicle is no towing vehicle (adapters/fs25.py _towing_vehicle).
                     "unclassified": [{k: v.get(k) for k in ("id", "name", "category", "self_propelled", "motor",
                                                             "kinds", "output_joints", "fold", "pipe", "ai_stop")}
