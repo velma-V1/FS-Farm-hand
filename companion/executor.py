@@ -1517,7 +1517,15 @@ class Executor:
             # own foldable, belted bed may itself qualify as a transport.
             hitched_to_named = [i for i in trailers if trailer_name and i.attached_to in observed
                                 and named(observed[i.attached_to], trailer_name)]
-            if hitched_to_named:
+            # A trailer named itself comes first: attachment is mutual, so the truck towing the
+            # named "1124 Deckover Trailer" is "hitched to" it too (live 7943148d7318494a-1: the
+            # Series 9 to be loaded onto the GMC's own 2.6 m bed, LOAD_DOES_NOT_FIT).
+            # A driven vehicle named ("the GMC") still means the deck it tows.
+            directly = [i for i in trailers if named_trailer(i, trailer_name)
+                        and i.category not in DRIVEN] if trailer_name else []
+            if directly:
+                trailers = directly
+            elif hitched_to_named:
                 trailers = hitched_to_named
             if not trailers:
                 return Result("BLOCKED", "NO_TRANSPORT", states=tuple(states))

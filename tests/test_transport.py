@@ -250,6 +250,15 @@ class TractorTransportTests(unittest.TestCase):
         self.assertEqual(result.equipment_ids, (tractor.id, deck.id))
         self.assertEqual(world.items[tractor.id].belted_to, deck.id)
 
+    def test_a_named_trailer_is_loaded_not_the_truck_towing_it(self):
+        # Live 7943148d7318494a-1: "1124 deckover trailer" named, the GMC's own bed chosen.
+        world, tractor, deck, truck = transport_world()
+        world.items[truck.id] = replace(truck, fold=0.0, folding=False,
+                                        belts_fastened=False, belt_markers=deck.belt_markers)
+        result = Executor(world).execute(load(tractor_name="series 9", implement_name="1124 deckover trailer"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+        self.assertEqual(result.equipment_ids, (tractor.id, deck.id))
+
     def test_load_lowers_the_ramps_lines_up_drives_up_belts_and_raises_the_ramps(self):
         from companion import hitch as transport
         world, tractor, deck, truck = transport_world()
