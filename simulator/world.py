@@ -423,6 +423,15 @@ class MockWorld:
                                              + trailer.fill_units[1:])
             return "EMPTIED" if moved == grain.level else "TRAILER_FULL"
 
+    def reach(self, vehicle_id, pose, owner):
+        # Mock-only: a point listed in mock_unreachable (within 1 m) is NOT_REACHABLE.
+        with self._lock:
+            self._owned(vehicle_id, owner)
+            self.mock_reached = getattr(self, "mock_reached", ()) + ((pose.x, pose.z),)
+            if any(math.dist((pose.x, pose.z), p) < 1.0 for p in getattr(self, "mock_unreachable", ())):
+                return "NOT_REACHABLE"
+            return "REACHABLE"
+
     def escort(self, tractor_id, combine_id, owner):
         # Mock-only: the cart teleported beside the harvesting combine (MOCK_PIPE_REACH_M to its left)
         # takes what its tank holds each poll, until the trailer is full, the helper ends or a stop.

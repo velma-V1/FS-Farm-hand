@@ -381,6 +381,25 @@ class LuaBridgeTests(unittest.TestCase):
             env.AIVehicleUtil.driveToPoint = env.AIVehicleUtil.driveToPoint or function() end
         """, self.w, self.lua.table_from([self.lua.table_from(f) for f in script]))
 
+    def test_reach_asks_giants_planner_and_never_drives(self):
+        # GIANTS never checks a field-work target before it drives (AIJobFieldWork:validate): REACH
+        # runs its agent's planner from where the vehicle stands, braked, and deletes the agent.
+        for script, code in (([(0, 0, 3), (0, 0, 3), (0.01, 10.0, 1)], "REACHABLE"),
+                             ([(0, 0, 3), (0, 0, 4)], "NOT_REACHABLE"),
+                             ([(0, 0, 2)], "REACH_BLOCKED")):
+            with self.subTest(code=code):
+                self.w = self.W.new()
+                self.adopt()
+                self.agent(script)
+                self.send(1, "reach", self.POSE)
+                self.W.run(self.w, 1000)
+                self.assertEqual(self.results(1)[-1], (1, "DONE", code))
+                self.assertFalse(self.w.drove)
+                calls = self.calls()
+                self.assertIn("createAgent", calls)
+                self.assertIn("deleteAgent", calls)
+                self.assertNotIn("startJob", calls)
+
     def test_navigate_drives_giants_agent_itself_and_ends_where_it_says(self):
         self.adopt()
         self.agent([(0.01, 20.0, 1)] * 30 + [(0, 0, 5)])

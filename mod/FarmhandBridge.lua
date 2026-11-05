@@ -598,6 +598,50 @@ local function stepAgent(env, task, dt, codes)
     return nil
 end
 
+-- -------------------------------------------------------------------- reach
+-- REACH: whether GIANTS' agent finds a route for the reserved vehicle (its rig as GIANTS sizes it,
+-- AIDrivable:createAgent / getAIAgentSize) from where it stands to (x, z, yaw): its own planner
+-- only, never a drive. The agent is made and given the target (setVehicleNavigationAgentTarget),
+-- its state polled with the vehicle braked (getVehicleNavigationAgentNextCurvature, as
+-- AIDrivable:onUpdate 218-243), then deleted. DONE REACHABLE (it plans a drive or is there),
+-- NOT_REACHABLE, REACH_BLOCKED (planned, but something stands at its start), or REACH_UNDECIDED
+-- after REACH_MS. A field-work job's target is never checked before GIANTS drives
+-- (AIJobFieldWork:validate): this is that check.
+Bridge.REACH_MS = 20000
+
+function starters.reach(env, spec)
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    local task, code = startAgent(env, spec)
+    if task == nil then return nil, code end
+    local ok, w, l, lo, fo = pcall(function() return spec.tractor:getAIAgentSize() end)
+    local radius = spec.tractor.maxTurningRadius
+    local okId, id = pcall(function() return env.NetworkUtil.getObjectId(spec.tractor) end)
+    log("reach: agent %s to %.1f,%.1f yaw %.2f (width %s length %s offsets %s/%s radius %s)",
+        okId and tostring(id) or "?", spec.x, spec.z, spec.yaw or 0,
+        ok and tostring(w) or "?", ok and tostring(l) or "?", ok and tostring(lo) or "?", ok and tostring(fo) or "?",
+        tostring(radius))
+    return task
+end
+
+function steppers.reach(env, task, dt)
+    local v = task.spec.tractor
+    if task.spec.owned() ~= true then agentEnd(env, task, dt); return "FAILED", "RESERVATION_LOST" end
+    local ai = v.spec_aiDrivable
+    pcall(Bridge.Hitch.halt, env, task.drive, dt)
+    v:updateAIAgentPoseData()
+    local _, _, state = env.getVehicleNavigationAgentNextCurvature(ai.agentId, ai.poseData, 0)
+    local name = agentState(env, state)
+    local code = (name == "DRIVING" or name == "TARGET_REACHED") and "REACHABLE"
+        or (name == "NOT_REACHABLE" and "NOT_REACHABLE") or (name == "BLOCKED" and "REACH_BLOCKED")
+        or (task.elapsed > Bridge.REACH_MS and "REACH_UNDECIDED") or nil
+    if code == nil then return nil end
+    log("reach: %s after %d ms", code, task.elapsed)
+    agentEnd(env, task, dt)
+    return "DONE", code
+end
+
+function aborts.reach(env, task) agentEnd(env, task, 0) end
+
 -- Both drive GIANTS' agent the same way (startAgent / stepAgent); the GOTO job only without one.
 function starters.stage(env, spec)
     local task, code = startAgent(env, spec)
@@ -3520,6 +3564,7 @@ Bridge.REASONS = {
     COMBINE_NOT_HARVESTING = "the combine's helper is not harvesting",
     COMBINE_NOT_AT_THE_FIELD = "the combine did not get to the field",
     NO_HEADER_FOR_THE_CROP = "no header on the farm cuts that contract's crop",
+    FIELD_NOT_REACHABLE = "GIANTS finds no route to that field for this machine",
     COMBINE_NOT_OWNED = "the combine is not this farm's",
     COMBINE_STOPPED = "the combine's helper stopped",
     ESCORT_AHEAD_OF_COMBINE = "the grain cart is ahead of the combine",

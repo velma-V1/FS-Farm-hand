@@ -75,6 +75,11 @@ class World(Protocol):
         combine (PASSED); AGENTS.md exception 6."""
         ...
 
+    def reach(self, vehicle_id: str, pose: Pose, owner: str) -> str:
+        """REACH: whether GIANTS' agent plans a route for the reserved vehicle to ``pose``; never drives.
+        REACHABLE, NOT_REACHABLE, REACH_BLOCKED or REACH_UNDECIDED."""
+        ...
+
     def escort(self, tractor_id: str, combine_id: str, owner: str) -> str:
         """ESCORT: the reserved tractor's trailer held under the pipe of the combine harvesting
         under GIANTS' helper, at its speed, behind it while it turns, until TRAILER_FULL or

@@ -9,7 +9,7 @@ from adapters.world import StepFailed, StepUnverified
 from companion import hitch as transport
 from companion.executor import Executor
 from companion.executor import COVERAGE_REQUIRED, OPERATIONS, resolve_field
-from protocol.model import Equipment, FarmInfo, Field, FieldCoverage, FillUnit, InputJoint, OutputJoint, Pose
+from protocol.model import Destination, Equipment, FarmInfo, Field, FieldCoverage, FillUnit, InputJoint, OutputJoint, Pose
 from simulator.world import MockWorld
 
 PLAYERS = {"farm-a": (0.0, 0.0)}
@@ -62,6 +62,32 @@ class FieldResolutionTests(unittest.TestCase):
 class FieldWorkTests(unittest.TestCase):
     def world(self, kind, level=0.0, coverage=STUBBLE, farm=FARM, cls=MockWorld):
         return cls(rig(kind, level), PLAYERS, fields=(field(7, 0.4, coverage), field(9, 1.2)), farm=farm)
+
+    def test_the_helper_starts_where_giants_finds_a_route_and_a_far_field_without_one_is_said_at_once(self):
+        # Live 2026-11-05 (save 1): GIANTS answered NOT_REACHABLE for the MF 8570 to field 90 and 64,
+        # then Farmhand's own drive planned for minutes and drove the wrong way. GIANTS never checks
+        # a field-work target (AIJobFieldWork:validate): Farmhand asks its planner first (REACH).
+        outline = ((150.0, 250.0), (250.0, 250.0), (250.0, 350.0), (150.0, 350.0))
+        place = Destination("field-7", (200.0, 300.0), "field 7", outline)
+        world = self.world("cultivator")
+        world.mock_field_places = (place,)
+        world.mock_unreachable = ((200.0, 300.0),)                      # its centre
+        result = Executor(world).execute(work("cultivate"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "FIELD_WORK_OBSERVED"), result)
+        self.assertEqual(world.mock_reached[0], (200.0, 300.0))
+        self.assertEqual(len(world.mock_reached), 2)                    # the nearest corner's inside point next
+        far = self.world("cultivator")
+        far.mock_field_places = (place,)
+        far.mock_unreachable = ((200.0, 300.0),) + tuple(world.mock_reached[1:]) + tuple(
+            (c[0] + (200.0 - c[0]) * 10.0 / math.dist(c, (200.0, 300.0)),
+             c[1] + (300.0 - c[1]) * 10.0 / math.dist(c, (200.0, 300.0))) for c in outline)
+        t1 = far.items["t-1"]
+        far.items["t-1"] = replace(t1, position=(900.0, 900.0), ai_root=Pose(900.0, 900.0, 0.0))
+        i1 = far.items["i-1"]
+        far.items["i-1"] = replace(i1, position=(900.0, 897.0))
+        result = Executor(far).execute(work("cultivate"))
+        self.assertEqual((result.status, result.reason), ("FAILED", "FIELD_NOT_REACHABLE"), result)
+        self.assertEqual(far.items["t-1"].position, (900.0, 900.0))       # nothing drove
 
     def test_each_operation_completes_on_the_measured_field(self):
         for operation, kind, level in (("cultivate", "cultivator", 0.0), ("sow", "sowing_machine", 500.0),

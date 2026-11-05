@@ -918,6 +918,54 @@ class Executor:
                 return None, None, "LOADED_NO_DRIVER"
         return (tractor, wagon), route, None
 
+    # A field this far off that GIANTS' agent finds no route to is said at once (live 2026-11-05: Farmhand's own
+    # drive planned 10 minutes for the MF 8570 to field 90, then drove it 130 m the wrong way toward field 8).
+    FIELD_OWN_DRIVE_MAX_M = 400.0
+    FIELD_START_PROBES = 6        # field points GIANTS' planner is asked about at most
+    FIELD_START_INSIDE_M = 10.0   # an outline point moved this far toward the field's centre
+
+    def _field_starts(self, tractor, field, center: Pose) -> list:
+        """Where GIANTS' helper may start a field's work: its centre, then points just inside its
+        outline, nearest the tractor first, each facing the centre."""
+        from companion.standalone import _inside
+        place = next((p for p in self.world.field_places() if p.id == f"field-{field.id}"), None)
+        outline = tuple(place.outline) if place is not None else ()
+        points = []
+        for corner in sorted(outline, key=lambda p: math.dist(p, tractor.position)):
+            span = math.dist(corner, field.center)
+            if span <= self.FIELD_START_INSIDE_M:
+                continue
+            share = self.FIELD_START_INSIDE_M / span
+            point = (corner[0] + (field.center[0] - corner[0]) * share, corner[1] + (field.center[1] - corner[1]) * share)
+            if (len(outline) < 3 or _inside(outline, point)) and all(math.dist(point, q) > 20.0 for q in points):
+                points.append(point)
+        starts = [center]
+        for point in points[:self.FIELD_START_PROBES - 1]:
+            starts.append(Pose(point[0], point[1], math.atan2(field.center[0] - point[0], field.center[1] - point[1])))
+        return starts
+
+    def _reachable_start(self, tractor, field, center: Pose, owner, enter) -> Pose:
+        """The first field start GIANTS' own planner routes the reserved pair to (REACH), checked
+        before the helper drives (it is never checked by GIANTS: AIJobFieldWork:validate). None
+        reachable: far off, FIELD_NOT_REACHABLE at once; near, the centre (the helper's refusal
+        then brings Farmhand's own drive, _to_field). A world without the probe: the centre."""
+        if getattr(type(self.world), "reach", None) is None:
+            return center
+        answers = []
+        for start in self._field_starts(tractor, field, center):
+            try:
+                answer = self.world.reach(tractor.id, start, owner)
+            except (StepFailed, StepUnverified) as failure:
+                answer = getattr(failure, "code", "REACH_FAILED")
+            answers.append((round(start.x), round(start.z), answer))
+            if answer == "REACHABLE":
+                log.info("field %s: GIANTS routes to %s (%s)", field.id, start, answers)
+                return start
+        log.info("field %s: GIANTS routes to none of its starts %s", field.id, answers)
+        if math.dist(tractor.position, field.center) > self.FIELD_OWN_DRIVE_MAX_M:
+            raise StepFailed("FIELD_NOT_REACHABLE")
+        return center
+
     def _to_field(self, tractor, field, ids, owner, enter) -> bool:
         """GIANTS' helper did not start its own drive to the field (NOT_REACHABLE: its
         planner; COULD_NOT_PREPARE: never ready to drive, live 9211b19abaa24cce-3, the combine
@@ -2744,6 +2792,8 @@ class Executor:
                     # Already on the field (a harvest partly done): on from where it stands, GIANTS'
                     # own default (live bc801c056bac4966-1: the field's point was not_reachable).
                     start = Pose(tractor.position[0], tractor.position[1], tractor.heading)
+                else:
+                    start = self._reachable_start(tractor, field, start, owner, enter)
                 area = command.get("area_m2")
                 seed = seed_position(implement, command.get("crop")) or 0      # the player's crop, else as set
                 extra = {**({"seed": seed} if seed else {}),
