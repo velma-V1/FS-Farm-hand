@@ -822,7 +822,7 @@ class ContractTests(unittest.TestCase):
         world.mock_contract_fields = {c[0]: field(c[0], 1.5, at=(400.0 + c[0], 500.0)) for c in contracts}
         return world
 
-    OFFERS = ((20, "harvest", "CREATED", False, 9000.0),       # not a contract Farmhand does
+    OFFERS = ((20, "bale", "CREATED", False, 9000.0),          # not a contract Farmhand does
               (31, "fertilize", "CREATED", False, 5000.0),     # no sprayer on the farm
               (21, "plow", "CREATED", False, 3000.0),
               (22, "plow", "CREATED", False, 2000.0))

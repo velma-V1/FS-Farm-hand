@@ -1645,6 +1645,31 @@ class LuaBridgeTests(unittest.TestCase):
         self.W.run(self.w, 300)
         self.assertEqual(self.results(4)[-1], (4, "DONE", "STOPPED"))
 
+    def test_a_sale_goes_to_the_station_of_the_farms_harvest_contract_for_that_crop(self):
+        # GIANTS credits a delivery to a running harvest mission of the farm at that station
+        # (SellingStation:addFillLevelFromTool, HarvestMission:fillSold); the best price elsewhere pays
+        # nothing toward the contract.
+        pick = self.lua.eval("""function(B)
+            local function station(name, price, missions)
+                local s = { name = name, missions = missions }
+                function s:getIsFillTypeAISupported() return true end
+                function s:isa(c) return c == "Selling" end
+                function s:getEffectiveFillTypePrice() return price end
+                function s:getName() return name end
+                return s
+            end
+            local contract = { fillSold = function() end, fillTypeIndex = 7, farmId = 1 }
+            local other = { fillSold = function() end, fillTypeIndex = 9, farmId = 1 }
+            local stations = { [1] = station("dear", 2.0, {}), [2] = station("contract", 1.0, { [contract] = contract }),
+                               [3] = station("otherCrop", 1.5, { [other] = other }) }
+            local env = { SellingStation = "Selling", NetworkUtil = { getObject = function(id) return stations[id] end } }
+            local job = { unloadingStationParameter = { unloadingStationIds = { 1, 2, 3 } } }
+            local best = B.deliverStation(env, { direction = 1, farmId = 1 }, job, 7, nil)
+            local plain = B.deliverStation(env, { direction = 1, farmId = 1 }, job, 8, nil)
+            return best:getName(), plain:getName()
+        end""")
+        self.assertEqual(tuple(pick(self.bridge)), ("contract", "dear"))
+
     def test_stop_pre_empts_a_maneuver_and_keeps_it_braked(self):
         self.adopt()
         self.scripted_maneuver(["CONTINUE"])

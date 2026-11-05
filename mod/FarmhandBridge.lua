@@ -1612,6 +1612,19 @@ function aborts.fold() end          -- GIANTS finishes the fold it started; noth
 Bridge.DELIVER_TIMEOUT_MS = 14400000    -- a safety bound (as DRIVE_TIMEOUT_MS); progress is DELIVER_STALL_MS
 Bridge.DELIVER_STALL_MS = 600000        -- GIANTS' helper running but unmoved 2 m for 10 min (tipping included)
 
+-- Whether a farm's running mission that is paid by deliveries (a harvest contract: fillSold) takes
+-- this fill type at the station (SellingStation.missions, as its own addFillLevelFromTool reads it).
+function Bridge.contractStation(station, fillType, farmId)
+    for key, value in pairs(station.missions or {}) do
+        local mission = type(value) == "table" and value or key
+        if type(mission) == "table" and mission.fillSold ~= nil and mission.fillTypeIndex == fillType
+                and mission.farmId == farmId then
+            return true
+        end
+    end
+    return false
+end
+
 function Bridge.deliverStation(env, spec, job, fillType, v)
     local store = spec.direction == -1
     local best, bestScore, vx, vz = nil, nil, nil, nil
@@ -1623,7 +1636,11 @@ function Bridge.deliverStation(env, spec, job, fillType, v)
         local station = env.NetworkUtil.getObject(id)
         if station ~= nil and station:getIsFillTypeAISupported(fillType) then
             local selling = station:isa(env.SellingStation) == true
-            if not store and selling then
+            if not store and selling and Bridge.contractStation(station, fillType, spec.farmId) then
+                -- This farm's harvest contract takes this crop here (SellingStation:addFillLevelFromTool
+                -- credits it to the mission, HarvestMission:fillSold): the contract's station first.
+                return station, station:getEffectiveFillTypePrice(fillType)
+            elseif not store and selling then
                 local price = station:getEffectiveFillTypePrice(fillType)
                 if finite(price) and (bestScore == nil or price > bestScore) then best, bestScore = station, price end
             elseif store and not selling and station.owningPlaceable ~= nil

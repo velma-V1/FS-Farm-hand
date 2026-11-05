@@ -510,8 +510,9 @@ GOALS = frozenset({"haul_tractor", "sequence", "contract", "combine_full", "wago
 
 
 # GIANTS' contract types Farmhand works (by the start of their registered name) -> the
-# field operation. Others (sowing: its crop is not readable; harvest, bales, ...) are not taken.
-CONTRACT_WORK = (("plow", "plow"), ("cultiv", "cultivate"), ("fertili", "fertilize"))
+# field operation. Others (sowing: its crop is not readable; bales, ...) are not taken. A harvest
+# contract's grain is sold, and the sale goes to the contract's own station (Bridge.deliverStation).
+CONTRACT_WORK = (("plow", "plow"), ("cultiv", "cultivate"), ("fertili", "fertilize"), ("harvest", "harvest"))
 
 
 def contract_operation(kind: str) -> str | None:
@@ -1345,12 +1346,15 @@ class Coordinator:
             used = ()
             if current.status != "FINISHED":
                 result = self._field_work(job, cancel, entered, {"field": contract.field, "operations": [operation],
-                                                                 "background": False})
+                                                                 "background": False,
+                                                                 **({"destination": "sell"} if operation == "harvest" else {})})
                 states += list(result.states)
                 used = tuple(result.equipment_ids)
                 if result.status != "COMPLETE":
                     return Result(result.status, result.reason, used, tuple(states))
-                if self._until(lambda: (mine() or contract).status == "FINISHED", self.CONTRACT_WAIT_S, cancel) is None:
+                # A harvest contract finishes once its grain is delivered too: the carts' last loads.
+                wait = self.CONTRACT_WAIT_S * (20 if operation == "harvest" else 1)
+                if self._until(lambda: (mine() or contract).status == "FINISHED", wait, cancel) is None:
                     return Result("UNVERIFIED", "CONTRACT_NOT_FINISHED", used, tuple(states))
             # GIANTS' own verdict (MissionStatus FINISHED) and its completion share, for the record.
             log.info("job %d contract field %s: GIANTS %s, completion %s", job.number, contract.field,
@@ -1839,8 +1843,12 @@ class Coordinator:
             observed = {i.id: i for i in self.world.snapshot()}
             cart = observed.get(result.equipment_ids[0]) if result.equipment_ids else None
             name = _words(cart.name) if cart is not None else None
-            if name and field is not None:
-                self._harvest_rigs[field] = name       # what is left in it goes where the harvest goes
+            if result.reason == "HARVEST_ENDED" and destination and name:
+                # What is left in it goes where the harvest goes, by the cart itself.
+                delivered = self._execute(job, cancel, entered, f"d{n}", task=destination, tractor_name=name)
+                self.notify(result_notice(delivered.status, delivered.reason, f"COMPLETE_{destination.upper()}"),
+                            job.spoken)
+                return delivered if delivered.status != "COMPLETE" else result
             if result.reason == "CART_WRONG_CROP":
                 # It took what the combine held; the next crop needs another trailer.
                 log.info("job %d grain cart: the %s takes no more of this crop; another cart", job.number, name)
