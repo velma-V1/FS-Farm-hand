@@ -2153,10 +2153,13 @@ end
 function starters.fold(env, spec)
     if spec.owned() ~= true or spec.tractor.ownerFarmId ~= spec.farmId then return nil, "RESERVATION_LOST" end
     local v = spec.tractor
-    local direction = (spec.direction == 1 and 1) or (spec.direction == -1 and -1) or nil
-    if direction == nil then return nil, "INVALID_DIRECTION" end
     local foldable = v.spec_foldable
     if foldable == nil or next(foldable.foldingParts or {}) == nil then return nil, "NOT_FOLDABLE" end
+    -- 2: folded for transport, away from the end GIANTS calls unfolded (Foldable:getIsUnfolded:
+    -- foldAnimTime at turnOnFoldDirection's end), whichever way this implement folds.
+    local direction = (spec.direction == 1 and 1) or (spec.direction == -1 and -1)
+        or (spec.direction == 2 and -(foldable.turnOnFoldDirection == -1 and -1 or 1)) or nil
+    if direction == nil then return nil, "INVALID_DIRECTION" end
     if not stopped(v) then return nil, "NOT_STOPPED" end
     if v:getIsFoldAllowed(direction, false) ~= true then return nil, "FOLD_NOT_ALLOWED" end
     v:setFoldDirection(direction)

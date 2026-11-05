@@ -270,11 +270,12 @@ class TractorTransportTests(unittest.TestCase):
         # a mounted implement along; the mod checks it is lifted, folded and fits).
         world, tractor, deck, truck = transport_world()
         plow = Equipment("p-41", "implement", "farm-a", (tractor.position[0] + 1.0, tractor.position[1] - 3.0),
-                         name="Titan Vineyard Plow", kinds=frozenset({"plow"}), attached_to=tractor.id)
+                         name="Titan Vineyard Plow", kinds=frozenset({"plow"}), attached_to=tractor.id, fold=1.0)
         world.items[tractor.id] = replace(world.items[tractor.id], attached_to=plow.id)
         world.items[plow.id] = plow
         result = Executor(world).execute(load())
         self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+        self.assertEqual(world.items[plow.id].fold, 0.0)        # folded for transport first (live ef3e350fd9fb4405-1)
         after = world.items
         self.assertEqual(after[tractor.id].attached_to, plow.id)                     # still on it
         moved = (after[tractor.id].position[0] - tractor.position[0], after[tractor.id].position[1] - tractor.position[1])

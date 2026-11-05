@@ -151,11 +151,17 @@ class MockWorld:
 
     def fold(self, vehicle_id, direction, owner):
         # Mock-only: the fold time jumps to the asked end.
+        # As the bridge: a reserved unit, or an implement attached to one; 2 folds for transport.
         with self._lock:
-            vehicle = self._owned(vehicle_id, owner)
+            item = self.items[vehicle_id]
+            reservation = self._reservations.get(owner)
+            if item.category == "implement" and reservation and item.attached_to in reservation[1]:
+                vehicle = item
+            else:
+                vehicle = self._owned(vehicle_id, owner)
             if vehicle.fold is None:
                 raise StepFailed("NOT_FOLDABLE")
-            self.items[vehicle_id] = replace(vehicle, fold=1.0 if direction > 0 else 0.0, folding=False)
+            self.items[vehicle_id] = replace(vehicle, fold=1.0 if direction == 1 else 0.0, folding=False)
             return "FOLDED"
 
     def belts(self, vehicle_id, fasten, owner):

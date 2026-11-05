@@ -1559,6 +1559,7 @@ class Executor:
             if loading:
                 aboard = tractor.belted_to == trailer.id or transport.on_deck(tractor, trailer)
                 if not aboard:
+                    self._fold_for_transport(tractor, owner)
                     self._ramps(trailer.id, 1, owner, "RAMPS_DOWN")
                     tractor, trailer = self._transport_pair(ids)
                     if not transport.lined_up(tractor, trailer, share=0.5):
@@ -2294,6 +2295,21 @@ class Executor:
         except StepFailed as again:
             log.info("APPROACH after BACKOFF: %s", again.code)
         return self._settled_transport((tractor.id, trailer.id))
+
+    def _fold_for_transport(self, tractor, owner) -> None:
+        """The implement the tractor carries folded for the road before it is driven onto a trailer
+        (live ef3e350fd9fb4405-1: the plow left unfolded by the field work, LOAD refused
+        LOAD_IMPLEMENT_UNFOLDED at the ramps). Nothing to fold, or a fold GIANTS refuses: LOAD
+        itself still checks."""
+        implement = next((i for i in self.world.snapshot()
+                          if i.id == tractor.attached_to and i.attached_to == tractor.id), None)
+        if implement is None or not hasattr(self.world, "fold"):
+            return
+        try:
+            self.world.fold(implement.id, 2, owner)
+            log.info("the %s folded for transport", implement.name)
+        except (StepFailed, StepUnverified) as failure:
+            log.info("the %s not folded (%s)", implement.name, failure.code)
 
     LOAD_LANE_M = 30.0      # the ramps and a straight run-in to them, clear behind the transport
 

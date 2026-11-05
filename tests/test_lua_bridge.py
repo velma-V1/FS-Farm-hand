@@ -1543,6 +1543,16 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertEqual(self.results(2)[-1], (2, "DONE", "FOLDED"))
         self.assertEqual(w.deck.spec_foldable.foldAnimTime, 0)
 
+    def test_fold_for_transport_goes_away_from_the_end_giants_calls_unfolded(self):
+        # Live ef3e350fd9fb4405-1: the plow left unfolded, LOAD refused at the ramps.
+        for turn_on, expected in ((1, "setFoldDirection:-1"), (-1, "setFoldDirection:1")):
+            with self.subTest(turn_on=turn_on):
+                self.w = self.W.new()
+                w = self.transport()
+                w.deck.spec_foldable.turnOnFoldDirection = turn_on
+                self.send(1, "fold", {"tractor": 12, "direction": 2})
+                self.assertIn(expected, self.calls())
+
     def test_fold_refusals_and_a_fold_that_never_ends(self):
         cases = {"FOLD_NOT_ALLOWED": lambda w: setattr(w.deck, "allowed", False),
                  "NOT_STOPPED": lambda w: setattr(w.deck, "speed", 4.0),

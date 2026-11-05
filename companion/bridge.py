@@ -790,9 +790,16 @@ class FS25World:
         return None
 
     def _unit(self, vehicle_id: str, owner: str) -> None:
+        """One of the reserved units, or an implement attached to one (a reserved tractor's own
+        plow folded for transport)."""
         with self._lock:
             reservation = self._reservations.get(owner)
-        if reservation is None or vehicle_id not in reservation[1]:
+        if reservation is None:
+            raise StepFailed("NOT_RESERVED")
+        if vehicle_id in reservation[1]:
+            return
+        unit = next((e for e in self.snapshot() if e.id == vehicle_id), None)
+        if unit is None or unit.category != "implement" or unit.attached_to not in reservation[1]:
             raise StepFailed("NOT_RESERVED")
 
     def unpark(self, tractor_id: str, owner: str) -> None:
