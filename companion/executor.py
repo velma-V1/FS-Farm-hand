@@ -988,6 +988,14 @@ class Executor:
                 except (StepFailed, StepUnverified) as failure:
                     alone = getattr(failure, "code", "REACH_FAILED")
                 log.info("field %s: at the combine's own width GIANTS says %s", field.id, alone)
+                # And whether it can leave where it stands at all: 30 m straight on.
+                yaw = tractor.heading or 0.0
+                near = Pose(tractor.position[0] + math.sin(yaw) * 30.0, tractor.position[1] + math.cos(yaw) * 30.0, yaw)
+                try:
+                    ahead = self.world.reach(tractor.id, near, owner, width=0.1)
+                except (StepFailed, StepUnverified) as failure:
+                    ahead = getattr(failure, "code", "REACH_FAILED")
+                log.info("field %s: 30 m straight on (%s) GIANTS says %s", field.id, near, ahead)
                 if alone in ("REACHABLE", "REACH_BLOCKED"):
                     raise StepFailed("FIELD_TOO_NARROW_FOR_THE_HEADER")
             raise StepFailed("FIELD_NOT_REACHABLE")
