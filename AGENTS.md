@@ -65,6 +65,16 @@ GIANTS FS25 remains the game engine. Farmhand may and should use native engine d
 
 External mods and open-source implementations are references or optional accelerators. They are not authorities over the player objective and are not required for ordinary advertised Farmhand behavior.
 
+## Owner directive 2026-11-05 — private reuse, temporary mod safety, native operation
+
+- Farmhand is intended for **private, non-distributed use**. Reuse proved mechanisms from other mods where technically suitable, adapting them into Farmhand-owned native modules rather than requiring those source mods at runtime. Preserve provenance and applicable licensing terms; private use does not make all proprietary restrictions disappear. Do not publish or transfer borrowed code/assets without an appropriate rights review.
+- First inspect GIANTS' available engine workers/functions and existing Farmhand code, including older bridges to external mods. Preserve working logic and migrate its required behavior to native Farmhand operations. Reimplement only what cannot be correctly reused. Farmhand remains the sole job owner, supervisor, state keeper, recovery orchestrator and completion verifier; it may direct suitable GIANTS helpers.
+- Existing installed mods on the player's PC are **protected**. Before installing, enabling, modifying, or cleaning reference mods, inventory current mod directories, filenames, versions and hashes. Do not uninstall, overwrite or delete any pre-existing mod, even if an old Farmhand dependency. Prefer isolated download/source extraction over live installation; install a reference mod into the actual game only when a game-side experiment requires it.
+- Maintain a ledger of precisely which mods/files Farmhand development installs, where, and when. After extracting and proving the needed functionality, remove **only** those development-added installations and their own temporary files, not the player's existing mods or settings. Never infer development ownership merely from a filename. Do not remove a temporary mod while still required by an active test.
+- The player reports nearly every field on **Save 1** has been purchased and the game saved (2026-11-05). Treat Save 1 as a valuable broad field/map test environment; discover actual ownership live on each load, do not hardcode universal ownership or individual field coordinates, and protect the save from destructive experiments. Back up save data before any risky game-state changes.
+- Build a reusable **per-map navigation cache**: road/track route graph plus detailed local navigability/clearance grids around complex sites, with live obstacle updates and vehicle/whole-rig geometry. Reuse applicable AutoDrive/Courseplay algorithms internally without executing their installed mods. Persist map-specific derived data; avoid expensive uniform whole-map high-resolution scans and measure real reliability and latency.
+
+
 Farmhand owns:
 - intent and conversation;
 - world observation;
