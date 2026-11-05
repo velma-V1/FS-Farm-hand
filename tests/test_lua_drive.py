@@ -2528,6 +2528,32 @@ class TowedReverseTests(unittest.TestCase):
         self.lua.execute("local env = ...; env.raycastClosest = nil", self.env)
         self.assertEqual(self.hitch.routePoseClear(self.env, foot, 0, 0, 0, 0)[0], False)   # terrain alone
 
+    def test_a_rigid_rig_is_judged_by_its_units_not_their_bounding_rectangle(self):
+        # Live 57022e28117b42d8-1: the Series 9 and its mounted plow, the rectangle touching a
+        # tree in its empty corner, every unit's own box clear, every search NO_ROUTE.
+        self.lua.execute("""local env, tractor = ...
+            local plow = {rootNode={x=0,z=-4,yaw=0},
+                size={width=6,length=2,height=2,widthOffset=0,lengthOffset=0,heightOffset=0}}
+            tractor.getAttachedImplements=function() return {{object=plow}} end
+            local tree = {x=2.6, z=2.0}
+            env.g_currentMission.environmentAreaSystem = {getWaterYAtWorldPosition=function() end}
+            env.g_currentMission.getNodeObject=function() return nil end
+            env.getName=function() return 'tree' end
+            env.overlapBox=function(x,y,z,rx,ry,rz,hw,hh,hl,cb,q)
+                q[cb](q, 0)                                       -- the terrain
+                local dx, dz = tree.x - x, tree.z - z
+                local across = dx*math.cos(ry) - dz*math.sin(ry)
+                local along = dx*math.sin(ry) + dz*math.cos(ry)
+                if math.abs(across) <= hw and math.abs(along) <= hl then q[cb](q, tree); return 2 end
+                return 1
+            end
+        """, self.env, self.tractor)
+        foot = self.footprint()
+        self.assertIsNone(foot.towed)
+        clear = self.hitch.routePoseClear(self.env, foot, 0, 0, 0)
+        self.assertEqual(clear[0], True, clear)
+        self.assertFalse(self.hitch.routePoseClear(self.env, foot, 1.5, 0, 0)[0])    # the tractor's own box on it
+
     def test_a_vehicles_drivable_deck_is_no_road_but_a_bridge_under_a_vehicle_is(self):
         # Live 058d1ca14df04245-2: the GMC under its unhitched Deckover's gooseneck read GRADE.
         foot = self.footprint()

@@ -2711,11 +2711,14 @@ function Hitch.routePoseClear(env, foot, x, z, yaw, curvature, reversing)
             excluded = leaving.excluded
         end
         local body
-        if leaving ~= nil and foot.unitRects ~= nil
-                and math.sqrt((x - leaving.x) ^ 2 + (z - leaving.z) ^ 2) < leaving.radius then
-            -- The long rig's one bounding rectangle contains empty yard beside
-            -- the trailer. For a short departure, probe each observed unit at
-            -- its proposed pose; keep the whole-rig terrain/grade checks above.
+        local departing = leaving ~= nil and math.sqrt((x - leaving.x) ^ 2 + (z - leaving.z) ^ 2) < leaving.radius
+        if foot.unitRects ~= nil and (departing or foot.towed == nil) then
+            -- The rig's one bounding rectangle contains empty space beside its units. A rig with
+            -- no towed unit moves as one body, so each observed unit is probed at its place in
+            -- it (live 57022e28117b42d8-1: the Series 9 and its mounted plow, the rectangle
+            -- touching a tree, every unit's own box clear, every search NO_ROUTE); a towed rig
+            -- so only for a short departure (a bend moves its units; Drive.routeProbe models
+            -- them where it can). The whole-rig terrain/grade checks above stay.
             body = { hits = {} }
             for _, rect in ipairs(foot.unitRects) do
                 local rx = x + math.sin(yaw) * rect.ahead + math.cos(yaw) * rect.side
