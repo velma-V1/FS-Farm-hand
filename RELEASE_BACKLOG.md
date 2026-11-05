@@ -4,67 +4,25 @@ Temporary files (RELEASE_BACKLOG.md, PRODUCT_WORKING_MEMORY.md, AGENT_MEMORY_NOT
 
 Purpose: capture work that must be fixed, verified, polished, or explicitly scoped before first production release without derailing the current active task. Remove completed entries instead of accumulating history.
 
-## Standalone navigation minimum proof
+## Towed-rig tight-space recovery
 Status: OPEN
-Priority: CURRENT RELEASE-BLOCKER
+Priority: MEDIUM
+Found: 2026-11-04 (live 8611351ac09e4a1b-1)
 
-The current repository is a proving ground. The goal is to identify and live-prove the smallest reusable navigation/physical-world primitives worth carrying into a clean Farmhand build, not to finish the legacy planner.
+Navigation is GIANTS' engine agent under Farmhand's own loop for routes (proven live with the loaded four-unit GMC rig), Farmhand's own drive for exact local poses. A Farmhand-planned long route for a towed rig is not a release requirement. What remains: a towed rig with its nose against an object and no forward way (the GMC at (-980,-14)) can leave only by the bounded straightening reverse; towed reverses are not planned. Address if a live workflow is blocked by it.
 
-Minimum proof ladder:
-1. complete recursive rig/object geometry;
-2. live physical measurement with explicit fallbacks;
-3. short-horizon articulated prediction;
-4. known aggregate-box false-rejection cases executed under normal physics;
-5. constrained local maneuver;
-6. cheap global corridor + correct local handoff;
-7. command-vs-motion supervision and bounded recovery;
-8. second materially different rig/destination;
-9. large-route responsiveness and compute/frame budget.
-
-Acceptance:
-- no oversized aggregate whole-rig box is authoritative for local clearance;
-- no AutoDrive/Courseplay/GIANTS GOTO ownership, teleport or scenery ghosting in standalone navigation qualification;
-- movement begins without whole-map high-resolution preplanning;
-- destination progress, physical arrival, STOP and verification are measured from live state;
-- every retained clean-build primitive is backed by a specific observed failure and live proof;
-- legacy mechanisms without proven player benefit are explicitly left behind.
-
-## Articulated route search: live proof and tight-space recovery
+## Turn around in place: live confirmation
 Status: OPEN
-Priority: RELEASE-BLOCKER (loaded/towed rigs by Farmhand's own drive)
-Found: 2026-11-04 (live 48192ed2fe274fc3-1, 8611351ac09e4a1b-1)
-
-159896e/f8355da carry the trailer's heading in Drive.plan, the preview and the straightening reverse, judged by each unit's box (Hitch.rigModel / modelPoses, Drive.trailerStep, matching predictFromRootPose within 2 cm). Live, the search now reports per-unit blocks (`unit1:6`) instead of the rectangle's phantom scenery, but no Farmhand-driven move of a towed rig has yet been planned and completed by it: the qualifying GMC haul (5d29c5999c864530-1) was driven by GIANTS' navigation.
-
-Next:
-- A towed rig by Farmhand's own drive (navigation-test mode on) over a bend and into a field entrance: planned vs observed trailer heading along the path, contacts, frame cost of four unit queries a metre.
-- Towed rigs plan no reverse moves: with the nose against an object and the trailer behind (the GMC at (-980,-14)), only the bounded straightening reverse can leave. Decide from live evidence whether planned towed reverses (the reverse kinematics are the same step) are needed.
-- The Dubins goal shot (757f4bd) is unit-tested and its steps rebuild as follower arcs; a live hitch approach by Farmhand's own drive with it is still to be observed.
-
-## Turn around in place instead of looping
-Status: OPEN
+Priority: LOW
 Found: 2026-11-04 (live f460004990284cd1-1)
 
-Farmhand's first route search plans forward moves only; facing away from a goal 12 m off, the Series 9 + plow drove a 33-point ~150 m loop (88 s) where a worker makes a three-point turn. Shuffles (forward/reverse) are searched only after a forward search fails. Candidate: let the first search use reverse moves for rigs that can reverse (no towed unit), costed as now.
+Implemented (bcc2c60, rigid-rig fix ae86dff): within 40 m, rigs with no towed unit are searched with reverse moves from the start. Unit-tested; the next near-goal live drive should log "turns round in place" instead of a loop.
 
 ## Reposition "open ground" arrives at any heading
 Status: OPEN
 Found: 2026-11-04 (live 8611351ac09e4a1b-1)
 
 starters.reposition proves a spot clear for the rig at `tyaw` but sends anything but a combine there at any heading; the GMC rig ARRIVED 18 m on with the truck's nose touching LOD0(-985,-12). Candidate: arrive at `tyaw` (the exact goal shot now plans a heading without lattice loops) or prove the spot at the heading the drive will arrive with. 21a5e70740024850-1 (heading correction at arrival under the old planner) must be re-checked first.
-
-## One controlled point for planning, clearance and following
-Status: OPEN
-Priority: RELEASE-BLOCKER (narrow-gap navigation)
-Found: 2026-11-04
-
-The lab-proven steering-reference predictor (collected/proven_systems/measured_short_motion.lua) is not in production. Code reading shows why promoting it alone is not enough: the follower aims GIANTS' steering node at the planned root path, while planning, prediction and the aggregate probe assume the root follows it - an expected ≈a²/(2R) outward root offset in bends (≈0.2 m GMC, ≈0.5–0.7 m 379; adapters/EVIDENCE.md "2026-11-04 production follower reference mismatch").
-
-Next:
-- Run the single-bend discriminator in that entry on the GMC and 379 rigs (normal physics, no ghosting).
-- If confirmed, change candidate generation, articulated prediction, probe poses and the follower's aim/progress together to one controlled point; qualify on both rigs and the 2 m / reverse-left fixtures.
-
-Acceptance: planned-versus-observed unit poses through a bend within the articulated clearance pad on both rigs; no regression of the proven local maneuvers.
 
 ## Scenery ghosting: prove the need or remove the option
 Status: OPEN
@@ -81,25 +39,6 @@ Next:
 Acceptance:
 - default gameplay never ghosts (verified in the game log: no "collision ... off" lines with the setting off);
 - the option is removed, or retained with one recorded qualifying case and verified restoration.
-
-## Loaded transport standalone
-Status: OPEN
-Priority: RELEASE-BLOCKER
-Found: 2026-10-31
-
-GIANTS GOTO reports BLOCKED from the first frame when a vehicle is belted on its own trailer (live d14230aa9fb24d30-3, abe8eb41ca6f4b5f-1).
-
-2026-10-31: proven with the cargo obstacle removed — GMC + Deckover + Series 9 (no plow) to field 90 by GIANTS navigation COMPLETE (1e27b06900b64385-2). Left: isolate/commit the FarmhandBridge cargo hunks; repeat with the plow mounted.
-
-Next:
-- Prove the cause with the smallest change: while Farmhand owns the GIANTS transport job, temporarily suppress only the belted cargo vehicle's own AIVehicleObstacle registration.
-- Keep straps, physics, and trailer attachment unchanged.
-- Restore the cargo obstacle on every exit path: completion, failure, STOP, cancellation, timeout, user takeover, deletion/unload cleanup.
-
-Acceptance:
-- AutoDrive unavailable/bypassed.
-- "take the gmc to field 90" completes with GMC + Deckover + Series 9 + plow intact and strapped.
-- No core transport command fails solely because AutoDrive is absent.
 
 ## Heavy cargo secure mounting
 Status: OPEN
@@ -145,7 +84,7 @@ Acceptance:
 
 ## Curve speed and long-rig road behavior
 Status: OPEN
-Priority: HIGH
+Priority: MEDIUM (long legs: GIANTS' agent's own curve speed, maxCentripetalAcceleration, under Farmhand's cap)
 Found: 2026-10-31
 
 Farmhand's standalone driver must reduce speed before curves using path curvature/turn radius and whole-rig geometry. Slowing is separate from wide-turn path generation.
@@ -202,6 +141,8 @@ Found: 2026-10-31
 
 User: "farmhand needs to be able to find the shortest path to complete the task instead of these random routes that are always over complex and long or unnecessary". Seen live: hitch approaches circling, 7-min own-drive wander near the plow, cross-map tractor choice for a nearby job.
 
+2026-11-04 night: long legs now go by GIANTS' agent (map routes, curve speed) under Farmhand's loop; near poses by Farmhand's own drive with the exact goal curve; the AutoDrive staging detour is gone. Remaining evidence of wandering: the load approach searches when the lane behind the ramps is cluttered (relocation now answers it).
+
 Next:
 - Choose equipment by total trip (nearest usable unit to the work, not to the player).
 - Prefer the straight / direct move when the target is close and lined up (as LOAD now does); cap Farmhand's own drive length/time against the straight-line distance (e.g. > 3x or > 2 min near a target: stop and take the next option, never wander).
@@ -225,16 +166,12 @@ Acceptance:
 - completion, failure, STOP, cancellation, link loss and provider handoff restore the exact original wheel flags;
 - no hardcoded map/route coordinates or external gameplay-mod requirement.
 
-## Bounded-area measurement
+## Bounded-area acceptance measure
+Status: OPEN
+Priority: MEDIUM
+Found: 2026-11-04
 
-Live abf1610fc62543be-1 (2026-11-04): the mod stopped GIANTS' helper for a 400 m2 test area
-when its measure (any ground/spray share change x field area, `Bridge.changedArea`) reached
-~414 m2; the companion then measured the operation's own share growth (192 m2) and reported
-PARTIAL_COVERAGE although the work was done. Two different measures decide stop and acceptance,
-both from ~112-124 field samples (~200 m2 each), the after-reading with extra track samples
-(another denominator). Needed: one measure for both, at a resolution finer than the asked area
-(e.g. samples along the worked track compared before/after on the same points). Do not widen
-COVERAGE_REQUIRED to hide it.
+Overshoot fixed live (45b7de3: 408 m2 of 400 with a ~450 m2/s plow; checks every 250 ms, every frame near the request; the companion waits for the field's first reading). Still two measures: the mod stops on any ground/spray share change (Bridge.changedArea), the companion accepts on the operation's own share. They agree for plowing stubble; for work over already-worked ground (abf1610fc62543be-1: cultivating plowed ground, 414 vs 192 m2) they can disagree. Needed: the mod told the operation's target ground types, so stop and acceptance use one measure.
 
 ## Sell equipment
 Status: OPEN
