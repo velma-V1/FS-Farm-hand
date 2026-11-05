@@ -2364,7 +2364,17 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
             -- Rotating the whole rig to that line at once invents a collision.
             backX,backZ,backYaw = advance(x,z,yaw,-probeStep,r.curve)
         end
-        local clear, blocked = Hitch.routePoseClear(env,s.foot,backX,backZ,backYaw,r.curve or 0,true)
+        local clear, blocked
+        local here = s.foot.model ~= nil and Drive.startPose(env, s, x, z, yaw) or nil
+        if here ~= nil and here.trailerYaw ~= nil then
+            -- The units where this metre puts them, from the trailer's observed heading (live
+            -- 8611351ac09e4a1b-1: "every unit's own box is clear", yet the rigid box stopped the
+            -- straightening reverse at 0.0 m).
+            local ty = Drive.trailerStep(s.foot.model, x, z, yaw, backX, backZ, backYaw, here.trailerYaw)
+            clear, blocked = Drive.routeProbe(env, s.foot, Hitch, backX, backZ, backYaw, r.curve or 0, -1, ty)
+        else
+            clear, blocked = Hitch.routePoseClear(env,s.foot,backX,backZ,backYaw,r.curve or 0,true)
+        end
         if clear == nil then return "UNKNOWN_OBSERVATION" end
         if clear ~= true then
             say(string.format("[Farmhand] drive reverse blocked behind at %.1f,%.1f after %.1f of %.1fm: %s; stopping to search on",
