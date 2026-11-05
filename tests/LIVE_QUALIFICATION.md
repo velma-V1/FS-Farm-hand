@@ -362,3 +362,10 @@ These runs used the production typed-request path, the local companion, and the 
 The barn and Field 5 runs qualify those observed rigs and destinations. Other maps, larger rigs, and recovery from a blocked route remain unqualified.
 
 The first clean-build Field 5 repeat (bb5413d8325b4f7b-2) stopped unmoved: the route preview queried a curved segment at its endpoint yaw, reporting `col@nil` 8 m ahead although the planner had cleared the same arc at its actual intermediate yaws. After making preview sampling follow that planned arc, 45229e65575445c2-2 completed the same loaded delivery with all four units stopped and attached/belted as before.
+
+### AutoDrive removed (build 3891e2f, 2026-11-05, Save 1, AutoDrive installed but unused)
+
+| Request | Test | Result |
+|---|---|---|
+| `use the gmc to take the deutz to field 5 and unload it` | d3b04daa1c1e4e37-1 | COMPLETE HAULED_AND_UNLOADED in 5 min 30 s: load, belts, ramps; delivery barn to field 5 by Farmhand's own drive (72 route sections, 4 min 17 s, peak 38.9 km/h); unload. Bridge ops only belts/farm_drive/fold/load/pay/stop: no AutoDrive op. |
+| `plow a small test area of field 5` | d3b04daa1c1e4e37-2 | COMPLETE AREA_WORK_OBSERVED in 2 min: 401 m2 worked of 400 m2 asked. |
