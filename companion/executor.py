@@ -980,7 +980,24 @@ class Executor:
                     and (not command.get("implement") or of_kind(implement, command["implement"]))
                     and named(implement, command.get("implement_name"))):
                 return vehicle_id, implement_id
+        # Nothing recorded (the companion restarted since the detach): a loose implement of the kind said
+        # just ahead of the named driven machine; REATTACH's own range and line-up checks decide.
+        if command.get("tractor_name") and command.get("implement"):
+            for vehicle in observed.values():
+                if not (vehicle.category in DRIVEN and vehicle.attached_to is None and vehicle.heading is not None
+                        and named(vehicle, command["tractor_name"])):
+                    continue
+                fx, fz = math.sin(vehicle.heading), math.cos(vehicle.heading)
+                for implement in observed.values():
+                    if not (implement.attached_to is None and of_kind(implement, command["implement"])
+                            and named(implement, command.get("implement_name"))):
+                        continue
+                    dx, dz = implement.position[0] - vehicle.position[0], implement.position[1] - vehicle.position[1]
+                    if 0 < dx * fx + dz * fz <= self.REATTACH_NEAR_M and abs(dx * fz - dz * fx) <= 1.5:
+                        return vehicle.id, implement.id
         return None
+
+    REATTACH_NEAR_M = 9.0          # an unrecorded loose implement this far ahead of the machine is tried
 
     def _front_reattach(self, command, enter, states) -> Result:
         """A front implement this Farmhand detached (a combine's header) attached again: RESERVE ->
@@ -1002,12 +1019,18 @@ class Executor:
                 return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
             reserved = True
             self.active = ids
-            pose = self._front_reattach_pose(implement)
+            # Unrecorded (the companion restarted since the detach): where it stands, REATTACH decides.
+            root = vehicle.ai_root or Pose(vehicle.position[0], vehicle.position[1], vehicle.heading or 0.0)
+            pose = self._front_reattach_pose(implement) or root
             back = Pose(pose.x - math.sin(pose.yaw) * self.REATTACH_BEHIND_M,
                         pose.z - math.cos(pose.yaw) * self.REATTACH_BEHIND_M, pose.yaw)
-            root = vehicle.ai_root or Pose(vehicle.position[0], vehicle.position[1], vehicle.heading or 0.0)
-            if math.dist((root.x, root.z), (back.x, back.z)) > 1.0 or abs(
-                    (root.yaw - pose.yaw + math.pi) % (2 * math.pi) - math.pi) > math.radians(5):
+            # Already in the creep's window (where it carried it, or up to REATTACH_BEHIND_M behind, lined up: live
+            # 602e4e500fbb45de-2, still at the header after the detach): no drive, which cannot start beside it.
+            hx, hz = math.sin(pose.yaw), math.cos(pose.yaw)
+            behind = (pose.x - root.x) * hx + (pose.z - root.z) * hz
+            aside = abs((root.x - pose.x) * hz - (root.z - pose.z) * hx)
+            turned = abs((root.yaw - pose.yaw + math.pi) % (2 * math.pi) - math.pi)
+            if not (-0.5 <= behind <= self.REATTACH_BEHIND_M + 1.0 and aside <= 0.4 and turned <= math.radians(5)):
                 enter("APPROACH")
                 moved = True
                 # Farmhand's drive takes the vehicle's root there: the AI root's offset ahead of it taken off.
