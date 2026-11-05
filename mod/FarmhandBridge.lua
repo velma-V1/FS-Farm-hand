@@ -52,7 +52,9 @@ Bridge.DETACH_TIMEOUT_MS = 10000      -- GIANTS' detach (lowering arms) must end
 Bridge.PULL_AFTER_DETACH_MS = 30000   -- a pull-clear only this soon after its detach
 Bridge.FIELDWORK_TIMEOUT_MS = 7200000 -- 2 h: a small owned field takes minutes
 Bridge.FIELDWORK_STALL_MS = 300000    -- running but unmoved (< 2 m) for 5 min: stopped
-Bridge.FIELDWORK_CHECK_MS = 3000      -- a bounded test area is re-measured this often
+Bridge.FIELDWORK_CHECK_MS = 3000      -- a bounded test area is re-measured this often before work starts
+Bridge.FIELDWORK_WORKING_CHECK_MS = 250 -- and this often once it works (live fb3522a3e1d64f75-1: 0 -> 1244 m2 in 3 s)
+Bridge.FIELDWORK_STOP_LEAD_MS = 750     -- the work rate over this long is counted as done before a stop takes
 Bridge.FIELDWORK_MAX_AREA_M2 = 20000  -- the largest bounded test area
 -- Travel (AutoDrive drive and sell, GIANTS GOTO, Deliver) is judged by progress: each has its
 -- own unmoved watch (AD_STALL_MS, NAVIGATE_STALL_MS, DELIVER_STALL_MS); this is only a safety
@@ -2739,20 +2741,30 @@ function steppers.fieldwork(env, task, dt)
         -- A bounded test area: once that much of the field changed, GIANTS' own stop.
         if task.spec.area ~= nil and not task.areaReached then
             task.sinceCheck = task.sinceCheck + (dt or 0)
-            if task.sinceCheck >= Bridge.FIELDWORK_CHECK_MS then
+            local working = pcall(function() assert(v:getIsFieldWorkActive() == true) end)
+            if task.sinceCheck >= (working and Bridge.FIELDWORK_WORKING_CHECK_MS or Bridge.FIELDWORK_CHECK_MS) then
                 task.sinceCheck = 0
-                pcall(Bridge.Observe.refreshField, env, task.spec.field)
-                local now = (Bridge.Observe.fieldCache or {})[task.spec.field]
-                local changed = Bridge.changedArea(task.before, now and now.record)
+                local okShares, shares = pcall(Bridge.Observe.fieldShares, env, task.spec.field)
+                local changed = Bridge.changedArea(task.before, okShares and shares or nil)
+                -- The area the measured work rate adds before a stop takes: counted as done.
+                local rate = 0
+                if changed ~= nil and task.lastChanged ~= nil and task.elapsed > task.lastCheckAt then
+                    rate = math.max(0, (changed - task.lastChanged) / (task.elapsed - task.lastCheckAt))
+                end
+                if changed ~= nil then task.lastChanged, task.lastCheckAt = changed, task.elapsed end
+                local expected = changed and changed + rate * Bridge.FIELDWORK_STOP_LEAD_MS or nil
                 -- Each check, for the overshoot (live f460004990284cd1-1: 2016 m2 of 400 for a plow).
                 local lowered = "?"
                 pcall(function()
                     local implement = (v:getAttachedImplements() or {})[1]
                     lowered = tostring(implement and implement.object:getIsLowered())
                 end)
-                log("fieldwork check at %.1f s: %s m2 changed of %.0f, lowered %s, %.1f km/h", task.elapsed / 1000,
-                    changed and string.format("%.0f", changed) or "?", task.spec.area, lowered, v:getLastSpeed())
-                if changed ~= nil and changed >= task.spec.area then
+                if changed ~= nil and changed ~= task.loggedChanged then
+                    task.loggedChanged = changed
+                    log("fieldwork check at %.1f s: %.0f m2 changed of %.0f (%.0f m2/s), lowered %s, %.1f km/h",
+                        task.elapsed / 1000, changed, task.spec.area, rate * 1000, lowered, v:getLastSpeed())
+                end
+                if expected ~= nil and expected >= task.spec.area then
                     log("fieldwork: %.0f m2 of field %s changed (test area %.0f m2); stopping the helper",
                         changed, tostring(task.spec.field), task.spec.area)
                     task.areaReached = true

@@ -1026,6 +1026,30 @@ function Observe.fieldWindrow(env, f)
     return out
 end
 
+-- Only what a bounded test area is judged by (Bridge.changedArea): the ground-type and spray
+-- shares and the measured m2, cheap enough to read every few frames while the work runs.
+function Observe.fieldShares(env, id)
+    local fields = env.g_fieldManager.fields
+    for _, f in ipairs(type(fields) == "table" and fields or {}) do
+        if fieldId(f) == id then
+            local ground = {}
+            for name, v in pairs(env.FieldGroundType) do
+                if type(v) == "number" and token(name) ~= nil then
+                    local value = try(function() return env.FieldGroundType.getValueByType(v) end)
+                    if integer(value) then ground[name] = value end
+                end
+            end
+            local groundShare, total = measure(env, f, env.FieldDensityMap.GROUND_TYPE, ground)
+            local maxSpray = env.g_currentMission.fieldGroundSystem:getMaxValue(env.FieldDensityMap.SPRAY_LEVEL)
+            local levels = {}
+            for level = 1, (integer(maxSpray) and maxSpray or 0) do levels[tostring(level)] = level end
+            return { ground = groundShare, spray = measure(env, f, env.FieldDensityMap.SPRAY_LEVEL, levels),
+                     total_m2 = total }
+        end
+    end
+    return nil
+end
+
 function Observe.fieldCoverage(env, f, track)
     local ground = {}
     for name, v in pairs(env.FieldGroundType) do

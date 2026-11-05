@@ -1180,6 +1180,29 @@ class LuaBridgeTests(unittest.TestCase):
         self.W.run(self.w, 300)
         self.assertEqual(self.results(1)[-1], (1, "DONE", "NOT_REACHABLE"))
 
+    def test_a_bounded_area_is_measured_often_while_working_and_stopped_ahead_of_its_rate(self):
+        # Live fb3522a3e1d64f75-1: 0 m2 at one 3 s check, 1244 m2 of 400 at the next.
+        self.adopt()
+        self.fieldwork_stubs()
+        self.w.gotoStarts = True
+        self.lua.execute("""local w, B = ...
+            function w.tractor:getIsFieldWorkActive() return true end
+            B.Observe.fieldCache = B.Observe.fieldCache or {}
+            B.Observe.refreshField = function(env, id)
+                B.Observe.fieldCache[id] = { record = { ground = { STUBBLE = 1.0 }, total_m2 = 10000 }, age = 0 }
+            end
+            w.worked = 0
+            B.Observe.fieldShares = function()
+                if w.aiActive then w.worked = w.worked + 30 end      -- 30 m2 a check (120 m2/s)
+                local share = w.worked / 10000
+                return { ground = { STUBBLE = 1 - share, PLOWED = share }, total_m2 = 10000 }
+            end""", self.w, self.bridge)
+        self.send(1, "fieldwork", {**self.FIELD, "area": 400})
+        self.beating(6000)
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "AREA_REACHED"))
+        self.assertGreaterEqual(self.w.worked, 300)
+        self.assertLess(self.w.worked, 400)                     # the stop's own lag left within the request
+
     def test_a_combine_always_lays_a_straw_swath_where_it_can(self):
         for available, honest, result in ((True, True, ("ACCEPTED", "ACCEPTED")), (False, True, ("ACCEPTED", "ACCEPTED")),
                                           (True, False, ("FAILED", "SWATH_NOT_SET"))):
