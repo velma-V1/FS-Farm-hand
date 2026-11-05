@@ -18,12 +18,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
 from xml.etree import ElementTree
 
-ROOT = Path(__file__).resolve().parents[1]
+# The checkout to build: this file's own, or (a pinned tool copy, scripts/fh_remote_deploy.py) FARMHAND_REPO.
+ROOT = Path(os.environ.get("FARMHAND_REPO") or Path(__file__).resolve().parents[1]).resolve()
 SOURCE = ROOT / "mod"
 RUNTIME_FILES = (
     "modDesc.xml",

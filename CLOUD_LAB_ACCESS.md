@@ -72,6 +72,36 @@ python3 scripts/fh_deploy.py status
 - **Refusals and rollback:** it refuses during a job or test, or with a reload marker pending. Any failed step, such as a reload error or a companion that won't start, puts the previous install back automatically.
 - **After a switch:** `live_status()` should show `installed.mod == installed.app == <production build>`, while `repo_head` still names Codex's checkout. Lab test results then exercise production code; record them against that build id.
 
+## Remote deployment (prepared, OFF until the owner enables it)
+
+`scripts/fh_remote_deploy.py` lets the gateway offer one tool, `live_deploy(action, commit)`, so a pushed production build can be tested without the owner running `fh_deploy.py` by hand. It is **disabled** by default and stays so until the owner does all three steps below.
+
+- **Two fields only:** `action` is `status`, `switch` or `restore`. `commit` is a 7–40 hex commit, required for `switch` and accepted only if it is on `origin/claude/fs25-farmhand-agent-jy2ds2`. No shell, paths, branches, URLs or extra fields.
+- **Pinned tools:** the work is done by **pinned, reviewed copies** of `fh_deploy.py`, `package_probe.py` and `fs25_host_runner.py`, checked by sha256 on every call. The commit's files are only built as data. The one thing from the commit that runs is the Farmhand build it installs, as any deployment does.
+- **Same safeguards:** one request at a time (a lock), every call audit-logged to `~/.local/share/farmhand-deploy/remote.jsonl`, and every `switch` or `restore` goes through `fh_deploy`'s own transaction: snapshot, game-side READY check and automatic rollback. Codex's baseline snapshot is never replaced.
+
+To enable it, on the PC in `~/farmhand-production`, after reviewing the script:
+
+```sh
+git pull && python3 scripts/fh_remote_deploy.py install   # pins the tools, prints their sha256
+python3 scripts/fh_remote_deploy.py enable                # approval; `disable` revokes it at any time
+```
+
+Then add one tool to the gateway (`~/.local/share/farmhand-cloud-bridge/bridge.py`), beside `live_hot_reload`:
+
+```python
+import sys, pathlib
+sys.path.insert(0, str(pathlib.Path.home() / "farmhand-production" / "scripts"))
+import fh_remote_deploy
+
+@mcp.tool()
+def live_deploy(action: str, commit: str = "") -> dict:
+    """Install a production Farmhand commit in the lab, or restore the lab baseline (fh_remote_deploy)."""
+    return fh_remote_deploy.handle({"action": action, **({"commit": commit} if commit else {})})
+```
+
+Until then `live_deploy` does not exist. If it is registered but not enabled, `switch` and `restore` answer `REMOTE_DEPLOY_DISABLED`. `status` works either way.
+
 GUI `click`/`key`, menus, `restart-fs25`, game closure and unrestricted host commands are intentionally **not** exposed through the MCP gateway. Existing Codex background screenshot path uses `.fhScreen`; do not bring FS25 to foreground just to inspect it.
 
 ## Engineering boundaries and product priorities

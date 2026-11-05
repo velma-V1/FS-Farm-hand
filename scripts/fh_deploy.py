@@ -40,7 +40,8 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fs25_host_runner as runner  # noqa: E402  (the runner's fixed targets and companion control)
 
-ROOT = Path(__file__).resolve().parents[1]
+# The checkout to deploy: this file's own, or (a pinned tool copy, scripts/fh_remote_deploy.py) FARMHAND_REPO.
+ROOT = Path(os.environ.get("FARMHAND_REPO") or Path(__file__).resolve().parents[1]).resolve()
 STATE_DIR = Path.home() / ".local" / "share" / "farmhand-deploy"
 LAB_CHECKOUT = Path.home() / "projects" / "FS-Farm-hand"     # Codex's lab: never built or written here
 STATE_FILES = ("settings.json", "goal.json", "routes.json")
@@ -547,8 +548,10 @@ def stage(targets: runner.Targets, allow_dirty: bool) -> Deployer:
                            capture_output=True, text=True, check=True).stdout.strip()
     if dirty and not allow_dirty:
         raise DeployError("CLONE_DIRTY", hint="commit or pass --allow-dirty")
-    subprocess.run([sys.executable, str(ROOT / "scripts" / "package_probe.py"), "--build-dev",
-                    str(ROOT / runner.SHARED / runner.BUILD_DIR)], check=True, stdout=subprocess.DEVNULL)
+    # The packager beside this file (a pinned copy builds the checkout as data; see fh_remote_deploy).
+    subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "package_probe.py"), "--build-dev",
+                    str(ROOT / runner.SHARED / runner.BUILD_DIR)], check=True, stdout=subprocess.DEVNULL,
+                   env={**os.environ, "FARMHAND_REPO": str(ROOT)})
     host = Host(targets)
     manifest, contents = host.runner._validated_build()
     deployer = Deployer(targets, host)
