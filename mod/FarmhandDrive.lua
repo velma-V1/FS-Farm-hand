@@ -852,6 +852,7 @@ Drive.FIRST_ROUTE_LIMIT_MS = 120000   -- the first route's search, at most
 Drive.LEARNED_ROUTE_LIMIT_MS = 180000 -- a taught short line must not loop for minutes before provider recovery
 Drive.LEAVE_M = 6                      -- a touched object left out this near the start
 Drive.SHUFFLE_LEGS = 16         -- legs driven in one drive's shuffles
+Drive.TURN_IN_PLACE_M = 40      -- a goal this near is searched with reverse moves from the start
 local SHUFFLE_LIMIT = 8000
 Drive.AHEAD_BUDGET_S = 0.004    -- per frame for the next section, searched while driving
 Drive.MAX_APPROACH_M = 100      -- = companion/standalone.py MAX_APPROACH_M
@@ -1705,7 +1706,28 @@ local function initialPlan(env, s, Hitch)
     end
     local start, target = s.initial.start, { s.targetX, s.targetZ }
     local path, corridor, reached, sectionAttempt, retreat, backOut
-    if s.learned == nil and distance(start[1],start[2],target[1],target[2]) <= 200 then
+    local far = distance(start[1],start[2],target[1],target[2])
+    if s.learned == nil and s.egress == nil and s.foot.towed == nil and far <= Drive.TURN_IN_PLACE_M then
+        -- Near, with no towed unit: forward and reverse moves from the start, as a worker turns
+        -- round in a few moves (live f460004990284cd1-1: facing away from a point 12 m off, a
+        -- forward-only search drove a 33-point 150 m loop). Reverse and gear changes keep their
+        -- costs, so a forward way still wins where there is one.
+        path = Drive.plan(start,target,s.radius,clear,nil,s.goalYaw,true,
+                          SHUFFLE_LIMIT,Drive.SHUFFLE_SWITCHES,canSteerReverse(s))
+        local shuffled = false
+        for n = 2, path and #path or 0 do
+            if (path[n][4] or 1) < 0 then shuffled = true end
+        end
+        if shuffled then
+            say(string.format("[Farmhand] drive turns round in place to %.1f,%.1f (%d steps)", target[1], target[2], #path))
+            s.shuffle = { waypoint = target, goalYaw = s.goalYaw }
+            beginLeg(s, path, start[1], start[2], start[3])
+            s.lastMovedX, s.lastMovedZ, s.movedAt = s.initial.x, s.initial.z, s.elapsed
+            s.initial = nil
+            return nil
+        end
+    end
+    if path == nil and s.learned == nil and far <= 200 then
         path = Drive.plan(start,target,s.radius,clear,nil,s.goalYaw,true)
     end
     if path == nil and s.egress == nil then

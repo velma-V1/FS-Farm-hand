@@ -3153,3 +3153,26 @@ class ArticulatedSearchTests(unittest.TestCase):
 
 class Lua51ArticulatedSearchTests(ArticulatedSearchTests):
     runtime = lua51
+
+
+class TurnInPlaceTests(unittest.TestCase):
+    """Live f460004990284cd1-1: a forward-only search looped 150 m for a point 12 m off."""
+    runtime = lua54
+
+    def test_a_lane_too_narrow_to_loop_is_left_by_a_few_forward_and_reverse_moves(self):
+        lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
+        drive = lua.execute(SOURCE.read_text())
+        lane = lua.eval("function(x, z) return math.abs(x) < 6 and z > -40 and z < 40 end")
+        start = lua.table_from((0, 0, 0))                     # facing +z, the goal 12 m behind
+        forward, _ = drive.plan(start, lua.table_from((0, -12)), 8.2, lane, None, None, True, 8000)
+        self.assertIsNone(forward)
+        path, why = drive.plan(start, lua.table_from((0, -12)), 8.2, lane, None, None, True, 8000,
+                               drive.SHUFFLE_SWITCHES, True)
+        self.assertIsNone(why)
+        self.assertTrue(any((path[n][4] or 1) < 0 for n in range(2, len(path) + 1)))
+        for n in range(1, len(path) + 1):
+            self.assertTrue(lane(path[n][1], path[n][2]))
+
+
+class Lua51TurnInPlaceTests(TurnInPlaceTests):
+    runtime = lua51
