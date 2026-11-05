@@ -668,6 +668,19 @@ function steppers.reach(env, task, dt)
         or (name == "NOT_REACHABLE" and "NOT_REACHABLE") or (name == "BLOCKED" and "REACH_BLOCKED")
         or (task.elapsed > Bridge.REACH_MS and "REACH_UNDECIDED") or nil
     if code == nil then return nil end
+    if code ~= "REACHABLE" then
+        -- Whether its footprint has room in GIANTS' cost map where it stands and at the target
+        -- (AIDrivable:debugGetAgentHasSpaceAt, the base agent size): a planner refusing at once.
+        pcall(function()
+            local node = v:getAIRootNode()
+            local x, y, z = env.getWorldTranslation(node)
+            local dx, dy, dz = env.localDirectionToWorld(node, 0, 0, 1)
+            local ty = env.getTerrainHeightAtWorldPos(env.g_currentMission.terrainRootNode, task.spec.x, 0, task.spec.z)
+            local yaw = task.spec.yaw or 0
+            log("reach: room at its start %s, at the target %s", tostring(v:debugGetAgentHasSpaceAt(x, y, z, dx, dy, dz)),
+                tostring(v:debugGetAgentHasSpaceAt(task.spec.x, ty, task.spec.z, math.sin(yaw), 0, math.cos(yaw))))
+        end)
+    end
     log("reach: %s after %d ms", code, task.elapsed)
     agentEnd(env, task, dt)
     return "DONE", code
