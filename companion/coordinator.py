@@ -26,6 +26,7 @@ from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified
 from companion import hitch as transport   # its tractor-transport section
+from companion.drive_goal import DRIVEN
 from companion.executor import (COVERAGE_REQUIRED, Executor, HITCHABLE_KINDS, OPERATIONS, already_done, crop_problem, named, of_kind,
                                 resolve_field, seed_position, usable)
 from protocol.model import Equipment, Result
@@ -161,7 +162,7 @@ def remember(context: dict, step: dict, result: Result, items) -> None:
     if step["command"] in ("haul_tractor", "load_tractor", "unload_tractor") and result.equipment_ids:
         # The carried tractor, never the truck towing the transport (a resumed haul's first
         # unit may be the truck).
-        cargo = [observed[i] for i in result.equipment_ids if i in observed and observed[i].category == "tractor"
+        cargo = [observed[i] for i in result.equipment_ids if i in observed and observed[i].category in DRIVEN
                  and not transport.is_transport(observed[i])
                  and not (observed.get(observed[i].attached_to) is not None
                           and transport.is_transport(observed[observed[i].attached_to]))]
@@ -188,14 +189,14 @@ def _tractor_for(items, farm_id: str, name: str | None, transports):
     tractor nearest a transport (within 50 m; "the tractor" beside the deckover)."""
     towing = {t.attached_to for t in transports}          # the truck towing a transport is never it
     if name:
-        found = [i for i in items if i.category == "tractor" and i.farm_id == farm_id and named(i, name)
+        found = [i for i in items if i.category in DRIVEN and i.farm_id == farm_id and named(i, name)
                  and not transport.is_transport(i) and i.id not in towing]
     else:
-        found = [i for i in items if i.category == "tractor" and i.farm_id == farm_id and i.id not in towing
+        found = [i for i in items if i.category in DRIVEN and i.farm_id == farm_id and i.id not in towing
                  and any(i.belted_to == t.id or transport.on_deck(i, t) for t in transports)]
         if not found:
             near = sorted((min(math.dist(i.position, t.position) for t in transports), i.id, i) for i in items
-                          if i.category == "tractor" and i.farm_id == farm_id and i.id not in towing and transports
+                          if i.category in DRIVEN and i.farm_id == farm_id and i.id not in towing and transports
                           and not transport.is_transport(i))
             found = [near[0][2]] if near and near[0][0] <= 50.0 else []
     return found

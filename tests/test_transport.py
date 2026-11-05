@@ -274,6 +274,16 @@ class TractorTransportTests(unittest.TestCase):
         self.assertEqual(after[truck.id].position, truck.position)                 # the truck never moved
         self.assertTrue(all(i.reserved_by is None for i in after.values()))
 
+    def test_a_combine_is_loaded_like_any_driven_machine(self):
+        # The owner (2026-11-05): slow combines are transported over long distances; the cargo is any
+        # driven machine, not only a "tractor" (the mod's LOAD decides whether it fits).
+        from companion import hitch as transport
+        world, tractor, deck, truck = transport_world()
+        world.items[tractor.id] = replace(world.items[tractor.id], category="harvester", name="MF 8570")
+        result = Executor(world).execute(load())
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+        self.assertTrue(transport.on_deck(world.items[tractor.id], world.items[deck.id]))
+
     def test_the_tractor_is_loaded_with_its_mounted_plow_on(self):
         # The user, 2026-10-21: "load the tractor and plow on the gooseneck" (AGENTS.md exception 5,
         # a mounted implement along; the mod checks it is lifted, folded and fits).

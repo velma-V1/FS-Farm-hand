@@ -1415,7 +1415,8 @@ class Executor:
             for trailer in trailers:
                 for tractor in items:
                     implement = observed.get(tractor.attached_to)
-                    if (tractor.category != "tractor" or tractor.id == trailer.id or tractor.id == trailer.attached_to
+                    # Any driven machine (a tractor, a combine) as cargo; the mod's LOAD decides whether it fits.
+                    if (tractor.category not in DRIVEN or tractor.id == trailer.id or tractor.id == trailer.attached_to
                             or not usable(tractor, farm_id) or not tractor.stopped
                             # Alone, or with what it carries (a mounted implement: the mod decides
                             # whether it may come along); never towing the transport or a trailer.
