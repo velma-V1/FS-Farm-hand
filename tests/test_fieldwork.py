@@ -2453,3 +2453,28 @@ class DriveStopTests(unittest.TestCase):
 
     def test_a_failed_drive_still_tries_the_route_provider(self):
         self.assertEqual(self.run_move("NO_GOAL_PROGRESS"), ["farm_drive", "navigate"])
+
+
+class ChangedAreaTests(unittest.TestCase):
+    """One measure stops a test area (mod) and accepts it (companion)."""
+
+    def test_the_companion_and_the_mod_measure_a_test_area_alike(self):
+        from pathlib import Path
+        from lupa import lua54
+        from companion.executor import changed_area
+        cases = (
+            ((("STUBBLE", 1.0),), (), (("STUBBLE", 0.96), ("PLOWED", 0.04)), ()),          # 400 m2 plowed
+            ((("PLOWED", 0.5), ("CULTIVATED", 0.5)), ((1, 0.5),),
+             (("PLOWED", 0.5), ("CULTIVATED", 0.5)), ((1, 0.54),)),                        # 400 m2 sprayed
+        )
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        bridge = lua.execute(Path("mod/FarmhandBridge.lua").read_text())
+        for g0, s0, g1, s1 in cases:
+            before = FieldCoverage(g0, s0, 10000.0, None, 0)
+            after = FieldCoverage(g1, s1, 10000.0, None, 0)
+            ours = changed_area(before, after)
+            theirs = bridge.changedArea(lua.table(ground=lua.table(**dict(g0)), spray=lua.table_from(dict(s0))),
+                                        lua.table(ground=lua.table(**dict(g1)), spray=lua.table_from(dict(s1)),
+                                                  total_m2=10000.0))
+            self.assertAlmostEqual(ours, 400.0, places=6)
+            self.assertAlmostEqual(theirs, ours, places=6)

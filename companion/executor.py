@@ -481,6 +481,18 @@ OPERATIONS = {
 }
 
 
+def changed_area(before: FieldCoverage, after: FieldCoverage) -> float:
+    """The m2 whose state changed, as the mod measures a test area (mod/FarmhandBridge.lua
+    Bridge.changedArea): the larger of the ground-type and spray share moved (half the summed
+    absolute share differences), times the field's m2."""
+    def moved(a, b):
+        a, b = dict(a or ()), dict(b or ())
+        # What is not listed (spray level 0, an unlisted ground type) is a share too.
+        a[None], b[None] = max(0.0, 1.0 - sum(a.values())), max(0.0, 1.0 - sum(b.values()))
+        return sum(abs(b.get(k, 0.0) - a.get(k, 0.0)) for k in set(a) | set(b)) / 2
+    return max(moved(before.ground, after.ground), moved(before.spray, after.spray)) * (after.total_m2 or 0.0)
+
+
 def already_done(operation: Operation, field: Field, area_m2=None) -> bool:
     """The field already shows the operation's result over COVERAGE_REQUIRED of its
     area, or (for a test area) less than that area is left undone."""
@@ -3055,9 +3067,13 @@ class Executor:
                              field.id, operation.name, before_done if before_done is not None else -1, done,
                              describe(after.coverage))
                     if area:
-                        # A bounded test area: the operation's own measured share grew by it.
-                        worked = (done - (before_done or 0.0)) * (after.coverage.total_m2 or 0.0)
-                        log.info("FIELD_WORK test area: %.0f m2 worked of %.0f m2 asked", worked, area)
+                        # A bounded test area: judged by the measure the mod stops it by (changed_area;
+                        # live abf1610fc62543be-1: cultivating partly plowed ground, the mod stopped at
+                        # 414 m2 changed while the cultivated share alone grew 192 m2, PARTIAL_COVERAGE).
+                        worked = changed_area(before.coverage, after.coverage)
+                        own = (done - (before_done or 0.0)) * (after.coverage.total_m2 or 0.0)
+                        log.info("FIELD_WORK test area: %.0f m2 worked of %.0f m2 asked (%s share +%.0f m2)",
+                                 worked, area, operation.name, own)
                         if worked < area * COVERAGE_REQUIRED:
                             raise StepFailed(ended if ended not in ("FINISHED", "AREA_REACHED") else "PARTIAL_COVERAGE")
                     elif done < COVERAGE_REQUIRED:

@@ -2642,10 +2642,13 @@ end
 function Bridge.changedArea(before, after)
     if type(before) ~= "table" or type(after) ~= "table" or not finite(after.total_m2) then return nil end
     local function moved(a, b)
-        local names, sum = {}, 0
-        for k in pairs(a or {}) do names[k] = true end
-        for k in pairs(b or {}) do names[k] = true end
+        local names, sum, restA, restB = {}, 0, 1, 1
+        for k, v in pairs(a or {}) do names[k] = true; restA = restA - v end
+        for k, v in pairs(b or {}) do names[k] = true; restB = restB - v end
         for k in pairs(names) do sum = sum + math.abs(((b or {})[k] or 0) - ((a or {})[k] or 0)) end
+        -- What is not listed (spray level 0, an unlisted ground type) is a share too: without it
+        -- a spray's change counted half (companion/executor.py changed_area, the same rule).
+        sum = sum + math.abs(math.max(0, restB) - math.max(0, restA))
         return sum / 2
     end
     return math.max(moved(before.ground, after.ground), moved(before.spray, after.spray)) * after.total_m2
