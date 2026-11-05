@@ -13,6 +13,8 @@ local LIMIT = 6000
 -- A drive must come this much closer to its goal within this time (see the step's goal check).
 Drive.GOAL_PROGRESS_M = 2.0
 Drive.GOAL_PROGRESS_MS = 150000
+-- A forward curve straight onto the goal pose is tried this near it (Drive.plan).
+Drive.SHOT_M, Drive.SHOT_EVERY = 40, 4
 
 local function finite(n)
     return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
@@ -70,6 +72,103 @@ local function advance(x, z, yaw, length, curvature)
     return x + (cos(yaw) - cos(endYaw)) / curvature,
            z + (sin(endYaw) - sin(yaw)) / curvature, endYaw
 end
+
+-- The forward (Dubins) curves from one pose to another at turning radius r, shortest
+-- first: each a list of {curvature, metres}. A search step turns STEP / r (1 rad at
+-- r = 4), so the lattice reaches only start +- whole steps of heading and met a goal
+-- heading within pi/12 by chance or by a loop (live 87ec310879a546ea-1, build 5613bd1: tractor 615
+-- turned 283 deg left for a 77 deg right turn, and every search to the hitch approach
+-- 25 m off in open ground exhausted). Each candidate is checked by driving it with
+-- advance(), so only curves that truly end at the goal pose are returned.
+local function wrap2pi(a) return a % (2 * pi) end
+function Drive.dubins(sx, sz, syaw, gx, gz, gyaw, r)
+    -- (u, v) = (z, x): forward is (cos yaw, sin yaw) there and a rising yaw turns left.
+    local du, dv = (gz - sz) / r, (gx - sx) / r
+    local d = sqrt(du * du + dv * dv)
+    local phi = atan2(dv, du)
+    local a, b = wrap2pi(syaw - phi), wrap2pi(gyaw - phi)
+    local sa, ca, sb, cb, cab = sin(a), cos(a), sin(b), cos(b), cos(a - b)
+    local words = {}
+    local function add(kinds, t, p, q) words[#words+1] = { kinds, t, p, q } end
+    local tmp = 2 + d*d - 2*cab + 2*d*(sa - sb)
+    if tmp >= 0 then
+        local th = atan2(cb - ca, d + sa - sb)
+        add("LSL", wrap2pi(-a + th), sqrt(tmp), wrap2pi(b - th))
+    end
+    tmp = 2 + d*d - 2*cab + 2*d*(sb - sa)
+    if tmp >= 0 then
+        local th = atan2(ca - cb, d - sa + sb)
+        add("RSR", wrap2pi(a - th), sqrt(tmp), wrap2pi(-b + th))
+    end
+    tmp = -2 + d*d + 2*cab + 2*d*(sa + sb)
+    if tmp >= 0 then
+        local p = sqrt(tmp)
+        local th = atan2(-ca - cb, d + sa + sb) - atan2(-2, p)
+        add("LSR", wrap2pi(-a + th), p, wrap2pi(-b + th))
+    end
+    tmp = d*d - 2 + 2*cab - 2*d*(sa + sb)
+    if tmp >= 0 then
+        local p = sqrt(tmp)
+        local th = atan2(ca + cb, d - sa - sb) - atan2(2, p)
+        add("RSL", wrap2pi(a - th), p, wrap2pi(b - th))
+    end
+    tmp = (6 - d*d + 2*cab + 2*d*(sa - sb)) / 8
+    if abs(tmp) <= 1 then
+        local p = wrap2pi(2*pi - math.acos(tmp))
+        local t = wrap2pi(a - atan2(ca - cb, d - sa + sb) + p/2)
+        add("RLR", t, p, wrap2pi(a - b - t + p))
+    end
+    tmp = (6 - d*d + 2*cab + 2*d*(sb - sa)) / 8
+    if abs(tmp) <= 1 then
+        local p = wrap2pi(2*pi - math.acos(tmp))
+        local t = wrap2pi(-a - atan2(ca - cb, d + sa - sb) + p/2)
+        add("LRL", t, p, wrap2pi(b - a - t + p))
+    end
+    local curves = {}
+    for _, w in ipairs(words) do
+        local segments, length = {}, 0
+        for n = 1, 3 do
+            local kind, size = w[1]:sub(n, n), w[n + 1]
+            local curvature = kind == "L" and 1 / r or kind == "R" and -1 / r or 0
+            segments[n] = { curvature, size * r }
+            length = length + size * r
+        end
+        local x, z, yaw = sx, sz, syaw
+        for _, seg in ipairs(segments) do x, z, yaw = advance(x, z, yaw, seg[2], seg[1]) end
+        if distance(x, z, gx, gz) < 0.05 and abs((yaw - gyaw + pi) % (2 * pi) - pi) < 0.01 then
+            segments.length = length
+            curves[#curves+1] = segments
+        end
+    end
+    table.sort(curves, function(p, q) return p.length < q.length end)
+    return curves
+end
+
+-- Path steps (each <= STEP, one arc) along a Dubins curve from a pose, or nil where the
+-- probe rejects a metre of it, it leaves the search area or crosses a planted crop
+-- (the search pays for crop; a shot does not cross it).
+local function dubinsSteps(x, z, yaw, segments, probe, inside)
+    local steps = {}
+    for _, seg in ipairs(segments) do
+        local curvature, length = seg[1], seg[2]
+        if length >= 0.05 then
+            local pieces = math.ceil(length / STEP - 1e-9)
+            local piece = length / pieces
+            for _ = 1, pieces do
+                local metres = math.ceil(piece - 1e-9)
+                for m = 1, metres do
+                    local px, pz, pyaw = advance(x, z, yaw, math.min(m, piece), curvature)
+                    local pass, surface = probe(px, pz, pyaw, curvature, 1)
+                    if pass ~= true or surface == "CROP" or not inside(px, pz) then return nil end
+                end
+                x, z, yaw = advance(x, z, yaw, piece, curvature)
+                steps[#steps+1] = { x, z, yaw }
+            end
+        end
+    end
+    return steps
+end
+Drive.dubinsSteps = dubinsSteps
 
 local function key(x, z, yaw)
     local angle = yaw % (2 * pi)
@@ -456,17 +555,29 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
     end
     local limit = maxExpanded or (guide and LIMIT*3 or LIMIT)
     switches = switches or 0
+    -- The path from the start to a search node.
+    local function trace(node)
+        local reversed = {}
+        while node ~= nil do
+            reversed[#reversed + 1] = { node.x, node.z, node.yaw, node.gear < 0 and -1 or nil,
+                                        node.gear < 0 and node.curve or nil }
+            node = node.parent
+        end
+        local path = {}
+        for i = #reversed, 1, -1 do path[#path + 1] = reversed[i] end
+        return path
+    end
     local function nodeKey(node)
         local k = key(node.x, node.z, node.yaw)
         return node.gear < 0 and k .. ":r" or k
     end
-    local found, expanded = resumable(signature("plan", sx, sz, syaw, gx, gz, radius, goalYaw, limit,
+    local found, expanded, blocked = resumable(signature("plan", sx, sz, syaw, gx, gz, radius, goalYaw, limit,
                                                 guide and #guide or 0, switches, steeredReverse and 1 or 0), function()
         local heap = {}
         local first = { x = sx, z = sz, yaw = syaw, cost = 0, gear = 1, switches = 0,
                         score = guide and corridorHeuristic(sx,sz,guide)*1.5 or distance(sx,sz,gx,gz) }
         push(heap, first)
-        return { heap = heap, best = { [nodeKey(first)] = 0 }, expanded = 0 }
+        return { heap = heap, best = { [nodeKey(first)] = 0 }, expanded = 0, blocked = {} }
     end, function(job)
     local heap, best = job.heap, job.best
     local moves = { {1,0}, {1,-1}, {1,1} }
@@ -482,16 +593,27 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
             -- follower's 1 m endpoint tolerance; corridor waypoints keep 3 m.
             if node.gear > 0 and distance(node.x, node.z, gx, gz) < (goalYaw and 3 or 2)
                     and headingError < pi/12 then
-                local reversed = {}
-                while node ~= nil do
-                    reversed[#reversed + 1] = { node.x, node.z, node.yaw, node.gear < 0 and -1 or nil,
-                                                node.gear < 0 and node.curve or nil }
-                    node = node.parent
-                end
-                local path = {}
-                for i = #reversed, 1, -1 do path[#path + 1] = reversed[i] end
-                job.result = pack(path, job.expanded)
+                job.result = pack(trace(node), job.expanded)
                 return true
+            end
+            -- An exact forward curve onto the goal pose (Drive.dubins), from the start and then
+            -- from every SHOT_EVERY-th node near the goal; a curve looping more than half a
+            -- turn beyond the straight distance is left to the search.
+            local near = distance(node.x, node.z, gx, gz)
+            if goalYaw ~= nil and node.gear > 0 and near <= Drive.SHOT_M
+                    and (node.parent == nil or near < 2 * radius or job.expanded % Drive.SHOT_EVERY == 0) then
+                for n, curve in ipairs(Drive.dubins(node.x, node.z, node.yaw, gx, gz, goalYaw, radius)) do
+                    if n > 2 or curve.length > near + pi * radius then break end
+                    local steps = dubinsSteps(node.x, node.z, node.yaw, curve, probe, function(px, pz)
+                        return px >= minX and px <= maxX and pz >= minZ and pz <= maxZ
+                    end)
+                    if steps ~= nil then
+                        local path = trace(node)
+                        for _, step in ipairs(steps) do path[#path + 1] = step end
+                        job.result = pack(path, job.expanded)
+                        return true
+                    end
+                end
             end
             -- Full STEP moves; where none fits, half ones from this node: in a tight spot the rig
             -- creeps out (live 140a6b52320b4587-1: the long GMC rig among parked rigs, every 2 m
@@ -510,6 +632,9 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
                     local pass, surface = probe(x, z, yaw, curve, gear)
                     if x < minX or x > maxX or z < minZ or z > maxZ or pass ~= true then
                         clear = false
+                        -- What rejected it, by the reason's first word (the exhausted log).
+                        local why = pass == true and "AREA" or tostring(surface):match("^[%w_]+") or "?"
+                        job.blocked[why] = (job.blocked[why] or 0) + 1
                     else
                         surfaceCost = surfaceCost + (surface == "CROP" and 40
                                                      or surface == "FIELD" and 8 or 0)
@@ -536,7 +661,7 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
             end
         end
     end
-    job.result = pack(nil, job.expanded)
+    job.result = pack(nil, job.expanded, job.blocked)
     return true
     end)
     if found ~= nil then return found, nil end
@@ -596,8 +721,12 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
         end
     end
     if localOnly then
-        say(string.format("[Farmhand] drive local search exhausted expanded=%d start=(%.1f,%.1f,%.2f) goal=(%.1f,%.1f) radius=%.1f goalYaw=%s guide=%d",
-                            expanded,sx,sz,syaw,gx,gz,radius,tostring(goalYaw),guide and #guide or 0))
+        local reasons = {}
+        for why, count in pairs(blocked or {}) do reasons[#reasons+1] = why .. ":" .. count end
+        table.sort(reasons)
+        say(string.format("[Farmhand] drive local search exhausted expanded=%d start=(%.1f,%.1f,%.2f) goal=(%.1f,%.1f) radius=%.1f goalYaw=%s guide=%d blocked %s",
+                            expanded,sx,sz,syaw,gx,gz,radius,tostring(goalYaw),guide and #guide or 0,
+                            #reasons > 0 and table.concat(reasons," ") or "none"))
         if expanded == 1 and guide == nil then
             -- Each metre of the first full move (live 140a6b52320b4587-1: 1 m clear every way, yet
             -- no move of the search's own length left the start; which metre, and what blocks it).
@@ -675,6 +804,11 @@ end
 function Drive.section(start, radius, probe, corridor, reached, attempt, switches, steeredReverse)
     local i, waypoint, guide, goalYaw = sectionGoal(corridor, reached, attempt)
     if i == nil then return nil,nil,"SECTION_EXHAUSTED" end
+    -- Near the corridor's end several spans reach its last point: the same search again
+    -- would fail the same way (live 87ec310879a546ea-1: four 7 s searches from one pose).
+    for earlier = 1, attempt - 1 do
+        if sectionGoal(corridor, reached, earlier) == i then return nil,i,"SECTION_REPEAT" end
+    end
     local limit = corridor.learned and 12000 or switches and SHUFFLE_LIMIT or 4000
     local section, why = Drive.plan(start,waypoint,radius,probe,guide,goalYaw,true,
                                     limit,switches,steeredReverse)

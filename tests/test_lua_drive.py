@@ -1881,6 +1881,7 @@ class ShuffleAndApproachTests(unittest.TestCase):
 
     def test_a_section_searched_ahead_spreads_over_frames_and_leaves_the_driven_path_alone(self):
         env, session, hitch = self.lua.execute(self.AHEAD, 0.001)
+        self.drive.SHOT_M = 0   # the open corridor would be met by one exact curve in the first frame
         before = [(session.path[i][1], session.path[i][2]) for i in range(1, len(session.path) + 1)]
         frames = 0
         while not self.drive.planAhead(env, session, hitch):
@@ -2896,4 +2897,77 @@ class RootArcFollowingTests(unittest.TestCase):
 
 
 class Lua51RootArcFollowingTests(RootArcFollowingTests):
+    runtime = lua51
+
+
+class GoalHeadingTests(unittest.TestCase):
+    """A goal heading is met by an exact forward curve, not by the lattice's luck or a loop."""
+    runtime = lua54
+
+    def setUp(self):
+        self.lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
+        self.drive = self.lua.execute(SOURCE.read_text())
+        self.clear = self.lua.eval("function() return true end")
+
+    def turning(self, path):
+        total = 0.0
+        for n in range(2, len(path) + 1):
+            change = (path[n][3] - path[n - 1][3] + math.pi) % (2 * math.pi) - math.pi
+            total += abs(change)
+        return total
+
+    def test_every_dubins_curve_ends_on_the_goal_pose(self):
+        import random
+        rnd = random.Random(7)
+        for _ in range(200):
+            sx, sz, gx, gz = (rnd.uniform(-40, 40) for _ in range(4))
+            syaw, gyaw = rnd.uniform(-7, 7), rnd.uniform(-7, 7)
+            curves = self.drive.dubins(sx, sz, syaw, gx, gz, gyaw, 4.0)
+            self.assertGreater(len(curves), 0)
+            self.assertGreaterEqual(curves[1].length + 1e-6, math.hypot(gx - sx, gz - sz))
+
+    def test_the_live_hitch_approach_in_open_ground_is_planned_at_once(self):
+        # Live, build 5613bd1, tractor 615: every 4000-node search from here exhausted.
+        start = self.lua.table_from((-752.4, 170.7, -4.62))
+        path, why = self.drive.plan(start, self.lua.table_from((-740.9, 193.6)), 4.0, self.clear,
+                                    None, 2.00038898038469, True, 4000)
+        self.assertIsNone(why)
+        end = path[len(path)]
+        self.assertLess(math.hypot(end[1] + 740.9, end[2] - 193.6), 0.1)
+        self.assertLess(abs((end[3] - 2.00038898038469 + math.pi) % (2 * math.pi) - math.pi), 0.01)
+        self.assertLess(self.turning(path), 2 * math.pi)
+        for n in range(2, len(path) + 1):   # every step one arc the follower can rebuild
+            self.assertIsNotNone(self.drive.routeSample(path, n, 0))
+
+    def test_a_gentle_turn_onto_a_corridor_heading_is_not_a_loop(self):
+        # Live, build 5613bd1: from yaw 0.32 to corridor heading 1.66 the plan turned 283 deg left.
+        start = self.lua.table_from((-791.3, 162.7, 0.32))
+        path, why = self.drive.plan(start, self.lua.table_from((-760.4, 171.5)), 4.0, self.clear,
+                                    None, -4.62 + 2 * math.pi, True, 4000)
+        self.assertIsNone(why)
+        self.assertLess(self.turning(path), math.pi)
+
+    def test_a_shot_through_an_obstacle_is_refused_and_the_search_goes_round(self):
+        wall = self.lua.eval("function(x,z) return not (z > 8 and z < 12 and x > -6 and x < 6) end")
+        start = self.lua.table_from((0, 0, 0))
+        path, why = self.drive.plan(start, self.lua.table_from((0, 24)), 4.0, wall, None, 0, True, 6000)
+        self.assertIsNone(why)
+        for n in range(1, len(path) + 1):
+            self.assertTrue(wall(path[n][1], path[n][2]))
+
+    def test_a_section_reaching_the_same_corridor_point_again_is_not_searched_again(self):
+        calls = self.lua.eval("""function(d)
+            local calls = {n = 0}
+            d.plan = function() calls.n = calls.n + 1; return nil, 'NO_ROUTE' end
+            return calls
+        end""")(self.drive)
+        corridor = self.lua.table_from([self.lua.table_from((0, 0)), self.lua.table_from((0, 10)),
+                                        self.lua.table_from((0, 20))])
+        start = self.lua.table_from((0, 0, 0))
+        for attempt in range(1, 7):
+            self.drive.section(start, 4.0, self.clear, corridor, 1, attempt)
+        self.assertEqual(calls.n, 2)   # to point 3 once, to point 2 (span 1) once
+
+
+class Lua51GoalHeadingTests(GoalHeadingTests):
     runtime = lua51
