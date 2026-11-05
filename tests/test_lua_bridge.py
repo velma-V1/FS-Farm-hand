@@ -1234,6 +1234,26 @@ class LuaBridgeTests(unittest.TestCase):
                 self.assertEqual(self.results(9)[-1], (9, "FAILED", "NOT_JUST_DETACHED"))
                 self.assertNotIn("newPullClear:4/1", self.calls())      # the fake never ran
 
+    def test_a_pull_clear_refused_for_the_player_may_be_tried_again_inside_its_window(self):
+        # Live cc1d2a73fb8243fc-1: refused PULL_CLEAR_PERSON, the retry 4 s later NOT_JUST_DETACHED.
+        self.detached()
+        fake = self.scripted_pull(["CLEAR"])
+        self.lua.execute("""local F, calls = ...
+            local made = F.newPullClear
+            local refused = false
+            F.newPullClear = function(env, args)
+                if not refused then refused = true; table.insert(calls, "refused"); return nil, "PULL_CLEAR_PERSON" end
+                return made(env, args)
+            end""", fake, self.w.calls)
+        self.send(2, "pull_clear", self.PAIR)
+        self.assertEqual(self.results(2)[-1], (2, "FAILED", "PULL_CLEAR_PERSON"))
+        self.W.run(self.w, 3000)
+        self.send(3, "pull_clear", self.PAIR)
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(3)[-1], (3, "DONE", "CLEAR"))
+        self.send(4, "pull_clear", self.PAIR)                   # one pull-clear per detach still
+        self.assertEqual(self.results(4)[-1], (4, "FAILED", "NOT_JUST_DETACHED"))
+
     def test_a_failed_pull_clear_is_failed_and_a_stop_aborts_it(self):
         self.detached()
         self.scripted_pull(["CONTINUE", "STALLED"])

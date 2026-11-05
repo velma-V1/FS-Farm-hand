@@ -47,7 +47,7 @@ def token(text: str) -> str:
 # Steps that move equipment: STATUS says "driving" only when it is observed moving.
 MOTION_STEPS = frozenset({"TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "PULL_CLEAR", "UNPARK",
                           "DELIVER", "FIELD_WORK", "APPROACH", "LOAD", "UNLOAD", "FOLLOW"})
-MILESTONES = frozenset({"FIELD_WORK", "PULL_CLEAR", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "DELIVER",
+MILESTONES = frozenset({"FIELD_WORK", "PULL_CLEAR", "WAIT_PERSON", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "DELIVER",
                         "RAMPS_DOWN", "LOAD", "BELTS", "RAMPS_UP", "UNLOAD"})
 # The executor task and the player-facing notices of each job command.
 JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE"),

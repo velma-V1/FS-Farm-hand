@@ -954,7 +954,12 @@ function starters.pull_clear(env, spec)
         tractor = spec.tractor, wagon = spec.wagon, tractorJoint = last.joints[1], wagonJoint = last.joints[2],
         farmId = spec.farmId, isReserved = spec.owned,
     })
-    if session == nil then return nil, reason end
+    if session == nil then
+        -- Refused before any motion (the player in its way, live cc1d2a73fb8243fc-1): the same
+        -- detach may be pulled clear again, inside its window, nothing else in between.
+        if reason == "PULL_CLEAR_PERSON" then Bridge.lastDetach = last end
+        return nil, reason
+    end
     Bridge.lastPull = session
     return { session = session }
 end

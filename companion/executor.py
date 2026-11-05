@@ -171,8 +171,9 @@ GOTO_MOVED_M = 1.0
 PULL_CLEAR_REFUSALS = frozenset({"PULL_CLEAR_BLOCKED", "PULL_CLEAR_PERSON", "PULL_CLEAR_NOT_BEHIND",
                                  "LOCAL_AREA_UNKNOWN", "NOT_STOPPED"})
 # PULL_CLEAR refused for the player on foot in its way is tried again every PERSON_RETRY_S
-# while the player is told, for at most PERSON_WAIT_S; then the detach stands as refused.
-PERSON_WAIT_S, PERSON_RETRY_S = 60.0, 3.0
+# while the player is told, for at most PERSON_WAIT_S (inside the mod's 30 s after its detach,
+# Bridge.PULL_AFTER_DETACH_MS); then the detach stands as refused.
+PERSON_WAIT_S, PERSON_RETRY_S = 25.0, 3.0
 # Stopped short by something ahead after it moved (live dfd431a3308b4da4-1: 4.15 of 4.5 m, a
 # parked combine ahead): the detach stands just as well; the tractor, verified at rest, leaves
 # later by Farmhand's own drive, which departs from a parked implement behind it (planEgress).
