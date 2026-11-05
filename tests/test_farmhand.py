@@ -4,6 +4,7 @@ from dataclasses import replace
 import math
 import random
 import unittest
+from unittest import mock
 
 from adapters.world import StepFailed
 from companion.executor import DELIVERY_STANDOFF_M, MAX_APPROACH_DRIVES, PLACE_STANDOFF_M, Executor
@@ -1867,9 +1868,27 @@ class DetachTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("BLOCKED", "NO_ATTACHED_IMPLEMENT"))
         self.assertNotIn("RESERVE", result.states)
 
+    def test_a_pull_clear_held_by_the_player_on_foot_waits_says_so_and_goes_on(self):
+        # Live 067708a5c6a44a4e-3: the player 6 m ahead; refused at once, the next hitch BLOCKED.
+        import companion.executor as executor
+        class Person(MockWorld):
+            refusals = 2
+            def pull_clear(self, *args):
+                if Person.refusals:
+                    Person.refusals -= 1
+                    raise StepFailed("PULL_CLEAR_PERSON")
+                return super().pull_clear(*args)
+
+        world = Person(list(hitched_pair("t-1", "w-1", (130.0, 260.0))), PLAYERS, ())
+        with mock.patch.object(executor, "PERSON_RETRY_S", 0.0):
+            result = Executor(world).execute(detach())
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "DETACH_OBSERVED"), result)
+        self.assertEqual(result.states.count("WAIT_PERSON"), 1)
+
     def test_a_pull_clear_refused_before_moving_leaves_the_detach_standing(self):
+        import companion.executor as executor
         for code in ("PULL_CLEAR_BLOCKED", "PULL_CLEAR_PERSON", "PULL_CLEAR_NOT_BEHIND"):
-            with self.subTest(code=code):
+            with self.subTest(code=code), mock.patch.object(executor, "PERSON_WAIT_S", 0.0):
                 class Refusing(MockWorld):
                     def pull_clear(self, *args):
                         raise StepFailed(code)

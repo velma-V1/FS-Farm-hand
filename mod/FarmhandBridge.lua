@@ -3571,6 +3571,7 @@ Bridge.STEPS = {
     ATTACH = "hitching the implement",
     DETACH = "unhitching the implement",
     PULL_CLEAR = "pulling clear of the unhitched implement",
+    WAIT_PERSON = "waiting for you to step out of the tractor's way",
     UNPARK = "driving out of the building",
     RAMPS_DOWN = "lowering the ramps",
     APPROACH = "lining up behind the ramps",

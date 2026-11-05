@@ -170,6 +170,9 @@ GOTO_MOVED_M = 1.0
 # the detach stands (DETACHED_NOT_CLEAR). Every other failure moved or may have.
 PULL_CLEAR_REFUSALS = frozenset({"PULL_CLEAR_BLOCKED", "PULL_CLEAR_PERSON", "PULL_CLEAR_NOT_BEHIND",
                                  "LOCAL_AREA_UNKNOWN", "NOT_STOPPED"})
+# PULL_CLEAR refused for the player on foot in its way is tried again every PERSON_RETRY_S
+# while the player is told, for at most PERSON_WAIT_S; then the detach stands as refused.
+PERSON_WAIT_S, PERSON_RETRY_S = 60.0, 3.0
 # Stopped short by something ahead after it moved (live dfd431a3308b4da4-1: 4.15 of 4.5 m, a
 # parked combine ahead): the detach stands just as well; the tractor, verified at rest, leaves
 # later by Farmhand's own drive, which departs from a parked implement behind it (planEgress).
@@ -3010,7 +3013,24 @@ class Executor:
                 if against_loose_implement(tractor, [implement]):
                     enter("PULL_CLEAR")
                     try:
-                        self.world.pull_clear(ids[0], ids[1], owner)
+                        until, told = time.monotonic() + PERSON_WAIT_S, False
+                        while True:
+                            try:
+                                self.world.pull_clear(ids[0], ids[1], owner)
+                                break
+                            except StepFailed as failure:
+                                if failure.code != "PULL_CLEAR_PERSON" or time.monotonic() >= until:
+                                    raise
+                            # The player on foot in its way: say so, as a worker would, and try
+                            # again (live 067708a5c6a44a4e-3: the player 6 m ahead of the 3650,
+                            # refused at once, then the hitch BLOCKED AGAINST_IMPLEMENT).
+                            if not told:
+                                told = True
+                                log.info("PULL_CLEAR waits for the player on foot in its way")
+                                enter("WAIT_PERSON")
+                            if cancel is not None and cancel.is_set():
+                                raise Cancelled()
+                            time.sleep(PERSON_RETRY_S)
                     except StepFailed as failure:
                         if failure.code != "ALREADY_CLEAR":
                             if failure.code not in PULL_CLEAR_REFUSALS | PULL_CLEAR_SHORT:
