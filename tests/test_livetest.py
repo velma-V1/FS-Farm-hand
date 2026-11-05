@@ -271,7 +271,7 @@ class CompanionLiveTestTests(CompanionCase):
         implements = {i["id"]: i for i in status["farm"]["implements"]}
         self.assertIn(12, implements)                  # why a wagon pairs with nothing: its joints and PTO need
         self.assertNotIn(11, implements)
-        self.assertEqual(set(implements[12]), {"id", "name", "pto_torque", "input_joint_poses", "fold"})
+        self.assertEqual(set(implements[12]), {"id", "name", "pto_torque", "input_joint_poses", "fold", "size", "output_joints", "belts"})
 
     def test_status_names_a_game_running_an_older_mod(self):
         self.start(build="0ld", autodrive=False)

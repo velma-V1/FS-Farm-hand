@@ -201,14 +201,29 @@ Acceptance:
 - sells only the named item when told; never on its own unless the setting is on; works from Alt+K.
 
 ## Combine transport for long trips
-Status: OPEN
-Priority: MEDIUM
-Found: 2026-10-31
+Status: IN PROGRESS (owner priority 2026-11-05)
+Priority: HIGH (also the way to the moving-unload gate in save 1)
+Found: 2026-10-31 ("do not drive the combine to field 90 ... it should be transported")
 
-Do not drive a slow combine long-distance when transport is appropriate. Haul it using suitable transport equipment and preserve headers/attachments safely.
+Live facts (build 9b9e8b2, save 1):
+- MF 8570: 8.2 m long, 3.99 m wide, 3.9 m tall.
+- 1124 Deckover belt box: 8.41 m, a narrow fit.
+- LB 56 26 lowboy behind the 379: 16.2 m, 12 belts, a comfortable fit.
+- MF 8570 Trailer (header trailer): reports no joints and no belts, so most likely GIANTS' DynamicMountAttacher (set the header down in its trigger and unhitch it).
+- The combine's cutter joint is dropped by the observer's JOINT_DRIFT_M filter (the feeder house moves it).
 
-Acceptance:
-- Farmhand can select/prepare/load/haul/unload the combine for a long trip without manual user work.
+Done:
+- Hauling picks any driven machine as cargo.
+- detach_pair accepts any driven machine.
+- The 379 now counts as a driven machine.
+
+Plan (reuse detach_pair, unpark, load_tractor, move_pair, unload_tractor, the haul goal):
+1. Record the combine-to-header geometry (the AI root relative to the header's input joint) when detaching. Re-attaching returns to that pose by Farmhand's own drive, then does check-only align plus GIANTS attach. This avoids planning from a joint that drifts.
+2. After a front detach, the combine backs clear with UNPARK (nothing attached, so it may reverse).
+3. In the haul, a header on a cutter joint becomes a "detach first" step instead of LOAD_IMPLEMENT_NOT_MOUNTED.
+4. Optional later: the header onto its MF 8570 Trailer (dynamic mount).
+
+To verify live: isDetachAllowed for the header (lowered?); the height gap at re-attach (Farmhand caps it at 0.5 m); the load fit; belts.
 
 ## Unload a combine on the move
 Status: IMPLEMENTED / AUTOMATED-TESTED / NOT YET LIVE-PROVEN
