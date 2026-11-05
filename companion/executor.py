@@ -736,6 +736,7 @@ class Executor:
         # machine's AI root stood relative to the implement (along, lateral in its heading frame,
         # heading difference), the vehicle by name, so it comes back there to attach it again.
         self._front_attachments: dict[str, tuple] = {}
+        self.attachments_file: Path | None = None   # where they are kept across a companion restart
         # The vehicles UNPARK was asked for, this job only, and those whose next GOTO is
         # its hand-off (it must move them).
         self._job: str | None = None
@@ -973,6 +974,7 @@ class Executor:
     def _front_reattach_ids(self, command):
         """(machine, implement) for "hitch the header to the mf 8570": a loose implement this
         Farmhand detached from that machine's front (_front_attachments), else None."""
+        self._load_attachments()
         observed = {i.id: i for i in self.world.snapshot()}
         for implement_id, (vehicle_id, *_rest) in self._front_attachments.items():
             vehicle, implement = observed.get(vehicle_id), observed.get(implement_id)
@@ -1047,6 +1049,7 @@ class Executor:
             # hitch pairing (live 2026-11-05: attached, yet COMPATIBILITY_CHANGED).
             vehicle, implement = self._pair(ids, farm_id, owner, attached=True, check=detachable)
             self._front_attachments.pop(implement.id, None)
+            self._save_attachments()
             status, reason = "COMPLETE", "HITCH_OBSERVED"
         except Cancelled:
             status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
@@ -1088,8 +1091,30 @@ class Executor:
         along, lateral = dx * hx + dz * hz, dx * hz - dz * hx
         turn = (root.yaw - implement.heading + math.pi) % (2 * math.pi) - math.pi
         self._front_attachments[implement.id] = (vehicle.id, along, lateral, turn)
+        self._save_attachments()
         log.info("front implement %s detached from %s: the machine stood %.2f m along, %.2f m aside, %.3f rad",
                  implement.id, vehicle.id, along, lateral, turn)
+
+    def _load_attachments(self) -> None:
+        if self.attachments_file is None or self._front_attachments:
+            return
+        try:
+            data = json.loads(self.attachments_file.read_text(encoding="utf-8"))
+            self._front_attachments = {k: tuple(v) for k, v in data.items()
+                                       if isinstance(v, list) and len(v) == 4}
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def _save_attachments(self) -> None:
+        if self.attachments_file is None:
+            return
+        try:
+            self.attachments_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.attachments_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self._front_attachments), encoding="utf-8")
+            tmp.replace(self.attachments_file)
+        except OSError as error:
+            log.info("front attachments not saved: %s", error)
 
     def _front_reattach_pose(self, implement) -> Pose | None:
         """Where the machine stood when it carried ``implement`` in front, from where it lies now."""

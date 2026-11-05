@@ -143,7 +143,9 @@ def serve(world: FS25World, should_stop=lambda: False, interpreter=None,
     link = world.link
     rules = interpreter or RuleInterpreter()
     replies = Replies(link.notice, speaker)
-    coordinator = Coordinator(world, Executor(world), replies,
+    executor = Executor(world)
+    executor.attachments_file = data_dir() / "front_attachments.json"   # survives a companion restart
+    coordinator = Coordinator(world, executor, replies,
                               farm=lambda: linked_farm(link), session=lambda: link.session,
                               goal_file=data_dir() / "goal.json", policy=Settings())
     coordinator.pay = Settings().pay          # Farmhand's pay, the player's choice, read for each job

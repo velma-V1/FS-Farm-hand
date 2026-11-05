@@ -930,7 +930,7 @@ function aborts.attach() end
 -- is needed. DONE ATTACHED once the implement names it; REATTACH_NOT_IN_RANGE (the nearest pair's
 -- gap logged) when nothing is in range; nothing moves.
 Bridge.REATTACH = { xzM = 0.7, yM = 1.4, settleMs = 5000, creepM = 6.5, creepKmh = 3.0, lateralM = 1.0,
-                     headingDeg = 6, timeoutMs = 40000 }
+                     headingDeg = 6, timeoutMs = 40000, implementMovedM = 0.3 }
 
 -- The free attacher joint of `v` and input joint of `impl` of one type nearest each other, their gap
 -- across and up, and the input joint's node.
@@ -1008,7 +1008,18 @@ function steppers.reattach(env, task, dt)
     if pair == nil then pcall(Bridge.Hitch.halt, env, task.drive, dt); return "FAILED", "NO_MATCHING_JOINT" end
     if pair.gap <= R.xzM and math.abs(pair.dy) <= R.yM then return reattachNow(env, task, pair) end
     if not task.creep then return "FAILED", "REATTACH_NOT_IN_RANGE" end
-    if task.elapsed > R.timeoutMs or pair.gap > task.startGap + 0.5 then
+    -- Never pushes it (live 2026-11-05: the MF 8570 shoved its loose header 14.5 m, the gap unchanged):
+    -- the implement moving at all ends it, and so does driving farther than the gap it started at.
+    local ix, _, iz = env.getWorldTranslation(impl.rootNode)
+    local vx, _, vz = env.getWorldTranslation(v.rootNode)
+    task.implAt = task.implAt or { ix, iz }
+    task.from = task.from or { vx, vz }
+    if math.sqrt((ix - task.implAt[1]) ^ 2 + (iz - task.implAt[2]) ^ 2) > R.implementMovedM then
+        pcall(Bridge.Hitch.halt, env, task.drive, dt)
+        return "FAILED", "IMPLEMENT_MOVED"
+    end
+    if task.elapsed > R.timeoutMs or pair.gap > task.startGap + 0.5
+            or math.sqrt((vx - task.from[1]) ^ 2 + (vz - task.from[2]) ^ 2) > task.startGap + 0.5 then
         pcall(Bridge.Hitch.halt, env, task.drive, dt)
         return "FAILED", "REATTACH_NOT_IN_RANGE"
     end
