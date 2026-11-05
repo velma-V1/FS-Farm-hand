@@ -96,6 +96,8 @@ cloud gateway's runner, no PC input. Positions are the companion's final observa
 | Same words | 123c4e0630984ad6-1 | 81b0559 | **PASS** COMPLETE HAULED_AND_UNLOADED, 10 min 20 s | plow folded, ramps down, approach, LOADED, belts, ramps up, own drive 3 min to the barn, belts off, ramps down, UNLOADED, ramps up; 5.5 min of it the approach, the mounted plow taken for a towed unit (fixed ae86dff) |
 | "use the gmc to take the deutz to field 5 and unload it" | 29f44b4ca53541f3-1 | ae86dff | **PASS** COMPLETE HAULED_AND_UNLOADED, 5 min 17 s | loaded in 28 s from where the unload left it, own drive to field 5, UNLOADED |
 | "plow a small test area of field 5" | 29f44b4ca53541f3-2 | ae86dff | **PASS** COMPLETE AREA_WORK_OBSERVED, 2 min 13 s | helper FIELDWORK_BLOCKED by the parked GMC rig, Farmhand moved it 20 m, the helper plowed 1180 m2 (400 asked) |
+| "plow a small test area of field 5" (bounded 400 m2) | fb3522a3e1d64f75-1 / f5c50ab7 / 057826b2bbb9485c-1 | 008f4c5 → b93df2c | **FAIL** 1245, 120, then (counted) 8934 m2 | the trace: 0 m2 at 9.0 s, 1244 at 12.0 s, the plow ~400-476 m2/s, a 3 s check cannot bound it (fixed d6936f1, b93df2c); then the companion's "before" unmeasured right after a reload (fixed 45b7de3) |
+| Same words | 2484aa8876c64fda-1 | 45b7de3 | **PASS** COMPLETE AREA_WORK_OBSERVED, 408 m2 of 400 | light checks every 250 ms, every frame near the request, stopped at the first reading >= 97 %; the companion waited for the field's reading after the reload |
 
 ## Hitch / attachment
 
