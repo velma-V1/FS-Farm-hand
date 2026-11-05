@@ -4326,8 +4326,11 @@ local function escortDrive(env, s, dt)
     local vc = math.abs(combine:getLastSpeed() or 0)
     assert(finite(vc))
     local root = combine.rootVehicle or combine
+    -- Turning, reversing, or not threshing (its helper still driving to the field, or stopped full):
+    -- no slot beside it, the cart behind it.
     local turning = (type(root.getAIFieldWorkerIsTurning) == "function" and root:getAIFieldWorkerIsTurning() == true)
         or (combine.movingDirection ~= nil and combine.movingDirection < 0)
+        or (type(combine.getIsTurnedOn) == "function" and combine:getIsTurnedOn() ~= true)
     if math.abs(angleDiff(s.yaw, s.lineYaw)) > math.rad(E.lineDeg) or turning then
         s.lineYaw, s.steadyMs = s.yaw, 0
     else

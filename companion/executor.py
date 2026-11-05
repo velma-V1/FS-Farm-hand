@@ -1855,6 +1855,9 @@ class Executor:
     # to its run-up ESCORT_RUN_UP_M behind the combine on its line, at its heading.
     ESCORT_NEAR_M = 70.0
     ESCORT_RUN_UP_M = 25.0
+    ESCORT_FIELD_MARGIN_M = 30.0   # the combine this near the field's outline (as a disc) counts as there
+    ESCORT_WAIT_S = 900.0
+    ESCORT_POLL_S = 2.0
 
     def _escort(self, command, enter, states) -> Result:
         """A combine harvesting under GIANTS' helper unloaded on the move (FINAL_FARMHAND_PRODUCT_SPEC.md 5,
@@ -1881,6 +1884,17 @@ class Executor:
             if not combines:
                 return Result("BLOCKED", reason, states=tuple(states))
             combine = combines[0]
+            if place is not None and valid_position(place.position):
+                # GIANTS' helper drives to the field first: the cart goes once the combine is there.
+                reach = max((math.dist(p, place.position) for p in place.outline), default=90.0) \
+                    + self.ESCORT_FIELD_MARGIN_M
+                deadline = time.monotonic() + self.ESCORT_WAIT_S
+                while math.dist(combine.position, place.position) > reach:
+                    enter("WAIT_COMBINE")
+                    if time.monotonic() > deadline or not combine.busy:
+                        return Result("BLOCKED", "COMBINE_NOT_AT_THE_FIELD", (combine.id,), tuple(states))
+                    time.sleep(self.ESCORT_POLL_S)
+                    combine = next((i for i in self.world.snapshot() if i.id == combine.id), combine)
             grain = next((u.fill_type for u in combine.fill_units
                           if (u.level or 0.0) > 0 and (u.fill_type or "UNKNOWN") not in self.NOT_CARGO), None)
             rigs = []
