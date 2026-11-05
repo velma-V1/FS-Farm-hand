@@ -968,6 +968,7 @@ class Executor:
         return center
 
     REATTACH_BEHIND_M = 3.0        # the machine comes back this far behind where it carried it, then creeps on
+    REATTACH_CREEP_M = 5.5         # lined up within this behind it: the creep alone (= the mod's creepM, less margin)
 
     def _front_reattach_ids(self, command):
         """(machine, implement) for "hitch the header to the mf 8570": a loose implement this
@@ -1030,7 +1031,7 @@ class Executor:
             behind = (pose.x - root.x) * hx + (pose.z - root.z) * hz
             aside = abs((root.x - pose.x) * hz - (root.z - pose.z) * hx)
             turned = abs((root.yaw - pose.yaw + math.pi) % (2 * math.pi) - math.pi)
-            if not (-0.5 <= behind <= self.REATTACH_BEHIND_M + 1.0 and aside <= 0.4 and turned <= math.radians(5)):
+            if not (-0.5 <= behind <= self.REATTACH_CREEP_M and aside <= 0.4 and turned <= math.radians(5)):
                 enter("APPROACH")
                 moved = True
                 # Farmhand's drive takes the vehicle's root there: the AI root's offset ahead of it taken off.
