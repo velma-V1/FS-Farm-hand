@@ -427,14 +427,15 @@ class FS25World:
         """Per-job pay for a completed request (charged only in that mode, by the game)."""
         self._run("charge", area=float(amount))
 
-    def reposition(self, vehicle_id: str, owner: str) -> None:
+    def reposition(self, vehicle_id: str, owner: str, lane_m: float = 0.0) -> None:
         """The reserved vehicle (a standing combine) to the nearest open ground with lanes beside and
-        behind it, by Farmhand's own drive."""
+        behind it, by Farmhand's own drive; ``lane_m`` > 0: with a clear lane that long behind the
+        whole rig (a transport's ramps and the run-in to them), arriving at that heading."""
         with self._lock:
             reservation = self._reservations.get(owner)
         if reservation is None or vehicle_id not in reservation[1]:
             raise StepFailed("NOT_RESERVED")
-        self._run("reposition", tractor=int(vehicle_id))
+        self._run("reposition", tractor=int(vehicle_id), area=float(lane_m))
 
     def teleport(self, vehicle_id: str, owner: str, min_m: float = 0.0, at: Pose | None = None) -> None:
         """Teleport recovery: the reserved rig and everything attached to the nearest open spot,

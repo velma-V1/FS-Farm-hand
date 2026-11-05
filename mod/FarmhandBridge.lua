@@ -1246,7 +1246,11 @@ function starters.reposition(env, spec)
     local H = Bridge.Hitch
     local foot = H.routeFootprint(env, v)
     if foot == nil then return nil, "RIG_GEOMETRY_UNKNOWN" end
-    local big = Bridge.grown(foot, v.spec_pipe ~= nil and Bridge.REPOSITION or Bridge.CLEAR_AWAY)
+    -- area > 0: a transport moved where a machine can be driven up its ramps (live
+    -- 8fa6ad416fa14943-1: the Deckover's run-in lane past a tree and the truck itself).
+    local lane = finite(spec.area) and spec.area > 0 and spec.area <= Bridge.REPOSITION_REACH_M and spec.area or nil
+    local big = Bridge.grown(foot, lane ~= nil and { sideM = 2, behindM = lane, aheadM = 4 }
+                             or v.spec_pipe ~= nil and Bridge.REPOSITION or Bridge.CLEAR_AWAY)
     local x, _, z = env.getWorldTranslation(v.rootNode)
     local fx, _, fz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
     -- At least the rig's own length away: driven to, not set down beside it. First where GIANTS'
@@ -1273,7 +1277,7 @@ function starters.reposition(env, spec)
     -- of the way arrives at any heading (live 21a5e70740024850-1: the 3650 2 m from its spot, 24
     -- degrees off that heading, corrected until OBSTACLE_AHEAD).
     return starters.farm_drive(env, { tractor = v, x = tx, z = tz, area = 0,
-                                      yaw = v.spec_pipe ~= nil and tyaw or 10, farmId = spec.farmId,
+                                      yaw = (v.spec_pipe ~= nil or lane ~= nil) and tyaw or 10, farmId = spec.farmId,
                                       owned = spec.owned, ghost = spec.ghost })
 end
 steppers.reposition = function(env, task, dt) return steppers.farm_drive(env, task, dt) end

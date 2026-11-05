@@ -13,6 +13,7 @@ from threading import Lock
 from jsonschema import Draft202012Validator
 
 from adapters.world import StepFailed, StepUnverified, World
+from companion.drive_goal import DRIVEN
 from companion import hitch as transport   # its tractor-transport section
 from companion.hitch import (ALIGN_MAX_HEADING_RAD, APPROACH_CLEARANCE_M, IMPLEMENT_CATEGORIES, LOCAL_WORK_RADIUS_M, align_problem,
                              against_loose_implement, approach_poses, hitch_problem, joint_error,
@@ -1563,7 +1564,15 @@ class Executor:
                     if not transport.lined_up(tractor, trailer, share=0.5):
                         enter("APPROACH")
                         moved = True
-                        self._approach(tractor, trailer, owner)
+                        try:
+                            self._approach(tractor, trailer, owner)
+                        except StepFailed as failure:
+                            # No way onto the ramps where the transport stands: it is moved where
+                            # a lane behind them is clear, as a driver would, and the approach again.
+                            if failure.code != "LOAD_APPROACH_FAILED" or not self._relocate_transport(trailer, owner):
+                                raise
+                            tractor, trailer = self._settled_transport(ids)
+                            self._approach(tractor, trailer, owner)
                     enter("LOAD")
                     moved = True
                     for attempt in range(LOAD_ATTEMPTS):
@@ -2285,6 +2294,29 @@ class Executor:
         except StepFailed as again:
             log.info("APPROACH after BACKOFF: %s", again.code)
         return self._settled_transport((tractor.id, trailer.id))
+
+    LOAD_LANE_M = 30.0      # the ramps and a straight run-in to them, clear behind the transport
+
+    def _relocate_transport(self, trailer, owner) -> bool:
+        """The transport (the driven vehicle of the rig that carries ``trailer``) by Farmhand's own
+        drive to open ground with LOAD_LANE_M clear behind it (live 8fa6ad416fa14943-1: the
+        Deckover's run-in past a tree, 7 min of searches). True when it moved."""
+        if getattr(type(self.world), "reposition", None) is None:
+            return False
+        items = {i.id: i for i in self.world.snapshot()}
+        driven = trailer if trailer.category in DRIVEN else items.get(trailer.attached_to)
+        if driven is None or driven.category not in DRIVEN:
+            return False
+        before = driven.position
+        try:
+            log.info("APPROACH: no way onto the ramps here; the %s to open ground with a %.0f m lane behind",
+                     driven.name, self.LOAD_LANE_M)
+            self.world.reposition(driven.id, owner, self.LOAD_LANE_M)
+        except (StepFailed, StepUnverified) as failure:
+            log.info("the transport could not be moved: %s", failure.code)
+            return False
+        now = next((i for i in self.world.snapshot() if i.id == driven.id), None)
+        return now is not None and math.dist(now.position, before) > 1.0
 
     def _approach(self, tractor, trailer, owner):
         """GIANTS GOTO to right behind the ramps; the first aim GIANTS reaches and that

@@ -340,6 +340,30 @@ class TractorTransportTests(unittest.TestCase):
         self.assertAlmostEqual(transport.to_frame(deck, target)[0] + 0.3 + 2.6, -5.0 - transport.RUN_UP_GAP_M)
         self.assertAlmostEqual(yaw, deck.heading)
 
+    def test_with_no_way_onto_the_ramps_the_transport_is_moved_to_a_clear_lane_once(self):
+        # Live 8fa6ad416fa14943-1: the Deckover's run-in past a tree; 7 min of searches, no way in.
+        class Hemmed(MockWorld):
+            relocated = None
+
+            def navigate(self, tractor_id, pose, owner):
+                if self.relocated is None:
+                    raise StepFailed("NAVIGATE_GOTO_INVALID")
+                super().navigate(tractor_id, pose, owner)
+
+            def reposition(self, vehicle_id, owner, lane_m=0.0):
+                self.relocated = (vehicle_id, lane_m)
+                for unit in (vehicle_id, self.items[vehicle_id].attached_to):
+                    u = self.items[unit]
+                    self.items[unit] = replace(u, position=(u.position[0] + 20.0, u.position[1]))
+                deck = next(i for i in self.items.values() if i.name == "1124 Deckover Trailer")
+                self.items[deck.id] = replace(deck, belt_markers=tuple(
+                    (m[0] + 20.0, m[1], m[2], m[3] + 20.0, m[4], m[5]) for m in deck.belt_markers))
+
+        world, tractor, deck, truck = transport_world(cls=Hemmed)
+        result = Executor(world).execute(load())
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+        self.assertEqual(world.relocated, (truck.id, Executor.LOAD_LANE_M))
+
     def test_a_run_up_ending_turned_towards_the_axis_is_left_to_the_run_in(self):
         # Live 3389dfbd1b564660-1: GIANTS' run-up GOTO ended on position alone, the Series 9
         # 1.6 m off and 18.4 deg turned (heading for the axis); the near aims then stalled
