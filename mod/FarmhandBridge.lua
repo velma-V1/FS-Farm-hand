@@ -684,12 +684,6 @@ function Bridge.watchGoto(env, dt)
     end
 end
 
-function starters.stage(env, spec) return startGoto(env, spec, "STAGE_") end
-function steppers.stage(env, task)
-    return stepGoto(env, task, Bridge.STAGE_TIMEOUT_MS, "STAGE_TIMEOUT", "STAGE_ENDED", false, "STAGE_")
-end
-aborts.stage = abortGoto
-
 -- Belted cargo out of GIANTS' AI obstacles while Farmhand's GOTO drives the loaded rig: a
 -- vehicle strapped on the towed trailer registers its own components as AI obstacles
 -- (AIVehicleObstacle:createAIVehicleObstacle -> aiSystem:addObstacle per component), so the
@@ -784,13 +778,22 @@ end
 -- GOTO_ENDED when the agent reaches its target or finds it NOT_REACHABLE (the companion judges
 -- the arrival), NAVIGATE_BLOCKED_AT_START / NAVIGATE_STALLED for a BLOCKED agent, NAVIGATE_STUCK
 -- for a rig commanded to drive that does not move.
-local function stepAgent(env, task, dt)
+-- `codes`: the op's own (Bridge.AGENT_CODES).
+Bridge.AGENT_CODES = {
+    navigate = { ended = "GOTO_ENDED", timeoutMs = "DRIVE_TIMEOUT_MS", timeout = "TIMEOUT",
+                 stuck = "NAVIGATE_STUCK", stuckAtStart = "NAVIGATE_STUCK_AT_START",
+                 blocked = "NAVIGATE_STALLED", blockedAtStart = "NAVIGATE_BLOCKED_AT_START" },
+    stage = { ended = "STAGE_ENDED", timeoutMs = "STAGE_TIMEOUT_MS", timeout = "STAGE_TIMEOUT",
+              stuck = "NAVIGATE_STUCK", stuckAtStart = "STAGE_BLOCKED_AT_START",
+              blocked = "NAVIGATE_STALLED", blockedAtStart = "STAGE_BLOCKED_AT_START" },
+}
+local function stepAgent(env, task, dt, codes)
     local v = task.spec.tractor
     local status, code = stillOurs(task.spec)
     if status ~= nil then agentEnd(env, task, dt); return status, code end
     if task.ended then return settle(task, task.ended) end
     if v:getIsAIActive() ~= false then agentEnd(env, task, dt); return "FAILED", "AI_ACTIVE" end
-    if task.elapsed > Bridge.DRIVE_TIMEOUT_MS then agentEnd(env, task, dt); return "FAILED", "TIMEOUT" end
+    if task.elapsed > Bridge[codes.timeoutMs] then agentEnd(env, task, dt); return "FAILED", codes.timeout end
     local ai = v.spec_aiDrivable
     local x, _, z = env.getWorldTranslation(v.rootNode)
     if not (finite(x) and finite(z)) then agentEnd(env, task, dt); return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
@@ -799,12 +802,13 @@ local function stepAgent(env, task, dt)
         task.leftStart = true
     end
     v:updateAIAgentPoseData()
+    pcall(function() ai.distanceToTarget = math.sqrt((x - task.spec.x) ^ 2 + (z - task.spec.z) ^ 2) end)
     local speed = math.abs((v.lastSpeedReal or 0) * 1000)
     local curvature, curveMps, state = env.getVehicleNavigationAgentNextCurvature(ai.agentId, ai.poseData, speed)
     ai.lastState = state                                   -- the diagnostics (logAgent) read it here
     local name = agentState(env, state)
     if name ~= task.lastName then
-        log("navigate: GIANTS' agent %s at %.1f,%.1f", name:lower(), x, z)
+        log("%s: GIANTS' agent %s at %.1f,%.1f", task.op, name:lower(), x, z)
         task.lastName, task.stateSince = name, task.elapsed
     end
     local function finish(endCode)
@@ -828,10 +832,10 @@ local function stepAgent(env, task, dt)
         elseif kmh > 1 and task.elapsed - (task.fromAt or task.elapsed) > Bridge.AGENT.stuckMs then
             local contacts = "?"
             pcall(function() contacts = Bridge.Hitch.rigContacts(env, v) end)
-            log("navigate: driven along GIANTS' agent but unmoved %.0f s at %.1f,%.1f (contacts %s)",
-                Bridge.AGENT.stuckMs / 1000, x, z, tostring(contacts))
+            log("%s: driven along GIANTS' agent but unmoved %.0f s at %.1f,%.1f (contacts %s)",
+                task.op, Bridge.AGENT.stuckMs / 1000, x, z, tostring(contacts))
             agentEnd(env, task, dt)
-            return "FAILED", task.leftStart and "NAVIGATE_STUCK" or "NAVIGATE_STUCK_AT_START"
+            return "FAILED", task.leftStart and codes.stuck or codes.stuckAtStart
         elseif kmh <= 1 then
             task.fromAt = task.elapsed
         end
@@ -840,21 +844,43 @@ local function stepAgent(env, task, dt)
     Bridge.Hitch.halt(env, task.drive, dt)
     task.fromAt = task.elapsed
     if name == "TARGET_REACHED" or name == "NOT_REACHABLE" then
-        logAgent(env, v, "navigate ended")
-        return finish("GOTO_ENDED")
+        logAgent(env, v, task.op .. " ended")
+        return finish(codes.ended)
     end
     local waited = task.elapsed - (task.stateSince or task.elapsed)
     if name == "BLOCKED" and waited > Bridge.AGENT.blockedMs then
-        logAgent(env, v, "navigate blocked")
+        logAgent(env, v, task.op .. " blocked")
         agentEnd(env, task, dt)
-        return "FAILED", task.leftStart and "NAVIGATE_STALLED" or "NAVIGATE_BLOCKED_AT_START"
+        return "FAILED", task.leftStart and codes.blocked or codes.blockedAtStart
     end
     if name ~= "BLOCKED" and waited > Bridge.AGENT.planningMs then
-        logAgent(env, v, "navigate planning")
+        logAgent(env, v, task.op .. " planning")
         agentEnd(env, task, dt)
-        return "FAILED", "NAVIGATE_STALLED"
+        return "FAILED", codes.blocked
     end
     return nil
+end
+
+-- Both drive GIANTS' agent the same way (startAgent / stepAgent); the GOTO job only without one.
+function starters.stage(env, spec)
+    local task, code = startAgent(env, spec)
+    if task == nil and code == "NO_AGENT" then return startGoto(env, spec, "STAGE_") end
+    if task ~= nil then task.agent = true end
+    return task, code
+end
+function steppers.stage(env, task, dt)
+    if not task.agent then
+        return stepGoto(env, task, Bridge.STAGE_TIMEOUT_MS, "STAGE_TIMEOUT", "STAGE_ENDED", false, "STAGE_")
+    end
+    local ok, status, code = pcall(stepAgent, env, task, dt or 0, Bridge.AGENT_CODES.stage)
+    if ok then return status, code end
+    log("stage: agent step error %s", tostring(status))
+    agentEnd(env, task, dt or 0)
+    return "UNVERIFIED", "UNKNOWN_OBSERVATION"
+end
+aborts.stage = function(env, task)
+    if task.agent then return agentEnd(env, task, 0) end
+    return abortGoto(env, task)
 end
 
 function starters.navigate(env, spec)
@@ -907,7 +933,7 @@ function steppers.navigate(env, task, dt)
     cargoObstaclesOff(task)
     local status, code
     if task.agent then
-        local ok, s1, c1 = pcall(stepAgent, env, task, dt or 0)
+        local ok, s1, c1 = pcall(stepAgent, env, task, dt or 0, Bridge.AGENT_CODES.navigate)
         if ok then status, code = s1, c1
         else
             log("navigate: agent step error %s", tostring(s1))
