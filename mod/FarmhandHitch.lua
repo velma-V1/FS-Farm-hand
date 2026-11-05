@@ -2261,7 +2261,16 @@ function Hitch.routeFootprint(env, tractor)
         for index = 2, initial do
             local unit = units[index]
             local ux, _, uz = world(env, unit.rootNode)
-            if (ux - x) * fx + (uz - z) * fz < -0.5 then
+            -- Mounted on a three-point joint (GIANTS AttacherJoints.JOINTTYPE_IMPLEMENT): it turns with
+            -- the tractor, wheels or not (live 123c4e0630984ad6-1: the Titan Vineyard Plow's depth
+            -- wheel made the Series 9 an articulated rig; no turning round in place, 5.5 min of
+            -- wrong-way reverse escapes). Semi-mounted and trailed units still articulate.
+            local mounted = readOr(function()
+                local joint = unit:getActiveInputAttacherJoint()
+                return joint ~= nil and env.AttacherJoints ~= nil
+                    and joint.jointType == env.AttacherJoints.JOINTTYPE_IMPLEMENT
+            end) == true
+            if not mounted and (ux - x) * fx + (uz - z) * fz < -0.5 then
                 local node = unit.steeringAxleNode or unit.rootNode
                 local ax, _, az = world(env, node)
                 towLength = math.max(towLength, math.sqrt((ax - x) ^ 2 + (az - z) ^ 2))

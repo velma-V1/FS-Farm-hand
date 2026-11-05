@@ -2528,6 +2528,20 @@ class TowedReverseTests(unittest.TestCase):
         self.lua.execute("local env = ...; env.raycastClosest = nil", self.env)
         self.assertEqual(self.hitch.routePoseClear(self.env, foot, 0, 0, 0, 0)[0], False)   # terrain alone
 
+    def test_a_wheeled_implement_on_the_three_point_joint_is_rigid_not_towed(self):
+        # Live 123c4e0630984ad6-1: the Titan Vineyard Plow's depth wheel made the Series 9 "towed".
+        for joint_type, towed in ((1, False), (2, True)):
+            with self.subTest(joint_type=joint_type):
+                self.lua.execute("""local env, tractor, joint_type = ...
+                    env.AttacherJoints = { JOINTTYPE_IMPLEMENT = 1, JOINTTYPE_TRAILER = 2 }
+                    local trailer = tractor:getAttachedImplements()[1].object
+                    trailer.getActiveInputAttacherJoint = function()
+                        return { node = {x=0, z=-2, yaw=0}, jointType = joint_type } end
+                    trailer.spec_wheels.wheels = {{repr={x=-0.5, z=-11}}, {repr={x=0.5, z=-11}}}
+                """, self.env, self.tractor, joint_type)
+                foot = self.footprint()
+                self.assertEqual(foot.towed is not None, towed)
+
     def test_a_rigid_rig_is_judged_by_its_units_not_their_bounding_rectangle(self):
         # Live 57022e28117b42d8-1: the Series 9 and its mounted plow, the rectangle touching a
         # tree in its empty corner, every unit's own box clear, every search NO_ROUTE.
