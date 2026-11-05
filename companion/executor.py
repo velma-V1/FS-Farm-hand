@@ -343,8 +343,9 @@ def movable(tractor: Equipment, wagon: Equipment) -> bool:
 
 
 def detachable(tractor: Equipment, implement: Equipment, kind: str | None = None) -> bool:
-    """detach_pair: a tractor with its implement (of ``kind`` when named)."""
-    return (tractor.category == "tractor" and implement.category in IMPLEMENT_CATEGORIES
+    """detach_pair: a driven machine (a tractor, a combine with its header) with its implement (of
+    ``kind`` when named); GIANTS' own isDetachAllowed decides in the mod."""
+    return (tractor.category in DRIVEN and implement.category in IMPLEMENT_CATEGORIES
             and (kind is None or of_kind(implement, kind)) and {"attach", "stop"} <= tractor.capabilities)
 
 
