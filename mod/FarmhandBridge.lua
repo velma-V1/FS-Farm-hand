@@ -476,6 +476,13 @@ end
 -- 2026-11-05), wider than the 6 m its roads default to (AISystem:addRoadSpline), so no route
 -- crosses the map. A header overhangs a road's edges for a player too; Farmhand's own watch
 -- (contact, stuck) supervises the drive.
+-- A front offset behind the AI root (the MF 8570: -3.70 m, live 2026-11-05; the Series 9 +3.26) is
+-- taken as that far ahead: GIANTS' planner refused every target for it within two frames.
+function Bridge.frontOffset(fo)
+    if finite(fo) and fo < 0 then return -fo end
+    return fo
+end
+
 function Bridge.createAgent(v, cap)
     if not (finite(cap) and cap > 0) then return v:createAgent() end
     if cap < 1 then
@@ -489,7 +496,7 @@ function Bridge.createAgent(v, cap)
         -- vehicleMaxHeight): a combine taller than that finds no cell to drive in.
         v.getAIAgentSize = function(self, ...)
             local w, l, lo, fo, h = base(self, ...)
-            return w, l, lo, fo, math.min(h or 0, 3.9)
+            return w, l, lo, Bridge.frontOffset(fo), math.min(h or 0, 3.9)
         end
         local ok, err = pcall(v.createAgent, v)
         v.collectAIAgentAttachments = ownCollect
@@ -503,7 +510,7 @@ function Bridge.createAgent(v, cap)
     v.getAIAgentSize = function(self, ...)
         local w, l, lo, fo, h = base(self, ...)
         local floor = self.spec_aiDrivable and self.spec_aiDrivable.agentInfo and self.spec_aiDrivable.agentInfo.width or 0
-        return math.min(w, math.max(cap, floor)), l, lo, fo, h
+        return math.min(w, math.max(cap, floor)), l, lo, Bridge.frontOffset(fo), h
     end
     local ok, err = pcall(v.createAgent, v)
     v.getAIAgentSize = own
