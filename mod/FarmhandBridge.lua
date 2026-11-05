@@ -478,6 +478,17 @@ end
 -- (contact, stuck) supervises the drive.
 function Bridge.createAgent(v, cap)
     if not (finite(cap) and cap > 0) then return v:createAgent() end
+    if cap < 1 then
+        -- Under a metre: the vehicle alone, none of its attachments in the agent (what it carries is
+        -- Farmhand's own watch's to supervise).
+        local ownCollect = rawget(v, "collectAIAgentAttachments")
+        v.collectAIAgentAttachments = function() end
+        local ok, err = pcall(v.createAgent, v)
+        v.collectAIAgentAttachments = ownCollect
+        if not ok then error(err) end
+        log("agent planned for the vehicle alone")
+        return
+    end
     local own = rawget(v, "getAIAgentSize")
     local base = v.getAIAgentSize
     v.getAIAgentSize = function(self, ...)

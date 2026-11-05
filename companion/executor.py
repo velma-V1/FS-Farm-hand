@@ -981,7 +981,7 @@ class Executor:
                     return Pose(now.position[0], now.position[1], now.heading or start.yaw)
         if math.dist(tractor.position, field.center) > self.FIELD_OWN_DRIVE_MAX_M:
             if tractor.category == "harvester":
-                # Narrow as the combine itself (a cap under its own width plans at its own): whether only
+                # The combine alone (a cap under a metre plans no attachment): whether only
                 # the header keeps it off the roads there, said as such.
                 try:
                     alone = self.world.reach(tractor.id, center, owner, width=0.1)
