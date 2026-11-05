@@ -1924,7 +1924,11 @@ function Drive.begin(env, args, Hitch)
             for _, turn in ipairs({preferred,-preferred,0}) do
                 local curve = turn / radius
                 local bx,bz,byaw = advance(x,z,yaw,-0.5,curve)
-                if clear(bx,bz,byaw,curve,-1) == true then
+                local backClear, backWhy = clear(bx,bz,byaw,curve,-1)
+                if backClear ~= true then
+                    say(string.format("[Farmhand] drive contact: reverse with turn %d refused: %s", turn, tostring(backWhy)))
+                end
+                if backClear == true then
                     s.retreat = {x=x,z=z,yaw=yaw,length=Drive.LEAVE_M,
                                  curve=curve ~= 0 and curve or nil,backOut=true,contact=true}
                     s.initial = nil
