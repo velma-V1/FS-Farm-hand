@@ -1320,3 +1320,10 @@ after 60 s. **Field-entry suitability remains UNVERIFIED**: proximity to one
 point is not enough. The partial live reruns do not prove a faster complete
 fieldwork job. Evidence: `.fs25-dev/evidence/5c48a61fc51d4add-2/` and
 `-3/`. The final retry was STOPped; do not treat it as completion.
+
+
+## GIANTS' navigation agent: width, roads, and NOT_REACHABLE (2026-11-05)
+
+- Fact (installed source): AIDrivable:onUpdate 220-243 stops a job on the first NOT_REACHABLE frame from the engine planner, and AIJobFieldWork:validate never checks the target. AIDrivable:createAgent 266-298 sizes the agent with getAIAgentSize: width = max(agent width, widest agentAttachment). Road splines are registered at the map's maxWidth, default 6 m (AISystem:addRoadSpline 140-170). The agent never reverses (getAIAllowsBackwards false).
+- Live (build 01808296, save 1): REACH for the MF 8570 with its header gave agent width 6.80 m, length 11.02 m, turning radius 4.96 m. All six field 64 starts were NOT_REACHABLE within 33-356 ms each.
+- Inference, not yet proven: an agent wider than the 6 m road default cannot use the roads, so a combine with its header finds no route across the map. To prove it, REACH the same targets with the header carried on its transport trailer.

@@ -228,8 +228,10 @@ Found: 2026-11-05
 
 Live: at 09:38 and 09:40 GIANTS' field-work helper planned the MF 8570's route to field 90; its agent was "blocked on its way" by the MT635, 774 m out. From 09:45 every request answered NOT_REACHABLE within 3 s. That covered field 90 and field 64 (opposite directions), from two different start spots, with the MT635 moved to the barn and no Farmhand navigation blocks. Farmhand's own drive then took over. The first time it planned for 10 minutes with the combine braked. The second time it drove the combine 130 m the wrong way, north, at up to 27 km/h, until its no-progress guard stopped it.
 
+Diagnosis so far (adapters/EVIDENCE.md, "GIANTS' navigation agent"): the REACH probe (01808296) sizes the combine with its header at 6.8 m wide. GIANTS' roads default to 6 m. All six field 64 starts came back NOT_REACHABLE within 1.5 s, and Farmhand now says FIELD_NOT_REACHABLE at once instead of driving.
+
 Acceptance:
-- Find what makes GIANTS' planner refuse the combine (its start, its width with the header, a cached state), from GIANTS' source and a live probe, not by retrying.
+- Prove the width cause: REACH with the header on its MF 8570 transport trailer. If it routes, carry the header that way for trips that are not reachable (see "Combine transport for long trips").
 - Farmhand's own drive starts useful motion within seconds or says why; it never drives away from the goal for minutes.
 - Consider carrying the header on its MF 8570 trailer for long trips (see "Combine transport for long trips").
 
