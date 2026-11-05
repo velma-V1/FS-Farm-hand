@@ -972,9 +972,11 @@ class Executor:
                 except (StepFailed, StepUnverified) as failure:
                     answer = getattr(failure, "code", "REACH_FAILED")
                 log.info("field %s: at %.1f m wide GIANTS says %s for %s", field.id, self.TRANSPORT_WIDTH_M, answer, start)
-                if answer == "REACHABLE":
+                # REACH_BLOCKED: a route, with something at its start (live 2026-11-05 at field 64): the drive's
+                # own start recovery (_navigate's UNPARK) handles that.
+                if answer in ("REACHABLE", "REACH_BLOCKED"):
                     enter("TO_FIELD")
-                    self.world.navigate(tractor.id, start, owner, width=self.TRANSPORT_WIDTH_M)
+                    self._navigate(tractor.id, start, owner, width=self.TRANSPORT_WIDTH_M)
                     now = next(i for i in self.world.snapshot() if i.id == tractor.id)
                     return Pose(now.position[0], now.position[1], now.heading or start.yaw)
         if math.dist(tractor.position, field.center) > self.FIELD_OWN_DRIVE_MAX_M:
@@ -2336,7 +2338,7 @@ class Executor:
                 raise StepFailed("UNPARK_HANDOFF_BLOCKED")
         return moved
 
-    def _navigate(self, tractor_id, pose, owner, partner_id=None, free=True):
+    def _navigate(self, tractor_id, pose, owner, partner_id=None, free=True, width=0.0):
         """GIANTS GOTO to ``pose``, routing around what physically stops it (see
         MAX_DETOURS): the stuck spot just ahead of the vehicle is blocked for GIANTS'
         planner and the same GOTO asked again. With ``free``, a GOTO GIANTS took that
@@ -2347,7 +2349,10 @@ class Executor:
             start = self._position(tractor_id)
             failed = None
             try:
-                self.world.navigate(tractor_id, pose, owner)
+                if width:
+                    self.world.navigate(tractor_id, pose, owner, width=width)
+                else:
+                    self.world.navigate(tractor_id, pose, owner)
             except StepFailed as failure:
                 if failure.code == "NAVIGATE_STUCK" and detours < MAX_DETOURS:
                     self._block_ahead(tractor_id, detours)
