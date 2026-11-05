@@ -369,3 +369,16 @@ The first clean-build Field 5 repeat (bb5413d8325b4f7b-2) stopped unmoved: the r
 |---|---|---|
 | `use the gmc to take the deutz to field 5 and unload it` | d3b04daa1c1e4e37-1 | COMPLETE HAULED_AND_UNLOADED in 5 min 30 s: load, belts, ramps; delivery barn to field 5 by Farmhand's own drive (72 route sections, 4 min 17 s, peak 38.9 km/h); unload. Bridge ops only belts/farm_drive/fold/load/pay/stop: no AutoDrive op. |
 | `plow a small test area of field 5` | d3b04daa1c1e4e37-2 | COMPLETE AREA_WORK_OBSERVED in 2 min: 401 m2 worked of 400 m2 asked. |
+
+
+## Grain cart, concurrent ops, harvest contracts (builds 5f5d755..d25e36a, 2026-11-05)
+
+Save 1 (Riverbend Springs). AutoDrive installed, never used.
+
+- LIVE-PROVEN: "drive the mt635 to field 8": the MT635 + RZK 300H drove about 250 m in 2 min, with one envelope contact restarted from there. "drive the mt635 to the farm barn" arrived in 90 s. "drive the 3650 to field 8": the 3650 + Z 18051 drove about 200 m and ended 40 m short with a 3 km/h final-approach OVERSPEED stop.
+- LIVE-PROVEN: harvest contracts carry their crop (parsnip, soybean, sunflower, canola, sugar beet, spinach, potato). Field 64's canola contract was taken (CONTRACT_RUNNING).
+- LIVE-PROVEN (partly): a grain-cart worker thread started beside the foreground contract harvest and polled for its combine while the job ran.
+- LIVE DEFECT, fixed in eafcf25: field 9's spinach harvest contract was taken with only a grain header on the farm.
+- LIVE DEFECT, fixed in d25e36a: the cart gave up before GIANTS' helper had taken the combine.
+- NOT LIVE-PROVEN: ESCORT (unloading on the move). The MF 8570 never reached a ripe field: fields 2, 5 and 7 were stubble (Farmhand rightly said done), and GIANTS answered NOT_REACHABLE for fields 90 and 64 (RELEASE_BACKLOG.md).
+- STOPPED by me: the stationary under-pipe approach (16 min of searches beside the combine) and two own-drive long-range attempts with the combine.

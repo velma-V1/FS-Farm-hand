@@ -221,6 +221,24 @@ Acceptance (live, still open):
 - The combine moving and threshing while grain flows into the cart (game log `escort end ... moving=<litres>` > 0, standing ~0), several lanes including headland turns, no contact, full cart delivered and back.
 - First live attempts (2026-11-05, save 1): field 7 was already harvested (Farmhand rightly refused). Field 90: GIANTS' helper could not leave because the MT635 + RZK 300H stood against the MF 8570's header; Farmhand's reposition only reversed it 4 m (see "Equipment left against a combine").
 
+## GIANTS' helper cannot route the MF 8570 (NOT_REACHABLE)
+Status: OPEN
+Priority: HIGH (blocks the live moving-unload gate in save 1)
+Found: 2026-11-05
+
+Live: at 09:38 and 09:40 GIANTS' field-work helper planned the MF 8570's route to field 90; its agent was "blocked on its way" by the MT635, 774 m out. From 09:45 every request answered NOT_REACHABLE within 3 s. That covered field 90 and field 64 (opposite directions), from two different start spots, with the MT635 moved to the barn and no Farmhand navigation blocks. Farmhand's own drive then took over. The first time it planned for 10 minutes with the combine braked. The second time it drove the combine 130 m the wrong way, north, at up to 27 km/h, until its no-progress guard stopped it.
+
+Acceptance:
+- Find what makes GIANTS' planner refuse the combine (its start, its width with the header, a cached state), from GIANTS' source and a live probe, not by retrying.
+- Farmhand's own drive starts useful motion within seconds or says why; it never drives away from the goal for minutes.
+- Consider carrying the header on its MF 8570 trailer for long trips (see "Combine transport for long trips").
+
+## Harvest contract left in the save
+Status: NEEDS PLAYER DECISION
+Found: 2026-11-05
+
+Before the crop check existed, Farmhand took field 9's harvest contract. Its crop is spinach, and no header on the farm cuts it. The contract is still RUNNING at 0% (field 64's canola contract is also ours and running). Cancelling it may cost a GIANTS penalty, so it is left for the player.
+
 ## Equipment left against a combine
 Status: OPEN
 Priority: HIGH
