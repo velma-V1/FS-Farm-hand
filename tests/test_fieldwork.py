@@ -3,6 +3,7 @@ field's measured state (companion/field.py, companion/executor.py)."""
 from dataclasses import replace
 import math
 import unittest
+from unittest import mock
 
 from adapters.world import StepFailed, StepUnverified
 from companion import hitch as transport
@@ -152,6 +153,39 @@ class FieldWorkTests(unittest.TestCase):
                 self.assertTrue(150.0 < world.driven[0] < 250.0 and 250.0 < world.driven[1] < 350.0)   # inside
                 # 8 m in from the edge point nearest the rig (here the field's corner).
                 self.assertAlmostEqual(math.dist(world.driven, (250.0, 350.0)), 8.0, places=6)
+
+    def test_hemmed_in_by_parked_equipment_on_its_way_to_the_field_it_moves_it_and_goes_on(self):
+        # Live fdc69c298fa64d99-1: the Series 9 just unloaded, the Deckover's ramps 4 m ahead.
+        from protocol.model import Destination
+        outline = ((150.0, 250.0), (250.0, 250.0), (250.0, 350.0), (150.0, 350.0))
+        moved = []
+
+        class Hemmed(MockWorld):
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                if not moved:
+                    raise StepFailed("NO_ROUTE")
+                for unit, behind in (("t-1", 0.0), ("i-1", 4.0)):
+                    self.items[unit] = replace(self.items[unit], position=(target[0], target[1] - behind))
+
+            def reposition(self, vehicle_id, owner):
+                pass
+
+            def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0, seed=0, hand=False):
+                if math.dist(self.items[tractor_id].position, (200.0, 300.0)) > 150.0:
+                    return "NOT_REACHABLE"
+                return super().fieldwork(tractor_id, field_id, pose, owner, area_m2, seed, hand)
+
+        world = Hemmed(rig("cultivator", at=(600.0, 900.0)), PLAYERS, fields=(field(7, 0.4),), farm=FARM)
+        world.mock_field_places = (Destination("field-7", (200.0, 300.0), "Field 7", outline),)
+        world.items["g-1"] = Equipment("g-1", "tractor", "farm-a", (604.0, 904.0), heading=0.0, name="GMC",
+                                       capabilities=frozenset({"move", "stop"}))
+        def move_blockers(rig_ids, farm_id, owner):     # the GMC driven aside; the next drive gets through
+            moved.append("g-1")
+            return 1
+        with mock.patch("companion.standalone.StandaloneMove._move_blockers", side_effect=move_blockers):
+            result = Executor(world).execute(work("cultivate"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "FIELD_WORK_OBSERVED"), result)
+        self.assertEqual(moved, ["g-1"])
 
     def test_a_job_that_ended_without_covering_the_field_is_not_complete(self):
         class Partial(MockWorld):

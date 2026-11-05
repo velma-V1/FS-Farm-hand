@@ -1041,13 +1041,23 @@ class Executor:
                 if _inside(outline, point):
                     target = point
                     break
-        try:
-            enter("TO_FIELD")
-            log.info("field %s: GIANTS' helper did not drive there; Farmhand's own drive to %s", field.id, target)
-            self.world.farm_drive(tractor.id, tuple(target), owner, 0.0)
-        except (StepFailed, StepUnverified) as failure:
-            log.info("TO_FIELD by Farmhand's drive: %s", failure.code)
-            return self._to_field_by_autodrive(tractor, field, ids, owner, enter)
+        enter("TO_FIELD")
+        log.info("field %s: GIANTS' helper did not drive there; Farmhand's own drive to %s", field.id, target)
+        for attempt in (1, 2):
+            try:
+                self.world.farm_drive(tractor.id, tuple(target), owner, 0.0)
+                break
+            except (StepFailed, StepUnverified) as failure:
+                log.info("TO_FIELD by Farmhand's drive: %s", failure.code)
+                # Hemmed in by parked equipment (live fdc69c298fa64d99-1: the Series 9 just
+                # unloaded, facing the Deckover's ramps 4 m ahead, a tree behind): that equipment
+                # is driven out of the way, as a worker would, and the drive tried once more.
+                if (attempt == 1 and getattr(failure, "code", None) in ("NO_ROUTE", "START_NOT_CLEAR")
+                        and getattr(type(self.world), "reposition", None) is not None):
+                    from companion.standalone import StandaloneMove
+                    if StandaloneMove(self.world)._move_blockers(ids, tractor.farm_id, owner):
+                        continue
+                return self._to_field_by_autodrive(tractor, field, ids, owner, enter)
         self._settled_transport(ids)
         return True
 
