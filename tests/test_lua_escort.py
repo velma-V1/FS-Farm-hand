@@ -49,7 +49,9 @@ function combine:getCurrentDischargeNode()
     local x, y, z = pipeWorld()
     return { node = { x = x, y = y, z = z, yaw = combine.rootNode.yaw }, fillUnitIndex = 1 }
 end
-function combine:getFillUnitFillType() return 7 end
+w.combineCrop = o.combineCrop or 7
+function combine:getFillUnitFillType() return w.combineCrop end
+function combine:getFillUnitFillLevel() return w.grain end
 function combine:getLastSpeed() return w.combineAi and w.combineKmh or 0 end
 function combine:getIsAIActive() return w.combineAi end
 function combine:getAIFieldWorkerIsTurning() return w.turning end
@@ -90,7 +92,7 @@ function trailer:getFillUnits() return { {} } end
 function trailer:getFillUnitFillLevel() return trailer.level end
 function trailer:getFillUnitCapacity() return trailer.capacity end
 function trailer:getFillUnitFillType() return trailer.crop end
-function trailer:getFillUnitSupportsFillType(_, t) return o.refuses ~= t end
+function trailer:getFillUnitSupportsFillType(_, t) return o.refuses ~= t and w.refuses ~= t end
 
 -- Each frame: the combine on (turning: round to its +x side or the other way at its speed), then
 -- the pipe as GIANTS' strategy works it: out while the trailer's middle is in the trigger, grain
@@ -268,6 +270,19 @@ class LuaEscortTests(unittest.TestCase):
         self.assertEqual(code, "NO_SAFE_SLOT", self.hitch.describeEscort(s))
         self.assertEqual(s.alongsideMs, 0)
         self.assertEqual(s.brakes.close, 0, self.hitch.describeEscort(s))
+        self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
+
+    def test_once_the_combine_holds_a_crop_the_trailer_cannot_take_it_stops_and_says_so(self):
+        # Live, save 1: the MF 8570 held canola from field 5, sent to the oats of field 90: the
+        # canola goes into the cart on the move, then the oats need another trailer.
+        w = self.world()
+        s, why, _ = self.start(w)
+        self.assertIsNotNone(s, why)
+        self.runner(w, s, 90 * 20, None)
+        self.assertEqual(s.mode, "alongside")
+        w.combineCrop, w.refuses, w.grain = 9, 9, 500   # oats coming in
+        code, _ = self.runner(w, s, 20, None)
+        self.assertEqual(code, "TRAILER_WRONG_CROP", self.hitch.describeEscort(s))
         self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
 
     def test_refused_unmoved_when_it_cannot_start(self):

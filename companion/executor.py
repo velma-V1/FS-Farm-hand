@@ -1944,8 +1944,8 @@ class Executor:
             log.info("ESCORT %s: trailer %.0f -> %.0f l", done, before, before + got)
             if got <= 0 and done == "TRAILER_FULL":
                 raise ObservationMismatch("GRAIN_NOT_MOVED")
-            status, reason = "COMPLETE", "CART_FULL" if done == "TRAILER_FULL" else (
-                "HARVEST_ENDED" if got > 0 else "HARVEST_ENDED_NOTHING_TAKEN")
+            status, reason = "COMPLETE", {"TRAILER_FULL": "CART_FULL", "TRAILER_WRONG_CROP": "CART_WRONG_CROP"}.get(
+                done, "HARVEST_ENDED" if got > 0 else "HARVEST_ENDED_NOTHING_TAKEN")
         except Cancelled:
             status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
         except ObservationMismatch as error:

@@ -4075,7 +4075,8 @@ end
 -- under the pipe (the unloading trigger until the pipe is out, then the discharge node), at the
 -- combine's speed, its tractor kept clear of the combine's and header's boxes; behind the combine
 -- on its own trail while it turns or is not yet straight. Never a teleport, never collision off.
--- Ends braked: TRAILER_FULL, COMBINE_STOPPED (its helper ended), or a failure.
+-- Ends braked: TRAILER_FULL, COMBINE_STOPPED (its helper ended), TRAILER_WRONG_CROP (the combine
+-- holds a crop this trailer cannot take), or a failure.
 Hitch.ESCORT = {
     maxSpeedKmh = 20,           -- the cart's limit while it catches up
     timeoutMs = 7200000,
@@ -4125,6 +4126,26 @@ local function cartLevel(trailer)
     end
     assert(finite(level) and finite(capacity))
     return level, capacity
+end
+
+-- Whether the trailer takes what the combine's tank holds (anything while it is empty): a fill
+-- unit that supports it and is empty or holds the same.
+local function cartTakes(env, s)
+    local node = s.combine:getCurrentDischargeNode()
+    if node == nil then return false end
+    local unknown = env.FillType ~= nil and env.FillType.UNKNOWN or 0
+    local crop = s.combine:getFillUnitFillType(node.fillUnitIndex)
+    if not finite(crop) or crop == unknown or (s.combine:getFillUnitFillLevel(node.fillUnitIndex) or 0) <= 0 then
+        return true
+    end
+    for i in ipairs(s.trailer:getFillUnits()) do
+        local held = s.trailer:getFillUnitFillType(i)
+        if s.trailer:getFillUnitSupportsFillType(i, crop)
+                and (held == crop or held == unknown or (s.trailer:getFillUnitFillLevel(i) or 0) <= 0) then
+            return true
+        end
+    end
+    return false
 end
 
 -- The slot under the pipe in the combine's frame: the discharge node while the pipe is out (the
@@ -4218,21 +4239,8 @@ function Hitch.newEscort(env, args)
         if capacity <= 0 then return "ESCORT_NOT_ONE_TRAILER" end
         if level >= E.fullShare * capacity then return "TRAILER_FULL" end
         s.startLevel, s.lastLevel, s.capacity = level, level, capacity
-        local node = combine:getCurrentDischargeNode()
-        if node == nil then return "NO_DISCHARGE_NODE" end
-        local unknown = env.FillType ~= nil and env.FillType.UNKNOWN or 0
-        local crop = combine:getFillUnitFillType(node.fillUnitIndex)
-        if finite(crop) and crop ~= unknown then
-            local takes = false
-            for i in ipairs(s.trailer:getFillUnits()) do
-                local held = s.trailer:getFillUnitFillType(i)
-                if s.trailer:getFillUnitSupportsFillType(i, crop)
-                        and (held == crop or held == unknown or (s.trailer:getFillUnitFillLevel(i) or 0) <= 0) then
-                    takes = true
-                end
-            end
-            if not takes then return "TRAILER_WRONG_CROP" end
-        end
+        if combine:getCurrentDischargeNode() == nil then return "NO_DISCHARGE_NODE" end
+        if not cartTakes(env, s) then return "TRAILER_WRONG_CROP" end
         -- The straight cart about its trailer's middle (along the tractor's heading).
         local mx, mz = middleOf(env, s.trailer)
         local fx, _, fz = env.localDirectionToWorld(tractor.rootNode, 0, 0, 1)
@@ -4353,6 +4361,8 @@ local function escortDrive(env, s, dt)
     if s.elapsed >= s.checkAt then
         s.checkAt = s.elapsed + E.checkMs
         escortSlot(env, s)
+        -- The combine now holds a crop this trailer cannot take (it emptied another into it first).
+        if not cartTakes(env, s) then return "TRAILER_WRONG_CROP" end
         if s.slotSource == "pipe" and vc > 1.5 then s.pipeOutMovingMs = s.pipeOutMovingMs + E.checkMs end
         s.combineBoxes = boxesOf(env, s, s.combineUnits)
         s.cartBoxes = boxesOf(env, s, units)

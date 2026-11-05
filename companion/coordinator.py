@@ -1770,6 +1770,10 @@ class Coordinator:
             name = _words(cart.name) if cart is not None else None
             if name and field is not None:
                 self._harvest_rigs[field] = name       # what is left in it goes where the harvest goes
+            if result.reason == "CART_WRONG_CROP":
+                # It took what the combine held; the next crop needs another trailer.
+                log.info("job %d grain cart: the %s takes no more of this crop; another cart", job.number, name)
+                continue
             if result.reason != "CART_FULL":
                 return result                          # the harvest ended
             if not destination:

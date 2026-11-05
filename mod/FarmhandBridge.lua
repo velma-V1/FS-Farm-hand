@@ -1391,7 +1391,7 @@ function steppers.escort(env, task, dt)
             end
         end
     end
-    if code ~= "TRAILER_FULL" and code ~= "COMBINE_STOPPED" then
+    if code ~= "TRAILER_FULL" and code ~= "COMBINE_STOPPED" and code ~= "TRAILER_WRONG_CROP" then
         return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code
     end
     return settle(task, code)
