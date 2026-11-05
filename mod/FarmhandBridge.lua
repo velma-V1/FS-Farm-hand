@@ -745,6 +745,9 @@ end
 
 local function agentEnd(env, task, dt)
     local v = task.spec.tractor
+    if task.agentMade and (task.replans or 0) > 0 then
+        log("%s: GIANTS' agent replanned %d times on the way", task.op or "navigate", task.replans)
+    end
     pcall(Bridge.Hitch.halt, env, task.drive, dt or 0)
     if task.agentMade then pcall(v.deleteAgent, v); task.agentMade = nil end
     if task.cruiseBefore ~= nil then
@@ -818,7 +821,12 @@ local function stepAgent(env, task, dt, codes)
     ai.lastState = state                                   -- the diagnostics (logAgent) read it here
     local name = agentState(env, state)
     if name ~= task.lastName then
-        log("%s: GIANTS' agent %s at %.1f,%.1f", task.op, name:lower(), x, z)
+        -- Its replanning flickers driving/planning (live 77e30fc15938406c-1: every frame for
+        -- seconds); those are counted, every other change is logged.
+        local flicker = (name == "PLANNING" and task.lastName == "DRIVING")
+                        or (name == "DRIVING" and task.lastName == "PLANNING" and task.drove)
+        if flicker then task.replans = (task.replans or 0) + (name == "PLANNING" and 1 or 0)
+        else log("%s: GIANTS' agent %s at %.1f,%.1f", task.op, name:lower(), x, z) end
         task.lastName, task.stateSince = name, task.elapsed
     end
     local function finish(endCode)

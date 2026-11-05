@@ -1284,7 +1284,10 @@ class Coordinator:
         name, target = work.get("tractor_name"), work["target"]
         states, used = [], []
         work.setdefault("delivered", False)       # kept with the goal: a resume never unloads early
-        work.setdefault("staged", False)          # the empty transport where AutoDrive has a route
+        # The empty transport taken where AutoDrive has a route first, only where Farmhand cannot
+        # drive the loaded rig itself (live 77e30fc15938406c-1: the GMC sent 133 m the other way
+        # to an AutoDrive waypoint before loading, and stuck there).
+        work.setdefault("staged", bool(getattr(self.executor, "_farm_drives", lambda: False)()))
         for n in range(1, self.MAX_HAUL_STEPS + 1):
             if cancel.is_set():
                 return Result("CANCELLED", "CANCELLED_BY_REQUESTER", tuple(used), tuple(states))

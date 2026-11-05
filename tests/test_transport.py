@@ -913,6 +913,28 @@ class HaulGoalTests(unittest.TestCase):
         starts = ad_route_starts(graph, (1.0, -2.0), (500.0, 500.0))
         self.assertEqual([wp for _, _, wp in starts], [10, 20, 21])
 
+    def test_with_its_own_drive_farmhand_loads_where_the_tractor_is_without_staging(self):
+        # Live 77e30fc15938406c-1: the GMC sent 133 m the other way to an AutoDrive waypoint.
+        from companion import coordinator as coordination
+        from protocol.model import Result
+        world, truck, deck, series9 = haul_world(hitched=True)
+        tasks = []
+
+        class Own:
+            def _farm_drives(self):
+                return True
+
+            def execute(self, intent, cancel=None, on_state=None, job=None):
+                tasks.append(intent["task"])
+                return Result("BLOCKED", "STOP_HERE", (), ())
+
+        world.retained = lambda: ()
+        c = coordination.Coordinator(world, Own(), lambda n, s=False: None, lambda: "farm-a", lambda: "s1")
+        from companion.language import RuleInterpreter
+        c.submit(RuleInterpreter().interpret("Take the Deutz to field 3 and unload it"))
+        c.wait(10)
+        self.assertEqual(tasks[:1], ["load_tractor"])
+
     def test_the_empty_transport_is_staged_where_autodrive_has_a_route_before_it_is_loaded(self):
         # Live 2026-10-22 (Riverbend Springs): the waypoint nearest the GMC was on a dead end,
         # AutoDrive "could not calculate path". Its saved network (read only) says so; GIANTS
