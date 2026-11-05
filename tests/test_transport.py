@@ -319,6 +319,27 @@ class TractorTransportTests(unittest.TestCase):
             else:                              # in LOAD's run-in: LOAD lines it up itself
                 self.assertEqual(len(world.aims), 1)
 
+    def test_with_its_own_drive_the_approach_drives_onto_the_aim_at_its_heading(self):
+        # Live 8fa6ad416fa14943-1: GIANTS' agent ended 1.6 m off and 30 deg turned after 85 s.
+        from companion import hitch as transport
+
+        class Own(MockWorld):
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
+                self.driven = getattr(self, "driven", []) + [(target, yaw)]
+                super().navigate(vehicle_id, Pose(target[0], target[1], yaw), owner)
+
+            def navigate(self, tractor_id, pose, owner):
+                self.navigated = True
+                super().navigate(tractor_id, pose, owner)
+
+        world, tractor, deck, _ = transport_world(cls=Own)
+        result = Executor(world).execute(load())
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "LOADED_AND_SECURED"), result)
+        self.assertFalse(getattr(world, "navigated", False))
+        target, yaw = world.driven[0]
+        self.assertAlmostEqual(transport.to_frame(deck, target)[0] + 0.3 + 2.6, -5.0 - transport.RUN_UP_GAP_M)
+        self.assertAlmostEqual(yaw, deck.heading)
+
     def test_a_run_up_ending_turned_towards_the_axis_is_left_to_the_run_in(self):
         # Live 3389dfbd1b564660-1: GIANTS' run-up GOTO ended on position alone, the Series 9
         # 1.6 m off and 18.4 deg turned (heading for the axis); the near aims then stalled

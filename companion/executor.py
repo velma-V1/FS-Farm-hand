@@ -2314,9 +2314,25 @@ class Executor:
             if transport.can_run_in(tractor, trailer):
                 log.info("APPROACH: in LOAD's run-in window after BACKOFF")
                 return
+        def drive_to(pose):
+            # Near: Farmhand's own drive onto the pose at its heading (an exact goal curve, and
+            # forward/reverse for a rig with no towed unit); GIANTS' navigation only if that
+            # finds no way (live 8fa6ad416fa14943-1: GIANTS' agent took 85 s and 134 replans to
+            # end 1.6 m off and 30 deg turned, then found every aim 10 m on not reachable).
+            here = next((i.position for i in self.world.snapshot() if i.id == tractor.id), tractor.position)
+            if self._farm_drives() and math.dist(here, (pose.x, pose.z)) <= OWN_DRIVE_FIRST_M:
+                try:
+                    self.world.farm_drive(tractor.id, (pose.x, pose.z), owner, 0.0, pose.yaw)
+                    return
+                except StepFailed as failure:
+                    if failure.code in ("STOPPED", "CANCELLED"):
+                        raise
+                    log.info("APPROACH by Farmhand's own drive to %s: %s; GIANTS' navigation", pose, failure.code)
+            self._navigate(tractor.id, pose, owner, free=True)
+
         for run_up in transport.load_aims(tractor, trailer, (transport.RUN_UP_GAP_M,)):
             try:
-                self._navigate(tractor.id, run_up, owner, free=True)
+                drive_to(run_up)
                 tractor, trailer = self._settled_transport((tractor.id, trailer.id))
             except StepFailed as failure:
                 log.info("APPROACH run-up %s: %s", run_up, failure.code)
@@ -2338,7 +2354,7 @@ class Executor:
                 return
         for aim in transport.load_aims(tractor, trailer):
             try:
-                self._navigate(tractor.id, aim, owner, free=True)
+                drive_to(aim)
             except StepFailed as failure:
                 log.info("APPROACH aim %s: %s", aim, failure.code)
                 continue
