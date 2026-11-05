@@ -343,7 +343,7 @@ class LandTests(unittest.TestCase):
     def world(self, owner="none", price=48000.0, money=100000.0):
         from protocol.model import FarmInfo, LandParcel
         from simulator.world import MockWorld
-        world = MockWorld([], {"farm-a": (0.0, 0.0)}, (), farm=FarmInfo(money, True, True, True))
+        world = MockWorld([], {"farm-a": (0.0, 0.0)}, farm=FarmInfo(money, True, True, True))
         world.mock_land = (LandParcel(11, 31, "other", 9000.0), LandParcel(12, 37, owner, price, 1.6))
         return world
 

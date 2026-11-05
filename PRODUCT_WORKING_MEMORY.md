@@ -20,7 +20,7 @@ Farmhand = FS25 mod + Farmhand companion program.
 Standalone means:
 - GIANTS native FS25 systems are allowed.
 - External gameplay mods are not required for core Farmhand capability.
-- AutoDrive, FollowMe, Courseplay, Universal Autoload and similar providers may be optional accelerators only.
+- AutoDrive is not used by Farmhand at all (removed 2026-11-05: no travel, markers, network edits, sell, unloader, or settings writes). Farmhand only reads whether the player's own AutoDrive is driving a vehicle, so it never takes that vehicle. FollowMe, Courseplay, Universal Autoload and similar providers may be optional accelerators only.
 - Provider limitation/failure != Farmhand limitation/failure.
 - The companion is not only AI-model communication; it owns deterministic command interpretation, planning/orchestration, state/verification/recovery and IPC. Ollama/llama.cpp AI is optional.
 

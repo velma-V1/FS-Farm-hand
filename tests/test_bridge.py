@@ -71,13 +71,10 @@ class FakeGame:
 
     # By default the tractor's joint starts beyond the local work radius (25 m) of the
     # wagon's, so GIANTS' GOTO (stage) brings it in; tractor_at=(0, 20) starts inside it.
-    def __init__(self, tractor_at=(0.0, 40.0), markers=None, faults=None, session_override=None,
-                 autodrive=True):
+    def __init__(self, tractor_at=(0.0, 40.0), faults=None, session_override=None, autodrive=True):
         self.vehicles = {11: record(11, "tractor", *tractor_at), 12: record(12, "wagon", 0.0, -4.0)}
-        if not autodrive:      # AutoDrive not installed: no vehicle.ad, no markers
+        if not autodrive:      # AutoDrive not installed: no vehicle.ad (installed, Farmhand never uses it)
             self.vehicles[11].update(has_autodrive=False, ad_active=None)
-        self.markers = ({} if not autodrive else
-                        markers or {3: ("Yard", 100.0, 200.0), 4: ("Near wagon", 5.0, 30.0)})
         self.player = {"x": 101.0, "z": 199.0}
         self.places = [("Cow Barn (Medium)", -200.0, 50.0), ("Machine Shed", 300.0, -80.0)]
         self.faults = faults or {}
@@ -127,8 +124,6 @@ class FakeGame:
                 frame = {"event": "snapshot", "protocol": 3, "seq": self.seq, "session": session,
                          "farm_id": 1, "map_id": "MapUS", "player": self.player, "truncated": False,
                          "skipped": 0, "vehicles": copy.deepcopy(list(self.vehicles.values())),
-                         "destinations": [{"id": i, "name": n, "x": x, "z": z}
-                                          for i, (n, x, z) in self.markers.items()],
                          "places": [{"name": n, "x": x, "z": z} for n, x, z in self.places]}
                 if not self.faults.get("silent_snapshots"):
                     self._emit(frame)
@@ -189,14 +184,6 @@ class FakeGame:
             place(tractor, jx - dx, jz - dz, yaw)
             tractor["heading"] = yaw
 
-        if op == "drive":
-            _, x, z = self.markers[int(c["marker"])]
-            if self.faults.get("drive_elsewhere"):
-                x += 50
-            place(tractor, x, z)
-            if wagon["attacher_vehicle_id"] == 11:
-                place(wagon, x, z - 8)
-            return "AD_ENDED"
         if op == "teleport":       # teleport recovery: the rig to open ground 12 m aside
             self.teleports = getattr(self, "teleports", 0) + 1
             place(tractor, tractor["x"] + 12.0, tractor["z"])
@@ -366,7 +353,8 @@ class CommandFramingTests(unittest.TestCase):
 
 class CapabilityTests(unittest.TestCase):
     def test_capabilities_only_with_this_companions_live_session(self):
-        for override, expected in ((None, {"move", "attach", "stop", "autodrive"}), ("other-session", set())):
+        # AutoDrive installed is never a Farmhand capability.
+        for override, expected in ((None, {"move", "attach", "stop"}), ("other-session", set())):
             with self.subTest(session=override):
                 game = FakeGame(session_override=override)
                 self.addCleanup(game.stop)
@@ -406,7 +394,7 @@ NEAR = (0.0, 20.0)      # the tractor's joint starts inside the local work radiu
 
 
 class ProductionSequenceTests(unittest.TestCase):
-    def run_ac001(self, target="player_at_acceptance", field_entrances=None, categories=CATEGORIES,
+    def run_ac001(self, target="player_at_acceptance", categories=CATEGORIES,
                   teleport=True, ghosting=None, **game_args):
         game = FakeGame(**game_args)
         self.addCleanup(game.stop)
@@ -416,22 +404,23 @@ class ProductionSequenceTests(unittest.TestCase):
             world.scenery_ghosting = ghosting
         with unittest.mock.patch.object(bridge, "ACCEPT_TIMEOUT_S", 0.3), \
                 unittest.mock.patch.dict(bridge.DONE_TIMEOUT_S, {op: 0.3 for op in bridge.DONE_TIMEOUT_S}):
-            result = Executor(world, field_entrances=field_entrances).execute(intent(target))
+            result = Executor(world).execute(intent(target))
         return game, world, result
 
     def ops(self, game):
         return [c["op"] for c in game.commands]
 
-    def test_complete_run_near_the_wagon_skips_autodrive_pickup(self):
+    def test_complete_run_near_the_wagon_with_autodrive_installed_never_uses_it(self):
         game, world, result = self.run_ac001()
         self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
         self.assertEqual(result.equipment_ids, ("11", "12"))
         self.assertEqual(result.states, ("FIND", "RESERVE", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH", "VERIFY",
                                          "DELIVER", "STOP", "RELEASE"))
-        # Delivered by Farmhand's own drive to marker 3, the one near the player ("here").
+        # Delivered by Farmhand's own drive short of the player ("here").
         self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "farm_drive", "stop"])
         drive = game.commands[4]
-        self.assertEqual((float(drive["x"]), float(drive["z"])), tuple(map(float, game.markers[3][1:])))
+        self.assertAlmostEqual(math.dist((float(drive["x"]), float(drive["z"])), (game.player["x"], game.player["z"])),
+                               DELIVERY_STANDOFF_M, places=6)
         self.assertEqual((game.commands[1]["tj"], game.commands[1]["wj"]), ("1", "1"))
         self.assertEqual(world._reservations, {})                   # released only at the very end
 
@@ -454,11 +443,10 @@ class ProductionSequenceTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("COMPLETE", "DELIVERY_OBSERVED"), result)
         self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "farm_drive", "stop"])
 
-    def test_far_tractor_uses_autodrive_first(self):
+    def test_far_tractor_with_autodrive_installed_drives_itself(self):
         game, _, result = self.run_ac001(tractor_at=(600.0, 600.0))
         self.assertEqual(result.status, "COMPLETE", result)
-        self.assertEqual(self.ops(game), ["drive", "stage", "maneuver", "align", "attach", "farm_drive", "stop"])
-        self.assertEqual(game.commands[0]["marker"], "4")           # the marker near the wagon
+        self.assertEqual(self.ops(game), ["farm_drive", "maneuver", "align", "attach", "farm_drive", "stop"])
         self.assertEqual(result.states[2], "TRAVEL_NEAR")
 
     def test_a_drive_ended_against_something_on_the_way_restarts_from_there(self):
@@ -566,23 +554,18 @@ class ProductionSequenceTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("UNVERIFIED", "UNKNOWN_OBSERVATION"))
         self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "farm_drive", "stop"])
 
-    def test_explicit_marker_without_autodrive_blocks_before_any_command(self):
-        game, _, result = self.run_ac001({"type": "autodrive_marker", "marker_name": "Yard"}, autodrive=False)
-        self.assertEqual((result.status, result.reason), ("BLOCKED", "DESTINATION_NOT_FOUND"))
-        self.assertEqual(game.commands, [])
-
     def test_explicit_targets_resolve_before_any_command(self):
-        game, _, result = self.run_ac001({"type": "autodrive_marker", "marker_name": "Yard"})
-        self.assertEqual(result.status, "COMPLETE")
-        game, _, result = self.run_ac001({"type": "field_entrance", "field": 12},
-                                         field_entrances={"MapUS": {12: "Missing gate"}})
+        game, _, result = self.run_ac001({"type": "field_entrance", "field": 12})
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "FIELD_NOT_FOUND"))
+        self.assertEqual(game.commands, [])
+        game, _, result = self.run_ac001({"type": "place", "name": "no such place"})
         self.assertEqual((result.status, result.reason), ("BLOCKED", "DESTINATION_NOT_FOUND"))
         self.assertEqual(game.commands, [])
 
     def test_every_step_failure_stops_with_its_reason_and_goes_no_further(self):
         cases = [
-            ({"drive": "FAILED:AD_STOPPED_WITH_ERROR"}, (600.0, 600.0), "FAILED", "AD_STOPPED_WITH_ERROR",
-             ["drive", "stop"]),
+            ({"farm_drive": "FAILED:NO_ROUTE", "navigate": "FAILED:NAVIGATE_STALLED"}, (600.0, 600.0), "FAILED",
+             "TRAPPED", ["farm_drive", "navigate", "navigate", "stop"]),
             ({"stage": "FAILED:GOTO_NOT_STARTED"}, None, "FAILED", "GOTO_NOT_STARTED", ["stage", "stop"]),
             ({"align": "FAILED:VERTICAL_MISMATCH"}, None, "FAILED", "VERTICAL_MISMATCH",
              ["stage", "maneuver", "align", "stop"]),
@@ -644,13 +627,14 @@ class ProductionSequenceTests(unittest.TestCase):
             self.assertIn(part, end)
 
     def test_delivery_and_arrival(self):
-        # AutoDrive, tried when Farmhand's own drive found no route, "ended" elsewhere: not arrival.
+        # GIANTS' navigation, tried when Farmhand's own drive found no route, "ended" elsewhere: not
+        # arrival; with AutoDrive installed it is never asked.
         unrouted = {"farm_drive": "FAILED:NO_ROUTE"}
-        game, world, result = self.run_ac001(faults={**unrouted, "drive_elsewhere": True})
+        game, world, result = self.run_ac001(faults={**unrouted, "navigate_elsewhere": True})
         self.assertEqual((result.status, result.reason), ("UNVERIFIED", "DELIVERY_NOT_OBSERVED"))
-        game, world, result = self.run_ac001(faults={**unrouted, "drive": "FAILED:TIMEOUT"})
+        game, world, result = self.run_ac001(faults={**unrouted, "navigate": "FAILED:TIMEOUT"})
         self.assertEqual((result.status, result.reason), ("FAILED", "TIMEOUT"))
-        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "farm_drive", "drive", "stop"])
+        self.assertEqual(self.ops(game), ["stage", "maneuver", "align", "attach", "farm_drive", "navigate", "stop"])
 
     def test_unconfirmed_stop_keeps_the_reservation(self):
         game, world, result = self.run_ac001(faults={"align": "FAILED:STALLED", "stop": "FAILED:NOT_STOPPED"})
@@ -706,7 +690,7 @@ class ProductionSequenceTests(unittest.TestCase):
         self.assertTrue(world.reserve(("11", "12"), "owner"))
         self.assertFalse(world.reserve(("11", "12"), "other"))
         for call in (lambda: world.stage("11", "12", None, "intruder"),
-                     lambda: world.travel("12", "3", "owner"),
+                     lambda: world.navigate("12", Pose(0.0, 0.0, 0.0), "owner"),
                      lambda: world.align("11", "99", None, "owner")):
             with self.assertRaises(StepFailed):
                 call()
@@ -770,15 +754,12 @@ class RunnerTests(unittest.TestCase):
         from companion import run
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "farmhand.json"
-            path.write_text(json.dumps({"tractor_store_categories": ["TRACTORSL"],
-                                        "field_entrances": {"MapUS": {"12": "Gate"}}}))
-            self.assertEqual(run.load_config(path), ({"TRACTORSL": "tractor"}, {"MapUS": {12: "Gate"}}))
+            path.write_text(json.dumps({"tractor_store_categories": ["TRACTORSL"]}))
+            self.assertEqual(run.load_config(path), {"TRACTORSL": "tractor"})
             path.write_text(json.dumps({"tractor_store_categories": "TRACTORSL"}))
             with self.assertRaises(ValueError):
                 run.load_config(path)
         cases = [("here", None, "player_at_acceptance"),
-                 ("marker", "Home Yard", {"type": "autodrive_marker", "marker_name": "Home Yard"}),
-                 ("marker-id", "7", {"type": "autodrive_marker", "marker_id": "7"}),
                  ("field", "12", {"type": "field_entrance", "field": 12})]
         for kind, value, expected in cases:
             self.assertEqual(run.target(argparse.Namespace(kind=kind, value=value)), expected)

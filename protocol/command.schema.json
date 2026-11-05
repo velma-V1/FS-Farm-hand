@@ -56,7 +56,7 @@
       ]
     },
     "target": {
-      "description": "fetch_pair and move_pair. Default 'here' (the requester's position when accepted). A place is named in the player's words (an AutoDrive marker name or part of an owned building's name). origin (move_pair): back where Farmhand took it from ('take it back').",
+      "description": "fetch_pair and move_pair. Default 'here' (the requester's position when accepted). A place is named in the player's words (part of an owned building's name). origin (move_pair): back where Farmhand took it from ('take it back').",
       "oneOf": [
         {
           "const": "here"
@@ -80,27 +80,6 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 64,
-              "not": {
-                "pattern": "[\\u0000-\\u001f\\u007f]"
-              }
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "type",
-            "marker_name"
-          ],
-          "properties": {
-            "type": {
-              "const": "autodrive_marker"
-            },
-            "marker_name": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128,
               "not": {
                 "pattern": "[\\u0000-\\u001f\\u007f]"
               }

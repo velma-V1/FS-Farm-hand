@@ -611,7 +611,7 @@ def contract(words: str) -> dict | None:
 
 
 # "sell the grain", "sell the wheat in the trailer", "go sell the load": the cargo a rig
-# carries, to the best paid sell point (AutoDrive's own). Never a vehicle ("sell the tractor").
+# carries, to the best paid sell point (GIANTS' own Deliver helper). Never a vehicle ("sell the tractor").
 _SELL = re.compile(r"^(?:please\s+)?(?:go\s+(?:and\s+)?)?sell\s+(?P<what>.{1,60}?)"
                    r"(?:\s+(?:in|on|from)\s+(?:the|my|our)\s+(?:trailer|truck|wagon))?(?:\s+please)?$")
 _SELL_VEHICLE = re.compile(r"\b(?:tractor|truck|trailer|wagon|combine|harvester|plow|plough|cultivator|seeder|"

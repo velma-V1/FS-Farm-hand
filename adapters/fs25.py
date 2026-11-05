@@ -57,7 +57,6 @@ class Observation:
     map_id: str | None
     player: Position | None
     equipment: tuple[Equipment, ...]
-    destinations: tuple[Destination, ...]
     places: tuple[Destination, ...] = ()
     fields: tuple[Field, ...] = ()
     farm: FarmInfo | None = None
@@ -128,15 +127,16 @@ def _category(vehicle, categories) -> str | None:
 
 def _capabilities(vehicle, bridge_ready: bool) -> frozenset[str]:
     """Physical capability exists only through the live command bridge
-    (mod/FarmhandBridge.lua). Moving needs GIANTS' GOTO job on the tractor (STAGE
-    always uses it); AutoDrive is an optional extra travel provider."""
+    (mod/FarmhandBridge.lua). Moving needs GIANTS' AI drivable on the tractor (its
+    navigation agent and GOTO)."""
     if not bridge_ready or vehicle["goto_supported"] is not True:
         return frozenset()
-    return frozenset({"move", "attach", "stop"} | ({"autodrive"} if vehicle["has_autodrive"] else set()))
+    return frozenset({"move", "attach", "stop"})
 
 
 def _busy_reason(vehicle) -> str | None:
-    """Which controller holds the vehicle, for diagnostics (busy decides)."""
+    """Which controller holds the vehicle, for diagnostics (busy decides). The player's own
+    AutoDrive driving a vehicle is only read, so Farmhand never takes it over."""
     if vehicle["has_autodrive"] and vehicle["ad_active"] is True:
         return "AUTODRIVE_ACTIVE"
     if vehicle["ai_active"] is True:
@@ -237,10 +237,6 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = N
                       for v in frame["vehicles"])
     if len({e.id for e in equipment}) != len(equipment):
         raise ObservationError("DUPLICATE_VEHICLE_ID")
-    destinations = tuple(Destination(str(d["id"]), (d["x"], d["z"]), d["name"])
-                         for d in frame["destinations"])
-    if len({d.id for d in destinations}) != len(destinations):
-        raise ObservationError("DUPLICATE_DESTINATION_ID")
     # Owned placeables, ordered by content so their opaque ids are repeatable.
     places = tuple(Destination(f"place-{n}", (p["x"], p["z"]), p["name"]) for n, p in enumerate(
         sorted(frame["places"], key=lambda p: (p["name"], p["x"], p["z"]))))
@@ -254,7 +250,6 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = N
         map_id=frame["map_id"],
         player=None if player is None else (player["x"], player["z"]),
         equipment=equipment,
-        destinations=destinations,
         places=places,
         fields=fields,
         field_places=tuple(Destination(f"field-{f['id']}", (f["x"], f["z"]), f"field {f['id']}",

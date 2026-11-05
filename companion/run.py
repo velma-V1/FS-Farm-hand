@@ -1,14 +1,11 @@
 """Run AC-001 once against the live game on this PC (Windows, next to FS25).
 
     python -m companion.run here
-    python -m companion.run marker "Home Yard"
-    python -m companion.run marker-id 7
     python -m companion.run --config farmhand.json field 12
 
 farmhand.json (optional trusted local configuration; tractors are recognised
 without it):
-    {"tractor_store_categories": ["<categoryName from fhHitchList>", ...],
-     "field_entrances": {"<map_id>": {"12": "<AutoDrive marker name>"}}}
+    {"tractor_store_categories": ["<categoryName from fhHitchList>", ...]}
 
 The request is a structured AC-001 intent; no language model is involved and no
 vehicle is named: the executor selects the exact pair. Exit status 0 only for
@@ -36,10 +33,6 @@ log = logging.getLogger("farmhand")
 def target(args) -> object:
     if args.kind == "here":
         return "player_at_acceptance"
-    if args.kind == "marker":
-        return {"type": "autodrive_marker", "marker_name": args.value}
-    if args.kind == "marker-id":
-        return {"type": "autodrive_marker", "marker_id": args.value}
     return {"type": "field_entrance", "field": int(args.value)}
 
 
@@ -62,20 +55,20 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, help="optional farmhand.json")
     parser.add_argument("--profile", type=Path, help="FarmingSimulator2025 folder (default: Documents)")
-    parser.add_argument("kind", choices=("here", "marker", "marker-id", "field"))
+    parser.add_argument("kind", choices=("here", "field"))
     parser.add_argument("value", nargs="?")
     args = parser.parse_args(argv)
     if (args.kind == "here") != (args.value is None):
-        parser.error("'here' takes no value; marker, marker-id and field need one")
+        parser.error("'here' takes no value; field needs one")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    categories, entrances = load_config(args.config) if args.config else ({}, {})
+    categories = load_config(args.config) if args.config else {}
     world = FS25World(start_local_link(args.profile), categories)
     try:
         farm_id = wait_until_linked(world)
         intent = {"version": 1, "request_id": "ac001-" + uuid.uuid4().hex[:12],
                   "task": "deliver_tractor_and_forage_wagon", "farm_id": farm_id, "target": target(args)}
         log.info("request %s", json.dumps(intent))
-        result = Executor(world, field_entrances=entrances).execute(intent)
+        result = Executor(world).execute(intent)
     finally:
         world.link.close()
     print(json.dumps({"status": result.status, "reason": result.reason,

@@ -465,8 +465,6 @@ class LiveTest:
             farm = {"farm_id": str(frame["farm_id"]), "map_id": frame.get("map_id"),
                     "player": frame.get("player"), "info": frame.get("farm"), "fields": frame.get("fields"),
                     "places": [(p.get("name"), round(p.get("x")), round(p.get("z"))) for p in frame.get("places") or []][:60],
-                    "markers": [(d.get("name"), round(d.get("x")), round(d.get("z")))
-                                for d in frame.get("destinations") or []][:300],
                     "contracts": frame.get("contracts"),
                     # Why a motorized vehicle is no towing vehicle (adapters/fs25.py _towing_vehicle).
                     "unclassified": [{k: v.get(k) for k in ("id", "name", "category", "self_propelled", "motor",

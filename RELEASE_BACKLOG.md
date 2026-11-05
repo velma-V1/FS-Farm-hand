@@ -65,6 +65,8 @@ Found: 2026-10-31
 
 Farmhand's core product must operate as Farmhand mod + companion + native GIANTS systems. AutoDrive, FollowMe, Courseplay, UAL, and other gameplay mods may accelerate capability but cannot be required.
 
+2026-11-05: AutoDrive removed from Farmhand's execution entirely (travel to markers, loaded-rig delivery, transport staging, marker creation, network linking, sell fallback, combine unloader, speed-limit and wage writes). Farmhand only reads whether the player's own AutoDrive drives a vehicle, so it never takes it. Still to run live: the representative set below with this build.
+
 Acceptance:
 - Run representative movement, transport, hitch/unhitch, fieldwork, unload/sell/store, and recovery commands with external provider mods unavailable/bypassed.
 - No advertised core command returns BLOCKED solely because another gameplay mod is missing.
@@ -190,6 +192,16 @@ Do not drive a slow combine long-distance when transport is appropriate. Haul it
 
 Acceptance:
 - Farmhand can select/prepare/load/haul/unload the combine for a long trip without manual user work.
+
+## Unload a combine on the move
+Status: OPEN
+Priority: MEDIUM
+Found: 2026-11-05
+
+AutoDrive's combine unloader was removed with AutoDrive (2026-11-05). A harvesting combine is now serviced natively: when it is full (or "unload the combine"), its helper is paused, Farmhand drives a trailer under the pipe, GIANTS' own discharge empties it, and the harvest goes on (tested; live overload proven earlier). The user asked (2026-10-31) for unloading "while harvesting at speed".
+
+Acceptance:
+- A tractor and trailer follow the harvesting combine under its pipe without stopping it, using GIANTS' agent/Farmhand's drive and GIANTS' discharge; a full trailer goes where the harvest goes.
 
 ## Park dropped implements away from active work
 Status: OPEN

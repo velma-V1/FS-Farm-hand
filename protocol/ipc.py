@@ -109,7 +109,6 @@ class FrameReader:
 # arguments; nothing else can be encoded. XML attribute names match the mod.
 COMMAND_ARGS = {
     "farm_drive": ("tractor", "x", "z", "area", "yaw"),   # area > 0: any clear approach point that near (x, z); yaw beyond +-2 pi: any heading
-    "drive": ("tractor", "marker"),
     "stage": ("tractor", "x", "z", "yaw"),
     "navigate": ("tractor", "x", "z", "yaw"),
     "fieldwork": ("tractor", "field", "x", "z", "yaw", "area", "seed", "hand"),   # seed: in the seeder's crops (0 as set); hand 1: ends WORKING
@@ -131,13 +130,9 @@ COMMAND_ARGS = {
     "worktool": ("tractor", "direction"),        # the plow lowered with field creation on (1), raised and limited again (-1)
     "belts": ("tractor", "direction"),           # a transport's TensionBelts fastened (1) or released (-1)
     "load": ("tractor", "wagon", "direction"),   # the tractor alone onto the trailer's deck (1) or off it (-1)
-    "ad_marker": ("field", "x", "z"),            # an AutoDrive destination: "Field N" by field N's edge, or (field 0) the farm building at (x, z) by its name
-    "ad_connect": ("tractor", "marker"),         # AutoDrive's dead-end lane from the vehicle joined to the routed road it stops short of
     "follow": ("tractor",),                      # FollowMe: the vehicle follows the one the player drives
     "contract": ("field", "direction"),          # the field's contract taken (1) or its reward collected (-1)
     "land": ("field", "direction"),              # the field's farmland parcel bought (1) or sold (-1), GIANTS' FarmlandStateEvent
-    "ad_unload": ("tractor", "marker", "field", "direction"),  # AutoDrive's combine unloader: waits at the marker; a full trailer to the best paid sell point (1), the farm's silo (-1) or parked at the marker (0)
-    "ad_sell": ("tractor",),                      # AutoDrive delivers the rig's cargo to the best paid sell point
     "pipe": ("tractor", "direction"),            # a combine's pipe out (1) or in (-1), GIANTS Pipe
     "overload": ("tractor", "wagon"),            # a standing combine discharges into the trailer under its pipe
     "alongside": ("tractor", "wagon", "direction"),  # the trailer under the combine's pipe (1) or on past the combine (-1)
@@ -145,11 +140,11 @@ COMMAND_ARGS = {
     "backoff": ("tractor", "wagon"),             # the tractor straight back from the transport's ramps it waits behind
     "stop": ("tractor",),
 }
-_ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "marker": "marker", "x": "x", "z": "z",
+_ATTRIBUTE = {"tractor": "tractor", "wagon": "wagon", "x": "x", "z": "z",
               "yaw": "yaw", "tractorJoint": "tj", "wagonJoint": "wj", "maxDistanceM": "dist", "field": "field", "area": "area", "seed": "seed", "hand": "hand", "item": "item", "hitch": "hitch",
               "engine": "eng", "opt1": "o1", "opt2": "o2", "opt3": "o3", "opt4": "o4",
               "direction": "fd"}
-_INTEGER = {"tractor", "wagon", "marker", "tractorJoint", "wagonJoint", "field", "seed", "hand", "item", "hitch", "engine",
+_INTEGER = {"tractor", "wagon", "tractorJoint", "wagonJoint", "field", "seed", "hand", "item", "hitch", "engine",
             "opt1", "opt2", "opt3", "opt4"}
 # The motions that may pass through scenery beside the rig, and only with the player's opt-in
 # setting (companion/ai.py Settings.scenery_ghosting, default off): an optional ghost=1. Absent is

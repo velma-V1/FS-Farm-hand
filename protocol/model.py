@@ -192,7 +192,7 @@ class FarmInfo:
     helper_buy_seeds: bool | None
     helper_buy_fertilizer: bool | None
     helper_buy_fuel: bool | None
-    savegame_dir: str | None = None       # the loaded save's folder (AutoDrive's network is saved there)
+    savegame_dir: str | None = None       # the loaded save's folder
     savegame: int | None = None           # GIANTS missionInfo.savegameIndex; scopes learned farm routes
 
 
@@ -208,9 +208,9 @@ class HitchPlan:
 
 @dataclass(frozen=True)
 class Destination:
-    """A routable delivery point, e.g. an AutoDrive map marker. Opaque ID.
+    """A routable point: a building, a field, or where Farmhand's own drive ended. Opaque ID.
 
-    ``name`` is the marker's display name, used only for exact explicit selection.
+    ``name`` is its display name, used only for exact explicit selection.
     ``outline`` is a field's boundary (GIANTS Field polygonPoints), else empty."""
     id: str
     position: Position

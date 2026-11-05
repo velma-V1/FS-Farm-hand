@@ -125,7 +125,7 @@ says it is unavailable.
    Farmhand offers its AI menu (Left Alt + N later): pick one of your own Ollama or
    llama.cpp models, or "Continue without AI" (Farmhand downloads no model; with none
    installed the menu says so); try both "without AI" and a model during the session.
-2. **Fetch, without AutoDrive.** Disable AutoDrive (if installed) and load a
+2. **Fetch.** Load a
    single-player save with the Farmhand mod. Own one tractor with nothing attached
    (no front weight either) and one forage wagon. Expect "Farmhand: companion
    connected". Get out of the tractor, walk somewhere the tractor can drive to,
@@ -153,11 +153,7 @@ says it is unavailable.
    unavailable…" and nothing else; that is correct. With one: say "bring me a
    tractor and forage wagon" and release; expect "listening..." and the same run,
    with spoken replies.
-7. **With AutoDrive.** Enable AutoDrive with a marker within 50 m of you and leave
-   "start helper" off in the tractor's AutoDrive HUD (Farmhand refuses to drive
-   while AutoDrive would hand the tractor to another AI). Fetch: delivery goes to
-   that marker.
-8. **Report.** Type **report** (Left Alt + K): Farmhand saves
+7. **Report.** Type **report** (Left Alt + K): Farmhand saves
    `Farmhand-report-<time>.zip` on your Desktop (its logs, the `[Farmhand]` lines of
    the game's log, your settings and the last game snapshot; nothing is sent). Send
    that zip, and note anything you saw that it cannot show, such as whether the game

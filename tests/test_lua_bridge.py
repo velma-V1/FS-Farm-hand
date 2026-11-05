@@ -195,7 +195,7 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertEqual((status, code), ("FAILED", "NO_ROUTE"))
 
     def test_inert_until_a_companion_session_exists(self):
-        self.send(1, "drive", {"tractor": 11, "marker": 3})
+        self.send(1, "navigate", self.POSE)
         self.W.run(self.w, 3000)
         self.assertEqual(len(self.w.lines), 0)                    # no pipe without a session
         self.assertEqual(self.calls(), [])
@@ -210,226 +210,34 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertGreaterEqual(len(snapshots), 2)
         self.assertTrue(all(f["session"] == "s1" for f in snapshots))
 
-    def test_drive_reports_acceptance_then_the_observed_end(self):
+    def test_unknown_vehicle_never_moves(self):
         self.adopt()
-        self.send(1, "drive", {"tractor": 11, "marker": 3})
-        self.assertEqual(self.calls(), ["setMode:1", "StartDriving:3:3"])   # DRIVETO, both markers
-        self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])
-        self.W.run(self.w, 2000)
-        self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])   # still driving
-        # Kept awake every frame while AutoDrive drives it (asleep, AutoDrive's own update
-        # never ran: live 2026-10-22, forceIsActive true, isActive false, no task).
-        self.assertGreaterEqual(self.w.raised, 19)
-        self.w.x = 150.0                                                    # it drove
-        self.w.adActive = False
-        self.w.speed = 3.0
-        self.W.run(self.w, 300)
-        self.assertEqual(len(self.results(1)), 1)                           # ended but rolling
-        self.w.speed = 0.0
-        self.W.run(self.w, 200)
-        self.assertEqual(self.results(1)[-1], (1, "DONE", "AD_ENDED"))
-        for line in self.w.lines.values():                                  # every frame decodes
-            if '"result"' in line:
-                parse_frame((line + "\n").encode())
-
-    def test_drive_failures(self):
-        cases = [("startsAD", False, "AD_NOT_STARTED", 6000),
-                 ("error", True, "AD_STOPPED_WITH_ERROR", 500),
-                 ("takeover", True, "DRIVER_TOOK_OVER", 500)]
-        for attr, value, code, ms in cases:
-            with self.subTest(code=code):
-                self.w = self.W.new()
-                self.adopt()
-                if attr == "startsAD":
-                    self.w.startsAD = False
-                self.send(1, "drive", {"tractor": 11, "marker": 3})
-                if attr == "error":
-                    self.w.tractor.ad.isStoppingWithError = True
-                    self.w.adActive = False
-                if attr == "takeover":
-                    self.w.entered = True
-                    self.assertTrue(self.w.takeOver())          # the player's input is always allowed
-                self.W.run(self.w, ms)
-                self.assertEqual(self.results(1)[-1], (1, "FAILED", code))
-                self.assertEqual("stopAutoDrive" in self.calls(), attr == "takeover")
-
-    def test_a_drive_that_does_not_move_fails_with_what_autodrive_waits_on(self):
-        # Live 831d6868b9df40b0-1: AutoDrive active 6 minutes, the loaded rig never moved, and
-        # nothing said why. Its own state names it: planning onto its network, a sensor
-        # triggered (what is in its box, and whether AutoDrive counts it as the rig's own), or
-        # paused. It is stopped and the drive FAILED with that.
-        lua_state = self.lua.eval("""function(w, task, sensorHit)
-            local t = w.tractor
-            t.ad.stateModule.getCurrentTaskInfo = function() return task end
-            function t:getClosestWayPoint() return 560, 41.5 end
-            function t:getRootVehicle() return t end
-            t.ad.drivePathModule = { isPaused = false,
-                                     getWayPoints = function() return { { x = 3, z = 8 }, { x = 4, z = 20 } }, 1 end }
-            w.env.worldToLocal = function(node, x, y, z) return x - 1, y, z - 2 end
-            t.rotatedTime, t.maxRotTime, t.minRotTime = 0.3, 0.6, -0.6
-            t.ad.collisionDetectionModule = { detectedObstable = sensorHit, detectedCollision = false }
-            local sensor = { triggered = sensorHit, getMask = function() return 7 end,
-                             getBoxShape = function() return { x = 1, y = 2, z = 3, rx = 0, ry = 0, size = { 1, 1, 1 } } end }
-            t.ad.sensors = { frontSensor = sensor }
-            local cargo = { getName = function() return "Series 9" end }
-            w.env.getName = function(id) return "series9_main_component1" end
-            w.env.getParent = function(id) return 0 end
-            w.env.g_currentMission.terrainRootNode = 1
-            w.env.g_currentMission.getNodeObject = function(_, id) if id == 615 then return cargo end end
-            w.env.overlapBox = function(x, y, z, rx, ry, rz, ex, ey, ez, cb, target)
-                target[cb](target, 615); return 1
-            end
-            function w.env.AutoDrive:checkIsConnected(a, b) return false end
-            w.env.AutoDrive.getAllImplementsFolded = function() return true end
-        end""")
-        self.bridge.AD_STALL_MS = 20000
-        cases = (("$l10n_AD_task_pathfinding; 3 / 9 - 400 / 2000", False, "AD_PATHFINDING_STALLED"),
-                 ("$l10n_AD_task_drive_to_destination;", True, "AD_WAITING_ON_OBSTACLE"))
-        for task, hit, code in cases:
-            with self.subTest(code=code):
-                self.w = self.W.new()
-                self.printed.clear()
-                self.adopt()
-                lua_state(self.w, task, hit)
-                self.send(1, "drive", {"tractor": 11, "marker": 3})
-                self.beating(15000)
-                self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])     # waiting, not yet given up
-                self.beating(15000)
-                self.assertEqual(self.results(1)[-1], (1, "FAILED", code))
-                self.assertIn("stopAutoDrive", self.calls())
-                logged = [line for line in self.printed if "drive stalled" in line]
-                self.assertTrue(logged)
-                self.assertIn("wp=(6.0,2.0) steer=0.5", logged[0])         # where it steers to
-                if hit:
-                    self.assertIn("frontSensor[series9_main_component1@Series 9]", logged[0])
-
-    def test_autodrive_is_capped_at_40_mph_while_farmhand_drives_and_given_back(self):
-        # The user, 2026-10-22: AutoDrive took the loaded GMC at 103 km/h, it lost control over
-        # rail tracks and ended against a wall. Farmhand's cap is 40 mph (64 km/h): AutoDrive's
-        # own limits are stepped down before it starts and back when the drive ends.
-        self.adopt()
-        st = self.w.tractor.ad.stateModule
-        self.send(1, "drive", {"tractor": 11, "marker": 3})
-        self.W.run(self.w, 300)
-        self.assertEqual((st.speedLimit, st.fieldSpeedLimit), (64, 30))
-        self.assertIn("StartDriving", " ".join(self.calls()))
-        self.W.run(self.w, 500)
-        self.w.x = 50.0                                        # it drove, then AutoDrive ended
-        self.w.adActive = False
-        self.W.run(self.w, 3000)
-        self.assertEqual(st.speedLimit, 103)                   # the player's own limit back
-        self.assertTrue(any("AutoDrive speed limits 103/30 -> 64/30" in p for p in self.printed))
-        self.assertTrue(any("given back: 103/30 km/h (were 103/30)" in p for p in self.printed))
-
-    def test_a_drive_ended_where_it_started_or_with_no_route_is_said_so(self):
-        # Live 2026-10-22: the waypoint nearest the rig was on a dead end; AutoDrive's path
-        # finder gave up at once ("Could not calculate path") without its error flag.
-        self.adopt()
-        self.send(1, "drive", {"tractor": 11, "marker": 3})
-        self.W.run(self.w, 500)
-        self.w.adActive = False
-        self.W.run(self.w, 300)
-        self.assertEqual(self.results(1)[-1], (1, "FAILED", "AD_ENDED_UNMOVED"))
-        # Asked first of AutoDrive's own graph (pathFromTo from its closest waypoint): no route,
-        # nothing started.
-        self.lua.execute("""local w = ...
-            local graph = { getMapMarkerById = function(_, id) return { id = 560 } end,
-                            pathFromTo = function(_, a, b) return {} end,
-                            createMapMarker = function() end, getMapMarkerByName = function() end,
-                            getWayPoints = function() return {} end }
-            local env = setmetatable({ ADGraphManager = graph }, { __index = _G })
-            w.env.getfenv = function() return env end
-            function w.tractor:getClosestWayPoint() return 11802, 30.7 end
-        """, self.w)
-        self.send(2, "drive", {"tractor": 11, "marker": 3})
-        self.assertEqual(self.results(2)[-1], (2, "FAILED", "AD_NO_ROUTE"))
-        self.assertEqual(self.calls().count("StartDriving:3:3"), 1)                 # only the first one started
-        self.assertTrue(any("AD_NO_ROUTE" in p and "11802" in p for p in self.printed))
-
-    def test_autodrives_dead_end_lane_is_joined_only_to_a_routed_road_continuing_its_way(self):
-        # Live 2026-10-22: the store yard's lane 11800-11808 stops 5.5 m short of the road it
-        # joins (5767). AutoDrive's own setConnectionBetween(end, road, 1) after the companion's
-        # backup; DONE once AutoDrive's own pathFromTo has the route. A road going back the other
-        # way, or none within 6 m, is never joined.
-        setup = self.lua.eval("""function(w, roadX, roadDir)
-            local wps = {
-                [1] = { id = 1, x = 0, z = 0, out = { 2 }, incoming = {} },
-                [2] = { id = 2, x = 0, z = 40, out = {}, incoming = { 1 } },              -- the dead end
-                [10] = { id = 10, x = roadX, z = 44, out = { 12 }, incoming = {} },        -- the road
-                [12] = { id = 12, x = roadX, z = 44 + 40 * roadDir, out = {}, incoming = { 10 } },
-            }
-            local graph = { joined = nil }
-            function graph:getWayPoints() return wps end
-            function graph:getWayPointById(id) return wps[id] end
-            function graph:getMapMarkerById(id) return { id = 12, name = "Farm Barn" } end
-            function graph:getMapMarkerByName() return nil end
-            function graph:createMapMarker() end
-            function graph:pathFromTo(a, b)
-                local seen, queue = { [a] = true }, { a }
-                while #queue > 0 do
-                    local n = table.remove(queue, 1)
-                    if n == b then return { wps[a], wps[b] } end
-                    for _, o in ipairs(wps[n].out) do if not seen[o] then seen[o] = true; queue[#queue + 1] = o end end
-                end
-                return {}
-            end
-            function graph:setConnectionBetween(a, b, direction)
-                self.joined = { a.id, b.id, direction }
-                table.insert(a.out, b.id)
-            end
-            w.graph = graph
-            local env = setmetatable({ ADGraphManager = graph }, { __index = _G })
-            w.env.getfenv = function() return env end
-            function w.tractor:getClosestWayPoint() return 1, 3.0 end
-        end""")
-        for road_x, road_dir, expected in ((0.0, 1, (2, "DONE", "AD_LINKED")), (0.0, -1, (2, "FAILED", "AD_NO_LINK_NEAR")),
-                                           (20.0, 1, (2, "FAILED", "AD_NO_LINK_NEAR"))):
-            with self.subTest(road_x=road_x, road_dir=road_dir):
-                self.w = self.W.new()
-                self.adopt()
-                setup(self.w, road_x, road_dir)
-                self.send(2, "ad_connect", {"tractor": 11, "marker": 3})
-                self.W.run(self.w, 300)
-                self.assertEqual(self.results(2)[-1], expected)
-                joined = self.w.graph.joined
-                self.assertEqual(tuple(joined.values()) if joined else None, (2, 10, 1) if expected[1] == "DONE" else None)
-
-    def test_drive_refuses_when_autodrive_would_hand_off_to_another_ai(self):
-        self.adopt()
-        self.w.startHelper = True
-        self.send(1, "drive", {"tractor": 11, "marker": 3})
-        self.assertEqual(self.results(1)[-1], (1, "FAILED", "AD_START_HELPER_ON"))
-        self.assertEqual(self.calls(), [])                                  # setting untouched, no start
-
-    def test_unknown_marker_and_vehicle_never_move(self):
-        self.adopt()
-        self.send(1, "drive", {"tractor": 11, "marker": 9})
-        self.send(2, "drive", {"tractor": 99, "marker": 3})
-        self.assertEqual(self.results(), [(1, "ACCEPTED", "ACCEPTED"), (1, "FAILED", "UNKNOWN_MARKER"),
-                                          (2, "REJECTED", "UNKNOWN_VEHICLE")])
+        self.send(2, "navigate", {**self.POSE, "tractor": 99})
+        self.assertEqual(self.results(), [(2, "REJECTED", "UNKNOWN_VEHICLE")])
         self.assertEqual(self.calls(), [])
 
     def test_stale_sessions_and_replayed_ids_are_never_executed(self):
         self.adopt()
-        self.send(1, "drive", {"tractor": 11, "marker": 3}, session="old-session")
+        self.send(1, "navigate", self.POSE, session="old-session")
         self.assertEqual(self.results(session="old-session"), [(1, "REJECTED", "STALE_SESSION")])
         self.send(5, "stop", {"tractor": 11})
         self.W.run(self.w, 200)
-        self.send(5, "drive", {"tractor": 11, "marker": 3})                  # replayed id
-        self.send(4, "drive", {"tractor": 11, "marker": 3})                  # lower id
+        self.send(5, "navigate", self.POSE)                                  # replayed id
+        self.send(4, "navigate", self.POSE)                                  # lower id
         self.assertEqual(self.calls(), [])
         self.assertEqual([r for r in self.results() if r[0] in (4, 5)],
                          [(5, "ACCEPTED", "ACCEPTED"), (5, "DONE", "STOPPED")])
 
     def test_one_command_at_a_time_and_stop_pre_empts(self):
         self.adopt()
-        self.send(1, "drive", {"tractor": 11, "marker": 3})
-        self.send(2, "drive", {"tractor": 11, "marker": 3})
+        self.w.gotoStarts = True
+        self.send(1, "navigate", self.POSE)
+        self.send(2, "navigate", self.POSE)
         self.assertIn((2, "REJECTED", "BUSY"), self.results())
         self.w.speed = 4.0
         self.send(3, "stop", {"tractor": 11})
         self.assertIn((1, "FAILED", "STOPPED"), self.results())
-        self.assertIn("stopAutoDrive", self.calls())
+        self.assertIn("stopCurrentAIJob", self.calls())
         self.assertEqual(self.results(3), [(3, "ACCEPTED", "ACCEPTED")])   # not yet at rest
         self.w.speed = 0.0
         self.W.run(self.w, 200)
@@ -488,10 +296,11 @@ class LuaBridgeTests(unittest.TestCase):
 
     def test_lost_companion_stops_its_motion_and_session(self):
         self.adopt()
-        self.send(1, "drive", {"tractor": 11, "marker": 3})
+        self.w.gotoStarts = True
+        self.send(1, "navigate", self.POSE)
         self.W.run(self.w, 11000)                                          # no new beat
         self.assertIn((1, "FAILED", "COMPANION_LOST"), self.results())
-        self.assertIn("stopAutoDrive", self.calls())
+        self.assertIn("stopCurrentAIJob", self.calls())
         self.w.lines = self.lua.table()
         self.W.run(self.w, 2000)                                           # same file: not re-adopted
         snapshots = [f for f in self.frames() if f.get("event") == "snapshot"]
@@ -499,17 +308,19 @@ class LuaBridgeTests(unittest.TestCase):
 
     def test_beating_companion_keeps_its_session(self):
         self.adopt()
-        self.send(1, "drive", {"tractor": 11, "marker": 3})
+        self.w.gotoStarts = True
+        self.send(1, "navigate", self.POSE)
         self.beating(12000)
         self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])
-        self.assertNotIn("stopAutoDrive", self.calls())
+        self.assertNotIn("stopCurrentAIJob", self.calls())
 
     def test_new_session_stops_the_old_ones_work(self):
         self.adopt("s1")
-        self.send(1, "drive", {"tractor": 11, "marker": 3})
+        self.w.gotoStarts = True
+        self.send(1, "navigate", self.POSE)
         self.adopt("s2")
         self.assertIn((1, "FAILED", "SESSION_CHANGED"), self.results())
-        self.assertIn("stopAutoDrive", self.calls())
+        self.assertIn("stopCurrentAIJob", self.calls())
         self.send(1, "stop", {"tractor": 11}, session="s2")              # ids restart per session
         self.assertEqual(self.results(1, session="s2"), [(1, "ACCEPTED", "ACCEPTED"), (1, "DONE", "STOPPED")])
 
@@ -739,7 +550,7 @@ class LuaBridgeTests(unittest.TestCase):
     def test_the_requester_may_ride_along(self):
         # Seated in the tractor (single player: the requester), nothing conflicting:
         # every motion op runs; only taking the controls ends it.
-        for op, args in (("navigate", self.POSE), ("stage", self.POSE), ("drive", {"tractor": 11, "marker": 3})):
+        for op, args in (("navigate", self.POSE), ("stage", self.POSE)):
             with self.subTest(op=op):
                 self.w = self.W.new()
                 self.adopt()
@@ -2029,67 +1840,6 @@ class BuyTests(unittest.TestCase):
                 self.assertEqual(len(env.bought), 0)
 
 
-class AutoDriveMarkerTests(unittest.TestCase):
-    """ad_marker: AutoDrive's own ADGraphManager:createMapMarker (GraphManager.lua 360-381),
-    reached as the environment of its GetAvailableDestinations (getfenv, which AutoDrive
-    uses in FS25), on the connected waypoint nearest field N's GIANTS boundary within 30 m.
-    Stubs only: AutoDrive's event round trip is stood in for by an immediate marker."""
-
-    ENV = r"""
-        local env = { made = {} }
-        local graph = { markers = {} }
-        graph.points = {
-            [1] = { x = -853, z = 420, out = { 2 }, incoming = { 3 } },      -- the road beside the field, 3 m off
-            [2] = { x = -855, z = 440, out = { 3 }, incoming = { 1 } },      -- 5 m off: farther from the edge
-            [3] = { x = -820, z = 420, out = {}, incoming = { 2 } },         -- inside the field, but a dead end
-            [4] = { x = -700, z = 100, out = { 1 }, incoming = { 1 } },      -- far away
-        }
-        function graph:getWayPoints() return self.points end
-        function graph:getMapMarkerByName(name) return self.markers[name] end
-        function graph:createMapMarker(id, name) env.made[#env.made + 1] = { id = id, name = name }; self.markers[name] = { id = id } end
-        local adEnv = { ADGraphManager = graph }
-        local AD = {}
-        function AD:GetAvailableDestinations() return {} end
-        env.AutoDrive = AD
-        env.getfenv = function(fn) if fn == AD.GetAvailableDestinations then return adEnv end return {} end
-        local function node(x, z) return { x = x, y = 0, z = z } end
-        env.getWorldTranslation = function(n) return n.x, n.y, n.z end
-        -- Field 3: a square whose west edge runs along x = -850.
-        env.g_fieldManager = { fields = { { fieldId = 3, polygonPoints = { node(-850, 0), node(-850, 800), node(-50, 800), node(-50, 0) } },
-                                          { fieldId = 7, polygonPoints = { node(500, 500), node(600, 500), node(600, 600) } } } }
-        env.graph = graph
-        return env
-    """
-
-    def setUp(self):
-        self.lua = lua54.LuaRuntime(unpack_returned_tuples=True)
-        self.bridge = self.lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
-        self.start = self.lua.eval("""function(B, env, field)
-            local task, code = B.start(env, { op = 'ad_marker', field = field, owned = function() return true end })
-            if task == nil then return nil, code end
-            task.elapsed = 0
-            local status, result = B.step(env, task, 16)
-            return task, code, status, result end""")
-
-    def test_the_marker_goes_on_the_connected_waypoint_nearest_the_fields_edge(self):
-        env = self.lua.execute(self.ENV)
-        task, _, status, code = self.start(self.bridge, env, 3)
-        self.assertIsNotNone(task)
-        self.assertEqual((status, code), ("DONE", "MARKER_CREATED"))
-        self.assertEqual((env.made[1].id, env.made[1].name), (1, "Field 3"))
-        task, _, status, code = self.start(self.bridge, env, 3)                 # there now: nothing made
-        self.assertEqual((status, code), ("DONE", "MARKER_EXISTS"))
-        self.assertEqual(len(env.made), 1)
-
-    def test_no_marker_without_a_network_at_the_field_or_without_autodrive_s_own_call(self):
-        env = self.lua.execute(self.ENV)
-        self.assertEqual(self.start(self.bridge, env, 7)[1], "AD_NO_WAYPOINT_AT_FIELD")
-        self.assertEqual(self.start(self.bridge, env, 9)[1], "FIELD_NOT_FOUND")
-        env.getfenv = None
-        self.assertEqual(self.start(self.bridge, env, 3)[1], "AD_MARKER_UNSUPPORTED")
-        self.assertEqual(len(env.made), 0)
-
-
 class ContractOpTests(unittest.TestCase):
     """contract: GIANTS' field contracts as the menu takes and collects them. Stubs in
     the documented shapes only: MissionManager getMissions / missionTypes {name,
@@ -2249,147 +1999,6 @@ class LandTests(unittest.TestCase):
         places = {p.id: p for p in self.observe.fieldPlaces(self.env, 1).values()}
         self.assertEqual((places[12].farmland, places[12].owner, places[12].price, places[12].area_ha), (37, "none", 48000, 1.6))
         self.assertEqual(places[11].owner, "other")
-
-
-class AutoDriveSellTests(unittest.TestCase):
-    """ad_unload / ad_sell: AutoDrive's own combine unloader and deliver mode to the best
-    paid sell point as AutoDrive finds it (ADTriggerManager getHighestPayingSellStation /
-    getMarkerAtStation, the map marker of that waypoint), reached as the environment of
-    its GetAvailableDestinations. Stubs in the pinned source's shapes only."""
-
-    ENV = r"""
-        local env = { started = {} }
-        local AD = { MODE_DRIVETO = 1, MODE_DELIVERTO = 3, MODE_UNLOAD = 5 }
-        local markers = { [4] = { id = 40, name = "Field 7" }, [9] = { id = 90, name = "Grain Elevator" } }
-        function AD:GetAvailableDestinations() return markers end
-        function AD:StartDriving(v, first, second)
-            env.started[#env.started + 1] = { mode = v.mode, first = first, second = second }
-            v.active = true
-        end
-        local triggers = { best = { name = "elevator" }, wp = 90 }
-        function triggers:getHighestPayingSellStation(fillType) env.askedFillType = fillType; return self.best end
-        function triggers:getMarkerAtStation(station, v) return self.wp end
-        local graph = {}
-        function graph:getMapMarkers() return markers end
-        env.AutoDrive = AD
-        env.getfenv = function(fn) if fn == AD.GetAvailableDestinations then return { ADTriggerManager = triggers, ADGraphManager = graph } end return {} end
-        env.triggers = triggers
-        env.FruitType = { UNKNOWN = 0 }
-        env.FieldState = { new = function() return { update = function(s) s.fruitTypeIndex = 3 end } end }
-        env.g_fruitTypeManager = { getFillTypeIndexByFruitTypeIndex = function(_, i) return 100 + i end }
-        env.g_fieldManager = { fields = { { fieldId = 7, posX = 1, posZ = 2 } } }
-        local trailer = { levels = { 0 } }
-        function trailer:getFillUnits() return { {} } end
-        function trailer:getFillUnitFillLevel(i) return self.levels[i] end
-        function trailer:getFillUnitFillType(i) return 7 end
-        local v = { ownerFarmId = 1, active = false, ad = {} }
-        function v:raiseActive() self.raised = (self.raised or 0) + 1 end
-        v.ad.stateModule = { getStartHelper = function() return false end, setMode = function(_, m) v.mode = m end,
-                             isActive = function() return v.active end, speedLimit = 80, fieldSpeedLimit = 20,
-                             getSpeedLimit = function(self) return self.speedLimit end,
-                             getFieldSpeedLimit = function(self) return self.fieldSpeedLimit end,
-                             decreaseSpeedLimit = function(self) self.speedLimit = self.speedLimit - 1 end,
-                             increaseSpeedLimit = function(self) self.speedLimit = self.speedLimit + 1 end,
-                             decreaseFieldSpeedLimit = function(self) self.fieldSpeedLimit = self.fieldSpeedLimit - 1 end,
-                             increaseFieldSpeedLimit = function(self) self.fieldSpeedLimit = self.fieldSpeedLimit + 1 end }
-        function v:getIsEntered() return false end
-        function v:getIsAIActive() return false end
-        function v:getLastSpeed() return 0 end
-        function v:getAttachedImplements() return { { object = trailer } } end
-        function v:stopAutoDrive() self.active = false end
-        env.v, env.trailer = v, trailer
-        return env
-    """
-
-    def setUp(self):
-        self.lua = lua54.LuaRuntime(unpack_returned_tuples=True)
-        self.lua.globals().print = lambda *a: None
-        for name in ("FarmhandObserve.lua", "FarmhandHitch.lua"):
-            self.lua.execute((ROOT / "mod" / name).read_text())
-        self.bridge = self.lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
-        self.env = self.lua.execute(self.ENV)
-        self.run = self.lua.eval("""function(B, env, op, marker, field)
-            local task, code = B.start(env, { op = op, tractor = env.v, marker = marker, field = field, farmId = 1,
-                                             owned = function() return true end })
-            if task == nil then return nil, code end
-            task.elapsed = 0
-            return task, B.step(env, task, 16) end""")
-
-    def test_the_unloader_waits_at_the_field_and_unloads_at_the_best_paid_sell_point(self):
-        task, status, code = self.run(self.bridge, self.env, "ad_unload", 4, 7)
-        self.assertEqual((status, code), ("DONE", "UNLOADING"))
-        started = self.env.started[1]
-        self.assertEqual((started.mode, started.first, started.second), (5, 4, 9))
-        self.assertEqual(self.env.askedFillType, 103)                      # the field's crop
-        self.assertEqual(self.bridge.handed[self.env.v], "drive")          # a stop still ends it
-
-    def test_the_players_autodrive_limits_come_back_when_the_handed_run_ends(self):
-        # AutoDrive saves its limits per vehicle: Farmhand's 64 km/h cap must not outlive its run.
-        st = self.env.v.ad.stateModule
-        task, status, code = self.run(self.bridge, self.env, "ad_unload", 4, 7)
-        self.assertEqual((status, st.speedLimit), ("DONE", 64))           # capped while it works
-        self.bridge.keepHandedAwake()
-        self.assertEqual(st.speedLimit, 64)                                # still running: kept
-        self.env.v.active = False                                          # AutoDrive's run ended
-        self.bridge.keepHandedAwake()
-        self.assertEqual((st.speedLimit, st.fieldSpeedLimit), (80, 20))
-        self.env.v.active = False                                          # a run that never starts
-        self.lua.execute("local env = ...; env.AutoDrive.StartDriving = function() end", self.env)
-        task = self.lua.eval("""function(B, env)
-            local t = B.start(env, { op = "ad_unload", tractor = env.v, marker = 4, field = 7, farmId = 1,
-                                     owned = function() return true end })
-            t.elapsed = 99999
-            return t end""")(self.bridge, self.env)
-        self.assertEqual(st.speedLimit, 64)
-        self.assertEqual(tuple(self.bridge.step(self.env, task, 16)), ("FAILED", "AD_NOT_STARTED"))
-        self.assertEqual(st.speedLimit, 80)                                # its abort gave them back
-
-    def test_selling_delivers_the_cargo_to_the_best_paid_sell_point(self):
-        self.assertEqual(self.run(self.bridge, self.env, "ad_sell", 0, 0), (None, "NOTHING_TO_SELL"))
-        self.env.trailer.levels[1] = 5000
-        task, status, code = self.run(self.bridge, self.env, "ad_sell", 0, 0)
-        started = self.env.started[1]
-        self.assertEqual((started.mode, started.first, started.second), (3, 9, 9))
-        self.assertEqual(self.env.askedFillType, 7)                        # what it carries
-        self.env.v.active = False
-        self.assertEqual(self.bridge.step(self.env, task, 16), ("DONE", "AD_ENDED"))
-
-    def test_a_full_trailer_goes_where_the_harvest_goes(self):
-        # The user, 2026-10-31: unloading while harvesting at speed, whatever the grain is for.
-        # keep (0): parked at the field's own marker; store (-1): the farm's silo, as the store
-        # delivery picks it (GIANTS' Deliver job's stations, the silo's own unloading station).
-        run = self.lua.eval("""function(B, env, direction)
-            local task, code = B.start(env, { op = "ad_unload", tractor = env.v, marker = 4, field = 7, farmId = 1,
-                                             direction = direction, owned = function() return true end })
-            return task ~= nil, code end""")
-        self.assertEqual(tuple(run(self.bridge, self.env, 0))[0], True)
-        self.assertEqual((self.env.started[1].first, self.env.started[1].second), (4, 4))
-        self.lua.execute("""local env = ...
-            local silo = { rootNode = 1, ownerFarmId = 1, spec_silo = {} }
-            local station = { owningPlaceable = silo, isa = function() return false end,
-                              getIsFillTypeAISupported = function() return true end }
-            silo.spec_silo.unloadingStation = station
-            env.SellingStation = {}
-            env.NetworkUtil = { getObject = function(id) return id == 31 and station or nil end }
-            env.getWorldTranslation = function() return 0, 0, 0 end
-            env.AIJobType = { DELIVER = 4 }
-            env.g_currentMission = { aiJobTypeManager = { createJob = function() return
-                { unloadingStationParameter = { unloadingStationIds = { 31 } } } end } }
-            env.triggers.getMarkerAtStation = function(self, st, v) return st == station and 40 or -1 end""", self.env)
-        self.env.v.active = False
-        self.assertEqual(tuple(run(self.bridge, self.env, -1))[0], True)
-        self.assertEqual((self.env.started[2].first, self.env.started[2].second), (4, 4))   # marker 4 is at the silo here
-        self.lua.execute("local env = ...; env.triggers.getMarkerAtStation = function() return -1 end", self.env)
-        self.env.v.active = False
-        self.assertEqual(tuple(run(self.bridge, self.env, -1)), (False, "AD_NO_MARKER_AT_SILO"))
-
-    def test_no_sell_point_or_no_marker_there_starts_nothing(self):
-        self.env.trailer.levels[1] = 5000
-        self.env.triggers.wp = -1
-        self.assertEqual(self.run(self.bridge, self.env, "ad_sell", 0, 0), (None, "AD_NO_MARKER_AT_SELL_POINT"))
-        self.env.triggers.best = None
-        self.assertEqual(self.run(self.bridge, self.env, "ad_unload", 4, 7), (None, "NO_SELL_POINT"))
-        self.assertEqual(len(self.env.started), 0)
 
 
 class PipeOverloadTests(unittest.TestCase):
@@ -2728,8 +2337,9 @@ class SaveTests(unittest.TestCase):
 
 
 class PayTests(unittest.TestCase):
-    """Farmhand's pay (the user, 2026-10-30): GIANTS' helper wage and AutoDrive's off for
-    Farmhand's work, Farmhand's own charged instead with GIANTS' wage money type."""
+    """Farmhand's pay (the user, 2026-10-30): GIANTS' helper wage off for Farmhand's work,
+    Farmhand's own charged instead with GIANTS' wage money type. The player's AutoDrive
+    settings are never touched."""
     ENV = r"""
         local env = { charged = {}, ad = {} }
         env.MoneyType = { AI = 7 }
@@ -2763,9 +2373,9 @@ class PayTests(unittest.TestCase):
         self.assertAlmostEqual(total, -1440 * 2, delta=26)        # GIANTS' 1440 / h x cost multiplier
         self.assertTrue(all(c[1:] == (1, 7) for c in self.charged()))
 
-    def test_a_chosen_mode_sets_autodrives_wage_and_zeroes_giants_on_farmhands_jobs(self):
+    def test_a_chosen_mode_zeroes_giants_wage_on_farmhands_jobs_and_leaves_autodrive_alone(self):
         self.assertEqual(self.start(self.bridge, self.env, "pay", 3, 750), ("DONE", "PAY_SET"))
-        self.assertEqual(self.env.ad["driverWages"], 1)                              # AutoDrive 0 %
+        self.assertEqual(len(self.env.ad), 0)                                        # AutoDrive's own settings
         job = self.lua.eval("function() return { getPricePerMs = function() return 0.0004 end } end")()
         self.assertEqual(self.bridge.farmhandJob(job).getPricePerMs(), 0)
         self.bridge.payTick(self.env, 1000, True, 1)
@@ -2780,9 +2390,9 @@ class PayTests(unittest.TestCase):
         self.assertEqual(len(self.charged()), 2)
         self.assertEqual(self.start(self.bridge, self.env, "charge", 0, 300), ("DONE", "CHARGED"))
         self.assertEqual(self.charged()[-1], (-300, 1, 7))
-        # The game's own wages: GIANTS' and AutoDrive's (100 %) back, Farmhand charges nothing.
+        # The game's own wages: GIANTS' back, Farmhand charges nothing.
         self.start(self.bridge, self.env, "pay", 4, 0)
-        self.assertEqual(self.env.ad["driverWages"], 3)
+        self.assertEqual(len(self.env.ad), 0)
         job = self.lua.eval("function() return { getPricePerMs = function() return 0.0004 end } end")()
         self.assertEqual(self.bridge.farmhandJob(job).getPricePerMs(), 0.0004)
         self.assertIsNone(self.start(self.bridge, self.env, "pay", 9, 0)[0])         # no such mode

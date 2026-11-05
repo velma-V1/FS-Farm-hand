@@ -13,8 +13,7 @@ FS25 profile folder.
 
 farmhand.json (optional trusted local configuration; tractors are recognised
 without it):
-    {"tractor_store_categories": ["<categoryName from fhHitchList>", ...],
-     "field_entrances": {"<map_id>": {"12": "<AutoDrive marker name>"}}}
+    {"tractor_store_categories": ["<categoryName from fhHitchList>", ...]}
 """
 from __future__ import annotations
 
@@ -47,17 +46,12 @@ RENEW_AFTER_S = 15.0
 LOG_FILE = "companion.log"
 
 
-def load_config(path: Path) -> tuple[dict[str, str], dict]:
+def load_config(path: Path) -> dict[str, str]:
     config = json.loads(path.read_text(encoding="utf-8"))
     names = config.get("tractor_store_categories", [])
     if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
         raise ValueError("tractor_store_categories must be a list of names")
-    entrances = {}
-    for map_id, fields in (config.get("field_entrances") or {}).items():
-        if not isinstance(fields, dict):
-            raise ValueError("field_entrances must map map_id -> {field: marker name}")
-        entrances[map_id] = {int(field): name for field, name in fields.items()}
-    return {name: "tractor" for name in names}, entrances
+    return {name: "tractor" for name in names}
 
 
 def _no_voice():
@@ -135,7 +129,7 @@ def linked_farm(link):
     return str(frame["farm_id"])
 
 
-def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, interpreter=None,
+def serve(world: FS25World, should_stop=lambda: False, interpreter=None,
           microphone=None, transcriber=None, speaker=None, ai=None, report=None, live=None) -> None:
     """Answer the player's requests until the link closes: one job at a time,
     STOP and STATUS at once (companion/coordinator.py). ``ai`` (companion/ai.py,
@@ -149,7 +143,7 @@ def serve(world: FS25World, field_entrances=None, should_stop=lambda: False, int
     link = world.link
     rules = interpreter or RuleInterpreter()
     replies = Replies(link.notice, speaker)
-    coordinator = Coordinator(world, Executor(world, field_entrances=field_entrances), replies,
+    coordinator = Coordinator(world, Executor(world), replies,
                               farm=lambda: linked_farm(link), session=lambda: link.session,
                               goal_file=data_dir() / "goal.json", policy=Settings())
     coordinator.pay = Settings().pay          # Farmhand's pay, the player's choice, read for each job
@@ -324,7 +318,7 @@ def main(argv=None) -> int:
     if not profile.is_dir():
         raise SystemExit(f"FS25 profile folder not found: {profile}")
     configure_logging(profile.joinpath(*MOD_DIR))
-    categories, entrances = load_config(args.config) if args.config else ({}, {})
+    categories = load_config(args.config) if args.config else {}
     try:
         link = start_local_link(profile)
     except OSError:
@@ -351,7 +345,7 @@ def main(argv=None) -> int:
         live = LiveTest(world, profile.joinpath(*MOD_DIR, FOLDER), game_log=profile / "log.txt")
         live.start()
     try:
-        serve(world, entrances, ai=ai, should_stop=(data / QUIT_FILE).exists,
+        serve(world, ai=ai, should_stop=(data / QUIT_FILE).exists,
               report=lambda: save_report(profile, link),
               microphone=SoundDeviceMicrophone, transcriber=WhisperTranscriber,
               speaker=SapiSpeaker() if sys.platform == "win32" else None, live=live)

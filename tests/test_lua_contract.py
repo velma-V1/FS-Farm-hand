@@ -331,8 +331,8 @@ class LuaContractTests(unittest.TestCase):
             env.g_currentMission.vehicleSystem = { vehicles = { v } }
         """, world.env)
         hello = parse_frame(self.observe.hello(world.env).encode())
-        self.assertEqual(hello["autodrive_version"], "3.0.1.4")
-        self.assertEqual(self.snapshot(world)["destinations"], [{"id": 7, "name": "Store", "x": 1, "z": 2}])
+        self.assertEqual(hello["autodrive_version"], "3.0.1.4")      # reported only; never driven
+        self.assertNotIn("destinations", self.snapshot(world))
         self.observe.autoDriveClass = None
 
     def test_module_is_exposed_for_fs25(self):
@@ -346,10 +346,6 @@ class LuaContractTests(unittest.TestCase):
         self.assertEqual(frame["skipped"], 1)        # vehicle 19: position unobservable
         self.assertFalse(frame["truncated"])
         self.assertEqual(frame["map_id"], "MapUS")
-        # Control characters or invalid UTF-8 blank a name, not the frame.
-        self.assertEqual(sorted((d["id"], d["name"], d["x"], d["z"]) for d in frame["destinations"]),
-                         [(1, "Yard", 101, 199), (7, "", 900.5, -12.25),
-                          (8, "Hof S\u00fcd", 5, 6), (9, "", 7, 8)])
         observed = observation_from_snapshot(frame, CATEGORIES)
         items = {e.id: e for e in observed.equipment}
         self.assertEqual(sorted(items), ["11", "12", "13", "14", "16", "17", "18"])  # farm 2 excluded
@@ -973,15 +969,13 @@ class LuaContractTests(unittest.TestCase):
                 record = records[31] if 31 in records else records[32]
                 self.assertEqual(get(record), expected)
 
-    def test_without_autodrive_there_are_no_destinations(self):
+    def test_without_autodrive_no_vehicle_reports_it(self):
         world = self.stubs.standard(self.lua.table(noAutoDrive=True))
         frame = self.snapshot(world)
-        self.assertEqual(frame["destinations"], [])
         self.assertFalse(any(v["has_autodrive"] for v in frame["vehicles"]))
 
     def test_unobservable_inputs_send_nothing(self):
-        for options, reason in ((dict(farm=0), "NO_FARM"),
-                                (dict(brokenDestinations=True), "NO_DESTINATIONS")):
+        for options, reason in ((dict(farm=0), "NO_FARM"),):
             with self.subTest(reason=reason):
                 world = self.stubs.standard(self.lua.table(**options))
                 self.assertEqual(tuple(self.observe.snapshot(world.env, 1)), (None, reason))
@@ -1016,9 +1010,6 @@ class LuaContractTests(unittest.TestCase):
 
             def player_position(self, farm_id):
                 return observed.player
-
-            def destinations(self):
-                return observed.destinations
 
             def __getattr__(self, name):
                 FrameWorld.calls.append(name)

@@ -32,10 +32,6 @@ class World(Protocol):
         """Resolve the authorized requester, or reject an unknown farm."""
         ...
 
-    def destinations(self) -> tuple[Destination, ...]:
-        """Return fresh AutoDrive map markers (empty without AutoDrive)."""
-        ...
-
     def places(self) -> tuple[Destination, ...]:
         """Return the farm's own named placeables (buildings), fresh."""
         ...
@@ -68,12 +64,6 @@ class World(Protocol):
         reads the farm's balance."""
         ...
 
-    def ad_unload(self, tractor_id: str, marker_id: str, field: int, owner: str) -> str:
-        """UNLOADER: AutoDrive's combine unloader for the reserved rig, waiting at the field's
-        marker and unloading at the best paid sell point for its crop; UNLOADING once it runs
-        (it goes on until ``stop``)."""
-        ...
-
     def pipe(self, vehicle_id: str, out: bool, owner: str) -> str:
         """PIPE_OUT / PIPE_IN: the reserved combine's pipe to its unloading state or folded
         (GIANTS Pipe); DONE once there."""
@@ -100,11 +90,6 @@ class World(Protocol):
         """OVERLOAD: the reserved standing combine (pipe out) discharges into the trailer
         under its pipe, GIANTS' own discharge; EMPTIED, TRAILER_FULL or OVERLOAD_STOPPED.
         The caller checks both fill levels."""
-        ...
-
-    def ad_sell(self, tractor_id: str, owner: str) -> str:
-        """SELL: AutoDrive takes the reserved rig's cargo to the best paid sell point for it
-        and unloads it there; the caller checks the cargo and the money."""
         ...
 
     def open_gates(self, x: float, z: float, radius: float) -> str:
@@ -141,14 +126,10 @@ class World(Protocol):
     # time, is bounded, and its normal return is never evidence: the executor
     # verifies every step from a fresh snapshot. Sources: adapters/EVIDENCE.md.
 
-    def travel(self, tractor_id: str, destination_id: str, owner: str) -> None:
-        """TRAVEL_NEAR: AutoDrive marker travel of the reserved, unattached tractor."""
-        ...
-
     def navigate(self, tractor_id: str, pose: Pose, owner: str) -> None:
-        """TRAVEL_NEAR or DELIVER without AutoDrive: GIANTS AIJobGoTo of the reserved
-        tractor's AI root to ``pose``, with the wagon if attached (GIANTS plans the
-        path for the whole combination)."""
+        """TRAVEL_NEAR or DELIVER: GIANTS' navigation agent, under Farmhand, takes the
+        reserved tractor's AI root to ``pose``, with the wagon if attached (GIANTS plans
+        the path for the whole combination)."""
         ...
 
     def stage(self, tractor_id: str, wagon_id: str, pose: Pose, owner: str) -> None:
@@ -201,10 +182,6 @@ class World(Protocol):
         (mod/FarmhandHitch.lua Hitch.newUnpark) of it and whatever is attached to it to the
         nearest exit its collision query shows clear. Refusals (UNPARK_*) move nothing. Not
         evidence of the exit: the executor observes it and hands back to GIANTS GOTO."""
-        ...
-
-    def deliver(self, tractor_id: str, destination_id: str, owner: str) -> None:
-        """Recheck authority/compatibility; delegate bounded AutoDrive travel to a marker."""
         ...
 
     def stop(self, tractor_id: str, owner: str) -> bool:

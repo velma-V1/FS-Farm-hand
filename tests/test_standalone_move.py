@@ -354,27 +354,21 @@ class StandaloneMoveTests(unittest.TestCase):
         self.assertEqual(result.status, "FAILED")                              # never past the last step
         self.assertEqual(len([c for c in world.calls if c[0] == "teleport"]), 4)
 
-    def test_a_rig_with_belted_cargo_goes_by_autodrive_to_the_fields_marker(self):
-        # GIANTS' helper is blocked from its first frame by a vehicle belted on its own trailer
-        # (live d14230aa9fb24d30-3; live abe8eb41ca6f4b5f-1: "take the gmc to field 90" blocked
-        # from every spot, four teleports no help); AutoDrive counts that cargo as the rig's own.
+    def test_a_rig_with_belted_cargo_is_driven_by_farmhand_never_autodrive(self):
+        # GIANTS' agent refused the loaded rig (live d14230aa9fb24d30-3, abe8eb41ca6f4b5f-1):
+        # Farmhand's own drive takes it on. AutoDrive installed, with a marker at the field, is
+        # never asked (it is not Farmhand's navigation provider).
         from adapters.world import StepFailed
 
         class Loaded(World):
-            markers = ()
-
-            def destinations(self):
-                return self.markers
-
-            def ad_marker(self, field=None, place=None):
-                self.calls.append(("ad_marker", field))
-                self.markers = (Destination("77", (-629.0, 205.0), "Field 5"),)
-
             def travel(self, vehicle_id, marker, owner):
                 self.calls.append(("travel", marker))
-                self.items = {i: replace(item, position=(-629.0, 205.0)) for i, item in self.items.items()}
+
+            def deliver(self, vehicle_id, marker, owner):
+                self.calls.append(("deliver", marker))
 
             def navigate(self, vehicle_id, pose, owner):
+                self.calls.append(("navigate", (pose.x, pose.z)))
                 raise StepFailed("NAVIGATE_BLOCKED_AT_START")
 
         def rig(position):
@@ -388,92 +382,9 @@ class StandaloneMoveTests(unittest.TestCase):
                                                 "tractor_name": "gmc", "target": {"type": "field_entrance", "field": 5}})
         self.assertEqual(result.status, "COMPLETE", result)
         names = [c[0] for c in world.calls]
-        self.assertEqual(names[names.index("ad_marker"):names.index("travel") + 1], ["ad_marker", "travel"])
-        self.assertIn(("travel", "77"), world.calls)
-        self.assertNotIn("teleport", names)
-        # AutoDrive's field marker on the road beside the field (live d30f1350225a420b-1, 15 m off
-        # its edge): Farmhand's own drive for the rest, to the nearest point of the real edge.
-        world = Loaded(rig((-100.0, 600.0)))
-        world.travel = lambda vehicle_id, marker, owner: setattr(world, "items", {
-            i: replace(item, position=(-629.0, 185.0)) for i, item in world.items.items()})
-        result = StandaloneMove(world).execute({"request_id": "g", "farm_id": "1", "task": "move_pair",
-                                                "tractor_name": "gmc", "target": {"type": "field_entrance", "field": 5}})
-        self.assertEqual(result.status, "COMPLETE", result)
-        self.assertEqual([c[2] for c in world.calls if c[0] == "drive"][-1], (-629.0, 200.0))
-        # AutoDrive has no route either (live 47e8e973c13140c0-2): Farmhand's own drive goes on.
-        from adapters.world import StepFailed
-        world = Loaded(rig((-100.0, 600.0)))
-        def no_route(vehicle_id, marker, owner):
-            world.calls.append(("travel", marker))
-            raise StepFailed("AD_NO_ROUTE")
-        world.travel = no_route
-        result = StandaloneMove(world).execute({"request_id": "g", "farm_id": "1", "task": "move_pair",
-                                                "tractor_name": "gmc", "target": {"type": "field_entrance", "field": 5}})
-        self.assertEqual(result.status, "COMPLETE", result)
-        names = [c[0] for c in world.calls]
-        self.assertLess(names.index("travel"), len(names) - 1 - names[::-1].index("drive"))
-        # Without belted cargo it stays with GIANTS' navigation first.
-        world = Loaded((replace(unit("611", "GMC Sierra", "tractor", position=(-100.0, 600.0)),
-                                capabilities=frozenset({"move", "stop", "autodrive"})),))
-        StandaloneMove(world).execute({"request_id": "g", "farm_id": "1", "task": "move_pair",
-                                       "tractor_name": "gmc", "target": {"type": "field_entrance", "field": 5}})
-        self.assertNotIn("travel", [c[0] for c in world.calls])
-
-    def test_a_loaded_rig_can_use_autodrive_after_native_navigation_refuses(self):
-        # Live 2026-10-31 (save 1): the loaded GMC 51 m off AutoDrive's network in the yard,
-        # AutoDrive ended at once unmoved; its route starts at a waypoint on the west road.
-        from adapters.world import StepFailed
-        from companion.hitch import ADGraph
-
-        graph = ADGraph(points={1: (-60.0, 600.0), 2: (-60.0, 640.0), 3: (-629.0, 205.0)},
-                        out={1: (2,), 2: (3,), 3: ()})
-
-        class OffNetwork(World):
-            teleport_recovery = True
-            drive_fails = False
-
-            def navigate(self, vehicle_id, pose, owner):
-                self.calls.append(("navigate", (pose.x, pose.z)))
-                raise StepFailed("NAVIGATE_GOTO_INVALID")
-
-            def destinations(self):
-                return (Destination("77", (-629.0, 205.0), "Field 5"),)
-
-            def ad_graph(self):
-                return graph
-
-            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None):
-                self.calls.append(("drive", target))
-                if self.drive_fails and target[0] == -60.0:          # out of the yard: no way
-                    raise StepFailed("NO_ROUTE")
-                return super().farm_drive(vehicle_id, target, owner, area, yaw)
-
-            def teleport(self, vehicle_id, owner, min_m=0.0, at=None):
-                self.calls.append(("teleport", (at.x, at.z)))
-                self.items = {i: replace(item, position=(at.x, at.z)) for i, item in self.items.items()}
-
-            def travel(self, vehicle_id, marker, owner):
-                self.calls.append(("travel", marker))
-                self.items = {i: replace(item, position=(-629.0, 205.0)) for i, item in self.items.items()}
-
-        def rig():
-            truck = replace(unit("611", "GMC Sierra", "tractor", attached="620", position=(-110.0, 600.0)),
-                            capabilities=frozenset({"move", "stop", "autodrive"}))
-            deck = unit("620", "1124 Deckover", "implement", attached="611", belted=("622",), position=(-110.0, 600.0))
-            return truck, deck, unit("622", "Series 9", "tractor", belted_to="620", position=(-110.0, 600.0))
-
-        command = {"request_id": "g", "farm_id": "1", "task": "move_pair", "tractor_name": "gmc",
-                   "target": {"type": "field_entrance", "field": 5}}
-        world = OffNetwork(rig())
-        self.assertEqual(StandaloneMove(world).execute(command).status, "COMPLETE")
-        moves = [c for c in world.calls if c[0] in ("drive", "teleport", "travel") and len(c) == 2]
-        self.assertEqual(moves[:2], [("drive", (-60.0, 600.0)), ("travel", "77")])   # its own short hop, then AutoDrive
-        world = OffNetwork(rig())
-        world.drive_fails = True                     # no way by driving: onto the waypoint by teleport
-        self.assertEqual(StandaloneMove(world).execute(command).status, "COMPLETE")
-        moves = [c[0] for c in world.calls if c[0] in ("drive", "teleport", "travel")]
-        self.assertEqual(moves[moves.index("teleport"):moves.index("teleport") + 2], ["teleport", "travel"])
-        self.assertIn(("teleport", (-60.0, 600.0)), world.calls)
+        self.assertIn("navigate", names)                                   # GIANTS' agent first
+        self.assertGreater(len(names) - 1 - names[::-1].index("drive"), names.index("navigate"))
+        self.assertFalse({"travel", "deliver", "teleport"} & set(names))
 
     def test_bare_named_vehicle_goes_to_a_building_usable_spot(self):
         world = World((unit("611", "GMC Sierra", "tractor", position=(-696.0, 139.0)),))

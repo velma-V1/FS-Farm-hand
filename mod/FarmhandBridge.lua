@@ -1,9 +1,8 @@
 -- AC-001 game-side command bridge (server only). Two parts:
 --
 -- 1. Operations, shared by the companion and the console probe:
---      drive    AutoDrive DRIVETO to a map marker  (TRAVEL_NEAR and DELIVER)
---      navigate GIANTS GOTO to a pose, any distance  (TRAVEL_NEAR and DELIVER
---               without AutoDrive or a fitting marker)
+--      navigate GIANTS' navigation agent to a pose under Farmhand's own control, any
+--               distance                          (TRAVEL_NEAR and DELIVER)
 --      stage    GIANTS GOTO towards the staging pose, only from outside the
 --               local work radius                 (Hitch.startStaging)
 --      maneuver Farmhand's bounded forward LOCAL_MANEUVER onto the wagon's
@@ -56,8 +55,8 @@ Bridge.FIELDWORK_CHECK_MS = 3000      -- a bounded test area is re-measured this
 Bridge.FIELDWORK_WORKING_CHECK_MS = 250 -- and this often once it works (live fb3522a3e1d64f75-1: 0 -> 1244 m2 in 3 s)
 Bridge.FIELDWORK_AREA_SHARE = 0.97     -- stopped at the first reading this share of the request (companion: 0.95)
 Bridge.FIELDWORK_MAX_AREA_M2 = 20000  -- the largest bounded test area
--- Travel (AutoDrive drive and sell, GIANTS GOTO, Deliver) is judged by progress: each has its
--- own unmoved watch (AD_STALL_MS, NAVIGATE_STALL_MS, DELIVER_STALL_MS); this is only a safety
+-- Travel (GIANTS' agent, GOTO, Deliver) is judged by progress: each has its
+-- own unmoved watch (NAVIGATE_STALL_MS, DELIVER_STALL_MS); this is only a safety
 -- bound, long enough for a 16x map (the user, 2026-10-22: a healthy long drive must not fail on a
 -- short fixed timeout; was 20 min).
 Bridge.DRIVE_TIMEOUT_MS = 14400000
@@ -131,7 +130,6 @@ local function settle(task, code)
 end
 
 local starters, steppers, aborts = {}, {}, {}
-local adGraph                 -- AutoDrive's graph manager (ad_marker below); also read by drive
 
 -- A self-driven motion's end: its own description, the speed it kept (Hitch.describeSpeed:
 -- the limit, Farmhand's measured peak, GIANTS' reading, the governor's frames), the rig's
@@ -224,95 +222,10 @@ function aborts.farm_drive(env, task)
     task.cropWheels = nil
 end
 
--- ------------------------------------------------------------------ drive
--- AutoDrive's external interface: StartDriving(vehicle, destinationID,
--- unloadDestinationID) starts the vehicle's current mode once both are valid
--- markers (ExternalInterface.lua:114-131), so DRIVETO is selected first
--- (StateModule.lua:664, AutoDrive.lua:23); DriveToMode drives to the first
--- marker (DriveToMode.lua:16-33). Arrival and failure both end in
--- stopAutoDrive (DriveToMode.lua:42, DriveToDestinationTask.lua:35-37), so
--- "ended" is not "arrived": the companion verifies the position.
-function starters.drive(env, spec)
-    local v = spec.tractor
-    local denied = idle(env, v, spec.farmId)
-    if denied ~= nil then return nil, denied end
-    local AD = (Bridge.Observe and Bridge.Observe.autoDrive and Bridge.Observe.autoDrive(env)) or env.AutoDrive
-    if v.ad == nil or AD == nil then return nil, "NO_AUTODRIVE" end
-    -- With the vehicle's "start helper" on, AutoDrive's own stop hands the vehicle
-    -- to Courseplay or a GIANTS AI job (Specialization.lua:1251-1285), which would
-    -- drive off with the pair. That setting is the user's; refuse, never change it.
-    if v.ad.stateModule:getStartHelper() ~= false then return nil, "AD_START_HELPER_ON" end
-    local markers = AD:GetAvailableDestinations()
-    if type(spec.marker) ~= "number" or markers[spec.marker] == nil then return nil, "UNKNOWN_MARKER" end
-    -- AutoDrive drives from the network waypoint nearest the vehicle (getClosestWayPoint; past
-    -- 30 m its path finder first plans onto it, DriveToDestinationTask.lua 18-24, and gives up at
-    -- once without a route on: PathFinderModule:startPathPlanningToWayPoint 215-226 needs
-    -- ADGraphManager:pathFromTo(closest, destination)). Live 2026-10-22 the waypoint nearest the
-    -- rig was on a 7-waypoint dead end ("Could not calculate path - shutting down"): asked here,
-    -- read only, so a route gap is said for what it is.
-    local graph = adGraph(env)
-    if graph ~= nil and type(graph.pathFromTo) == "function" and type(graph.getMapMarkerById) == "function" then
-        local okRoute, routed, closest, distance = pcall(function()
-            local target = graph:getMapMarkerById(spec.marker).id
-            local from, d = v:getClosestWayPoint()
-            local path = graph:pathFromTo(from, target)
-            return path ~= nil and #path >= 1, from, d
-        end)
-        if okRoute and not routed then
-            log("drive refused AD_NO_ROUTE: no route on AutoDrive's network from waypoint %s (%.1f m from the vehicle) to %s",
-                tostring(closest), distance or -1, tostring(markers[spec.marker].name))
-            return nil, "AD_NO_ROUTE"
-        end
-    end
-    local okAt, x, _, z = pcall(env.getWorldTranslation, v.rootNode)
-    local saved = Bridge.capAdSpeed(v)
-    v.ad.stateModule:setMode(AD.MODE_DRIVETO)
-    AD:StartDriving(v, spec.marker, spec.marker)
-    local cropWheels = Bridge.protectTransportCrops(v)
-    return { seen = false, startAt = okAt and finite(x) and finite(z) and { x, z } or nil,
-             onEnd = function() Bridge.restoreAdSpeed(v, saved); Bridge.restoreTransportCrops(cropWheels) end }
-end
+-- Farmhand's travel speed limit (the user, 2026-10-22: 40 mph): a drive's peak is judged against it.
+Bridge.TRAVEL_LIMIT_KMH = 40 * 1.609344
 
--- Farmhand's travel speed cap (the user, 2026-10-22: 40 mph; AutoDrive took the loaded GMC at
--- up to 103 km/h, it lost control over rail tracks and ended against a wall). AutoDrive's own
--- per-vehicle limits (ADStateModule speedLimit / fieldSpeedLimit 48-49, the HUD's) bound every
--- speed it drives (DrivePathModule 286-333 only lowers it for corners, steering, fields), and
--- its own calls step them (decreaseSpeedLimit / decreaseFieldSpeedLimit 1191-1214, floor 2).
--- Lowered to the cap before Farmhand starts it; a drive Farmhand ends gives the player's back.
-Bridge.TRAVEL_MAX_KMH = 64           -- AutoDrive's limits step in whole km/h
-Bridge.TRAVEL_LIMIT_KMH = 40 * 1.609344   -- the user's 40 mph, what a peak is judged against
-
-local function stepLimit(get, step, want, up)
-    for _ = 1, 400 do
-        local now = get()
-        if not finite(now) or (up and now >= want) or (not up and now <= want) then break end
-        step()
-    end
-    return get()
-end
-
-function Bridge.capAdSpeed(v)
-    local st = v.ad.stateModule
-    local saved = { road = st:getSpeedLimit(), field = st:getFieldSpeedLimit() }
-    local road = stepLimit(function() return st:getSpeedLimit() end, function() st:decreaseSpeedLimit() end,
-                           Bridge.TRAVEL_MAX_KMH, false)
-    local field = stepLimit(function() return st:getFieldSpeedLimit() end, function() st:decreaseFieldSpeedLimit() end,
-                            Bridge.TRAVEL_MAX_KMH, false)
-    log("AutoDrive speed limits %s/%s -> %s/%s km/h (road/field; Farmhand's cap %d)", tostring(saved.road),
-        tostring(saved.field), tostring(road), tostring(field), Bridge.TRAVEL_MAX_KMH)
-    return saved
-end
-
-function Bridge.restoreAdSpeed(v, saved)
-    local st = v.ad.stateModule
-    local road = stepLimit(function() return st:getSpeedLimit() end, function() st:increaseSpeedLimit() end, saved.road, true)
-    local field = stepLimit(function() return st:getFieldSpeedLimit() end, function() st:increaseFieldSpeedLimit() end,
-                            saved.field, true)
-    log("AutoDrive speed limits given back: %s/%s km/h (were %s/%s)", tostring(road), tostring(field),
-        tostring(saved.road), tostring(saved.field))
-end
-
--- A task's end hook (once): a drive gives AutoDrive's limits back.
+-- A task's end hook (once).
 local function finish(task)
     if task.ended then return end
     task.ended = true
@@ -322,207 +235,6 @@ local function finish(task)
             task.peakKmh > Bridge.TRAVEL_LIMIT_KMH and string.format(" OVER Farmhand's %.1f (40 mph)", Bridge.TRAVEL_LIMIT_KMH)
             or "")
     end
-end
-
--- What AutoDrive is doing, read only, for the log and for a drive that does not move: its
--- task text (ADStateModule:getCurrentTaskInfo 586-588; "$l10n_AD_task_pathfinding;" while it
--- plans onto its network from more than 30 m away, DriveToDestinationTask.lua 18-21, 65-70),
--- the rig's distance from the network (getClosestWayPoint, ADGraphManager:
--- getDistanceFromNetwork 230-233), its route (ADDrivePathModule:getWayPoints), paused
--- (DrivePathModule.isPaused 141-147), the collision module's verdict
--- (ADCollisionDetectionModule detectedObstable / detectedCollision 16-36, 69-82), which of its
--- sensors are triggered (ADSensor.triggered 522-528), whether it counts its implements folded
--- (AutoDrive.getAllImplementsFolded, AutoDriveUtilFuncs 529-), and for each triggered
--- collision sensor what its own box holds now: its getBoxShape (VirtualSensors 287-375) and
--- getMask (CollSensor.lua 45-48) asked of GIANTS' overlapBox, each shape's object and
--- whether AutoDrive counts it as part of the rig (AutoDrive:checkIsConnected,
--- AutoDriveUtilFuncs 53-80, as its sensor callback CollSensor.lua 64-86 asks).
-Bridge.AD_DIAG_MS = 5000
-Bridge.AD_STALL_MS = 180000     -- active this long without moving AD_STALL_M: FAILED with what it waits on
-Bridge.AD_STALL_M = 2
-
-local function adSensorHits(env, AD, v, sensor)
-    local box = sensor:getBoxShape()
-    local mission = env.g_currentMission
-    local q, seen = { names = {} }, 0
-    function q.onAdDiagOverlap(_, nodeId)
-        seen = seen + 1
-        if nodeId ~= mission.terrainRootNode and #q.names < 4 then
-            local object = mission:getNodeObject(nodeId) or mission:getNodeObject(env.getParent(nodeId))
-            local name = tostring(select(2, pcall(env.getName, nodeId)))
-            if object == nil then
-                q.names[#q.names + 1] = name .. "@-"
-            else
-                local own = object == v or AD:checkIsConnected(v:getRootVehicle(), object)
-                local label = type(object.getName) == "function" and object:getName() or tostring(object.typeName)
-                q.names[#q.names + 1] = string.format("%s@%s%s", name, tostring(label), own and "(own)" or "")
-            end
-        end
-        return true
-    end
-    env.overlapBox(box.x, box.y, box.z, box.rx, box.ry, 0, box.size[1], box.size[2], box.size[3], "onAdDiagOverlap", q,
-                   sensor:getMask(), true, true, true, true)
-    return table.concat(q.names, ",")
-end
-
-function Bridge.adState(env, v)
-    local d = {}
-    local AD = (Bridge.Observe and Bridge.Observe.autoDrive and Bridge.Observe.autoDrive(env)) or env.AutoDrive
-    pcall(function() d.task = tostring(v.ad.stateModule:getCurrentTaskInfo()) end)
-    pcall(function() local _, dist = v:getClosestWayPoint(); d.network = dist end)
-    pcall(function() local wps, cur = v.ad.drivePathModule:getWayPoints(); d.route = wps and #wps or 0; d.at = cur end)
-    -- Where it is steering to (live 344392c02cd942ff-2: after a STOP and "continue" it crept at
-    -- 0.1-0.4 km/h for 3 min at route point 2 of 467): that waypoint in the vehicle's own frame
-    -- (ahead, to its side), and the steering state (rotatedTime of its limits).
-    pcall(function()
-        local wps, cur = v.ad.drivePathModule:getWayPoints()
-        local wp = wps[cur]
-        local x, y, z = wp.x, wp.y or 0, wp.z
-        local lx, _, lz = env.worldToLocal(v.rootNode, x, y, z)
-        d.wpAhead, d.wpSide = lz, lx
-    end)
-    pcall(function()
-        local limit = v.rotatedTime >= 0 and v.maxRotTime or -v.minRotTime
-        d.steer = limit ~= 0 and v.rotatedTime / limit or nil
-    end)
-    pcall(function() d.paused = v.ad.drivePathModule.isPaused == true end)
-    pcall(function()
-        d.obstacle = v.ad.collisionDetectionModule.detectedObstable == true
-        d.collision = v.ad.collisionDetectionModule.detectedCollision == true
-    end)
-    pcall(function() d.folded = AD.getAllImplementsFolded(v) == true end)
-    -- Whether its task ever began (live 2026-10-22 "take the deutz to the farm": no task text, no route, nothing in the
-    -- way): its first marker (ADStateModule:getFirstMarkerName 873-879), the active task and the
-    -- queue (ADTaskModule:getActiveTask 34-36, getNumberOfTasks 198-200), the fold wait
-    -- (Specialization.lua 446: foldStartTime + AutoDrive.foldTimeout against g_time), and whether
-    -- GIANTS updates the vehicle at all (forceIsActive, onStartAutoDrive 1294-1295; isActive).
-    pcall(function() d.marker = tostring(v.ad.stateModule:getFirstMarkerName()) end)
-    pcall(function() d.active = v.ad.taskModule:getActiveTask() ~= nil end)
-    pcall(function() d.queued = v.ad.taskModule:getNumberOfTasks() end)
-    pcall(function() d.foldWaitMs = (v.ad.foldStartTime or 0) + AD.foldTimeout - env.g_time end)
-    pcall(function() d.forced = v.forceIsActive == true; d.updated = v.isActive == true end)
-    pcall(function() d.motor = v:getIsMotorStarted() == true end)
-    pcall(function() d.speed = v:getLastSpeed() end)
-    local triggered, seen = {}, {}
-    pcall(function()
-        for name, sensor in pairs(v.ad.sensors or {}) do
-            if type(sensor) == "table" and sensor.triggered == true then
-                local hit = ""
-                if type(sensor.getMask) == "function" and type(sensor.getBoxShape) == "function" then
-                    local ok, names = pcall(adSensorHits, env, AD, v, sensor)
-                    hit = ok and names or "?"
-                end
-                triggered[#triggered + 1] = name .. "[" .. hit .. "]"
-                seen[#seen + 1] = name
-            end
-        end
-    end)
-    table.sort(triggered)
-    d.sensors = table.concat(triggered, " ")
-    return d
-end
-
-local function describeAd(d)
-    local function f(n) return type(n) == "number" and string.format("%.1f", n) or "?" end
-    return string.format("task=%s network=%s route=%s/%s paused=%s obstacle=%s collision=%s folded=%s speed=%s sensors=%s "
-        .. "marker=%s activeTask=%s queued=%s foldWaitMs=%s forceIsActive=%s isActive=%s motor=%s wp=(%s,%s) steer=%s",
-        tostring(d.task), f(d.network), tostring(d.at), tostring(d.route), tostring(d.paused), tostring(d.obstacle),
-        tostring(d.collision), tostring(d.folded), f(d.speed), d.sensors ~= "" and d.sensors or "-", tostring(d.marker),
-        tostring(d.active), tostring(d.queued), f(d.foldWaitMs), tostring(d.forced), tostring(d.updated), tostring(d.motor),
-        f(d.wpAhead), f(d.wpSide), f(d.steer))
-end
-
--- What a drive that does not move waits on: AutoDrive's own path planning onto its network
--- (a route problem), its collision module or a sensor (something in the way, the rig's own
--- cargo included: the sensors' hits say whose), paused, or none of these.
-local function adStallCode(d)
-    if type(d.task) == "string" and d.task:find("pathfinding", 1, true) then return "AD_PATHFINDING_STALLED" end
-    if d.obstacle or d.collision or (d.sensors or "") ~= "" then return "AD_WAITING_ON_OBSTACLE" end
-    if d.paused then return "AD_PAUSED" end
-    return "AD_NOT_MOVING"
-end
-
--- GIANTS updates a vehicle nobody sits in only while something raises it active
--- (Vehicle:raiseActive, as Farmhand's own motions and AutoDrive inside its update do): AutoDrive
--- started by its external interface sets forceIsActive (onStartAutoDrive 1294-1295) but its own
--- update, which plans and drives, never ran on an asleep vehicle (live 2026-10-22 "take the deutz
--- to the farm": forceIsActive true, isActive false, no task, motor off, 180 s unmoved). Raised
--- every frame while AutoDrive runs a job Farmhand started, and for one handed off.
-local function keepAwake(v)
-    if v.ad ~= nil and v.ad.stateModule:isActive() == true then v:raiseActive() end
-end
-
--- AutoDrive's own speed limits from before a run Farmhand handed on to it (ad_unload): the run
--- keeps Farmhand's cap while it works and the player's limits come back once it ends, is stopped
--- or never starts (AutoDrive saves them per vehicle, so a cap left on is lost to the player).
-Bridge.handedSpeed = {}
-function Bridge.giveBackAdSpeed(v)
-    local h = Bridge.handedSpeed[v]
-    if h == nil then return end
-    Bridge.handedSpeed[v] = nil
-    pcall(Bridge.restoreAdSpeed, v, h.saved)
-end
-
-function Bridge.keepHandedAwake()
-    for v, op in pairs(Bridge.handed) do
-        if op == "drive" then pcall(keepAwake, v) end
-    end
-    for v, h in pairs(Bridge.handedSpeed) do        -- seen running, then ended: limits back
-        local ok, active = pcall(function() return v.ad.stateModule:isActive() end)
-        if ok and active == true then h.seen = true
-        elseif not ok or h.seen then Bridge.giveBackAdSpeed(v) end
-    end
-end
-
-function steppers.drive(env, task)
-    local spec, v = task.spec, task.spec.tractor
-    local status, code = stillOurs(spec)
-    if status ~= nil then return status, code end
-    local active = v.ad.stateModule:isActive()
-    if active == true then task.seen = true; v:raiseActive() end
-    if not task.seen then
-        if task.elapsed > Bridge.START_TIMEOUT_MS then return "FAILED", "AD_NOT_STARTED" end
-        return nil
-    end
-    if active == true and task.elapsed >= (task.diagAt or 0) then
-        task.diagAt = task.elapsed + Bridge.AD_DIAG_MS
-        local okAt, x, _, z = pcall(env.getWorldTranslation, v.rootNode)
-        local ok, d = pcall(Bridge.adState, env, v)
-        if okAt and finite(x) and finite(z) and ok then
-            if task.movedFrom == nil or math.sqrt((x - task.movedFrom[1]) ^ 2 + (z - task.movedFrom[2]) ^ 2) > Bridge.AD_STALL_M then
-                task.movedFrom, task.movedAt = { x, z }, task.elapsed
-            end
-            log("drive AutoDrive (%.0f, %.0f) %s", x, z, describeAd(d))
-            if task.elapsed - task.movedAt > Bridge.AD_STALL_MS then
-                local stall = adStallCode(d)
-                local okC, contacts = pcall(Bridge.Hitch.rigContacts, env, v)
-                log("drive stalled %s: unmoved %.0f s; %s; touching %s", stall, (task.elapsed - task.movedAt) / 1000,
-                    describeAd(d), okC and contacts or "?")
-                return "FAILED", stall
-            end
-        end
-    end
-    if active ~= false then
-        if active ~= true then return "UNVERIFIED", "UNKNOWN_OBSERVATION" end
-        if task.elapsed > Bridge.DRIVE_TIMEOUT_MS then return "FAILED", "TIMEOUT" end
-        return nil
-    end
-    -- Set on AutoDrive's own error stops (DrivePathModule.lua:67,100, TaskModule.lua:142).
-    if v.ad.isStoppingWithError == true then return "FAILED", "AD_STOPPED_WITH_ERROR" end
-    -- Ended where it started: AutoDrive gave up (its path finder's "could not calculate path"
-    -- stops it without the error flag, DriveToDestinationTask.lua 35-37).
-    local okAt, x, _, z = pcall(env.getWorldTranslation, v.rootNode)
-    if task.startAt ~= nil and okAt and finite(x) and finite(z)
-            and math.sqrt((x - task.startAt[1]) ^ 2 + (z - task.startAt[2]) ^ 2) < Bridge.AD_STALL_M then
-        return "FAILED", "AD_ENDED_UNMOVED"
-    end
-    return settle(task, "AD_ENDED")
-end
-
--- Server only (AD Specialization.lua:1290); only while the job we saw runs.
-function aborts.drive(_env, task)
-    local v = task.spec.tractor
-    if task.seen and v.ad.stateModule:isActive() == true then v:stopAutoDrive() end
 end
 
 -- ------------------------------------------------------- stage, navigate
@@ -1376,10 +1088,9 @@ function Bridge.beltsHold(belted)
 end
 Bridge.TELEPORT_SETTLE_MS, Bridge.TELEPORT_FASTEN_MS, Bridge.TELEPORT_BELTS_MS = 1000, 1000, 8000
 
--- A named spot on a road lane (AutoDrive's waypoint, at the lane's heading): the rig set down on
--- it, or a few metres along the lane, with only its own box clear (the road is the lane; live
--- 3de53846739b4945-1: the room rule for GIANTS' helper put it 28 m off the road, crosswise, and
--- AutoDrive drove in from the grass and jammed at the yard edge). x, z, yaw, or nil.
+-- A named spot (a lane, at its heading): the rig set down on it, or a few metres along it, with
+-- only its own box clear (live 3de53846739b4945-1: the room rule for GIANTS' helper put it 28 m
+-- off the road, crosswise). x, z, yaw, or nil.
 Bridge.LANE_SLIDE_M = { 0, 3, -3, 6, -6, 9, -9, 12, -12 }
 -- Across the lane too, toward the road's middle or its edge (live 386189c90cff4142-1: the loaded
 -- GMC's box on the lane's centre touched roadside objects 2.5 m to its side).
@@ -1429,8 +1140,7 @@ function starters.teleport(env, spec)
     local x, _, z = env.getWorldTranslation(v.rootNode)
     local fx, _, fz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
     local yaw = atan2(fx, fz)
-    -- Near (spec.x, spec.z) at spec.yaw when the companion names a spot (a loaded rig onto
-    -- AutoDrive's road: live 2026-10-31, AutoDrive would not drive it the 51 m out of the yard);
+    -- Near (spec.x, spec.z) at spec.yaw when the companion names a spot (a blocker set aside);
     -- x beyond 50000: near the rig itself (= companion/bridge.py TELEPORT_HERE, 90000).
     local cx, cz = x, z
     local tx, tz, tyaw
@@ -1699,252 +1409,6 @@ function aborts.follow(env, task)
     if v:getIsFollowVehicleActive() == true then Bridge.Hitch.cancelStaging(env, v) end
 end
 
--- -------------------------------------------------------------- ad_marker
--- An AutoDrive destination "Field N" made AutoDrive's own way, so a loaded transport can be
--- delivered there (GIANTS GOTO does not start one, AGENTS.md): ADGraphManager:createMapMarker
--- (GraphManager.lua 360-381, which its HUD and name dialog call; it broadcasts
--- AutoDriveCreateMapMarkerEvent and AutoDrive saves it with the game) on the network waypoint
--- nearest field N's own boundary (GIANTS Field polygonPoints, as Observe samples them), at
--- most AD_FIELD_EDGE_M from it and connected (incoming and outgoing). AutoDrive keeps
--- ADGraphManager in its own environment: it is the environment of its own
--- GetAvailableDestinations (ExternalInterface.lua 84-94 reads it), reached with getfenv, which
--- AutoDrive itself uses in FS25 (register.lua 329). DONE once AutoDrive lists the marker.
-Bridge.AD_FIELD_EDGE_M = 30
-Bridge.AD_MARKER_TIMEOUT_MS = 5000
-
-function adGraph(env)
-    local AD = (Bridge.Observe and Bridge.Observe.autoDrive and Bridge.Observe.autoDrive(env)) or env.AutoDrive
-    if type(AD) ~= "table" or type(AD.GetAvailableDestinations) ~= "function" or type(env.getfenv) ~= "function" then
-        return nil
-    end
-    local ok, adEnv = pcall(env.getfenv, AD.GetAvailableDestinations)
-    local graph = ok and type(adEnv) == "table" and adEnv.ADGraphManager or nil
-    if type(graph) ~= "table" or type(graph.createMapMarker) ~= "function" or type(graph.getMapMarkerByName) ~= "function"
-            or type(graph.getWayPoints) ~= "function" then
-        return nil
-    end
-    return graph
-end
-
-local function segmentDistance(px, pz, ax, az, bx, bz)
-    local dx, dz = bx - ax, bz - az
-    local l2 = dx * dx + dz * dz
-    local t = l2 > 0 and math.max(0, math.min(1, ((px - ax) * dx + (pz - az) * dz) / l2)) or 0
-    local cx, cz = ax + t * dx, az + t * dz
-    return math.sqrt((px - cx) ^ 2 + (pz - cz) ^ 2)
-end
-
--- Field 0: the farm's own building whose root is within AD_PLACE_AT_M of (x, z) (as Observe
--- lists places: placeableSystem placeables, getName, rootNode), the marker named as it, on the
--- connected waypoint nearest it within AD_PLACE_M (buildings stand back from the roads).
-Bridge.AD_PLACE_AT_M = 1
-Bridge.AD_PLACE_M = 60
-
-local function placeMarker(env, spec, graph)
-    if not (finite(spec.x) and finite(spec.z)) then return nil, "INVALID_PLACE" end
-    local name
-    for _, pl in pairs(env.g_currentMission.placeableSystem.placeables or {}) do
-        if pl.ownerFarmId == spec.farmId then
-            local px, _, pz = env.getWorldTranslation(pl.rootNode)
-            if finite(px) and finite(pz) and math.sqrt((px - spec.x) ^ 2 + (pz - spec.z) ^ 2) <= Bridge.AD_PLACE_AT_M then
-                name = pl:getName()
-            end
-        end
-    end
-    if type(name) ~= "string" or name == "" then return nil, "AD_PLACE_NOT_FOUND" end
-    if graph:getMapMarkerByName(name) ~= nil then return { name = name, existed = true } end
-    local best, bestD
-    for id, wp in pairs(graph:getWayPoints() or {}) do
-        if type(wp) == "table" and finite(wp.x) and finite(wp.z) and #(wp.out or {}) > 0 and #(wp.incoming or {}) > 0 then
-            local d = math.sqrt((wp.x - spec.x) ^ 2 + (wp.z - spec.z) ^ 2)
-            if d <= Bridge.AD_PLACE_M and (bestD == nil or d < bestD) then best, bestD = id, d end
-        end
-    end
-    if best == nil then return nil, "AD_NO_WAYPOINT_AT_PLACE" end
-    log("ad_marker %s on waypoint %s, %.1f m from the building", name, tostring(best), bestD)
-    graph:createMapMarker(best, name)
-    return { name = name, graph = graph }
-end
-
-function starters.ad_marker(env, spec)
-    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
-    local graph = adGraph(env)
-    if graph == nil then return nil, "AD_MARKER_UNSUPPORTED" end
-    local n = spec.field
-    if n == 0 then return placeMarker(env, spec, graph) end
-    if not finite(n) or n < 1 or n ~= math.floor(n) then return nil, "INVALID_FIELD" end
-    local name = string.format("Field %d", n)
-    if graph:getMapMarkerByName(name) ~= nil then return { name = name, existed = true } end
-    local field
-    for _, f in ipairs(env.g_fieldManager.fields or {}) do
-        local id = (type(f.getId) == "function" and f:getId()) or f.fieldId
-        if id == n then field = f end
-    end
-    if field == nil or type(field.polygonPoints) ~= "table" or #field.polygonPoints < 3 then return nil, "FIELD_NOT_FOUND" end
-    local corners = {}
-    for i, node in ipairs(field.polygonPoints) do
-        local x, _, z = env.getWorldTranslation(node)
-        if not (finite(x) and finite(z)) then return nil, "FIELD_NOT_FOUND" end
-        corners[i] = { x, z }
-    end
-    local best, bestD
-    for id, wp in pairs(graph:getWayPoints() or {}) do
-        if type(wp) == "table" and finite(wp.x) and finite(wp.z) and #(wp.out or {}) > 0 and #(wp.incoming or {}) > 0 then
-            local d = math.huge
-            for i = 1, #corners do
-                local a, b = corners[i], corners[i % #corners + 1]
-                d = math.min(d, segmentDistance(wp.x, wp.z, a[1], a[2], b[1], b[2]))
-            end
-            if d <= Bridge.AD_FIELD_EDGE_M and (bestD == nil or d < bestD) then best, bestD = id, d end
-        end
-    end
-    if best == nil then return nil, "AD_NO_WAYPOINT_AT_FIELD" end
-    log("ad_marker %s on waypoint %s, %.1f m from field %d's edge", name, tostring(best), bestD, n)
-    graph:createMapMarker(best, name)
-    return { name = name, graph = graph }
-end
-
--- ad_connect (tractor, marker): the user 2026-10-22, "inspect and configure the existing
--- AutoDrive network using supported mechanisms, preserving its configuration". Only one repair:
--- AutoDrive's own path from the waypoint nearest the vehicle (getClosestWayPoint, out edges)
--- runs to a dead end, and a waypoint that has a route to the marker (ADGraphManager:pathFromTo)
--- lies within AD_LINK_M of that end and continues its direction (within AD_LINK_DEG, its own
--- next edge too): the two joined one way, as AutoDrive's route editor joins them
--- (ADGraphManager:setConnectionBetween(start, end, 1), GraphManager.lua 600-, which broadcasts
--- AutoDriveSetConnectionEvent and AutoDrive saves with the game), after the companion's backup.
--- Live 2026-10-22 (Riverbend Springs): the store yard's lane 11800-11808 stops 5.5 m short of
--- the road it joins (5767). DONE AD_LINKED once AutoDrive's own pathFromTo has the route.
-Bridge.AD_LINK_M = 6
-Bridge.AD_LINK_DEG = 60
-
-local function heading(a, b) return atan2(b.x - a.x, b.z - a.z) end
-local function turnDeg(a, b)
-    local d = (b - a + math.pi) % (2 * math.pi) - math.pi
-    return math.abs(math.deg(d))
-end
-
-function starters.ad_connect(env, spec)
-    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
-    local graph = adGraph(env)
-    local v = spec.tractor
-    if graph == nil or type(graph.setConnectionBetween) ~= "function" or type(graph.pathFromTo) ~= "function"
-            or type(graph.getWayPointById) ~= "function" or type(v.getClosestWayPoint) ~= "function" then
-        return nil, "AD_LINK_UNSUPPORTED"
-    end
-    local ok, result, why = pcall(function()
-        local marker = graph:getMapMarkerById(spec.marker)
-        if marker == nil then return nil, "UNKNOWN_MARKER" end
-        local target = marker.id
-        local from = v:getClosestWayPoint()
-        local function routed(id)
-            local path = graph:pathFromTo(id, target)
-            return path ~= nil and #path >= 1
-        end
-        if routed(from) then return { linked = true } end
-        local wps = graph:getWayPoints()
-        local seen, prev, at = {}, nil, wps[from]
-        while at ~= nil and #(at.out or {}) > 0 and not seen[at.id] do
-            seen[at.id] = true
-            prev, at = at, wps[at.out[1]]
-        end
-        if at == nil or prev == nil or #(at.out or {}) > 0 then return nil, "AD_NO_DEAD_END" end
-        local lane = heading(prev, at)
-        local best, bestD
-        for id, wp in pairs(wps) do
-            if id ~= at.id and finite(wp.x) and finite(wp.z) and #(wp.out or {}) > 0 then
-                local d = math.sqrt((wp.x - at.x) ^ 2 + (wp.z - at.z) ^ 2)
-                local onward = wps[wp.out[1]]
-                if d <= Bridge.AD_LINK_M and (bestD == nil or d < bestD) and onward ~= nil
-                        and turnDeg(lane, heading(at, wp)) <= Bridge.AD_LINK_DEG
-                        and turnDeg(lane, heading(wp, onward)) <= Bridge.AD_LINK_DEG and routed(id) then
-                    best, bestD = wp, d
-                end
-            end
-        end
-        if best == nil then return nil, "AD_NO_LINK_NEAR" end
-        log("ad_connect: AutoDrive's lane from waypoint %s ends at %s; joined to %s (%.1f m on, routed to %s)",
-            tostring(from), tostring(at.id), tostring(best.id), bestD, tostring(marker.name))
-        graph:setConnectionBetween(at, best, 1)
-        return { from = from, target = target, graph = graph }
-    end)
-    if not ok then return nil, "AD_LINK_ERROR" end
-    if result == nil then return nil, why end
-    return result
-end
-
-function steppers.ad_connect(_env, task)
-    if task.linked then return "DONE", "AD_ROUTED" end
-    local okR, path = pcall(function() return task.graph:pathFromTo(task.from, task.target) end)
-    if okR and path ~= nil and #path >= 1 then return "DONE", "AD_LINKED" end
-    if task.elapsed > Bridge.AD_MARKER_TIMEOUT_MS then return "FAILED", "AD_LINK_NOT_OBSERVED" end
-    return nil
-end
-
-function aborts.ad_connect() end
-
-function steppers.ad_marker(_env, task)
-    if task.existed then return "DONE", "MARKER_EXISTS" end
-    if task.graph:getMapMarkerByName(task.name) ~= nil then return "DONE", "MARKER_CREATED" end
-    if task.elapsed > Bridge.AD_MARKER_TIMEOUT_MS then return "FAILED", "MARKER_NOT_OBSERVED" end
-    return nil
-end
-
-function aborts.ad_marker() end
-
--- ------------------------------------------------------------ AutoDrive sell / unload
--- The best paid sell point for a fill type and the AutoDrive marker at it, as AutoDrive's
--- own "automatic unload target" finds them (UnloadAtMode.lua getNextTask:
--- ADTriggerManager:getHighestPayingSellStation(fillType) (TriggerManager.lua 377-394),
--- getMarkerAtStation(station, vehicle) 444- (a map marker's waypoint on the path over the
--- trigger, else -1), ADStateModule:setFirstMarkerByWayPointId 886-893 (the marker whose
--- waypoint it is)). AutoDrive's globals come in as its own function environment, as for
--- ad_marker (adGraph). Returns the marker id (GetAvailableDestinations' key) or nil, why.
-local function adManagers(env)
-    local AD = (Bridge.Observe and Bridge.Observe.autoDrive and Bridge.Observe.autoDrive(env)) or env.AutoDrive
-    if type(AD) ~= "table" or type(AD.GetAvailableDestinations) ~= "function" or type(env.getfenv) ~= "function" then
-        return nil
-    end
-    local ok, adEnv = pcall(env.getfenv, AD.GetAvailableDestinations)
-    if not ok or type(adEnv) ~= "table" or type(adEnv.ADTriggerManager) ~= "table"
-            or type(adEnv.ADGraphManager) ~= "table" then
-        return nil
-    end
-    return AD, adEnv.ADTriggerManager, adEnv.ADGraphManager
-end
-
-function Bridge.bestSellMarker(env, v, fillType)
-    local AD, triggers, graph = adManagers(env)
-    if AD == nil then return nil, "AD_SELL_UNSUPPORTED" end
-    local ok, marker, why = pcall(function()
-        local station = triggers:getHighestPayingSellStation(fillType)
-        if station == nil then return nil, "NO_SELL_POINT" end
-        local wp = triggers:getMarkerAtStation(station, v)
-        if wp == nil or wp < 0 then return nil, "AD_NO_MARKER_AT_SELL_POINT" end
-        for id, m in pairs(graph:getMapMarkers()) do
-            if m.id == wp then return id end
-        end
-        return nil, "AD_NO_MARKER_AT_SELL_POINT"
-    end)
-    if not ok then return nil, "AD_SELL_ERROR" end
-    return marker, why
-end
-
--- The fill type a field's crop is harvested as (FieldState at GIANTS' field position, as
--- Observe samples it; g_fruitTypeManager:getFillTypeIndexByFruitTypeIndex, as
--- SowingMachine:setSeedIndex 405 uses it).
-local function fieldFillType(env, n)
-    for _, f in ipairs(env.g_fieldManager.fields or {}) do
-        local id = (type(f.getId) == "function" and f:getId()) or f.fieldId
-        if id == n then
-            local state = env.FieldState.new()
-            state:update(f.posX, f.posZ)
-            if state.fruitTypeIndex == nil or state.fruitTypeIndex == env.FruitType.UNKNOWN then return nil end
-            return env.g_fruitTypeManager:getFillTypeIndexByFruitTypeIndex(state.fruitTypeIndex)
-        end
-    end
-    return nil
-end
-
 -- What the rig carries to sell: the first filled unit behind the tractor (getFillUnits,
 -- getFillUnitFillLevel, getFillUnitFillType as Observe.fillUnits reads them).
 local function cargoFillType(v)
@@ -1958,106 +1422,6 @@ local function cargoFillType(v)
     end
     return nil
 end
-
--- The farm's own silo for a fill type and the AutoDrive marker at it: the silo station as the
--- store delivery picks it (GIANTS' Deliver job's unloading stations, deliverStation direction
--- -1), then getMarkerAtStation as for selling. Returns the marker id or nil, why.
-function Bridge.storeMarker(env, v, fillType, farmId)
-    local AD, triggers, graph = adManagers(env)
-    if AD == nil then return nil, "AD_SELL_UNSUPPORTED" end
-    local ok, marker, why = pcall(function()
-        local job = env.g_currentMission.aiJobTypeManager:createJob(env.AIJobType.DELIVER)
-        if job == nil then return nil, "NO_DELIVER_JOB" end
-        local station = Bridge.deliverStation(env, { direction = -1, farmId = farmId }, job, fillType, v)
-        if station == nil then return nil, "NO_FARM_SILO" end
-        local wp = triggers:getMarkerAtStation(station, v)
-        if wp == nil or wp < 0 then return nil, "AD_NO_MARKER_AT_SILO" end
-        for id, m in pairs(graph:getMapMarkers()) do
-            if m.id == wp then return id end
-        end
-        return nil, "AD_NO_MARKER_AT_SILO"
-    end)
-    if not ok then return nil, "AD_STORE_ERROR" end
-    return marker, why
-end
-
--- ad_unload (tractor, marker, field, direction): AutoDrive's own combine unloader
--- (CombineUnloaderMode, MODE_UNLOAD 5, Specialization.lua:212) for the rig: it waits at
--- `marker` (the field's), is called by AutoDrive's harvest manager to the combines that
--- need it (HarvestManager.lua 239-300, GIANTS helpers included), and empties its trailer at
--- the best paid sell point for the field's crop. AutoDrive:StartDriving(v, marker, unload)
--- (ExternalInterface.lua:114-161) after setMode. DONE UNLOADING once AutoDrive runs it:
--- handed off (it goes on until stopped).
-function starters.ad_unload(env, spec)
-    local v = spec.tractor
-    local denied = idle(env, v, spec.farmId)
-    if denied ~= nil then return nil, denied end
-    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
-    local AD = adManagers(env)
-    if v.ad == nil or AD == nil then return nil, "NO_AUTODRIVE" end
-    if v.ad.stateModule:getStartHelper() ~= false then return nil, "AD_START_HELPER_ON" end
-    if type(spec.marker) ~= "number" or AD:GetAvailableDestinations()[spec.marker] == nil then return nil, "UNKNOWN_MARKER" end
-    local ok, fillType = pcall(fieldFillType, env, spec.field)
-    if not ok or fillType == nil then return nil, "FIELD_CROP_UNKNOWN" end
-    -- Where a full trailer goes, as the harvest's destination (the user, 2026-10-31: unloading
-    -- while harvesting at speed, whatever the grain is for): the best paid sell point (1), the
-    -- farm's silo (-1), or parked at the field's own marker with the grain kept (0).
-    local unload, why
-    if spec.direction == 0 then unload = spec.marker
-    elseif spec.direction == -1 then unload, why = Bridge.storeMarker(env, v, fillType, spec.farmId)
-    else unload, why = Bridge.bestSellMarker(env, v, fillType) end
-    if unload == nil then return nil, why end
-    -- Handed on to AutoDrive: it keeps Farmhand's cap while it runs (Bridge.giveBackAdSpeed after).
-    Bridge.handedSpeed[v] = Bridge.handedSpeed[v] or { saved = Bridge.capAdSpeed(v), seen = false }
-    v.ad.stateModule:setMode(AD.MODE_UNLOAD)
-    AD:StartDriving(v, spec.marker, unload)
-    log("ad_unload: waiting at marker %s, unloading at marker %s", tostring(spec.marker), tostring(unload))
-    return { seen = false }
-end
-
-function steppers.ad_unload(_env, task)
-    local status, code = stillOurs(task.spec)
-    if status ~= nil then return status, code end
-    local v = task.spec.tractor
-    if v.ad.stateModule:isActive() == true then
-        Bridge.handed[v] = "drive"
-        return "DONE", "UNLOADING"
-    end
-    if task.elapsed > Bridge.START_TIMEOUT_MS then return "FAILED", "AD_NOT_STARTED" end
-    return nil
-end
-
-aborts.ad_unload = function(_env, task)
-    local v = task.spec.tractor
-    if v.ad.stateModule:isActive() == true then v:stopAutoDrive() end
-    Bridge.giveBackAdSpeed(v)
-end
-
--- ad_sell (tractor): the rig's cargo delivered by AutoDrive (MODE_DELIVERTO: UnloadAtMode
--- drives to the first marker, unloads there, parks; UnloadAtMode.lua 1-80) to the best paid
--- sell point for what it carries; the drive as `drive` (AutoDrive ends it). The companion
--- checks the cargo went and the money came.
-function starters.ad_sell(env, spec)
-    local v = spec.tractor
-    local denied = idle(env, v, spec.farmId)
-    if denied ~= nil then return nil, denied end
-    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
-    local AD = adManagers(env)
-    if v.ad == nil or AD == nil then return nil, "NO_AUTODRIVE" end
-    if v.ad.stateModule:getStartHelper() ~= false then return nil, "AD_START_HELPER_ON" end
-    local ok, fillType = pcall(cargoFillType, v)
-    if not ok or fillType == nil then return nil, "NOTHING_TO_SELL" end
-    local marker, why = Bridge.bestSellMarker(env, v, fillType)
-    if marker == nil then return nil, why end
-    local saved = Bridge.capAdSpeed(v)
-    v.ad.stateModule:setMode(AD.MODE_DELIVERTO)
-    AD:StartDriving(v, marker, marker)
-    log("ad_sell: to marker %s", tostring(marker))
-    return { seen = false, onEnd = function() Bridge.restoreAdSpeed(v, saved) end }
-end
-
-steppers.ad_sell = steppers.drive
-aborts.ad_sell = aborts.drive
 
 -- ------------------------------------------------------------------- fold
 -- A reserved vehicle's own folding parts (a pickup's tailgate, a deckover's ramps) to one
@@ -2289,8 +1653,7 @@ aborts.deliver = abortGoto
 
 -- ------------------------------------------------------------------ pipe / overload
 -- A standing combine emptied into a trailer the way GIANTS' own overloading does it (the
--- user 2026-10-21: the combine was full and its helper would not work on; AutoDrive's
--- unloader serves only a combine whose helper runs, HarvestManager.lua update).
+-- user 2026-10-21: the combine was full and its helper would not work on).
 -- pipe (vehicle, direction): Pipe:setPipeState (732-759) to its first unloading state
 -- (spec.unloadingStates, as Pipe:onUpdateTick's own unfolding 527-553) or back to 1;
 -- DONE once spec.currentState is there (getCurrentPipeState 763-765).
@@ -2496,8 +1859,7 @@ end
 function aborts.belts() end
 
 -- -------------------------------------------------------------- fieldwork
--- GIANTS' field-work job, started like GOTO (Hitch.startStaging; AutoDrive
--- Specialization.lua:1518-1527): AIJobTypeManager registers "FIELDWORK" ->
+-- GIANTS' field-work job, started like GOTO (Hitch.startStaging): AIJobTypeManager registers "FIELDWORK" ->
 -- AIJobFieldWork (36); applyCurrentState(vehicle, mission, farmId, false) (134-163),
 -- positionAngle at a point inside the field (setPosition/setAngle, snapped), setValues
 -- (199-211), validate (vehicle only, 215-224), aiSystem:startJob (AISystem 540-559).
@@ -2987,13 +2349,13 @@ function steppers.block() return "DONE", "BLOCKED_AREA" end
 function aborts.block() end
 
 -- -------------------------------------------------------------------- pay
--- Farmhand's pay, the player's choice (the user, 2026-10-30): GIANTS' helper wage and
--- AutoDrive's are off for Farmhand's work and Farmhand charges its own instead, through the
+-- Farmhand's pay, the player's choice (the user, 2026-10-30): GIANTS' helper wage is off for
+-- Farmhand's work and Farmhand charges its own instead, through the
 -- wage money type GIANTS charges its helpers with (AIJob:updateCost: addMoney(-cost, farm,
 -- MoneyType.AI, true), AIJob.lua 111-126). Modes (the `pay` op): 0 none, 1 per hour (amount per
 -- in-game working hour), 2 per job (`charge` after each completed request), 3 per day (once
--- each in-game day Farmhand works), 4 the game's own wages (GIANTS' and AutoDrive's, Farmhand
--- charging nothing). Until the companion sends it: per hour at GIANTS' own helper rate
+-- each in-game day Farmhand works), 4 the game's own wages (GIANTS', Farmhand charging
+-- nothing). Until the companion sends it: per hour at GIANTS' own helper rate
 -- (AIJob:getPricePerMs 0.0004 per ms = 1440 per hour, times EconomyManager.getCostMultiplier).
 Bridge.PAY = { HOURLY = 1, PER_JOB = 2, DAILY = 3, GAME = 4, giantsPerHour = 1440 }
 Bridge.pay = { mode = 1, amount = nil, pending = 0 }
@@ -3011,21 +2373,12 @@ function Bridge.farmhandJob(job)
     return job
 end
 
-local function payAutoDrive(env)
-    -- AutoDrive's own setting (Settings.lua 536-545, 1920): driverWages index 1 is 0 %.
-    local ad = env.AutoDrive
-    if ad ~= nil and type(ad.setSettingState) == "function" then
-        pcall(ad.setSettingState, "driverWages", Bridge.pay.mode == Bridge.PAY.GAME and 3 or 1)
-    end
-end
-
 function starters.pay(env, spec)
     local mode = spec.direction
     if not (finite(mode) and mode >= 0 and mode <= 4 and mode % 1 == 0) or not finite(spec.area) or spec.area < 0 then
         return nil, "INVALID_PAY"
     end
     Bridge.pay.mode, Bridge.pay.amount = mode, spec.area > 0 and spec.area or nil
-    payAutoDrive(env)
     log("pay: mode %d amount %s", mode, tostring(Bridge.pay.amount))
     return {}
 end
@@ -3334,17 +2687,13 @@ function aborts.land() end
 -- spec.target: the running task on this tractor, if any; it is aborted first.
 function starters.stop(env, spec)
     if spec.target ~= nil then Bridge.abort(env, spec.target, "STOPPED") end
-    -- A handed-off job of this vehicle: GIANTS' helper ended as the player's stop does,
-    -- AutoDrive by its own stop (as aborts.drive).
+    -- A handed-off job of this vehicle: GIANTS' helper ended as the player's stop does.
     local handed = spec.tractor ~= nil and Bridge.handed[spec.tractor] or nil
     if handed == "fieldwork" and spec.tractor:getIsAIActive() == true then
         Bridge.Hitch.cancelStaging(env, spec.tractor)
-    elseif handed == "drive" and spec.tractor.ad.stateModule:isActive() == true then
-        spec.tractor:stopAutoDrive()
     end
     if spec.tractor ~= nil then
         Bridge.handed[spec.tractor] = nil
-        Bridge.giveBackAdSpeed(spec.tractor)
     end
     return { handed = handed }
 end
@@ -3373,11 +2722,10 @@ function steppers.stop(env, task)
     local ownMotion = Bridge.pendingGoto[v] ~= nil
         or (target ~= nil and target.op == "farm_drive" and not stopped(v))
         or (task.handed == "fieldwork" and v:getIsAIActive() ~= false)
-        or (task.handed == "drive" and v.ad.stateModule:isActive() ~= false) or (target ~= nil
-        and ((target.op == "drive" and v.ad.stateModule:isActive() ~= false)
-        or ((target.op == "stage" or target.op == "navigate" or target.op == "fieldwork" or target.op == "follow"
-             or target.op == "deliver")
-            and target.seen and v:getIsAIActive() ~= false)))
+        or (target ~= nil
+            and (target.op == "stage" or target.op == "navigate" or target.op == "fieldwork" or target.op == "follow"
+                 or target.op == "deliver")
+            and target.seen and v:getIsAIActive() ~= false)
     if not ownMotion and stopped(v) then
         Bridge.Hitch.disarm(v)                    -- the job's motion is over: stop watching
         return "DONE", "STOPPED"
@@ -3392,7 +2740,7 @@ function aborts.stop() end
 
 Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true, load = true,
                        overload = true, alongside = true, backoff = true }
-Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true, ad_marker = true, contract = true,
+Bridge.NO_VEHICLE = { buy = true, save = true, block = true, open_gates = true, contract = true,
                       land = true, pay = true, charge = true }   -- ops that act on no vehicle
 
 function Bridge.start(env, spec)
@@ -3662,7 +3010,6 @@ function Bridge:update(dt)
         end
     end
     Bridge.watchGoto(self.env, dt)
-    Bridge.keepHandedAwake()
     if Bridge.lastDetach ~= nil then Bridge.lastDetach.age = Bridge.lastDetach.age + dt end
     if self.pipe == nil and self.session ~= nil then
         self.pipeTimer = self.pipeTimer + dt
@@ -3754,9 +3101,6 @@ Bridge.NOTICES = {
     ACCEPTED_RETURN = "Farmhand: bringing a helper's equipment back",
     COMPLETE_RETURN = "Farmhand: equipment back and unhitched",
     STATUS_HELPERS_WORKING = "Farmhand: free; helpers are working the fields",
-    UNLOADER_STARTED = "Farmhand: an AutoDrive tractor and trailer unloads the combine and sells at the best paid point (this harvest is to be sold)",
-    UNLOADER_STOPPED = "Farmhand: AutoDrive stopped unloading the combine; check the unloader",
-    NO_UNLOADER = "Farmhand: no AutoDrive tractor with an empty trailer to unload the combine; it waits when full",
     ACCEPTED_UNLOAD_COMBINE = "Farmhand: emptying the combine into a trailer",
     COMPLETE_UNLOAD_COMBINE = "Farmhand: the combine is emptied into the trailer",
     COMBINE_UNLOADED = "Farmhand: combine emptied into the trailer",
@@ -3836,7 +3180,6 @@ Bridge.STEPS = {
     FIELD_WORK = "working the field (GIANTS helper)",
     CONTRACT = "taking the contract",
     WAIT_AHEAD = "waiting for the helper ahead to get going",
-    UNLOADER = "sending the unloader (AutoDrive)",
     SELL = "driving the load to the sell point",
     STORE = "driving the load to the farm's storage",
     OVERLOAD = "emptying the combine into the trailer",
@@ -3882,18 +3225,9 @@ Bridge.REASONS = {
     LOAD_TRACTOR_NOT_ALONE = "unhitch the tractor's implement first",
     TRANSPORT_MOVED = "the truck or trailer moved; stopped",
     BELTS_NOT_HOLDING = "the belts did not hold the tractor; check it",
-    LOADED_NEEDS_AUTODRIVE = "a loaded trailer needs an AutoDrive destination (the game's own driver will not start with cargo)",
-    LOADED_NO_DRIVER = "the game's helper does not drive a trailer with a belted vehicle on it and AutoDrive has no destination there; drive the truck there yourself, then say continue",
+    LOADED_NO_DRIVER = "nothing here can drive a trailer with a belted vehicle on it there; drive the truck there yourself, then say continue",
     OVERSPEED = "the tractor went faster than Farmhand's 3 km/h limit, so it stopped; check it before going on",
     ENVELOPE_CONTACT = "something came too close to the tractor or what it carries, so it stopped",
-    AD_PATHFINDING_STALLED = "AutoDrive could not find its way onto its road network from there",
-    AD_WAITING_ON_OBSTACLE = "AutoDrive waited on something in its way and never moved",
-    AD_NOT_MOVING = "AutoDrive was driving but never moved",
-    AD_PAUSED = "AutoDrive paused and never moved on",
-    AD_NO_ROUTE = "AutoDrive's road network has no route from where the vehicle stands to there",
-    AD_ENDED_UNMOVED = "AutoDrive gave up without moving",
-    AD_NO_WAYPOINT_AT_PLACE = "AutoDrive has no road near that building",
-    AD_PLACE_NOT_FOUND = "no farm building there for AutoDrive",
     NO_STORAGE = "the farm has no storage that takes this crop",
     NOT_ON_DECK = "the tractor is not on the deck; check it",
     DETACH_NOT_ALLOWED = "the game does not allow unhitching it right now",
@@ -3901,7 +3235,6 @@ Bridge.REASONS = {
     DETACH_TIMEOUT = "unhitching did not finish; check the tractor",
     DESTINATION_NOT_FOUND = "I do not know that place",
     DESTINATION_AMBIGUOUS = "more than one place has that name",
-    AUTODRIVE_UNAVAILABLE = "that destination needs AutoDrive",
     NOT_LINKED = "the game is not linked to the companion",
     AI_NOT_CLEARED = "an AI job still controls the tractor; check it",
     CLEANUP_AI_NOT_CLEARED = "an AI job still controls the tractor; check it",
@@ -3999,8 +3332,7 @@ Bridge.REASONS = {
     CROP_NOT_READY = "the crop on that field is not ready to harvest",
     NO_HARVESTER_WITH_HEADER = "no free combine with its header on",
     SWATH_NOT_SET = "the combine did not switch to laying a straw swath",
-    NO_RIG_TO_SELL = "no AutoDrive tractor with a loaded trailer",
-    NO_UNLOADER = "no free AutoDrive tractor with a trailer that has room",
+    NO_RIG_TO_SELL = "no tractor with a loaded trailer",
     NO_COMBINE_HARVESTING = "no helper is harvesting that field",
     SAY_WHICH_FIELD = "helpers are harvesting several fields; say which",
     NO_FULL_COMBINE = "no standing combine with grain in it",
@@ -4025,12 +3357,8 @@ Bridge.REASONS = {
     NOTHING_TO_HITCH_TOGETHER = "say which tractor and implement to hitch (or buy them in the same sentence)",
     NOTHING_TO_SELL = "the trailer is empty",
     NO_SELL_POINT = "no sell point buys that",
-    AD_NO_MARKER_AT_SELL_POINT = "AutoDrive has no destination at the best sell point; add one there in AutoDrive",
-    AD_SELL_UNSUPPORTED = "this AutoDrive version does not offer its sell point lookup",
-    AD_SELL_ERROR = "AutoDrive's sell point lookup failed",
     FIELD_CROP_UNKNOWN = "the crop on that field could not be read",
     CARGO_NOT_UNLOADED = "the load did not come off at the sell point; check the trailer",
-    AD_NO_FIELD_MARKER = "AutoDrive has no destination at that field",
     NO_FIELD_FOUND = "the helper found no field there",
     FIELD_NOT_READY = "the field needs nothing from this implement",
     PARTIAL_COVERAGE = "the helper stopped before the whole field was done",
@@ -4060,23 +3388,7 @@ Bridge.REASONS = {
     -- Every other failure the companion or the mod reports, in the player's words (completing
     -- "could not start - ", "stopped short - " or "unsure, check it - "); tests/test_lua_bridge.py
     -- ReasonWordingTests keeps every emitted code worded.
-    AD_CONFIG_BACKUP_FAILED = "AutoDrive's route network could not be backed up first, so it was not changed",
-    AD_LINK_ERROR = "joining AutoDrive's lane to the road failed",
-    AD_LINK_NOT_OBSERVED = "AutoDrive did not show the lane joined to the road",
-    AD_LINK_UNSUPPORTED = "this AutoDrive version cannot join lanes for Farmhand",
-    AD_MARKER_NOT_ON_NETWORK = "that AutoDrive destination is not on AutoDrive's road network",
-    AD_MARKER_UNSUPPORTED = "this AutoDrive version cannot add destinations for Farmhand",
-    AD_NETWORK_UNREADABLE = "AutoDrive's road network could not be read",
-    AD_NOT_STARTED = "AutoDrive did not start driving",
-    AD_NO_DEAD_END = "the vehicle is not at the end of an AutoDrive lane",
-    AD_NO_LINK_NEAR = "no AutoDrive road is near the lane's end to join it to",
-    AD_NO_MARKER_AT_SILO = "AutoDrive has no destination at the farm's silo",
-    AD_NO_ROUTED_WAYPOINT_NEAR = "no AutoDrive road with a route to there is near the transport",
-    AD_NO_WAYPOINT_AT_FIELD = "AutoDrive has no road near that field",
-    AD_START_HELPER_ON = "AutoDrive's start helper is on for that vehicle; turn it off in its AutoDrive menu",
-    AD_STOPPED_WITH_ERROR = "AutoDrive stopped with an error",
-    AD_STORE_ERROR = "AutoDrive could not set up the trip to the silo",
-    AI_ACTIVE = "a helper or AutoDrive is driving it",
+    AI_ACTIVE = "a helper is driving it",
     ALIGN_NOT_OBSERVED = "the tractor was not seen lined up with the implement",
     ALONGSIDE_ARTICULATED_UNSUPPORTED = "an articulated tractor cannot be lined up beside the combine yet",
     ALONGSIDE_GEOMETRY_UNKNOWN = "the rig's size could not be read",
@@ -4156,7 +3468,6 @@ Bridge.REASONS = {
     INVALID_GEOMETRY = "the rig's turning room could not be worked out",
     INVALID_INTENT = "that request was not a valid job",
     INVALID_LIMITS = "the motion's limits were not valid",
-    INVALID_MARKER_PLACE = "there is no valid spot for an AutoDrive destination there",
     INVALID_PAY = "that pay setting is not valid",
     INVALID_PLACE = "that place is not valid",
     INVALID_POSE = "that position is not valid",
@@ -4183,7 +3494,6 @@ Bridge.REASONS = {
     LOAD_QUERY_UNVERIFIED = "the way onto the deck could not be checked reliably",
     LOAD_TOO_FAR = "the tractor is too far from the ramps",
     LOAD_WITH_PLAN_TOO_LONG = "loading needed more steps than expected; check the rig",
-    MARKER_NOT_OBSERVED = "AutoDrive did not show the new destination",
     MAP_UNKNOWN = "the map could not be identified",
     MOTOR_UNAVAILABLE = "the engine cannot run",
     NAVIGATE_START_CONTACT = "the rig touches something where it stands, so the game's driver cannot start",
@@ -4199,7 +3509,6 @@ Bridge.REASONS = {
     NOT_ROOT_VEHICLE = "it is hitched to another vehicle; name that one",
     NOT_STOPPED = "it was still moving",
     NO_ACCEPTANCE = "the game did not answer; check it is running",
-    NO_AUTODRIVE = "AutoDrive is not available for that vehicle",
     NO_BELTS = "it has no straps",
     NO_CLEAR_APPROACH = "there is no clear way up to that place",
     NO_CLOSED_GATE = "no closed gate or door is near",
@@ -4260,7 +3569,6 @@ Bridge.REASONS = {
     UNKNOWN_CONFIGURATION = "that store option is not available",
     UNKNOWN_IMPLEMENT = "Farmhand does not know that implement",
     UNKNOWN_JOINT = "the hitch joints could not be read",
-    UNKNOWN_MARKER = "that AutoDrive destination no longer exists",
     UNKNOWN_OBSERVATION = "the game reported something Farmhand could not read",
     UNKNOWN_OP = "the game's Farmhand mod is older than the companion; update it",
     UNLOAD_NOT_ON_DECK = "the tractor is not on the deck",

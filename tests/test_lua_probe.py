@@ -346,7 +346,7 @@ class LuaProbeTests(unittest.TestCase):
             FarmhandBridge.pay.amount = 7
             return dropped""")
         dropped = [dropped[i] for i in range(1, len(dropped) + 1)]
-        self.assertIn("FarmhandBridge.handedSpeed", dropped)
+        self.assertIn("FarmhandBridge.pendingGoto", dropped)
         pay = g.FarmhandBridge.pay
         probe = g.FarmhandProbe
         probe.env = g
@@ -361,8 +361,7 @@ class LuaProbeTests(unittest.TestCase):
         self.assertEqual(missing, "")
         self.assertTrue(lua.eval("function(p) return FarmhandBridge.pay == p end")(pay))  # same state table
         self.assertEqual(g.FarmhandBridge.pay.amount, 7)
-        g.FarmhandBridge.keepHandedAwake()                     # the per-frame call that failed live
-        g.FarmhandBridge.giveBackAdSpeed(lua.table())
+        g.FarmhandBridge.watchGoto(g, 16)                      # a per-frame call over the new state
 
     def test_moddesc_loads_the_dependencies_first(self):
         desc = ET.parse(ROOT / "mod/modDesc.xml").getroot()

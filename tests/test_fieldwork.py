@@ -106,34 +106,20 @@ class FieldWorkTests(unittest.TestCase):
         self.assertEqual(teleports, [])
 
 
-    def test_a_field_the_helper_cannot_reach_from_afar_is_reached_by_autodrive_first(self):
+    def test_without_farmhands_drive_a_field_the_helper_cannot_reach_says_so(self):
         # Live 5c8eeb68ccea4304-2: the 3650 + spreader 1 km from field 10, GIANTS' helper ended
-        # NOT_REACHABLE at once. AutoDrive takes the pair to the field's marker (made its own
-        # way), the helper starts from there; without AutoDrive the failure stands.
-        from protocol.model import Destination
-        for autodrive in (True, False):
-            with self.subTest(autodrive=autodrive):
+        # NOT_REACHABLE at once. A world without Farmhand's own drive has nothing else to take
+        # it there (AutoDrive installed or not is never asked): the failure stands.
+        for caps in (frozenset({"move", "attach", "stop"}), frozenset({"move", "attach", "stop", "autodrive"})):
+            with self.subTest(caps=caps):
                 items = rig("sprayer", 500.0, at=(1100.0, 900.0))
-                caps = frozenset({"move", "attach", "stop"} | ({"autodrive"} if autodrive else set()))
                 items[0] = replace(items[0], capabilities=caps)
                 items[1] = replace(items[1], required_pto_torque=0.0)
-                world = MockWorld(items, PLAYERS, (Destination("m-7", (205.0, 290.0), "Field 7"),),
-                                  fields=(field(7, 0.4), field(9, 1.2)), farm=FARM)
+                world = MockWorld(items, PLAYERS, fields=(field(7, 0.4), field(9, 1.2)), farm=FARM)
                 world.mock_helper_reach_m = 150.0
-                # AutoDrive's network: the waypoint nearest the rig on a branch with no route
-                # (live 57e9dbe9633044fd-1); a routed road 60 m off leads to the field.
-                from companion.hitch import ADGraph
-                world.mock_ad_graph = ADGraph(points={1: (1100.0, 915.0), 2: (1100.0, 960.0),
-                                                      10: (1160.0, 900.0), 11: (205.0, 290.0)},
-                                              out={1: (2,), 2: (), 10: (11,), 11: ()})
                 result = Executor(world).execute(work("fertilize"))
-                if autodrive:
-                    self.assertEqual((result.status, result.reason), ("COMPLETE", "FIELD_WORK_OBSERVED"), result)
-                    self.assertIn("TO_FIELD", result.states)
-                    self.assertIn("STAGE", result.states)            # GIANTS GOTO onto the routed road first
-                else:
-                    self.assertEqual((result.status, result.reason), ("FAILED", "NOT_REACHABLE"), result)
-                    self.assertNotIn("TO_FIELD", result.states)
+                self.assertEqual((result.status, result.reason), ("FAILED", "NOT_REACHABLE"), result)
+                self.assertNotIn("TO_FIELD", result.states)
 
     def test_a_field_the_helper_will_not_drive_to_is_reached_by_farmhands_own_drive(self):
         # Live 9211b19abaa24cce-3: the combine at the barn, GIANTS' helper ended COULD_NOT_PREPARE
@@ -1352,28 +1338,10 @@ class UnloadAndSellTests(unittest.TestCase):
                                 heading=0.0, attached_to="t-5",
                                 fill_units=(FillUnit(1, "WHEAT", cargo, 30000.0),))
             items += [tractor, trailer]
-        world = CoordinatedWorld(items, PLAYERS, destinations=(Destination("17", (210.0, 290.0), "Field 7"),),
+        world = CoordinatedWorld(items, PLAYERS,
                       fields=(field(7, 0.4, HarvestTests.READY),), farm=FARM)
         world.mock_sell_at = (900.0, 900.0)
         return world
-
-    def test_a_harvest_to_be_sold_is_unloaded_while_it_harvests_and_the_rest_is_sold_after(self):
-        world = self.world()
-        c, notices = coordinated(world)
-        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"], "destination": "sell"})
-        c.wait(10)
-        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"))
-        self.assertEqual(sorted((w.tractor, w.operation) for w in c.workers), [("c-1", "harvest"), ("t-5", "unload")])
-        self.assertIn("UNLOADER_STARTED", notices)
-        unit = world.items["w-5"]
-        world.items["w-5"] = replace(unit, fill_units=(replace(unit.fill_units[0], level=5000.0),))   # AutoDrive loaded it
-        world.finish_worker("c-1")
-        self.assertTrue(until(lambda: c.last.command == "worker_return" and c.last.state == "COMPLETE"))
-        self.assertEqual(world.farm().money, FARM.money + 10000.0)
-        self.assertEqual(world.items["w-5"].fill_units[0].level, 0.0)
-        self.assertEqual(c.workers, [])
-        self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
-        self.assertIn("WORKER_DONE", notices)
 
     def test_a_harvest_is_done_only_when_giants_finished_it_and_the_field_shows_it(self):
         # GIANTS' helper ending is its own verdict (AIMessageSuccessFinishedJob: FINISHED); the
@@ -1389,56 +1357,6 @@ class UnloadAndSellTests(unittest.TestCase):
                     world.items["c-1"] = replace(world.items["c-1"], ai_stop=ai_stop)
                 self.assertTrue(until(lambda: notice in notices))
                 self.assertNotIn({"WORKER_DONE": "WORKER_STOPPED", "WORKER_STOPPED": "WORKER_DONE"}[notice], notices)
-
-    def test_without_an_unloader_the_player_is_told(self):
-        world = self.world(unloader=False)
-        c, notices = coordinated(world)
-        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"], "destination": "sell"})
-        c.wait(10)
-        self.assertIn("NO_UNLOADER", notices)
-        self.assertEqual([w.tractor for w in c.workers], ["c-1"])
-
-    def test_a_harvest_not_said_to_be_sold_is_unloaded_on_the_move_and_the_grain_kept(self):
-        # The user, 2026-10-31: "i need farmhand to be able to do this while harvesting at speed".
-        # AutoDrive's combine unloader follows the combine whatever the grain is for; not to be
-        # sold, a full trailer parks at the field's marker with the grain (never a sell point).
-        world = self.world()
-        c, notices = coordinated(world)
-        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
-        c.wait(10)
-        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "WORKERS_STARTED"))
-        self.assertEqual(sorted((w.tractor, w.operation) for w in c.workers), [("c-1", "harvest"), ("t-5", "unload")])
-        self.assertIn("UNLOADER_STARTED", notices)
-        self.assertEqual(world.mock_unload_to, {"t-5": "keep"})
-        w5 = world.items["w-5"]                                                # grain in its trailer
-        world.items["w-5"] = replace(w5, fill_units=(replace(w5.fill_units[0], fill_type="WHEAT", level=5000.0),))
-        world.finish_worker("c-1")
-        self.assertTrue(until(lambda: c.workers == [] and not c._after and c.current is None))
-        self.assertEqual(world.farm().money, FARM.money)                       # nothing sold
-
-    def test_unload_the_combine_sends_an_unloader_hitched_after_the_harvest_began(self):
-        # Live f41b44f422974e15-4: the harvest began with no unloader; the player hitches a
-        # trailer to an AutoDrive tractor and says "unload the combine".
-        world = self.world(unloader=False)
-        c, notices = coordinated(world)
-        c.submit({"version": 1, "command": "unload_combine"})
-        c.wait(10)
-        self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", "NO_FULL_COMBINE"))   # none standing full either
-        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"], "destination": "sell"})
-        c.wait(10)
-        self.assertIn("NO_UNLOADER", notices)
-        rig = self.world().items
-        world.items.update({k: rig[k] for k in ("t-5", "w-5")})
-        c.workers[0].destination = "sell"                     # this harvest's crop is to be sold
-        c.submit({"version": 1, "command": "unload_combine"})
-        c.wait(10)
-        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "UNLOADER_STARTED"), c.last)
-        self.assertEqual(sorted((w.tractor, w.operation) for w in c.workers), [("c-1", "harvest"), ("t-5", "unload")])
-        c.submit({"version": 1, "command": "unload_combine", "field": 7})
-        c.wait(10)
-        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "UNLOADER_ALREADY_WORKING"))
-        world.finish_worker("c-1")
-        self.assertTrue(until(lambda: c.workers == []))
 
     def full_combine_world(self):
         # Live 49b5344a47ec418a-2: the MF 8570 full, its helper ending 7 s in; the 3650 with

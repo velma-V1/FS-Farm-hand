@@ -501,7 +501,7 @@ class AI:
 # from the next job on.
 
 PAY_LABELS = (("hour", "per hour"), ("job", "per job"), ("day", "per day"), ("none", "nothing"),
-              ("game", "the game's own wages (GIANTS and AutoDrive)"))
+              ("game", "the game's own helper wages"))
 # Preset amounts per mode; 0 per hour is GIANTS' own helper rate.
 PAY_AMOUNTS = {"hour": (0, 500, 1000, 2000, 3000, 5000), "job": (100, 250, 500, 1000, 2500),
                "day": (500, 1000, 2500, 5000, 10000)}

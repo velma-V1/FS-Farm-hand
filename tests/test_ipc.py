@@ -47,11 +47,10 @@ def vehicle(identifier, kind, x=0.0, z=0.0, **overrides):
     return item
 
 
-def snapshot(vehicles, destinations=(), **overrides):
+def snapshot(vehicles, **overrides):
     frame = {"event": "snapshot", "protocol": 3, "seq": 7, "session": None, "farm_id": 1, "map_id": "MapUS",
              "player": {"x": 100.0, "z": 200.0}, "truncated": False, "skipped": 0,
              "vehicles": list(vehicles),
-             "destinations": list(destinations) or [{"id": 3, "name": "Yard", "x": 101.0, "z": 199.0}],
              "places": []}
     frame.update(overrides)
     return frame
@@ -157,8 +156,6 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(wagon.position, (40, 0.0))
         self.assertTrue(usable(tractor, "1") and usable(wagon, "1"))
         self.assertTrue(tractor.stopped and wagon.stopped)
-        self.assertEqual([(d.id, d.name, d.position) for d in observed.destinations],
-                         [("3", "Yard", (101.0, 199.0))])
         self.assertEqual(observed.map_id, "MapUS")
         # Power and PTO now come from GIANTS data and are sufficient/compatible.
         self.assertAlmostEqual(tractor.pto_torque_capacity, 1.8)
@@ -173,9 +170,9 @@ class MappingTests(unittest.TestCase):
         self.assertTrue(compatible(replace(tractor, capabilities=frozenset({"move", "attach", "stop"})),
                                    wagon))
 
-    def test_capability_needs_giants_goto_and_the_live_bridge_not_autodrive(self):
+    def test_capability_needs_giants_goto_and_the_live_bridge_never_autodrive(self):
         move = {"move", "attach", "stop"}
-        cases = [({}, True, move | {"autodrive"}),
+        cases = [({}, True, move),          # AutoDrive installed is never a Farmhand capability
                  ({"has_autodrive": False, "ad_active": None}, True, move),
                  ({"goto_supported": False}, True, set()),
                  ({"goto_supported": None}, True, set()),
@@ -289,9 +286,7 @@ class MappingTests(unittest.TestCase):
         hello = parse_frame(line({"event": "hello", "protocol": 3, "mod_version": "1",
                                   "autodrive_version": None}))
         duplicate = snapshot([vehicle(11, TRACTORS), vehicle(11, WAGONS)])
-        duplicate_marker = snapshot([vehicle(11, TRACTORS)], destinations=[
-            {"id": 3, "name": "a", "x": 0, "z": 0}, {"id": 3, "name": "b", "x": 1, "z": 1}])
-        for frame in (hello, snapshot([], truncated=True), duplicate, duplicate_marker):
+        for frame in (hello, snapshot([], truncated=True), duplicate):
             with self.subTest(frame=frame.get("event")):
                 with self.assertRaises(ObservationError):
                     observation_from_snapshot(frame, CATEGORIES)
@@ -403,9 +398,6 @@ class MappingTests(unittest.TestCase):
 
             def player_position(self, farm_id):
                 return self.observed.player
-
-            def destinations(self):
-                return self.observed.destinations
 
             def __getattr__(self, name):
                 def record(*args):

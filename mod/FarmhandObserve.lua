@@ -18,7 +18,6 @@ Observe.BUILD = "source"
 -- is a write-only client (pattern from Farmhand Companion scripts/Transport.lua).
 Observe.PIPE_PATH = "\\\\.\\pipe\\fs_farmhand_ac001"
 Observe.MAX_VEHICLES = 200
-Observe.MAX_DESTINATIONS = 2000
 Observe.MAX_PLACES = 500
 Observe.MAX_JOINTS = 32
 Observe.MAX_SEEDS = 64            -- crops one seeder can sow (FS25 base seeders: up to about 20)
@@ -805,8 +804,8 @@ local function playerPosition(env)
     return Observe.NULL
 end
 
--- Returns (line, nil), or (nil, reason) when the farm, the vehicle list or the
--- AutoDrive destination list cannot be observed (nothing is sent in that case).
+-- Returns (line, nil), or (nil, reason) when the farm or the vehicle list cannot be
+-- observed (nothing is sent in that case).
 -- ------------------------------------------------------------------ fields
 -- The farm's own fields and how much of each is in which state: GIANTS' field
 -- mission pattern (PlowMission:createModifier 40-47, AbstractFieldMission
@@ -1397,8 +1396,8 @@ local function farmInfo(env, farmId)
              savegame = (finite(info.savegameIndex) and info.savegameIndex == math.floor(info.savegameIndex)
                          and info.savegameIndex >= 1 and info.savegameIndex <= 99) and info.savegameIndex
                          or Observe.NULL,
-             -- Where the save's files are (FSCareerMissionInfo.savegameDirectory): the companion
-             -- backs up AutoDrive's network there before Farmhand adds a destination to it.
+             -- Where the save's files are (FSCareerMissionInfo.savegameDirectory): it scopes the
+             -- companion's learned farm routes to this save.
              savegame_dir = text(info.savegameDirectory) or Observe.NULL }
 end
 
@@ -1426,29 +1425,8 @@ function Observe.snapshot(env, seq, session, dt)
         end
     end
 
-    local destinations = Observe.array()
-    local AD = Observe.autoDrive(env)
-    if AD ~= nil and type(AD.GetAvailableDestinations) == "function" then
-        local markers = try(function() return AD:GetAvailableDestinations() end)
-        if type(markers) ~= "table" then return nil, "NO_DESTINATIONS" end
-        for _, marker in pairs(markers) do
-            if integer(marker.id) and finite(marker.x) and finite(marker.z) then
-                if #destinations >= Observe.MAX_DESTINATIONS then
-                    truncated = true
-                else
-                    -- An unusable name leaves the marker selectable by ID only.
-                    destinations[#destinations + 1] = { id = marker.id, name = text(marker.name) or "",
-                                                        x = marker.x, z = marker.z }
-                end
-            else
-                skipped = skipped + 1
-            end
-        end
-    end
-
-    -- The farm's own named placeables (FH Collectors.lua:628-637) at their root node
-    -- (AutoDrive AutoDrivePlaceableData.lua:331): named destinations without
-    -- AutoDrive. An unreadable one is left out, so it can never be a target.
+    -- The farm's own named placeables (FH Collectors.lua:628-637) at their root node:
+    -- named destinations. An unreadable one is left out, so it can never be a target.
     local places = Observe.array()
     local placeables = try(function() return env.g_currentMission.placeableSystem.placeables end)
     if type(placeables) == "table" then
@@ -1480,7 +1458,6 @@ function Observe.snapshot(env, seq, session, dt)
         truncated = truncated,
         skipped = skipped,
         vehicles = records,
-        destinations = destinations,
         places = places,
         fields = try(function() return Observe.fields(env, farmId) end) or Observe.array(),
         field_places = try(function()
@@ -1493,7 +1470,7 @@ end
 
 -- fhReload (FarmhandProbe) keeps the running game's module table and installs only the
 -- new functions and UPPERCASE constants (Probe.merge), so a state field a newer build adds
--- (Bridge.handedSpeed = {}) would be missing from the live table and fail every frame.
+-- (Bridge.handed = {}) would be missing from the live table and fail every frame.
 -- Each module calls this while it is being re-read, before its global is replaced: a
 -- lowercase field the live table lacks gets the fresh value; existing state is never
 -- touched. Works whichever build's Probe does the reload.

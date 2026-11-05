@@ -30,7 +30,7 @@ import uuid
 from adapters.fs25 import Observation, observation_from_snapshot
 from adapters.world import StepFailed, StepUnverified
 from companion.drive_goal import DRIVEN
-from companion.hitch import STAGING_DISTANCE_M, load_ad_graph
+from companion.hitch import STAGING_DISTANCE_M
 from protocol.ipc import (GHOST_OPS, MAX_NOTICES, PIPE_PATH, FrameError, FrameReader, encode_command,
                           encode_session)
 from protocol.model import Contract, Destination, Equipment, FarmInfo, Field, HitchPlan, Pose, Position, StoreItem
@@ -57,7 +57,7 @@ CONTACT_RESTARTS = 2
 STUCK_CODES = frozenset({"EGRESS_LIMIT", "EGRESS_DIVERGED", "EGRESS_BLOCKED", "EGRESS_NOT_CLEAR",
                          "EGRESS_NOT_AHEAD", "EGRESS_NOT_BEHIND", "START_NOT_CLEAR"})
 CONTACT_SETTLE_S = 10.0     # waited for it to stand before a restart
-DONE_TIMEOUT_S = {"pay": 15.0, "charge": 15.0, "teleport": 20.0, "worktool": 25.0, "reposition": 14700.0, "farm_drive": 14700.0, "drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "ad_marker": 15.0, "ad_connect": 15.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "ad_unload": 20.0, "ad_sell": 14700.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
+DONE_TIMEOUT_S = {"pay": 15.0, "charge": 15.0, "teleport": 20.0, "worktool": 25.0, "reposition": 14700.0, "farm_drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -321,9 +321,6 @@ class FS25World:
         observation = self._observe()
         return observation.player if observation.farm_id == farm_id else None
 
-    def destinations(self) -> tuple[Destination, ...]:
-        return self._observe().destinations
-
     def places(self) -> tuple[Destination, ...]:
         return self._observe().places
 
@@ -439,8 +436,8 @@ class FS25World:
 
     def teleport(self, vehicle_id: str, owner: str, min_m: float = 0.0, at: Pose | None = None) -> None:
         """Teleport recovery: the reserved rig and everything attached to the nearest open spot,
-        no nearer than ``min_m``; near ``at`` at its heading when given (a loaded rig onto
-        AutoDrive's road), else near where the rig stands."""
+        no nearer than ``min_m``; near ``at`` at its heading when given (a blocker set aside),
+        else near where the rig stands."""
         with self._lock:
             reservation = self._reservations.get(owner)
         if reservation is None or reservation[1][0] != vehicle_id:
@@ -594,23 +591,6 @@ class FS25World:
         """LAND: the field's farmland parcel bought or sold; mod/FarmhandBridge.lua starters.land."""
         return self._run("land", field=int(field), direction=1 if buy else -1)
 
-    UNLOAD_TO = {"sell": 1, "store": -1, "keep": 0}
-
-    def ad_unload(self, tractor_id: str, marker_id: str, field: int, owner: str, destination: str = "sell") -> str:
-        """UNLOADER: AutoDrive's own combine unloader for the reserved rig (mod/FarmhandBridge.lua
-        starters.ad_unload); UNLOADING once AutoDrive runs it, which goes on until stopped. A full
-        trailer goes where the harvest goes: sell, store (the farm's silo) or keep (parked at the
-        field's marker)."""
-        self._reserved(tractor_id, owner)
-        return self._run("ad_unload", tractor=int(tractor_id), marker=int(marker_id), field=int(field),
-                         direction=self.UNLOAD_TO[destination])
-
-    def ad_sell(self, tractor_id: str, owner: str) -> str:
-        """SELL: AutoDrive delivers the reserved rig's cargo to the best paid sell point for it
-        (mod/FarmhandBridge.lua starters.ad_sell); never evidence of the sale."""
-        self._reserved(tractor_id, owner)
-        return self._run("ad_sell", tractor=int(tractor_id))
-
     def pipe(self, vehicle_id: str, out: bool, owner: str) -> str:
         """The reserved combine's pipe out or in (mod/FarmhandBridge.lua starters.pipe)."""
         self._unit(vehicle_id, owner)
@@ -662,10 +642,6 @@ class FS25World:
         self._reserved(tractor_id, owner)
         return self._run("fieldwork", tractor=int(tractor_id), field=int(field_id), x=pose.x, z=pose.z,
                          yaw=pose.yaw, area=float(area_m2), seed=int(seed), hand=1 if hand else 0)
-
-    def travel(self, tractor_id: str, destination_id: str, owner: str) -> None:
-        self._reserved(tractor_id, owner)
-        self._run("drive", tractor=int(tractor_id), marker=int(destination_id))
 
     def navigate(self, tractor_id: str, pose: Pose, owner: str) -> None:
         self._reserved(tractor_id, owner)
@@ -739,56 +715,6 @@ class FS25World:
         self._reserved(tractor_id, owner)
         return self._run("follow", tractor=int(tractor_id))
 
-    def ad_marker(self, field: int | None = None, place: tuple[float, float] | None = None) -> str:
-        """An AutoDrive destination made AutoDrive's own way (mod/FarmhandBridge.lua
-        starters.ad_marker): "Field N" by field N's edge, or the farm building at ``place`` by
-        its own name; only after AutoDrive's saved network was backed up."""
-        if (field is None) == (place is None):
-            raise StepFailed("INVALID_MARKER_PLACE")
-        farm = self._observe().farm
-        folder = getattr(self.link.files, "path", None)
-        if folder is None:
-            raise StepFailed("AD_CONFIG_BACKUP_FAILED")
-        backup_autodrive_config(farm.savegame_dir if farm else None, Path(folder).parent.parent,
-                                Path(folder) / "backup")
-        if field is not None:
-            return self._run("ad_marker", field=int(field), x=0.0, z=0.0)
-        return self._run("ad_marker", field=0, x=float(place[0]), z=float(place[1]))
-
-    def ad_connect(self, tractor_id: str, marker_id: str, owner: str) -> str:
-        """AutoDrive's lane from the vehicle, a dead end within a few metres of a road that has a
-        route to the marker, joined to it AutoDrive's own way (mod/FarmhandBridge.lua
-        starters.ad_connect), only after AutoDrive's saved network was backed up."""
-        self._reserved(tractor_id, owner)
-        farm = self._observe().farm
-        folder = getattr(self.link.files, "path", None)
-        if folder is None:
-            raise StepFailed("AD_CONFIG_BACKUP_FAILED")
-        backup_autodrive_config(farm.savegame_dir if farm else None, Path(folder).parent.parent,
-                                Path(folder) / "backup")
-        return self._run("ad_connect", tractor=int(tractor_id), marker=int(marker_id))
-
-    _ad_graph_cache: tuple | None = None
-
-    def ad_graph(self):
-        """AutoDrive's road network as the loaded save holds it (companion/hitch.py load_ad_graph; the
-        save's own AutoDrive_config.xml, else the profile's active save folder), read only;
-        None when there is none to read."""
-        farm = self._observe().farm
-        folder = getattr(self.link.files, "path", None)
-        candidates = [Path(farm.savegame_dir) / "AutoDrive_config.xml"] if farm and farm.savegame_dir else []
-        if folder is not None:
-            candidates.append(Path(folder).parent.parent / "save" / "AutoDrive_config.xml")
-        for source in candidates:
-            try:
-                stamp = (str(source), source.stat().st_mtime_ns)
-                if self._ad_graph_cache is None or self._ad_graph_cache[0] != stamp:
-                    self._ad_graph_cache = (stamp, load_ad_graph(source))
-                return self._ad_graph_cache[1]
-            except (OSError, ValueError) as error:
-                log.info("AutoDrive network %s unreadable: %s", source, error)
-        return None
-
     def _unit(self, vehicle_id: str, owner: str) -> None:
         """One of the reserved units, or an implement attached to one (a reserved tractor's own
         plow folded for transport)."""
@@ -806,10 +732,6 @@ class FS25World:
         self._reserved(tractor_id, owner)
         self._run("unpark", tractor=int(tractor_id))
 
-    def deliver(self, tractor_id: str, destination_id: str, owner: str) -> None:
-        self._reserved(tractor_id, owner)
-        self._run("drive", tractor=int(tractor_id), marker=int(destination_id))
-
     def stop(self, tractor_id: str, owner: str) -> bool:
         try:
             self._reserved(tractor_id, owner)
@@ -819,27 +741,6 @@ class FS25World:
 
 
 # ------------------------------------------------------------------ local I/O
-
-def backup_autodrive_config(savegame_dir: str | None, profile: Path, backup_dir: Path) -> Path:
-    """A verified copy of the loaded save's AutoDrive network (AutoDrive_config.xml) before
-    Farmhand adds anything to it: the save's own folder, else the profile's active save
-    folder. No copy, no change (AD_CONFIG_BACKUP_FAILED)."""
-    candidates = [Path(savegame_dir) / "AutoDrive_config.xml"] if savegame_dir else []
-    candidates.append(profile / "save" / "AutoDrive_config.xml")
-    for source in candidates:
-        try:
-            data = source.read_bytes()
-        except OSError:
-            continue
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        target = backup_dir / time.strftime("AutoDrive_config-%Y%m%d-%H%M%S.xml")
-        target.write_bytes(data)
-        if target.read_bytes() != data:
-            break
-        log.info("AutoDrive network backed up: %s -> %s", source, target)
-        return target
-    raise StepFailed("AD_CONFIG_BACKUP_FAILED")
-
 
 class ModSettingsDir:
     """The game's modSettings/FS25_Farmhand folder (Farmhand Companion PROTOCOL.md)."""
