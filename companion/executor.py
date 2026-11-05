@@ -980,6 +980,16 @@ class Executor:
                     now = next(i for i in self.world.snapshot() if i.id == tractor.id)
                     return Pose(now.position[0], now.position[1], now.heading or start.yaw)
         if math.dist(tractor.position, field.center) > self.FIELD_OWN_DRIVE_MAX_M:
+            if tractor.category == "harvester":
+                # Narrow as the combine itself (a cap under its own width plans at its own): whether only
+                # the header keeps it off the roads there, said as such.
+                try:
+                    alone = self.world.reach(tractor.id, center, owner, width=0.1)
+                except (StepFailed, StepUnverified) as failure:
+                    alone = getattr(failure, "code", "REACH_FAILED")
+                log.info("field %s: at the combine's own width GIANTS says %s", field.id, alone)
+                if alone in ("REACHABLE", "REACH_BLOCKED"):
+                    raise StepFailed("FIELD_TOO_NARROW_FOR_THE_HEADER")
             raise StepFailed("FIELD_NOT_REACHABLE")
         return center
 
