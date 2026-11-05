@@ -614,6 +614,12 @@ class ObserveTravelTests(unittest.TestCase):
         reading = {"kmh": 2.0}
         self.v.getLastSpeed = lambda _self: reading["kmh"]
         self.sample(0)
+        # Live aff8c152ac3246d3-1: the snapshot clock moves only with a snapshot, so right after
+        # one the sample reads 0 ms old; the time since it (set by the Bridge) makes it judgeable.
+        self.assertIsNone(self.observe.restingTravelKmh(self.env, self.v))
+        self.observe.sinceSnapshotMs = 300
+        self.assertEqual(self.observe.restingTravelKmh(self.env, self.v), 0.0)
+        self.observe.sinceSnapshotMs = 0
         self.observe.clockMs = self.observe.clockMs + 1000          # a snapshot sample 1 s old
         self.assertTrue(self.observe.atRest(self.env, self.v)[0])       # jitter, root unmoved
         reading["kmh"] = 7.0                                         # any reading: the root decides

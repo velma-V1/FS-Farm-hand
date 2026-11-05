@@ -441,12 +441,16 @@ function Observe.travelKmh(env, v)
 end
 
 -- Read only (never moves the snapshot sample): km/h of root travel since this vehicle's last
--- snapshot sample, when that sample is RESTING_MIN_MS..RESTING_MAX_MS old; else nil.
+-- snapshot sample, when that sample is RESTING_MIN_MS..RESTING_MAX_MS old; else nil. The
+-- sample's age is the snapshot clock plus the time since the last snapshot (sinceSnapshotMs,
+-- set by the Bridge each frame): clockMs moves only when a snapshot is taken (live
+-- aff8c152ac3246d3-1: every check saw a 0 ms old sample and judged by GIANTS' reading).
 Observe.RESTING_MIN_MS, Observe.RESTING_MAX_MS = 50, 2000
+Observe.sinceSnapshotMs = 0
 function Observe.restingTravelKmh(env, v)
     local last = Observe.roots[v]
     if last == nil or v.rootNode == nil then return nil end
-    local span = Observe.clockMs - last.t
+    local span = Observe.clockMs - last.t + (Observe.sinceSnapshotMs or 0)
     if span < Observe.RESTING_MIN_MS or span > Observe.RESTING_MAX_MS then return nil end
     local x, y, z = env.getWorldTranslation(v.rootNode)
     if not (finite(x) and finite(y) and finite(z)) then return nil end

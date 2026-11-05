@@ -3408,9 +3408,11 @@ function Bridge:update(dt)
         end)
     end
     self.snapshotTimer = self.snapshotTimer + dt
+    self.Observe.sinceSnapshotMs = self.snapshotTimer   -- Observe.atRest: the sample's real age
     if self.snapshotTimer >= Bridge.SNAPSHOT_MS and self.pipe ~= nil then
         local elapsed = self.snapshotTimer
         self.snapshotTimer = 0
+        self.Observe.sinceSnapshotMs = 0
         self.seq = self.seq + 1
         local line = self.Observe.snapshot(self.env, self.seq, self.session, elapsed)
         if line ~= nil then self:writeLine(line) end
