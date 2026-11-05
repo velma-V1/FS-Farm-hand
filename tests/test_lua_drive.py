@@ -2157,6 +2157,30 @@ class TowedReverseTests(unittest.TestCase):
         self.env.overlapBox = self.lua.eval("function() return 0 end")
         self.assertTrue(self.hitch.predictedUnitsClear(self.env, foot, samples)[0])
 
+    def test_the_search_rig_model_puts_each_unit_where_the_short_predictor_does(self):
+        self.lua.execute("""local env,truck=...
+            truck.rootNode.x,truck.rootNode.z,truck.rootNode.yaw=-867.0151,-69.7927,-2.417
+            local trailer=truck:getAttachedImplements()[1].object
+            trailer.rootNode.x,trailer.rootNode.z,trailer.rootNode.yaw=-860.5936,-62.7076,-2.0
+            local hx,_,hz=env.localToWorld(truck.rootNode,0.059,0,-2.197)
+            trailer.getActiveInputAttacherJoint=function() return {node={x=hx,z=hz,yaw=-2.0}} end
+            local axleX=hx-math.sin(-2.0)*9.152
+            local axleZ=hz-math.cos(-2.0)*9.152
+            trailer.spec_wheels.wheels={{repr={x=axleX+0.5,z=axleZ,yaw=0}},{repr={x=axleX-0.5,z=axleZ,yaw=0}}}
+        """, self.env, self.tractor)
+        foot = self.footprint()
+        self.assertIsNotNone(foot.model)
+        self.assertAlmostEqual(foot.model.trailerYaw, -2.0)
+        end = (-866.0, -68.6, -2.30)
+        short = self.hitch.predictFromRootPose(self.env, foot, *end)
+        ty = self.lua.eval("function(d, m, ...) return d.trailerStep(m, ...) end")(
+            self.drive, foot.model, -867.0151, -69.7927, -2.417, end[0], end[1], end[2], foot.model.trailerYaw)
+        modelled = self.hitch.modelPoses(foot.model, *end, ty)
+        self.assertEqual(len(modelled), len(short))
+        for n in range(1, len(short) + 1):
+            self.assertLess(math.dist((modelled[n].x, modelled[n].z), (short[n].x, short[n].z)), 0.02)
+            self.assertAlmostEqual(modelled[n].yaw, short[n].yaw, delta=0.005)
+
     def test_a_reverse_off_what_the_truck_touches_at_the_start_is_not_vetoed_by_it(self):
         # Live 732546fb86914a8c-1: the loaded GMC's nose against scenery; every 0.5 m reverse
         # refused by that same contact (unit1@-0.25m), START_NOT_CLEAR.
@@ -3000,4 +3024,74 @@ class GoalHeadingTests(unittest.TestCase):
 
 
 class Lua51GoalHeadingTests(GoalHeadingTests):
+    runtime = lua51
+
+
+class ArticulatedSearchTests(unittest.TestCase):
+    """The route search carries the trailer's heading (live 732546fb86914a8c-1: the GMC rig bent
+    23 deg, every search vetoed by the root-heading rectangle beside the trailer)."""
+    runtime = lua54
+
+    def setUp(self):
+        self.lua = self.runtime.LuaRuntime(unpack_returned_tuples=True)
+        self.drive = self.lua.execute(SOURCE.read_text())
+        self.model = self.lua.table(truckSide=0, truckAhead=-2, towLength=9)
+
+    def wrap(self, a):
+        return (a + math.pi) % (2 * math.pi) - math.pi
+
+    def test_a_trailer_follows_its_hitch_straight_and_round_a_turn(self):
+        step = self.drive.trailerStep
+        self.assertAlmostEqual(step(self.model, 0, 0, 0, 0, 5, 0, 0), 0)          # in line stays in line
+        ty = -0.4
+        x = z = 0.0
+        for _ in range(40):                                                       # bent, then straight on
+            ty = step(self.model, x, z, 0, x, z + 1, 0, ty)
+            z += 1
+        self.assertLess(abs(ty), 0.05)
+        ty, yaw, x, z, k = 0.0, 0.0, 0.0, 0.0, 1 / 12                              # round a 12 m circle
+        for _ in range(300):
+            nx, nz, nyaw = x + (math.cos(yaw) - math.cos(yaw + k * 0.25)) / k, \
+                z + (math.sin(yaw + k * 0.25) - math.sin(yaw)) / k, yaw + k * 0.25
+            ty = step(self.model, x, z, yaw, nx, nz, nyaw, ty)
+            x, z, yaw = nx, nz, nyaw
+        # On that circle the hitch (2 m behind the root) runs at sqrt(12^2 + 2^2), the trailer's
+        # wheel group 9 m behind it at sqrt(that^2 - 9^2): their radii's angle is the articulation.
+        steady = math.atan2(2, 12) + math.atan2(9, math.sqrt(12 ** 2 + 2 ** 2 - 9 ** 2))
+        self.assertAlmostEqual(self.wrap(yaw - ty), steady, delta=0.05)
+
+    def test_the_search_probes_each_pose_with_its_own_trailer_heading(self):
+        seen = []
+        probe = self.lua.eval("""function(log) return function(x, z, yaw, curve, gear, ty)
+            log(ty); return true end end""")(lambda ty: seen.append(ty))
+        start = self.lua.table_from((0, 0, 0))
+        start.model, start.trailerYaw = self.model, -0.4
+        path, why = self.drive.plan(start, self.lua.table_from((0, 40)), 12.0, probe, None, 0, True, 4000)
+        self.assertIsNone(why)
+        self.assertTrue(all(t is not None for t in seen))
+        end = path[len(path)]
+        self.assertLess(abs(self.wrap(end[3] - end[6])), 0.1)    # in line again where it arrives
+        plain = []
+        probe = self.lua.eval("""function(log) return function(x, z, yaw, curve, gear, ty)
+            log(ty == nil); return true end end""")(lambda none: plain.append(none))
+        self.drive.plan(self.lua.table_from((0, 0, 0)), self.lua.table_from((0, 40)), 12.0, probe, None, 0, True, 4000)
+        self.assertTrue(all(plain))                               # no model: as before
+
+    def test_a_modelled_pose_is_judged_by_its_units_not_the_root_heading_rectangle(self):
+        hitch = self.lua.eval("""function()
+            local calls = {}
+            return {
+                routePoseClear = function() calls[#calls+1] = "rectangle"; return false, "OBSTACLE beside" end,
+                modelPoses = function(model, x, z, yaw, ty) calls[#calls+1] = "poses:" .. ty; return {} end,
+                predictedUnitsClear = function() calls[#calls+1] = "units"; return true end,
+            }, calls
+        end""")
+        h, calls = hitch()
+        foot = self.lua.table(model=self.model)
+        self.assertTrue(self.drive.routeProbe(None, foot, h, 0, 5, 0, 0, 1, -0.4)[0])
+        self.assertEqual(list(calls.values()), ["poses:-0.4", "units"])
+        self.assertFalse(self.drive.routeProbe(None, foot, h, 0, 5, 0, 0, 1)[0])   # no heading: the rectangle
+
+
+class Lua51ArticulatedSearchTests(ArticulatedSearchTests):
     runtime = lua51

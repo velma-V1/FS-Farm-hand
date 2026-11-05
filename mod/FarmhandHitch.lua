@@ -2330,7 +2330,11 @@ function Hitch.routeFootprint(env, tractor)
                  aMin = aMin, aMax = aMax, lMin = lMin, lMax = lMax, height = height,
                  unitRects = unitRects }
     end)
-    return ok and footprint or nil
+    if not ok or footprint == nil then return nil end
+    -- The articulated route search's rig (Drive.plan): nil where it cannot be measured.
+    local modelled, model = pcall(Hitch.rigModel, env, footprint)
+    footprint.model = modelled and model or nil
+    return footprint
 end
 
 -- Read-only inventory for the geometry experiment. A rigid-body AABB is a
@@ -2469,6 +2473,62 @@ function Hitch.predictFromRootPose(env, foot, endX, endZ, endYaw)
                                   yaw = trailerYaw + atan2(ufx, ufz) - atan2(rfx, rfz),
                                   rigidFollower = true }
         end
+    end
+    return poses
+end
+
+-- The measured geometry of a one-hitch articulated rig, read once from the live rig (the
+-- same hitch, wheel group and offsets as predictFromRootPose), for the route search to carry
+-- the trailer's heading as part of its state (Drive.trailerStep, Hitch.modelPoses). nil where
+-- predictFromRootPose would refuse (unmeasured tow, a second articulated wheel group).
+function Hitch.rigModel(env, foot)
+    if foot == nil or foot.tractor == nil or foot.towed == nil or foot.towMeasured ~= true
+            or not (finite(foot.towLength) and foot.towLength > 0.5) then return nil end
+    local truck, trailer = foot.tractor, foot.towed
+    local tx, _, tz = world(env, truck.rootNode)
+    if Hitch.predictFromRootPose(env, foot, tx, tz, 0) == nil then return nil end
+    local joint = readOr(function() return trailer:getActiveInputAttacherJoint() end)
+    if joint == nil or joint.node == nil then return nil end
+    local fx, _, fz = env.localDirectionToWorld(truck.rootNode, 0, 0, 1)
+    local truckYaw = atan2(fx, fz)
+    local hx, _, hz = world(env, joint.node)
+    local rx, _, rz = world(env, trailer.rootNode)
+    local rfx, _, rfz = env.localDirectionToWorld(trailer.rootNode, 0, 0, 1)
+    local trailerYaw = atan2(rfx, rfz)
+    local function offset(ox, oz, yaw, x, z)
+        local dx, dz = x - ox, z - oz
+        return dx * math.cos(yaw) - dz * math.sin(yaw), dx * math.sin(yaw) + dz * math.cos(yaw)
+    end
+    local model = { truck = truck, trailer = trailer, towLength = foot.towLength, trailerYaw = trailerYaw,
+                    followers = {} }
+    model.truckSide, model.truckAhead = offset(tx, tz, truckYaw, hx, hz)
+    model.hitchSide, model.hitchAhead = offset(rx, rz, trailerYaw, hx, hz)
+    for _, unit in ipairs(foot.units) do
+        if unit ~= truck and unit ~= trailer then
+            local ux, _, uz = world(env, unit.rootNode)
+            local ufx, _, ufz = env.localDirectionToWorld(unit.rootNode, 0, 0, 1)
+            local side, ahead = offset(rx, rz, trailerYaw, ux, uz)
+            model.followers[#model.followers + 1] = { unit = unit, side = side, ahead = ahead,
+                                                      yaw = atan2(ufx, ufz) - trailerYaw }
+        end
+    end
+    return model
+end
+
+-- The unit poses of the modelled rig with the truck's root at x, z, yaw and the trailer at
+-- trailerYaw (predictFromRootPose's frames).
+function Hitch.modelPoses(model, x, z, yaw, trailerYaw)
+    local function at(px, pz, pyaw, side, ahead)
+        return px + math.cos(pyaw) * side + math.sin(pyaw) * ahead,
+               pz - math.sin(pyaw) * side + math.cos(pyaw) * ahead
+    end
+    local hx, hz = at(x, z, yaw, model.truckSide, model.truckAhead)
+    local trailerX, trailerZ = at(hx, hz, trailerYaw, -model.hitchSide, -model.hitchAhead)
+    local poses = { { unit = model.truck, x = x, z = z, yaw = yaw },
+                    { unit = model.trailer, x = trailerX, z = trailerZ, yaw = trailerYaw } }
+    for _, f in ipairs(model.followers) do
+        local px, pz = at(trailerX, trailerZ, trailerYaw, f.side, f.ahead)
+        poses[#poses + 1] = { unit = f.unit, x = px, z = pz, yaw = trailerYaw + f.yaw, rigidFollower = true }
     end
     return poses
 end

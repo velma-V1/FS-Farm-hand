@@ -22,8 +22,24 @@ end
 
 -- Keep clearance separate from ground preference: a planted field is passable
 -- when the task genuinely needs it, but transport searches pay for crossing it.
-function Drive.routeProbe(env, foot, Hitch, x, z, yaw, curve, gear)
+function Drive.routeProbe(env, foot, Hitch, x, z, yaw, curve, gear, trailerYaw)
     local clear, reason, hits
+    -- With the search's own trailer heading (Drive.plan, articulated): each unit's box where
+    -- the modelled rig puts it. The aggregate rectangle at the root's heading is no measure of
+    -- a bent rig (live 732546fb86914a8c-1: every search from the GMC bent 23 deg vetoed by
+    -- scenery 19 m off beside the trailer, while each unit's 2 m moves were clear).
+    if finite(trailerYaw) and foot ~= nil and foot.model ~= nil and type(Hitch.modelPoses) == "function"
+            and type(Hitch.predictedUnitsClear) == "function" then
+        local ok, unitsClear, unitsReason, unitsHits = pcall(function()
+            local poses = Hitch.modelPoses(foot.model, x, z, yaw, trailerYaw)
+            return Hitch.predictedUnitsClear(env, foot, { { distance = gear == -1 and -1 or 1, poses = poses } })
+        end)
+        if ok then clear, reason, hits = unitsClear, unitsReason, unitsHits end
+        if clear == true and type(Hitch.routeSurface) == "function" then
+            return true, Hitch.routeSurface(env, x, z)
+        end
+        if clear ~= nil or reason ~= nil then return clear, reason, hits end
+    end
     -- The live 2 m turn passed with this short articulated check while the
     -- aggregate rectangle reported scenery in empty space. Use it only for a
     -- candidate arc rooted at the vehicle's current observed pose; other route
@@ -62,6 +78,41 @@ end
 
 local function distance(x, z, gx, gz)
     return sqrt((x - gx) ^ 2 + (z - gz) ^ 2)
+end
+
+-- The trailer's heading after the truck's root moves from (x0, z0, yaw0) to (x1, z1, yaw1):
+-- the hitch point's motion across the trailer turns it about its wheel group (towLength),
+-- in 0.25 m parts, as Hitch.predictFromRootPose.
+Drive.JACKKNIFE = math.rad(75)          -- truck-to-trailer angle a route never plans beyond
+function Drive.trailerStep(model, x0, z0, yaw0, x1, z1, yaw1, trailerYaw)
+    local function hitch(x, z, yaw)
+        return x + cos(yaw) * model.truckSide + sin(yaw) * model.truckAhead,
+               z - sin(yaw) * model.truckSide + cos(yaw) * model.truckAhead
+    end
+    local steps = math.max(1, math.ceil(distance(x0, z0, x1, z1) / 0.25))
+    local lastX, lastZ = hitch(x0, z0, yaw0)
+    for i = 1, steps do
+        local share = i / steps
+        local hx, hz = hitch(x0 + (x1 - x0) * share, z0 + (z1 - z0) * share, yaw0 + (yaw1 - yaw0) * share)
+        trailerYaw = trailerYaw + ((hx - lastX) * cos(trailerYaw) - (hz - lastZ) * sin(trailerYaw)) / model.towLength
+        lastX, lastZ = hx, hz
+    end
+    return trailerYaw
+end
+
+-- A search start where the rig stands: with a modelled articulated rig (s.foot.model), the
+-- trailer's observed heading too, which Drive.plan then carries as part of its state.
+function Drive.startPose(env, s, x, z, yaw)
+    local start = { x, z, yaw }
+    local model = s ~= nil and s.foot ~= nil and s.foot.model or nil
+    if model ~= nil then
+        local ok, ty = pcall(function()
+            local fx, _, fz = env.localDirectionToWorld(model.trailer.rootNode, 0, 0, 1)
+            return atan2(fx, fz)
+        end)
+        if ok and finite(ty) then start.trailerYaw, start.model = ty, model end
+    end
+    return start
 end
 
 local function advance(x, z, yaw, length, curvature)
@@ -147,7 +198,7 @@ end
 -- Path steps (each <= STEP, one arc) along a Dubins curve from a pose, or nil where the
 -- probe rejects a metre of it, it leaves the search area or crosses a planted crop
 -- (the search pays for crop; a shot does not cross it).
-local function dubinsSteps(x, z, yaw, segments, probe, inside)
+local function dubinsSteps(x, z, yaw, segments, probe, inside, model, trailerYaw)
     local steps = {}
     for _, seg in ipairs(segments) do
         local curvature, length = seg[1], seg[2]
@@ -156,13 +207,20 @@ local function dubinsSteps(x, z, yaw, segments, probe, inside)
             local piece = length / pieces
             for _ = 1, pieces do
                 local metres = math.ceil(piece - 1e-9)
+                local lx, lz, lyaw, ty = x, z, yaw, trailerYaw
                 for m = 1, metres do
                     local px, pz, pyaw = advance(x, z, yaw, math.min(m, piece), curvature)
-                    local pass, surface = probe(px, pz, pyaw, curvature, 1)
+                    if model ~= nil then
+                        ty = Drive.trailerStep(model, lx, lz, lyaw, px, pz, pyaw, ty)
+                        lx, lz, lyaw = px, pz, pyaw
+                        if abs((pyaw - ty + pi) % (2 * pi) - pi) > Drive.JACKKNIFE then return nil end
+                    end
+                    local pass, surface = probe(px, pz, pyaw, curvature, 1, ty)
                     if pass ~= true or surface == "CROP" or not inside(px, pz) then return nil end
                 end
-                x, z, yaw = advance(x, z, yaw, piece, curvature)
-                steps[#steps+1] = { x, z, yaw }
+                x, z, yaw = advance(x, z, yaw, piece, curvature)    -- the last metre ends here
+                trailerYaw = ty
+                steps[#steps+1] = { x, z, yaw, nil, nil, trailerYaw }
             end
         end
     end
@@ -539,10 +597,14 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
         return nil, "INVALID_GEOMETRY"
     end
     local sx, sz, syaw, gx, gz = start[1], start[2], start[3], target[1], target[2]
+    -- An articulated rig (Drive.startPose): the trailer's heading is part of each search state,
+    -- moved by Drive.trailerStep and judged by its units' own boxes (Drive.routeProbe).
+    local model, sty = start.model, start.trailerYaw
+    if model == nil or not finite(sty) then model, sty = nil, nil end
     -- A shuffle may begin where the rig stands inside its own margin of something (live
     -- f13bb95c295c4a4b-1: stopped off a turning reverse by its planter, every move forward
     -- clear); each move it makes is probed as before.
-    if probe(sx, sz, syaw) ~= true and (switches or 0) <= 0 then return nil, "START_NOT_CLEAR" end
+    if probe(sx, sz, syaw, nil, nil, sty) ~= true and (switches or 0) <= 0 then return nil, "START_NOT_CLEAR" end
     if distance(sx, sz, gx, gz) < 3 then return { { sx, sz, syaw } }, nil end
     local margin = math.max(45, math.min(120, distance(sx, sz, gx, gz) * 0.6))
     local minX, maxX = math.min(sx, gx) - margin, math.max(sx, gx) + margin
@@ -560,7 +622,7 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
         local reversed = {}
         while node ~= nil do
             reversed[#reversed + 1] = { node.x, node.z, node.yaw, node.gear < 0 and -1 or nil,
-                                        node.gear < 0 and node.curve or nil }
+                                        node.gear < 0 and node.curve or nil, node.trailerYaw }
             node = node.parent
         end
         local path = {}
@@ -569,12 +631,16 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
     end
     local function nodeKey(node)
         local k = key(node.x, node.z, node.yaw)
+        if node.trailerYaw ~= nil then     -- the articulation too, in BIN steps
+            k = k .. ":" .. floor(((node.yaw - node.trailerYaw + pi) % (2 * pi) - pi) / BIN + 0.5)
+        end
         return node.gear < 0 and k .. ":r" or k
     end
     local found, expanded, blocked = resumable(signature("plan", sx, sz, syaw, gx, gz, radius, goalYaw, limit,
-                                                guide and #guide or 0, switches, steeredReverse and 1 or 0), function()
+                                                guide and #guide or 0, switches, steeredReverse and 1 or 0,
+                                                sty or "-"), function()
         local heap = {}
-        local first = { x = sx, z = sz, yaw = syaw, cost = 0, gear = 1, switches = 0,
+        local first = { x = sx, z = sz, yaw = syaw, cost = 0, gear = 1, switches = 0, trailerYaw = sty,
                         score = guide and corridorHeuristic(sx,sz,guide)*1.5 or distance(sx,sz,gx,gz) }
         push(heap, first)
         return { heap = heap, best = { [nodeKey(first)] = 0 }, expanded = 0, blocked = {} }
@@ -606,7 +672,7 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
                     if n > 2 or curve.length > near + pi * radius then break end
                     local steps = dubinsSteps(node.x, node.z, node.yaw, curve, probe, function(px, pz)
                         return px >= minX and px <= maxX and pz >= minZ and pz <= maxZ
-                    end)
+                    end, model, node.trailerYaw)
                     if steps ~= nil then
                         local path = trace(node)
                         for _, step in ipairs(steps) do path[#path + 1] = step end
@@ -626,10 +692,18 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
                 local switched = gear ~= node.gear and node.parent ~= nil
                 local clear = not switched or node.switches < switches
                 local surfaceCost = 0
+                local px, pz, pyaw, ty = node.x, node.z, node.yaw, node.trailerYaw
                 for d = 1, len do
                     if not clear then break end
                     local x, z, yaw = advance(node.x, node.z, node.yaw, d * gear, curve)
-                    local pass, surface = probe(x, z, yaw, curve, gear)
+                    if model ~= nil then
+                        ty = Drive.trailerStep(model, px, pz, pyaw, x, z, yaw, ty)
+                        px, pz, pyaw = x, z, yaw
+                    end
+                    local pass, surface = probe(x, z, yaw, curve, gear, ty)
+                    if pass == true and ty ~= nil and abs((yaw - ty + pi) % (2 * pi) - pi) > Drive.JACKKNIFE then
+                        pass, surface = false, "JACKKNIFE"
+                    end
                     if x < minX or x > maxX or z < minZ or z > maxZ or pass ~= true then
                         clear = false
                         -- What rejected it, by the reason's first word (the exhausted log).
@@ -648,7 +722,7 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
                                  + (curve ~= 0 and 0.3 or 0)
                                  + (switched and STEP * 3 or 0)
                     local child = { x = x, z = z, yaw = yaw, cost = cost, gear = gear, curve = curve,
-                                    switches = node.switches + (switched and 1 or 0), parent = node,
+                                    switches = node.switches + (switched and 1 or 0), parent = node, trailerYaw = ty,
                                     score = cost + (guide and corridorHeuristic(x,z,guide)*1.5
                                                   or distance(x,z,gx,gz)) }
                     local k = nodeKey(child)
@@ -710,7 +784,8 @@ function Drive.plan(start, target, radius, probe, guide, goalYaw, localOnly, max
                     break
                 end
                 for n = path[1] and 2 or 1, #section do path[#path+1] = section[n] end
-                current, reached = section[#section], chosen
+                local last = section[#section]
+                current, reached = { last[1], last[2], last[3], trailerYaw = last[6], model = model }, chosen
             end
             if not failed then return path, nil end
         else
@@ -864,12 +939,13 @@ function Drive.planAhead(env, s, Hitch)
             or (s.aheadAttempt or 1) > #SECTION_SPANS then return nil end
     local last = s.path[#s.path]
     if (last[4] or 1) < 0 then return nil end
-    local function clear(px, pz, pyaw, curve, gear)
-        return Drive.routeProbe(env, s.foot, Hitch, px, pz, pyaw, curve, gear)
+    local function clear(px, pz, pyaw, curve, gear, trailerYaw)
+        return Drive.routeProbe(env, s.foot, Hitch, px, pz, pyaw, curve, gear, trailerYaw)
     end
     s.ahead = s.ahead or { budget = Drive.AHEAD_BUDGET_S }
     local section, reached = planned(s.ahead, gameClock(env), Drive.section,
-                                     { last[1], last[2], last[3] }, s.radius, clear,
+                                     { last[1], last[2], last[3], trailerYaw = last[6], model = s.foot.model },
+                                     s.radius, clear,
                                      s.corridor, s.reached, s.aheadAttempt or 1)
     if section == PENDING then return nil end
     s.ahead = nil
@@ -1619,8 +1695,8 @@ end
 -- The first route of a drive, as a replayable planning step (Drive.begin, and
 -- Drive.step while it continues over frames). nil, or the failure code.
 local function initialPlan(env, s, Hitch)
-    local function clear(px, pz, pyaw, curve, gear)
-        return Drive.routeProbe(env, s.foot, Hitch, px, pz, pyaw, curve, gear)
+    local function clear(px, pz, pyaw, curve, gear, trailerYaw)
+        return Drive.routeProbe(env, s.foot, Hitch, px, pz, pyaw, curve, gear, trailerYaw)
     end
     local start, target = s.initial.start, { s.targetX, s.targetZ }
     local path, corridor, reached, sectionAttempt, retreat, backOut
@@ -1743,8 +1819,8 @@ function Drive.begin(env, args, Hitch)
         if args.via ~= nil and Drive.learnedCorridor({x,z,yaw}, {args.x,args.z}, args.via) == nil then
             return nil, "INVALID_DESTINATION"
         end
-        local function clear(px, pz, pyaw, curve, gear)
-            return Drive.routeProbe(env, foot, Hitch, px, pz, pyaw, curve, gear)
+        local function clear(px, pz, pyaw, curve, gear, trailerYaw)
+            return Drive.routeProbe(env, foot, Hitch, px, pz, pyaw, curve, gear, trailerYaw)
         end
         local startClear, startReason, hits = Hitch.routePoseClear(env, foot, x, z, yaw)
         local egress, ghostedAtStart
@@ -1873,12 +1949,14 @@ function Drive.begin(env, args, Hitch)
         end
         local navHint = Drive.navHint(env)
         local planStart
-        if egress == nil then
-            planStart = {x,z,yaw}
-        else
+        planStart = Drive.startPose(env, { foot = foot }, x, z, yaw)
+        if egress ~= nil then
             local px = x + sin(yaw) * egress.plannedM * (egress.dir or 1)
             local pz = z + cos(yaw) * egress.plannedM * (egress.dir or 1)
-            planStart = {px,pz,yaw}
+            if planStart.model ~= nil then
+                planStart.trailerYaw = Drive.trailerStep(planStart.model, x, z, yaw, px, pz, yaw, planStart.trailerYaw)
+            end
+            planStart[1], planStart[2] = px, pz
         end
         local cruise = v.spec_drivable and v.spec_drivable.cruiseControl
         local savedCruise = cruise and cruise.speed
@@ -2075,6 +2153,15 @@ local function guard(env, s, Hitch, x, z, yaw, atTarget)
         -- box's 0.5 m margin; both contacts were in that band, never on the path itself).
         local ox, oz = Drive.pathOffset(s.path, s.next, x, z)
         local shifted = math.sqrt(ox * ox + oz * oz) > Drive.PREVIEW_OFFSET_M
+        -- An articulated rig: the trailer's observed heading carried along what is previewed
+        -- (Drive.trailerStep) and each sample judged by the units' own boxes (Drive.routeProbe).
+        local model = s.foot.model
+        local ty = model ~= nil and Drive.startPose(env, s, x, z, yaw).trailerYaw or nil
+        local lastX, lastZ, lastYaw = x, z, yaw
+        local function previewClear(px, pz, pyaw, turn, gear)
+            if ty == nil then return Hitch.routePoseClear(env, s.foot, px, pz, pyaw, turn) end
+            return Drive.routeProbe(env, s.foot, Hitch, px, pz, pyaw, turn, gear, ty)
+        end
         local traveled = 0
         for i = s.next, #s.path do
             local segmentLength
@@ -2085,14 +2172,19 @@ local function guard(env, s, Hitch, x, z, yaw, atTarget)
                 if playerX ~= nil and distance(px, pz, playerX, playerZ) < 6 then
                     return "PERSON_TOO_CLOSE"
                 end
-                local clear, why = Hitch.routePoseClear(env, s.foot, px, pz, pyaw, turn)
+                local gear = s.path[i][4] == -1 and -1 or 1
+                if ty ~= nil then
+                    ty = Drive.trailerStep(model, lastX, lastZ, lastYaw, px, pz, pyaw, ty)
+                    lastX, lastZ, lastYaw = px, pz, pyaw
+                end
+                local clear, why = previewClear(px, pz, pyaw, turn, gear)
                 if clear ~= true then
                     say(string.format("[Farmhand] drive preview blocked at %.2f,%.2f yaw %.2f: %s",
                                         px, pz, pyaw, tostring(why)))
                     return clear == nil and "UNKNOWN_OBSERVATION" or "OBSTACLE_AHEAD"
                 end
                 if shifted then
-                    clear, why = Hitch.routePoseClear(env, s.foot, px + ox, pz + oz, pyaw, turn)
+                    clear, why = previewClear(px + ox, pz + oz, pyaw, turn, gear)
                     if clear ~= true then
                         say(string.format("[Farmhand] drive preview blocked as tracked (%.1f m off the path) at %.2f,%.2f yaw %.2f: %s",
                                             math.sqrt(ox * ox + oz * oz), px + ox, pz + oz, pyaw, tostring(why)))
@@ -2224,10 +2316,10 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
                 end
             end
             s.foot.departureNudge = nil
-            local function clear(px,pz,pyaw,curve,gear)
-                return Drive.routeProbe(env,s.foot,Hitch,px,pz,pyaw,curve,gear)
+            local function clear(px,pz,pyaw,curve,gear,ty)
+                return Drive.routeProbe(env,s.foot,Hitch,px,pz,pyaw,curve,gear,ty)
             end
-            local start = {x,z,yaw}
+            local start = Drive.startPose(env, s, x, z, yaw)
             if s.shuffle ~= nil then
                 s.retreat = nil
                 if shuffleOn(s,start,clear) then return "CONTINUE" end
@@ -2318,7 +2410,7 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
                               along, ahead ~= true and "front blocked" or "its length",
                               inLine and "in line" or "the route box still touching"))
             s.straightenForward = nil
-            s.initial = { start = {x,z,yaw}, x = x, z = z, yaw = yaw }
+            s.initial = { start = Drive.startPose(env, s, x, z, yaw), x = x, z = z, yaw = yaw }
             s.maxSpeedKmh,s.commandShare,s.driveStartMs = 64,nil,nil
             return "CONTINUE"
         end
@@ -2340,10 +2432,10 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
             or Drive.sectionReached(s.path,x,z,yaw)))) then
         Hitch.halt(env,s,dt)
         if not stopped(s.tractor) then return "CONTINUE" end
-        local function clear(px,pz,pyaw,curve,gear)
-            return Drive.routeProbe(env,s.foot,Hitch,px,pz,pyaw,curve,gear)
+        local function clear(px,pz,pyaw,curve,gear,ty)
+            return Drive.routeProbe(env,s.foot,Hitch,px,pz,pyaw,curve,gear,ty)
         end
-        local start = {x,z,yaw}
+        local start = Drive.startPose(env, s, x, z, yaw)
         -- Bent by a turn (live 125141b03ef949ff-2: a 48 m leg ended in a turn beside a fill
         -- station; every plan from there was START_NOT_CLEAR): into line first.
         if (s.unbends or 0) < 4 and s.foot.towed ~= nil then
@@ -2450,7 +2542,7 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
             s.foot.leaving = { x = x, z = z, radius = Drive.LEAVE_M,
                                excluded = (e.ignoredFoot or s.foot).excluded }
             s.egress, s.path, s.corridor = nil, nil, nil
-            s.initial = { start = { x, z, yaw }, x = x, z = z, yaw = yaw }
+            s.initial = { start = Drive.startPose(env, s, x, z, yaw), x = x, z = z, yaw = yaw }
             s.planSince, s.maxSpeedKmh, s.commandShare = nil, 64, nil
             say(string.format("[Farmhand] drive departure not clear after %.1fm; leaving it by the route from %.1f,%.1f",
                               along, x, z))
@@ -2465,10 +2557,10 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
         if clear then
             Hitch.halt(env, s, dt)
             if not stopped(s.tractor) then return "CONTINUE" end
-            local function probe(px, pz, pyaw)
-                return Drive.routeProbe(env, s.foot, Hitch, px, pz, pyaw)
+            local function probe(px, pz, pyaw, curve, gear, ty)
+                return Drive.routeProbe(env, s.foot, Hitch, px, pz, pyaw, curve, gear, ty)
             end
-            local start = {x,z,yaw}
+            local start = Drive.startPose(env, s, x, z, yaw)
             local path
             if distance(x,z,s.targetX,s.targetZ) <= 200 then
                 path = Drive.plan(start,{s.targetX,s.targetZ},s.radius,
