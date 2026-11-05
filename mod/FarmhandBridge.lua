@@ -784,7 +784,9 @@ Bridge.AGENT_CODES = {
                  stuck = "NAVIGATE_STUCK", stuckAtStart = "NAVIGATE_STUCK_AT_START",
                  blocked = "NAVIGATE_STALLED", blockedAtStart = "NAVIGATE_BLOCKED_AT_START" },
     stage = { ended = "STAGE_ENDED", timeoutMs = "STAGE_TIMEOUT_MS", timeout = "STAGE_TIMEOUT",
-              stuck = "NAVIGATE_STUCK", stuckAtStart = "STAGE_BLOCKED_AT_START",
+              -- unmoved from its start: ended, as GIANTS' NOT_REACHABLE (the hitch then takes
+              -- the aim by Farmhand's own drive, live a34770b22e2a46fa-2)
+              stuck = "NAVIGATE_STUCK", stuckAtStart = "STAGE_ENDED",
               blocked = "NAVIGATE_STALLED", blockedAtStart = "STAGE_BLOCKED_AT_START" },
 }
 local function stepAgent(env, task, dt, codes)
@@ -826,23 +828,28 @@ local function stepAgent(env, task, dt, codes)
         Bridge.Hitch.holdActive(task.drive)
         v:raiseActive()
         env.AIVehicleUtil.driveAlongCurvature(v, dt, curvature, kmh, 1)
-        -- Commanded to move, yet the root does not: something physical holds it.
-        if kmh > 1 and (task.fromX == nil or math.sqrt((x - task.fromX) ^ 2 + (z - task.fromZ) ^ 2) >= Bridge.AGENT.stuckM) then
-            task.fromX, task.fromZ, task.fromAt = x, z, task.elapsed
-        elseif kmh > 1 and task.elapsed - (task.fromAt or task.elapsed) > Bridge.AGENT.stuckMs then
-            local contacts = "?"
-            pcall(function() contacts = Bridge.Hitch.rigContacts(env, v) end)
-            log("%s: driven along GIANTS' agent but unmoved %.0f s at %.1f,%.1f (contacts %s)",
-                task.op, Bridge.AGENT.stuckMs / 1000, x, z, tostring(contacts))
-            agentEnd(env, task, dt)
-            return "FAILED", task.leftStart and codes.stuck or codes.stuckAtStart
-        elseif kmh <= 1 then
-            task.fromAt = task.elapsed
-        end
-        return nil
+        task.drove = true
+        if kmh <= 1 then task.fromAt = task.elapsed end      -- the agent itself asks it to wait
+    else
+        Bridge.Hitch.halt(env, task.drive, dt)
     end
-    Bridge.Hitch.halt(env, task.drive, dt)
-    task.fromAt = task.elapsed
+    -- Driven along the agent, and through its replanning (live a34770b22e2a46fa-2: planning and
+    -- driving by turns every 5 s, unmoved 33 s before NOT_REACHABLE), yet the root does not move.
+    if task.fromX == nil or math.sqrt((x - task.fromX) ^ 2 + (z - task.fromZ) ^ 2) >= Bridge.AGENT.stuckM then
+        task.fromX, task.fromZ, task.fromAt = x, z, task.elapsed
+    elseif task.drove and (name == "DRIVING" or name == "PLANNING")
+            and task.elapsed - (task.fromAt or task.elapsed) > Bridge.AGENT.stuckMs then
+        local contacts = "?"
+        pcall(function() contacts = Bridge.Hitch.rigContacts(env, v) end)
+        log("%s: driven along GIANTS' agent but unmoved %.0f s at %.1f,%.1f (contacts %s)",
+            task.op, Bridge.AGENT.stuckMs / 1000, x, z, tostring(contacts))
+        local stuck = task.leftStart and codes.stuck or codes.stuckAtStart
+        if stuck == codes.ended then return finish(stuck) end
+        agentEnd(env, task, dt)
+        return "FAILED", stuck
+    end
+    if name == "DRIVING" and finite(curvature) then return nil end
+    if name == "BLOCKED" then task.fromAt = task.elapsed end   -- its own bound below
     if name == "TARGET_REACHED" or name == "NOT_REACHABLE" then
         logAgent(env, v, task.op .. " ended")
         return finish(codes.ended)

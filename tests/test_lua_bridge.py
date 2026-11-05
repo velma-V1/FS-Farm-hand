@@ -599,9 +599,10 @@ class LuaBridgeTests(unittest.TestCase):
                 self.assertEqual(self.results(1)[-1], (1, "FAILED", code))
                 self.assertIn("deleteAgent", self.calls())
 
-    def test_stage_drives_the_agent_too_and_a_start_it_cannot_leave_is_blocked_at_start(self):
+    def test_stage_drives_the_agent_too_and_a_start_it_cannot_leave_ends_it(self):
+        # Live a34770b22e2a46fa-2: planning and driving by turns, unmoved 33 s: ended in 8 s now.
         for script, moves, result in (([(0.0, 8.0, 1)] * 10 + [(0, 0, 5)], True, ("DONE", "STAGE_ENDED")),
-                                      ([(0.0, 8.0, 1)], False, ("FAILED", "STAGE_BLOCKED_AT_START"))):
+                                      ([(0.0, 8.0, 1), (0.0, 0.0, 3)] * 40, False, ("DONE", "STAGE_ENDED"))):
             with self.subTest(result=result):
                 self.w = self.W.new()
                 self.adopt()
