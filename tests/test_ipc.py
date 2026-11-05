@@ -305,7 +305,8 @@ class MappingTests(unittest.TestCase):
                  ({"motor": None}, "unknown"),
                  # No PTO (live: the GMC Sierra): it still tows; its PTO capacity is unknown.
                  ({"motor": {"peak_torque": 900.0, "pto_rpm_ratio": None}}, "tractor"),
-                 ({"output_joints": []}, "unknown"),
+                 # No reported hitch still drives (live 2026-11-05: the 379 towing its lowboy reported none).
+                 ({"output_joints": []}, "tractor"),
                  # A pickup or truck with a trailer hitch tows (the GMC and its gooseneck);
                  # PTO power and joint types are decided per joint pair.
                  ({"output_joints": no_pto}, "tractor"),

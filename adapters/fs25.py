@@ -97,12 +97,13 @@ def _towing_vehicle(vehicle) -> bool:
     and a readable store category that is not a loader's. A pickup or truck with a
     trailer hitch tows too (the GMC and its gooseneck): PTO power and joint types are
     decided per joint pair, so it can never take an implement it cannot hitch or power.
-    No tractor store category name is proven (adapters/EVIDENCE.md)."""
+    No tractor store category name is proven (adapters/EVIDENCE.md). A driven machine needs no
+    free or reported hitch to drive (live 2026-11-05: the 379 towing its lowboy reported none):
+    hitching still needs a matching joint per pair."""
     category = vehicle["category"]
     return (vehicle["self_propelled"] is True and vehicle["motor"] is not None
             and category is not None and category.upper() not in LOADER_STORE_CATEGORIES
-            and not WORK_KINDS & set(vehicle["kinds"])
-            and bool(vehicle["output_joints"]))
+            and not WORK_KINDS & set(vehicle["kinds"]))
 
 
 def _category(vehicle, categories) -> str | None:
