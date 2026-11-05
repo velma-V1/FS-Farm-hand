@@ -54,7 +54,7 @@ Bridge.FIELDWORK_TIMEOUT_MS = 7200000 -- 2 h: a small owned field takes minutes
 Bridge.FIELDWORK_STALL_MS = 300000    -- running but unmoved (< 2 m) for 5 min: stopped
 Bridge.FIELDWORK_CHECK_MS = 3000      -- a bounded test area is re-measured this often before work starts
 Bridge.FIELDWORK_WORKING_CHECK_MS = 250 -- and this often once it works (live fb3522a3e1d64f75-1: 0 -> 1244 m2 in 3 s)
-Bridge.FIELDWORK_STOP_LEAD_MS = 750     -- the work rate over this long is counted as done before a stop takes
+Bridge.FIELDWORK_AREA_SHARE = 0.97     -- stopped at the first reading this share of the request (companion: 0.95)
 Bridge.FIELDWORK_MAX_AREA_M2 = 20000  -- the largest bounded test area
 -- Travel (AutoDrive drive and sell, GIANTS GOTO, Deliver) is judged by progress: each has its
 -- own unmoved watch (AD_STALL_MS, NAVIGATE_STALL_MS, DELIVER_STALL_MS); this is only a safety
@@ -2742,17 +2742,23 @@ function steppers.fieldwork(env, task, dt)
         if task.spec.area ~= nil and not task.areaReached then
             task.sinceCheck = task.sinceCheck + (dt or 0)
             local working = pcall(function() assert(v:getIsFieldWorkActive() == true) end)
-            if task.sinceCheck >= (working and Bridge.FIELDWORK_WORKING_CHECK_MS or Bridge.FIELDWORK_CHECK_MS) then
+            local every = task.nearArea and 0 or working and Bridge.FIELDWORK_WORKING_CHECK_MS or Bridge.FIELDWORK_CHECK_MS
+            if task.sinceCheck >= every then
                 task.sinceCheck = 0
                 local okShares, shares = pcall(Bridge.Observe.fieldShares, env, task.spec.field)
                 local changed = Bridge.changedArea(task.before, okShares and shares or nil)
-                -- The area the measured work rate adds before a stop takes: counted as done.
+                -- Near the request, measured every frame and stopped at the first reading inside
+                -- it: a stop takes at once (live f5c50ab7: a 750 ms lead stopped a 476 m2/s plow at
+                -- 121 m2 of 400), and the measured rate says when the next check would pass it.
                 local rate = 0
                 if changed ~= nil and task.lastChanged ~= nil and task.elapsed > task.lastCheckAt then
                     rate = math.max(0, (changed - task.lastChanged) / (task.elapsed - task.lastCheckAt))
                 end
                 if changed ~= nil then task.lastChanged, task.lastCheckAt = changed, task.elapsed end
-                local expected = changed and changed + rate * Bridge.FIELDWORK_STOP_LEAD_MS or nil
+                local stopNow = changed ~= nil and changed >= task.spec.area * Bridge.FIELDWORK_AREA_SHARE
+                if changed ~= nil and changed + rate * Bridge.FIELDWORK_WORKING_CHECK_MS >= task.spec.area then
+                    task.nearArea = true
+                end
                 -- Each check, for the overshoot (live f460004990284cd1-1: 2016 m2 of 400 for a plow).
                 local lowered = "?"
                 pcall(function()
@@ -2764,7 +2770,7 @@ function steppers.fieldwork(env, task, dt)
                     log("fieldwork check at %.1f s: %.0f m2 changed of %.0f (%.0f m2/s), lowered %s, %.1f km/h",
                         task.elapsed / 1000, changed, task.spec.area, rate * 1000, lowered, v:getLastSpeed())
                 end
-                if expected ~= nil and expected >= task.spec.area then
+                if stopNow then
                     log("fieldwork: %.0f m2 of field %s changed (test area %.0f m2); stopping the helper",
                         changed, tostring(task.spec.field), task.spec.area)
                     task.areaReached = true

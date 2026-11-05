@@ -1193,15 +1193,15 @@ class LuaBridgeTests(unittest.TestCase):
             end
             w.worked = 0
             B.Observe.fieldShares = function()
-                if w.aiActive then w.worked = w.worked + 30 end      -- 30 m2 a check (120 m2/s)
+                if w.aiActive then w.worked = w.worked + 30 end      -- 30 m2 a reading
                 local share = w.worked / 10000
                 return { ground = { STUBBLE = 1 - share, PLOWED = share }, total_m2 = 10000 }
             end""", self.w, self.bridge)
         self.send(1, "fieldwork", {**self.FIELD, "area": 400})
         self.beating(6000)
         self.assertEqual(self.results(1)[-1], (1, "DONE", "AREA_REACHED"))
-        self.assertGreaterEqual(self.w.worked, 300)
-        self.assertLess(self.w.worked, 400)                     # the stop's own lag left within the request
+        self.assertGreaterEqual(self.w.worked, 0.97 * 400)
+        self.assertLess(self.w.worked, 400 + 30)                # at most one reading's work over
 
     def test_a_combine_always_lays_a_straw_swath_where_it_can(self):
         for available, honest, result in ((True, True, ("ACCEPTED", "ACCEPTED")), (False, True, ("ACCEPTED", "ACCEPTED")),
