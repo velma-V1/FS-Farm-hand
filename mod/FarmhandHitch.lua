@@ -2503,27 +2503,62 @@ end
 
 -- Local experimental clearance of the predicted connected units. Unlike
 -- routePoseClear, no empty whole-rig rectangle can veto this motion.
+-- One predicted unit pose's own box (size + 0.5 m) against the obstacles: its hits, or nil.
+local function unitPoseHits(env, foot, pose)
+    local size = pose.unit.size
+    if size == nil or not (finite(size.width) and finite(size.length)) then return nil, "UNIT_SIZE_UNREADABLE" end
+    local bx = pose.x + math.sin(pose.yaw) * (size.lengthOffset or 0)
+               + math.cos(pose.yaw) * (size.widthOffset or 0)
+    local bz = pose.z + math.cos(pose.yaw) * (size.lengthOffset or 0)
+               - math.sin(pose.yaw) * (size.widthOffset or 0)
+    local query = boxQuery(env, foot.excluded, bx, bz, pose.yaw,
+        size.width / 2 + 0.5, size.length / 2 + 0.5,
+        0.3, (size.height or foot.height) + 0.5,
+        foot.masks.obstacles, terrainAt(env, bx, bz))
+    if query == nil then return nil, "COLLISION_UNREADABLE" end
+    return query.hits
+end
+
+-- What each unit's own box touches where the rig stands now: per unit index, a set of nodes.
+function Hitch.unitStartHits(env, foot)
+    local x, _, z = world(env, foot.tractor.rootNode)
+    local fx, _, fz = env.localDirectionToWorld(foot.tractor.rootNode, 0, 0, 1)
+    local poses = Hitch.predictFromRootPose(env, foot, x, z, atan2(fx, fz))
+    if poses == nil then return nil end
+    local out = {}
+    for index, pose in ipairs(poses) do
+        local hits = unitPoseHits(env, foot, pose)
+        if hits == nil then return nil end
+        out[index] = {}
+        for _, node in ipairs(hits) do out[index][node] = true end
+    end
+    return out
+end
+
 function Hitch.predictedUnitsClear(env, foot, samples)
     if foot == nil or samples == nil then return nil, "PREDICTION_UNREADABLE" end
+    -- Reversing off what a unit touched at the start (Drive.begin: foot.leaving.unitHits), that
+    -- unit's own contact is no veto inside the leaving radius (live 732546fb86914a8c-1: the
+    -- loaded GMC's nose against scenery, every 0.5 m reverse refused by that same contact).
+    local leaving = foot.leaving
+    local away = leaving ~= nil and leaving.unitHits or nil
     local ok, clear, reason, hits = pcall(function()
         for _, sample in ipairs(samples) do
             for index, pose in ipairs(sample.poses) do
-                local size = pose.unit.size
-                if size == nil or not (finite(size.width) and finite(size.length)) then
-                    return nil, "UNIT_SIZE_UNREADABLE"
+                local found, why = unitPoseHits(env, foot, pose)
+                if found == nil then return nil, why end
+                if away ~= nil and away[index] ~= nil and sample.distance < 0
+                        and math.sqrt((sample.poses[1].x - leaving.x) ^ 2 + (sample.poses[1].z - leaving.z) ^ 2)
+                            < leaving.radius then
+                    local kept = {}
+                    for _, node in ipairs(found) do
+                        if not away[index][node] then kept[#kept + 1] = node end
+                    end
+                    found = kept
                 end
-                local bx = pose.x + math.sin(pose.yaw) * (size.lengthOffset or 0)
-                           + math.cos(pose.yaw) * (size.widthOffset or 0)
-                local bz = pose.z + math.cos(pose.yaw) * (size.lengthOffset or 0)
-                           - math.sin(pose.yaw) * (size.widthOffset or 0)
-                local query = boxQuery(env, foot.excluded, bx, bz, pose.yaw,
-                    size.width / 2 + 0.5, size.length / 2 + 0.5,
-                    0.3, (size.height or foot.height) + 0.5,
-                    foot.masks.obstacles, terrainAt(env, bx, bz))
-                if query == nil then return nil, "COLLISION_UNREADABLE" end
-                if #query.hits > 0 then
+                if #found > 0 then
                     return false, string.format("unit%d@%.2fm OBSTACLE %s", index,
-                        sample.distance, hitNames(env, query.hits)), query.hits
+                        sample.distance, hitNames(env, found)), found
                 end
             end
         end

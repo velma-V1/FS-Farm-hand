@@ -1817,6 +1817,10 @@ function Drive.begin(env, args, Hitch)
                 -- the route is planned as ever, the touched object alone left out while the rig is
                 -- within Drive.LEAVE_M of where it stood, so its first moves are the ones away from it.
                 foot.leaving = { x = x, z = z, radius = Drive.LEAVE_M, excluded = excluded }
+                if type(Hitch.unitStartHits) == "function" and foot.towMeasured == true then
+                    local okHits, unitHits = pcall(Hitch.unitStartHits, env, foot)
+                    foot.leaving.unitHits = okHits and unitHits or nil
+                end
                 say(string.format("[Farmhand] drive starts touching %s, no straight way off it (%s): leaving it by the route",
                                   vehicle ~= nil and tostring(vehicle.getName and vehicle:getName() or vehicle.typeName)
                                   or tostring(startReason), tostring(why)))
@@ -2216,6 +2220,7 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
                     -- Contact is over: plan the turn with the kiosk/tree/building
                     -- counted again, even while the rig is inside its start radius.
                     s.foot.leaving.excluded = s.foot.excluded
+                    s.foot.leaving.unitHits = nil
                 end
             end
             s.foot.departureNudge = nil

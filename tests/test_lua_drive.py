@@ -2157,6 +2157,36 @@ class TowedReverseTests(unittest.TestCase):
         self.env.overlapBox = self.lua.eval("function() return 0 end")
         self.assertTrue(self.hitch.predictedUnitsClear(self.env, foot, samples)[0])
 
+    def test_a_reverse_off_what_the_truck_touches_at_the_start_is_not_vetoed_by_it(self):
+        # Live 732546fb86914a8c-1: the loaded GMC's nose against scenery; every 0.5 m reverse
+        # refused by that same contact (unit1@-0.25m), START_NOT_CLEAR.
+        self.lua.execute("""local env,truck=...
+            truck.rootNode.yaw=0
+            local trailer=truck:getAttachedImplements()[1].object
+            trailer.rootNode.yaw=0
+            local hx,_,hz=env.localToWorld(truck.rootNode,0,0,-2)
+            trailer.getActiveInputAttacherJoint=function()
+                return {node={x=hx,z=hz,yaw=0}} end
+            trailer.spec_wheels.wheels={{repr={x=hx-0.5,z=hz-9}},
+                                        {repr={x=hx+0.5,z=hz-9}}}
+            local front = truck.rootNode.z + (truck.size.lengthOffset or 0) + truck.size.length/2 + 0.1
+            local tree = {x=0,z=front+0.5}
+            env.g_currentMission.getNodeObject=function() return nil end
+            env.getName=function() return 'tree' end
+            env.overlapBox=function(x,y,z,rx,ry,rz,hw,hh,hl,callback,q)
+                if z + hl > front then q[callback](q,tree); return 1 end
+                return 0
+            end
+        """, self.env, self.tractor)
+        foot = self.footprint()
+        self.assertTrue(foot.towMeasured)
+        back = self.hitch.predictShortMotion(self.env, foot, -0.5, 0)
+        ahead = self.hitch.predictShortMotion(self.env, foot, 0.5, 0)
+        self.assertFalse(self.hitch.predictedUnitsClear(self.env, foot, back)[0])
+        foot.leaving = self.lua.table(x=0, z=0, radius=6, unitHits=self.hitch.unitStartHits(self.env, foot))
+        self.assertTrue(self.hitch.predictedUnitsClear(self.env, foot, back)[0])
+        self.assertFalse(self.hitch.predictedUnitsClear(self.env, foot, ahead)[0])   # never into it
+
     def test_short_predictor_refuses_unmeasured_trailer_wheelbase(self):
         foot = self.footprint()
         self.assertFalse(foot.towMeasured)
