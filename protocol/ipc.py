@@ -110,7 +110,7 @@ class FrameReader:
 COMMAND_ARGS = {
     "farm_drive": ("tractor", "x", "z", "area", "yaw"),   # area > 0: any clear approach point that near (x, z); yaw beyond +-2 pi: any heading
     "stage": ("tractor", "x", "z", "yaw"),
-    "navigate": ("tractor", "x", "z", "yaw"),
+    "navigate": ("tractor", "x", "z", "yaw", "area"),   # area > 0: GIANTS' agent planned at most that wide (a combine's header over a road's edges)
     "fieldwork": ("tractor", "field", "x", "z", "yaw", "area", "seed", "hand"),   # seed: in the seeder's crops (0 as set); hand 1: ends WORKING
     "buy": ("item", "hitch", "engine", "opt1", "opt2", "opt3", "opt4"),
     "save": (),
@@ -136,7 +136,7 @@ COMMAND_ARGS = {
     "pipe": ("tractor", "direction"),            # a combine's pipe out (1) or in (-1), GIANTS Pipe
     "overload": ("tractor", "wagon"),            # a standing combine discharges into the trailer under its pipe
     "alongside": ("tractor", "wagon", "direction"),  # the trailer under the combine's pipe (1) or on past the combine (-1)
-    "reach": ("tractor", "x", "z", "yaw"),       # whether GIANTS' agent plans a route there for the vehicle (never drives)
+    "reach": ("tractor", "x", "z", "yaw", "area"),       # whether GIANTS' agent plans a route there for the vehicle (never drives)
     "escort": ("tractor", "wagon"),              # the trailer held under the pipe of the combine (wagon) harvesting under GIANTS' helper
     "deliver": ("tractor", "direction"),        # GIANTS' Deliver helper: the cargo to the best paid selling station (1) or the farm's storage (-1)
     "backoff": ("tractor", "wagon"),             # the tractor straight back from the transport's ramps it waits behind

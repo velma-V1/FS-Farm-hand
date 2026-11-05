@@ -923,6 +923,7 @@ class Executor:
     FIELD_OWN_DRIVE_MAX_M = 400.0
     FIELD_START_PROBES = 6        # field points GIANTS' planner is asked about at most
     FIELD_START_INSIDE_M = 10.0   # an outline point moved this far toward the field's centre
+    TRANSPORT_WIDTH_M = 6.0       # GIANTS' default road width (AISystem:addRoadSpline): a combine's header plans at it
 
     def _field_starts(self, tractor, field, center: Pose) -> list:
         """Where GIANTS' helper may start a field's work: its centre, then points just inside its
@@ -962,6 +963,20 @@ class Executor:
                 log.info("field %s: GIANTS routes to %s (%s)", field.id, start, answers)
                 return start
         log.info("field %s: GIANTS routes to none of its starts %s", field.id, answers)
+        if self.TRANSPORT_WIDTH_M and tractor.category == "harvester":
+            # Its header makes GIANTS' agent wider than the roads (live: 6.80 m over a 3.99 m MF 8570, roads 6 m):
+            # planned at the road width, Farmhand drives it there along that agent, the helper starts on the field.
+            for start in self._field_starts(tractor, field, center)[:2]:
+                try:
+                    answer = self.world.reach(tractor.id, start, owner, width=self.TRANSPORT_WIDTH_M)
+                except (StepFailed, StepUnverified) as failure:
+                    answer = getattr(failure, "code", "REACH_FAILED")
+                log.info("field %s: at %.1f m wide GIANTS says %s for %s", field.id, self.TRANSPORT_WIDTH_M, answer, start)
+                if answer == "REACHABLE":
+                    enter("TO_FIELD")
+                    self.world.navigate(tractor.id, start, owner, width=self.TRANSPORT_WIDTH_M)
+                    now = next(i for i in self.world.snapshot() if i.id == tractor.id)
+                    return Pose(now.position[0], now.position[1], now.heading or start.yaw)
         if math.dist(tractor.position, field.center) > self.FIELD_OWN_DRIVE_MAX_M:
             raise StepFailed("FIELD_NOT_REACHABLE")
         return center

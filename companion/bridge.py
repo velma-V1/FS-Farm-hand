@@ -604,11 +604,11 @@ class FS25World:
         self._unit(combine_id, combine_owner)
         return self._run("alongside", tractor=int(tractor_id), wagon=int(combine_id), direction=-1 if past else 1)
 
-    def reach(self, vehicle_id: str, pose: Pose, owner: str) -> str:
+    def reach(self, vehicle_id: str, pose: Pose, owner: str, width: float = 0.0) -> str:
         """REACH: whether GIANTS' agent plans a route for the reserved vehicle to ``pose`` (REACHABLE,
         NOT_REACHABLE, REACH_BLOCKED, REACH_UNDECIDED); nothing drives (mod/FarmhandBridge.lua starters.reach)."""
         self._reserved(vehicle_id, owner)
-        return self._run("reach", tractor=int(vehicle_id), x=pose.x, z=pose.z, yaw=pose.yaw)
+        return self._run("reach", tractor=int(vehicle_id), x=pose.x, z=pose.z, yaw=pose.yaw, area=float(width))
 
     def escort(self, tractor_id: str, combine_id: str, owner: str) -> str:
         """ESCORT: the reserved tractor's trailer held under the pipe of the combine harvesting
@@ -656,9 +656,10 @@ class FS25World:
         return self._run("fieldwork", tractor=int(tractor_id), field=int(field_id), x=pose.x, z=pose.z,
                          yaw=pose.yaw, area=float(area_m2), seed=int(seed), hand=1 if hand else 0)
 
-    def navigate(self, tractor_id: str, pose: Pose, owner: str) -> None:
+    def navigate(self, tractor_id: str, pose: Pose, owner: str, width: float = 0.0) -> None:
+        """``width`` > 0: GIANTS' agent planned at most that wide (never narrower than the vehicle's own)."""
         self._reserved(tractor_id, owner)
-        self._run("navigate", tractor=int(tractor_id), x=pose.x, z=pose.z, yaw=pose.yaw)
+        self._run("navigate", tractor=int(tractor_id), x=pose.x, z=pose.z, yaw=pose.yaw, area=float(width))
 
     def stage(self, tractor_id: str, wagon_id: str, pose: Pose, owner: str) -> None:
         self._reserved(tractor_id, owner, wagon_id)

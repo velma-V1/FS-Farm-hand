@@ -89,6 +89,39 @@ class FieldWorkTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("FAILED", "FIELD_NOT_REACHABLE"), result)
         self.assertEqual(far.items["t-1"].position, (900.0, 900.0))       # nothing drove
 
+    def test_a_combine_wider_than_the_roads_is_driven_there_on_a_road_wide_agent(self):
+        # Live 2026-11-05: the MF 8570's header made GIANTS' agent 6.80 m, its roads are 6 m: no route at
+        # full width; at the road width GIANTS routes it, Farmhand drives it along that agent.
+        combine, header = HarvestTests().combine()
+        far = (900.0, 900.0)
+        combine = replace(combine, position=far, ai_root=Pose(*far, 0.0))
+        header = replace(header, position=(far[0], far[1] + 4.0))
+        outline = ((150.0, 250.0), (250.0, 250.0), (250.0, 350.0), (150.0, 350.0))
+        driven = []
+
+        class Roads(MockWorld):
+            def navigate(self, tractor_id, pose, owner, width=0.0):
+                # Mock-only: the combine (and its header) carried to the pose, as GIANTS' agent drives it.
+                driven.append(width)
+                with self._lock:
+                    c = self.items[tractor_id]
+                    self.items[tractor_id] = replace(c, position=(pose.x, pose.z), heading=pose.yaw,
+                                                     ai_root=Pose(pose.x, pose.z, pose.yaw))
+                    h = self.items[c.attached_to]
+                    self.items[h.id] = replace(h, position=(pose.x, pose.z + 4.0))
+
+        world = Roads([combine, header], PLAYERS, fields=(field(7, 0.4, HarvestTests.READY),), farm=FARM)
+        world.mock_field_places = (Destination("field-7", (200.0, 300.0), "field 7", outline),)
+        world.mock_unreachable = ((200.0, 300.0),) + tuple(
+            (c[0] + (200.0 - c[0]) * 10.0 / math.dist(c, (200.0, 300.0)),
+             c[1] + (300.0 - c[1]) * 10.0 / math.dist(c, (200.0, 300.0))) for c in outline)
+        world.mock_road_width = 6.0
+        result = Executor(world).execute(work("harvest", hand_off=True))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "WORKER_STARTED"), result)
+        self.assertIn("TO_FIELD", result.states)
+        self.assertEqual(driven, [6.0])
+        self.assertLess(math.dist(world.items[combine.id].position, (200.0, 300.0)), 1.0)
+
     def test_each_operation_completes_on_the_measured_field(self):
         for operation, kind, level in (("cultivate", "cultivator", 0.0), ("sow", "sowing_machine", 500.0),
                                        ("fertilize", "sprayer", 500.0)):

@@ -470,6 +470,27 @@ local function agentEnd(env, task, dt)
     end
 end
 
+-- GIANTS' agent for the vehicle (AIDrivable:createAgent). `cap` > 0: planned at most that wide,
+-- never narrower than the vehicle's own agent. GIANTS sizes it by the widest attachment
+-- (getAIAgentSize, static XML widths: the MF 8570's header 6.80 m on a 3.99 m combine, live
+-- 2026-11-05), wider than the 6 m its roads default to (AISystem:addRoadSpline), so no route
+-- crosses the map. A header overhangs a road's edges for a player too; Farmhand's own watch
+-- (contact, stuck) supervises the drive.
+function Bridge.createAgent(v, cap)
+    if not (finite(cap) and cap > 0) then return v:createAgent() end
+    local own = rawget(v, "getAIAgentSize")
+    local base = v.getAIAgentSize
+    v.getAIAgentSize = function(self, ...)
+        local w, l, lo, fo, h = base(self, ...)
+        local floor = self.spec_aiDrivable and self.spec_aiDrivable.agentInfo and self.spec_aiDrivable.agentInfo.width or 0
+        return math.min(w, math.max(cap, floor)), l, lo, fo, h
+    end
+    local ok, err = pcall(v.createAgent, v)
+    v.getAIAgentSize = own
+    if not ok then error(err) end
+    log("agent planned at most %.2f m wide", cap)
+end
+
 local function startAgent(env, spec)
     local v = spec.tractor
     local denied = idle(env, v, spec.farmId)
@@ -483,7 +504,7 @@ local function startAgent(env, spec)
     local ok, why = pcall(function()
         local cruise = v.spec_drivable and v.spec_drivable.cruiseControl
         task.cruiseBefore = cruise and cruise.speed
-        v:createAgent()
+        Bridge.createAgent(v, spec.area)
         task.agentMade = true
         local mission = env.g_currentMission
         local y = env.getTerrainHeightAtWorldPos(mission.terrainRootNode, spec.x, 0, spec.z)

@@ -75,7 +75,7 @@ class World(Protocol):
         combine (PASSED); AGENTS.md exception 6."""
         ...
 
-    def reach(self, vehicle_id: str, pose: Pose, owner: str) -> str:
+    def reach(self, vehicle_id: str, pose: Pose, owner: str, width: float = 0.0) -> str:
         """REACH: whether GIANTS' agent plans a route for the reserved vehicle to ``pose``; never drives.
         REACHABLE, NOT_REACHABLE, REACH_BLOCKED or REACH_UNDECIDED."""
         ...
@@ -137,7 +137,7 @@ class World(Protocol):
     # time, is bounded, and its normal return is never evidence: the executor
     # verifies every step from a fresh snapshot. Sources: adapters/EVIDENCE.md.
 
-    def navigate(self, tractor_id: str, pose: Pose, owner: str) -> None:
+    def navigate(self, tractor_id: str, pose: Pose, owner: str, width: float = 0.0) -> None:
         """TRAVEL_NEAR or DELIVER: GIANTS' navigation agent, under Farmhand, takes the
         reserved tractor's AI root to ``pose``, with the wagon if attached (GIANTS plans
         the path for the whole combination)."""

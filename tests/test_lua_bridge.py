@@ -168,6 +168,9 @@ class LuaBridgeTests(unittest.TestCase):
             self.W.run(self.w, 1000)
 
     def send(self, command_id, op, args, session="s1"):
+        from protocol.ipc import COMMAND_ARGS
+        if "area" in COMMAND_ARGS.get(op, ()) and "area" not in args:
+            args = {**args, "area": 0.0}         # navigate / reach: no width cap
         self.write("command.xml", encode_command(session, command_id, op, args))
         self.W.run(self.w, 100)
 
@@ -399,6 +402,27 @@ class LuaBridgeTests(unittest.TestCase):
                 self.assertIn("createAgent", calls)
                 self.assertIn("deleteAgent", calls)
                 self.assertNotIn("startJob", calls)
+
+    def test_a_width_cap_plans_the_agent_narrower_never_below_the_vehicle_and_restores_it(self):
+        # Live 2026-11-05: GIANTS sized the MF 8570 with its header 6.80 m (the combine 3.99 m); its roads are 6 m.
+        self.adopt()
+        self.agent([(0, 0, 3), (0.01, 10.0, 1)])
+        widths = self.lua.execute("""local w = ...
+            local t = w.tractor
+            t.spec_aiDrivable.agentInfo.width = 3.99
+            local seen = {}
+            function t:getAIAgentSize() return 6.8, 11, -0.7, -3.7, 4 end
+            local made = t.createAgent
+            function t:createAgent() local wd = self:getAIAgentSize(); table.insert(seen, wd); return made(self) end
+            return seen""", self.w)
+        self.send(1, "reach", {**self.POSE, "area": 6.0})
+        self.W.run(self.w, 500)
+        self.send(2, "reach", {**self.POSE, "area": 2.0})
+        self.W.run(self.w, 500)
+        self.send(3, "reach", self.POSE)
+        self.W.run(self.w, 500)
+        self.assertEqual(list(widths.values()), [6.0, 3.99, 6.8])
+        self.assertEqual(self.lua.eval("function(t) return t:getAIAgentSize() end")(self.w.tractor)[0], 6.8)
 
     def test_navigate_drives_giants_agent_itself_and_ends_where_it_says(self):
         self.adopt()

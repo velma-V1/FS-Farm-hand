@@ -423,11 +423,13 @@ class MockWorld:
                                              + trailer.fill_units[1:])
             return "EMPTIED" if moved == grain.level else "TRAILER_FULL"
 
-    def reach(self, vehicle_id, pose, owner):
+    def reach(self, vehicle_id, pose, owner, width=0.0):
         # Mock-only: a point listed in mock_unreachable (within 1 m) is NOT_REACHABLE.
         with self._lock:
             self._owned(vehicle_id, owner)
             self.mock_reached = getattr(self, "mock_reached", ()) + ((pose.x, pose.z),)
+            if width and getattr(self, "mock_road_width", None) is not None and width <= self.mock_road_width:
+                return "REACHABLE"                   # mock-only: narrow enough for the roads
             if any(math.dist((pose.x, pose.z), p) < 1.0 for p in getattr(self, "mock_unreachable", ())):
                 return "NOT_REACHABLE"
             return "REACHABLE"
@@ -638,7 +640,7 @@ class MockWorld:
         self.items[tractor.id] = replace(tractor, position=(pose.x, pose.z), ai_root=pose,
                                          heading=pose.yaw, stopped=True)
 
-    def navigate(self, tractor_id, pose, owner):
+    def navigate(self, tractor_id, pose, owner, width=0.0):
         # Mock-only teleport standing in for GIANTS GOTO; an attached wagon lands
         # MOCK_TRAILER_OFFSET_M behind the tractor's AI root.
         with self._lock:
