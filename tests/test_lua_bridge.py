@@ -1163,6 +1163,23 @@ class LuaBridgeTests(unittest.TestCase):
                 told = [n for n in self.w.notices.values() if "stopped for you" in n]
                 self.assertEqual(len(told), 1 if near else 0)
 
+    def test_a_helper_whose_drive_to_the_field_never_finds_a_way_ends_not_reachable(self):
+        # Live e3e4f50db5174dc2-2: "planning" for 5 min, unmoved, then FIELDWORK_STALLED.
+        self.adopt()
+        self.fieldwork_stubs()
+        self.w.gotoStarts = True
+        self.lua.execute("""local w = ...
+            w.env.AIDrivable = { STATES = { [3] = "planning" } }
+            w.tractor.spec_aiDrivable = { lastState = 3, distanceToTarget = 50 }
+            function w.tractor:getIsFieldWorkActive() return false end""", self.w)
+        self.send(1, "fieldwork", self.FIELD)
+        self.beating(29000)
+        self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])
+        self.beating(3000)
+        self.assertIn("stopCurrentAIJob", self.calls())
+        self.W.run(self.w, 300)
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "NOT_REACHABLE"))
+
     def test_a_combine_always_lays_a_straw_swath_where_it_can(self):
         for available, honest, result in ((True, True, ("ACCEPTED", "ACCEPTED")), (False, True, ("ACCEPTED", "ACCEPTED")),
                                           (True, False, ("FAILED", "SWATH_NOT_SET"))):

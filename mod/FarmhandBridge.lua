@@ -559,6 +559,14 @@ local function agentBlocked(env, v)
     end)
 end
 
+-- Whether GIANTS' agent is still planning (no way found yet).
+Bridge.HELPER_PLANNING_MS = 30000
+local function agentPlanning(env, v)
+    return pcall(function()
+        assert(tostring(env.AIDrivable.STATES[v.spec_aiDrivable.lastState]):upper() == "PLANNING")
+    end)
+end
+
 -- GIANTS' field worker holding for something in its collision triggers (AIFieldWorker).
 local function fieldWorkerBlocked(v)
     return pcall(function() assert(v:getAIFieldWorkerIsBlocked() == true) end)
@@ -2664,12 +2672,25 @@ function steppers.fieldwork(env, task, dt)
             local working = pcall(function() assert(v:getIsFieldWorkActive() == true) end)
             if working then task.track[#task.track + 1] = { x, z } end
         end
+        if not task.workedOnce and pcall(function() assert(v:getIsFieldWorkActive() == true) end) then
+            task.workedOnce = true
+        end
         if not task.sampled and task.elapsed > 60000 then
             task.sampled = true
             Bridge.logFieldWork(env, v, "at 60 s")
         end
         if task.fromX == nil or math.sqrt((x - task.fromX) ^ 2 + (z - task.fromZ) ^ 2) >= Bridge.NAVIGATE_PROGRESS_M then
             task.fromX, task.fromZ, task.fromAt = x, z, task.elapsed
+        elseif not task.workedOnce and task.elapsed - task.fromAt > Bridge.HELPER_PLANNING_MS
+                and agentPlanning(env, v)
+                and not pcall(function() assert(v:getIsFieldWorkActive() == true) end) then
+            -- Its drive to the field never found a way (live e3e4f50db5174dc2-2: the Series 9
+            -- just off the Deckover's ramps, the agent "planning" 5 min, unmoved): ended as GIANTS'
+            -- NOT_REACHABLE, so the companion takes the pair onto the field by Farmhand's own drive.
+            logAgent(env, v, "fieldwork drive never left its start")
+            Bridge.aiStops[v] = "NOT_REACHABLE"
+            Bridge.Hitch.cancelStaging(env, v)
+            task.helperUnreached = true
         elseif task.elapsed - task.fromAt > Bridge.BLOCKED_START_MS and agentBlocked(env, v) then
             -- Unmoved with GIANTS' agent BLOCKED on its way: it waits for an obstacle it knows,
             -- and a parked vehicle never leaves (live 5eb1005df58446f7-1: the MT600 22 m from the
@@ -2720,7 +2741,8 @@ function steppers.fieldwork(env, task, dt)
     end
     -- Ended: DONE with GIANTS' reason once at rest; the companion judges the field,
     -- measured again now.
-    local ended, endCode = settle(task, task.areaReached and "AREA_REACHED" or Bridge.aiStops[v] or "AI_STOPPED")
+    local ended, endCode = settle(task, task.areaReached and "AREA_REACHED"
+        or task.helperUnreached and "NOT_REACHABLE" or Bridge.aiStops[v] or "AI_STOPPED")
     if ended ~= nil then pcall(Bridge.Observe.refreshField, env, task.spec.field, task.track) end
     return ended, endCode
 end
