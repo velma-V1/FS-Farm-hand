@@ -2744,6 +2744,14 @@ function steppers.fieldwork(env, task, dt)
                 pcall(Bridge.Observe.refreshField, env, task.spec.field)
                 local now = (Bridge.Observe.fieldCache or {})[task.spec.field]
                 local changed = Bridge.changedArea(task.before, now and now.record)
+                -- Each check, for the overshoot (live f460004990284cd1-1: 2016 m2 of 400 for a plow).
+                local lowered = "?"
+                pcall(function()
+                    local implement = (v:getAttachedImplements() or {})[1]
+                    lowered = tostring(implement and implement.object:getIsLowered())
+                end)
+                log("fieldwork check at %.1f s: %s m2 changed of %.0f, lowered %s, %.1f km/h", task.elapsed / 1000,
+                    changed and string.format("%.0f", changed) or "?", task.spec.area, lowered, v:getLastSpeed())
                 if changed ~= nil and changed >= task.spec.area then
                     log("fieldwork: %.0f m2 of field %s changed (test area %.0f m2); stopping the helper",
                         changed, tostring(task.spec.field), task.spec.area)
