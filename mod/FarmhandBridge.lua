@@ -482,11 +482,20 @@ function Bridge.createAgent(v, cap)
         -- Under a metre: the vehicle alone, none of its attachments in the agent (what it carries is
         -- Farmhand's own watch's to supervise).
         local ownCollect = rawget(v, "collectAIAgentAttachments")
+        local ownSize = rawget(v, "getAIAgentSize")
+        local base = v.getAIAgentSize
         v.collectAIAgentAttachments = function() end
+        -- And under the 4 m GIANTS builds its navigation map for (AISystem createVehicleNavigationMap,
+        -- vehicleMaxHeight): a combine taller than that finds no cell to drive in.
+        v.getAIAgentSize = function(self, ...)
+            local w, l, lo, fo, h = base(self, ...)
+            return w, l, lo, fo, math.min(h or 0, 3.9)
+        end
         local ok, err = pcall(v.createAgent, v)
         v.collectAIAgentAttachments = ownCollect
+        v.getAIAgentSize = ownSize
         if not ok then error(err) end
-        log("agent planned for the vehicle alone")
+        log("agent planned for the vehicle alone, under 3.9 m")
         return
     end
     local own = rawget(v, "getAIAgentSize")
@@ -645,7 +654,7 @@ function starters.reach(env, spec)
     if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
     local task, code = startAgent(env, spec)
     if task == nil then return nil, code end
-    local ok, w, l, lo, fo = pcall(function() return spec.tractor:getAIAgentSize() end)
+    local ok, w, l, lo, fo, h = pcall(function() return spec.tractor:getAIAgentSize() end)
     local radius = spec.tractor.maxTurningRadius
     -- Where its width comes from: the vehicle's own agent, or an attachment (AIDrivable getAIAgentSize:
     -- the widest of them), each as GIANTS registered it (updateAIAgentAttachments, AIVehicle).
@@ -660,10 +669,10 @@ function starters.reach(env, spec)
     end)
     log("reach: agent widths %s", okParts and parts or "?")
     local okId, id = pcall(function() return env.NetworkUtil.getObjectId(spec.tractor) end)
-    log("reach: agent %s to %.1f,%.1f yaw %.2f (width %s length %s offsets %s/%s radius %s)",
+    log("reach: agent %s to %.1f,%.1f yaw %.2f (width %s length %s offsets %s/%s height %s radius %s)",
         okId and tostring(id) or "?", spec.x, spec.z, spec.yaw or 0,
         ok and tostring(w) or "?", ok and tostring(l) or "?", ok and tostring(lo) or "?", ok and tostring(fo) or "?",
-        tostring(radius))
+        ok and tostring(h) or "?", tostring(radius))
     return task
 end
 
