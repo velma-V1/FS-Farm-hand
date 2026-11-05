@@ -3638,6 +3638,7 @@ Bridge.REASONS = {
     COMBINE_NOT_AT_THE_FIELD = "the combine did not get to the field",
     NO_HEADER_FOR_THE_CROP = "no header on the farm cuts that contract's crop",
     FIELD_NOT_REACHABLE = "GIANTS finds no route to that field for this machine",
+    MOVING_AWAY = "it was driving away from where it was going, so it stopped",
     COMBINE_NOT_OWNED = "the combine is not this farm's",
     COMBINE_STOPPED = "the combine's helper stopped",
     ESCORT_AHEAD_OF_COMBINE = "the grain cart is ahead of the combine",

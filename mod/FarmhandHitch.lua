@@ -773,6 +773,12 @@ local function hitNames(env, hits)
         if okAt and finite(hx) and finite(hz) then
             names[i] = names[i] .. string.format("(%.0f,%.0f)", hx, hz)
         end
+        -- A tree (GIANTS split shape: getSplitType > 0, as TreePlantManager and the chainsaw read it).
+        pcall(function()
+            if type(env.getSplitType) == "function" and (env.getSplitType(hits[i]) or 0) > 0 then
+                names[i] = names[i] .. ":tree"
+            end
+        end)
         -- The object the shape belongs to (a vehicle's or placeable's name), for diagnosis.
         pcall(function()
             local object = env.g_currentMission:getNodeObject(hits[i])

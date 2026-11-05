@@ -12,7 +12,8 @@ local STEP, BIN, CELL = 4, pi / 8, 2
 local LIMIT = 6000
 -- A drive must come this much closer to its goal within this time (see the step's goal check).
 Drive.GOAL_PROGRESS_M = 2.0
-Drive.GOAL_PROGRESS_MS = 150000
+Drive.GOAL_PROGRESS_MS = 90000
+Drive.AWAY_M = 60.0        -- farther than this from the goal than its best: MOVING_AWAY
 -- A forward curve straight onto the goal pose is tried this near it (Drive.plan).
 Drive.SHOT_M, Drive.SHOT_EVERY = 40, 4
 
@@ -2253,6 +2254,23 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
     local denied = guard(env, s, Hitch, x, z, yaw, atTarget)
     if denied == "OBSTACLE_AHEAD" then s.recovering = true
     elseif denied ~= nil then return denied end
+    -- Progress toward the goal, judged every frame whatever the drive is doing (live 2026-11-05: replanning
+    -- sections for 10 minutes unmoved, and later 130 m driven the wrong way, both past the check below
+    -- that only a moving frame reached). The first route's own search has its limit.
+    -- A departure or retreat backs away by design, bounded by its own limits (EGRESS_LIMIT and the like).
+    if s.initial == nil and s.egress == nil and s.retreat == nil then
+        local toGoal = distance(x, z, s.targetX, s.targetZ)
+        if s.goalBest == nil or toGoal < s.goalBest - Drive.GOAL_PROGRESS_M then
+            s.goalBest, s.goalBestAt = toGoal, s.elapsed
+        elseif toGoal > s.goalBest + Drive.AWAY_M then
+            say(string.format("[Farmhand] drive moving away from the goal: %.1f m off, best %.1f m", toGoal, s.goalBest))
+            return "MOVING_AWAY"
+        elseif s.elapsed - s.goalBestAt > Drive.GOAL_PROGRESS_MS then
+            say(string.format("[Farmhand] drive no goal progress: %.1f m from the goal at %.1f,%.1f, best %.1f m %.0f s ago",
+                              toGoal, x, z, s.goalBest, (s.elapsed - s.goalBestAt) / 1000))
+            return "NO_GOAL_PROGRESS"
+        end
+    end
     if s.initial ~= nil then
         -- The first route is still being searched: the rig waits braked, at most
         -- Drive.FIRST_ROUTE_LIMIT_MS (live 8570c6316cb9406f-1: 12 minutes to NO_ROUTE, the job
