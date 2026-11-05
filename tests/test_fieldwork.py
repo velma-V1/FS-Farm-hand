@@ -1303,6 +1303,36 @@ class HarvestTests(unittest.TestCase):
                            heading=0.0, attached_to="c-1")
         return [combine, header]
 
+    def test_the_header_comes_off_the_combine_and_goes_back_on_where_it_was_carried(self):
+        # Combine transport (the owner, 2026-11-05): the header off first, and on again afterwards. Re-attached
+        # from the geometry recorded at the detach (the combine's cutter joint is not observed: it moves).
+        drives = []
+
+        class Drives(MockWorld):
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None, via=None):
+                drives.append((target, yaw))
+                with self._lock:
+                    v = self._owned(vehicle_id, owner)
+                    self.items[vehicle_id] = replace(v, position=tuple(target), heading=yaw,
+                                                     ai_root=Pose(target[0], target[1], yaw))
+                return "ARRIVED"
+
+        combine, header = self.combine()
+        world = Drives([combine, replace(header, required_pto_torque=0.0)], PLAYERS,
+                       fields=(field(7, 0.4, self.READY),), farm=FARM)
+        executor = Executor(world)
+        base = {"version": 1, "farm_id": "farm-a", "target": "player_at_acceptance", "implement": "cutter"}
+        off = executor.execute(dict(base, request_id="r1", task="detach_pair"))
+        self.assertEqual(off.status, "COMPLETE", off)
+        self.assertIsNone(world.items["h-1"].attached_to)
+        self.assertIn("h-1", executor._front_attachments)
+        world.items["c-1"] = replace(world.items["c-1"], position=(100.0, 80.0), ai_root=Pose(100.0, 80.0, 0.0))
+        on = executor.execute(dict(base, request_id="r2", task="hitch_pair"))
+        self.assertEqual((on.status, on.reason), ("COMPLETE", "HITCH_OBSERVED"), on)
+        self.assertEqual(world.items["h-1"].attached_to, "c-1")
+        self.assertEqual(drives[0][1], 0.0)                                  # at the heading it carried it
+        self.assertAlmostEqual(drives[0][0][1], 100.0 - Executor.REATTACH_BEHIND_M, places=6)
+
     def test_the_combine_harvests_and_the_field_shows_it_cut(self):
         world = MockWorld(self.combine(), PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
         result = Executor(world).execute(work("harvest"))

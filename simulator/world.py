@@ -423,6 +423,17 @@ class MockWorld:
                                              + trailer.fill_units[1:])
             return "EMPTIED" if moved == grain.level else "TRAILER_FULL"
 
+    def reattach(self, vehicle_id, implement_id, owner):
+        # Mock-only: within MOCK_REATTACH_M of where it carried it (the executor's recorded pose), attached.
+        with self._lock:
+            vehicle = self._owned(vehicle_id, owner)
+            implement = self.items[implement_id]
+            if math.dist(vehicle.position, implement.position) > getattr(self, "mock_reattach_m", 12.0):
+                raise StepFailed("REATTACH_NOT_IN_RANGE")
+            self.items[vehicle_id] = replace(vehicle, attached_to=implement_id)
+            self.items[implement_id] = replace(implement, attached_to=vehicle_id)
+            return "ATTACHED"
+
     def reach(self, vehicle_id, pose, owner, width=0.0):
         # Mock-only: a point listed in mock_unreachable (within 1 m) is NOT_REACHABLE.
         with self._lock:

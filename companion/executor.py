@@ -732,6 +732,10 @@ class Executor:
         # {"type": "origin"} takes it back there (the user: "you can't just leave it
         # in the field"). Never coordinates from words.
         self._origins: dict[str, Pose] = {}
+        # Implements detached from the front of a driven machine (a combine's header): where that
+        # machine's AI root stood relative to the implement (along, lateral in its heading frame,
+        # heading difference), the vehicle by name, so it comes back there to attach it again.
+        self._front_attachments: dict[str, tuple] = {}
         # The vehicles UNPARK was asked for, this job only, and those whose next GOTO is
         # its hand-off (it must move them).
         self._job: str | None = None
@@ -962,6 +966,115 @@ class Executor:
         log.info("field %s: GIANTS routes to none of its starts %s (the helper, then Farmhand's own drive)",
                  field.id, answers)
         return center
+
+    REATTACH_BEHIND_M = 3.0        # the machine comes back this far behind where it carried it, then creeps on
+
+    def _front_reattach_ids(self, command):
+        """(machine, implement) for "hitch the header to the mf 8570": a loose implement this
+        Farmhand detached from that machine's front (_front_attachments), else None."""
+        observed = {i.id: i for i in self.world.snapshot()}
+        for implement_id, (vehicle_id, *_rest) in self._front_attachments.items():
+            vehicle, implement = observed.get(vehicle_id), observed.get(implement_id)
+            if (vehicle is not None and implement is not None and implement.attached_to is None
+                    and vehicle.attached_to is None and named(vehicle, command.get("tractor_name"))
+                    and (not command.get("implement") or of_kind(implement, command["implement"]))
+                    and named(implement, command.get("implement_name"))):
+                return vehicle_id, implement_id
+        return None
+
+    def _front_reattach(self, command, enter, states) -> Result:
+        """A front implement this Farmhand detached (a combine's header) attached again: RESERVE ->
+        APPROACH (Farmhand's own drive to REATTACH_BEHIND_M behind the recorded pose, at its heading)
+        -> REATTACH (a short straight creep, GIANTS' own attach range) -> VERIFY (observed attached)
+        -> STOP -> RELEASE."""
+        owner, farm_id = command["request_id"], command["farm_id"]
+        ids = self._front_reattach_ids(command)
+        reserved, moved = False, False
+        status, reason = "BLOCKED", "NO_ATTACHED_IMPLEMENT"
+        try:
+            enter("FIND")
+            observed = {i.id: i for i in self.world.snapshot()}
+            vehicle, implement = observed[ids[0]], observed[ids[1]]
+            if not all(usable(x, farm_id) and x.stopped for x in (vehicle, implement)):
+                return Result("BLOCKED", "EQUIPMENT_UNAVAILABLE", ids, tuple(states))
+            enter("RESERVE")
+            if not self.world.reserve(ids, owner):
+                return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
+            reserved = True
+            self.active = ids
+            pose = self._front_reattach_pose(implement)
+            back = Pose(pose.x - math.sin(pose.yaw) * self.REATTACH_BEHIND_M,
+                        pose.z - math.cos(pose.yaw) * self.REATTACH_BEHIND_M, pose.yaw)
+            root = vehicle.ai_root or Pose(vehicle.position[0], vehicle.position[1], vehicle.heading or 0.0)
+            if math.dist((root.x, root.z), (back.x, back.z)) > 1.0 or abs(
+                    (root.yaw - pose.yaw + math.pi) % (2 * math.pi) - math.pi) > math.radians(5):
+                enter("APPROACH")
+                moved = True
+                # Farmhand's drive takes the vehicle's root there: the AI root's offset ahead of it taken off.
+                fx, fz = math.sin(vehicle.heading or root.yaw), math.cos(vehicle.heading or root.yaw)
+                ahead = (root.x - vehicle.position[0]) * fx + (root.z - vehicle.position[1]) * fz
+                target = (back.x - math.sin(back.yaw) * ahead, back.z - math.cos(back.yaw) * ahead)
+                self.world.farm_drive(vehicle.id, target, owner, 0.0, yaw=back.yaw)
+            enter("REATTACH")
+            moved = True
+            self.world.reattach(vehicle.id, implement.id, owner)
+            enter("VERIFY")
+            vehicle, implement = self._pair(ids, farm_id, owner, attached=True)
+            self._front_attachments.pop(implement.id, None)
+            status, reason = "COMPLETE", "HITCH_OBSERVED"
+        except Cancelled:
+            status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
+        except ObservationMismatch as error:
+            status, reason = "UNVERIFIED", str(error)
+        except StepUnverified as error:
+            status, reason = "UNVERIFIED", error.code
+        except StepFailed as error:
+            status, reason = "FAILED", error.code
+        except (RuntimeError, ValueError, KeyError) as error:
+            status, reason = "FAILED", getattr(error, "code", None) or type(error).__name__
+        finally:
+            try:
+                if moved:
+                    enter("STOP")
+                    if not self.world.stop(ids[0], owner):
+                        raise ObservationMismatch("STOP_NOT_CONFIRMED")
+                if reserved:
+                    enter("RELEASE")
+                    self.world.release(owner)
+            except Exception as error:
+                log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
+                status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        self.active = ()
+        log.info("result %s %s states %s", status, reason, ",".join(states))
+        return Result(status, reason, ids, tuple(states))
+
+    def _remember_front_attachment(self, vehicle, implement) -> None:
+        """A just-detached implement that hung in front of its machine (its middle ahead of the
+        AI root): that machine's pose relative to it, for attaching it again (_front_attachments)."""
+        if vehicle is None or implement is None or vehicle.heading is None or implement.heading is None:
+            return
+        root = vehicle.ai_root or Pose(vehicle.position[0], vehicle.position[1], vehicle.heading)
+        fx, fz = math.sin(vehicle.heading), math.cos(vehicle.heading)
+        if (implement.position[0] - root.x) * fx + (implement.position[1] - root.z) * fz <= 0:
+            return                                      # behind it: the ordinary rear hitch
+        hx, hz = math.sin(implement.heading), math.cos(implement.heading)
+        dx, dz = root.x - implement.position[0], root.z - implement.position[1]
+        along, lateral = dx * hx + dz * hz, dx * hz - dz * hx
+        turn = (root.yaw - implement.heading + math.pi) % (2 * math.pi) - math.pi
+        self._front_attachments[implement.id] = (vehicle.id, along, lateral, turn)
+        log.info("front implement %s detached from %s: the machine stood %.2f m along, %.2f m aside, %.3f rad",
+                 implement.id, vehicle.id, along, lateral, turn)
+
+    def _front_reattach_pose(self, implement) -> Pose | None:
+        """Where the machine stood when it carried ``implement`` in front, from where it lies now."""
+        kept = self._front_attachments.get(implement.id)
+        if kept is None or implement.heading is None:
+            return None
+        _, along, lateral, turn = kept
+        hx, hz = math.sin(implement.heading), math.cos(implement.heading)
+        x = implement.position[0] + along * hx + lateral * hz
+        z = implement.position[1] + along * hz - lateral * hx
+        return Pose(x, z, implement.heading + turn)
 
     def _to_field(self, tractor, field, ids, owner, enter) -> bool:
         """GIANTS' helper did not start its own drive to the field (NOT_REACHABLE: its
@@ -2610,6 +2723,8 @@ class Executor:
             return self._part(command, enter, states)
         if command["task"] == "escort":
             return self._escort(command, enter, states)
+        if command["task"] == "hitch_pair" and self._front_reattach_ids(command) is not None:
+            return self._front_reattach(command, enter, states)
         if command["task"] == "save_game":
             try:
                 enter("SAVE")
@@ -2888,8 +3003,10 @@ class Executor:
                 used = next((j for j in tractor.output_joints if not j.free), None)
                 if used is not None:
                     self._tailgate_down(tractor, used.index, owner)
+                before = {i.id: i for i in self.world.snapshot()}
                 enter("DETACH")
                 self.world.detach(ids[0], ids[1], owner)
+                self._remember_front_attachment(before.get(ids[0]), before.get(ids[1]))
                 enter("VERIFY")
                 tractor, implement = self._pair(ids, farm_id, owner, attached=False)
                 if not (tractor.stopped and implement.stopped):
@@ -2927,6 +3044,15 @@ class Executor:
                             log.info("PULL_CLEAR %s (%s)", "stopped short" if failure.code in PULL_CLEAR_SHORT
                                      else "refused unmoved", failure.code)
                             reason = "DETACHED_NOT_CLEAR"
+                            if failure.code == "PULL_CLEAR_NOT_BEHIND" and implement.id in self._front_attachments:
+                                # It hung in front (a combine's header): nothing attached any more, UNPARK
+                                # backs the machine straight off it (its swept volume checked).
+                                enter("UNPARK")
+                                try:
+                                    self.world.unpark(ids[0], owner)
+                                    reason = "DETACH_OBSERVED"
+                                except StepFailed as unparked:
+                                    log.info("UNPARK off the front implement: %s", unparked.code)
                     enter("VERIFY")
                     tractor, implement = self._pair(ids, farm_id, owner, attached=False)
                     gap = joint_separation(tractor, implement)

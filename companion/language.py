@@ -102,6 +102,7 @@ _IMPLEMENT_NOUNS = [(re.compile(p), kind) for p, kind in (
     (r"\bbalers?\b", "baler"),
     (r"\b(?:trailers?|tippers?|grain carts?|grain trailers?|goosenecks?|deckovers?)\b", "trailer"),
     (r"\brollers?\b", "roller"),
+    (r"\b(?:headers?|cutter ?bars?|grain tables?)\b", "cutter"),
     (r"\bweeders?\b", "weeder"),
     (r"\bmulchers?\b", "mulcher"),
 )]
@@ -1101,6 +1102,10 @@ class RuleInterpreter:
         if self._target(text, words) != {}:
             return None
         proposal = {"version": 1, "command": "detach_pair"}
+        # "... from the mf 8570": that machine's (never the implement nearest the player instead).
+        machine = re.search(r"\bfrom\s+(?:the\s+|my\s+)?([a-z0-9][a-z0-9 .\-]*?)\s*$", words)
+        if machine is not None and implement_kind(machine.group(1)) is None:
+            proposal["tractor_name"] = machine.group(1)
         return {**proposal, "implement": kind} if kind is not None else proposal
 
     def _implement(self, text: str, words: str, kind: str) -> dict | None:

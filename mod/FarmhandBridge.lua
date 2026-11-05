@@ -921,6 +921,111 @@ end
 -- GIANTS' smooth attach is not undone.
 function aborts.attach() end
 
+-- --------------------------------------------------------------- reattach
+-- REATTACH: the reserved, idle machine attaches the loose implement it stands at, as the player's
+-- own attach key does (AttacherJoints:updateVehiclesInAttachRange 3684-3777): one of its free
+-- attacher joints of the implement's input-joint type within GIANTS' attach range (0.7 m across,
+-- 1.4 m up or down), GIANTS' isAttachAllowed, then attachImplement. For a machine whose joint
+-- Farmhand does not observe (a combine's cutter joint moves with its feeder): no plan of joints
+-- is needed. DONE ATTACHED once the implement names it; REATTACH_NOT_IN_RANGE (the nearest pair's
+-- gap logged) when nothing is in range; nothing moves.
+Bridge.REATTACH = { xzM = 0.7, yM = 1.4, settleMs = 5000, creepM = 6.0, creepKmh = 2.0, lateralM = 0.4,
+                     headingDeg = 6, timeoutMs = 30000 }
+
+-- The free attacher joint of `v` and input joint of `impl` of one type nearest each other, their gap
+-- across and up, and the input joint's node.
+local function reattachPair(env, v, impl)
+    local best
+    for ji, joint in ipairs(v:getAttacherJoints() or {}) do
+        if joint.jointIndex == 0 and joint.jointTransform ~= nil then
+            local jx, jy, jz = env.getWorldTranslation(joint.jointTransform)
+            for ii, input in ipairs(impl:getInputAttacherJoints() or {}) do
+                if input.jointType == joint.jointType and input.node ~= nil then
+                    local ix, iy, iz = env.getWorldTranslation(input.node)
+                    local gap = math.sqrt((jx - ix) ^ 2 + (jz - iz) ^ 2)
+                    if best == nil or gap < best.gap then
+                        best = { joint = ji, input = ii, gap = gap, dy = jy - iy, node = input.node, jx = jx, jz = jz,
+                                 ix = ix, iz = iz }
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function reattachNow(env, task, pair)
+    local v, impl = task.spec.tractor, task.impl
+    if impl:isAttachAllowed(task.spec.farmId, v) ~= true then return "FAILED", "ATTACH_REJECTED" end
+    log("reattach: joint %d to input %d, %.2f m across, %.2f m up", pair.joint, pair.input, pair.gap, pair.dy)
+    pcall(Bridge.Hitch.halt, env, task.drive, 0)
+    v:attachImplement(impl, pair.input, pair.joint)
+    task.asked = true
+    return nil
+end
+
+function starters.reattach(env, spec)
+    local v, impl = spec.tractor, spec.wagon
+    local denied = idle(env, v, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    if impl.getAttacherVehicle ~= nil and impl:getAttacherVehicle() ~= nil then return nil, "WAGON_ATTACHED" end
+    local pair = reattachPair(env, v, impl)
+    if pair == nil then return nil, "NO_MATCHING_JOINT" end
+    local R = Bridge.REATTACH
+    local task = { impl = impl, drive = { tractor = v, maxSpeedKmh = R.creepKmh, elapsed = 0 }, startGap = pair.gap }
+    if pair.gap > R.xzM or math.abs(pair.dy) > R.yM then
+        -- Not in range: only a short straight creep onto it (it backed straight off it), lined up.
+        local node = v:getAISteeringNode()
+        local lx, _, lz = env.worldToLocal(node, pair.ix, 0, pair.iz)
+        local jl, _, jz = env.worldToLocal(node, pair.jx, 0, pair.jz)
+        local ahead, across = lz - jz, lx - jl
+        log("reattach: %.2f m off (%.2f ahead, %.2f across, %.2f up)", pair.gap, ahead, across, pair.dy)
+        if ahead <= 0 or ahead > R.creepM or math.abs(across) > R.lateralM or math.abs(pair.dy) > R.yM then
+            return nil, "REATTACH_NOT_IN_RANGE"
+        end
+        task.creep = true
+        Bridge.Hitch.watchDriver(env, v)
+    end
+    return task
+end
+
+function steppers.reattach(env, task, dt)
+    local v, impl, R = task.spec.tractor, task.impl, Bridge.REATTACH
+    if task.spec.owned() ~= true then pcall(Bridge.Hitch.halt, env, task.drive, dt); return "FAILED", "RESERVATION_LOST" end
+    if impl.getAttacherVehicle ~= nil and impl:getAttacherVehicle() == v then
+        pcall(Bridge.Hitch.halt, env, task.drive, dt)
+        return settle(task, "ATTACHED")
+    end
+    task.drive.elapsed = task.elapsed
+    if task.asked then
+        pcall(Bridge.Hitch.halt, env, task.drive, dt)
+        if task.elapsed - (task.askedAt or task.elapsed) > R.settleMs then return "UNVERIFIED", "ATTACH_NOT_OBSERVED" end
+        task.askedAt = task.askedAt or task.elapsed
+        return nil
+    end
+    local pair = reattachPair(env, v, impl)
+    if pair == nil then pcall(Bridge.Hitch.halt, env, task.drive, dt); return "FAILED", "NO_MATCHING_JOINT" end
+    if pair.gap <= R.xzM and math.abs(pair.dy) <= R.yM then return reattachNow(env, task, pair) end
+    if not task.creep then return "FAILED", "REATTACH_NOT_IN_RANGE" end
+    if task.elapsed > R.timeoutMs or pair.gap > task.startGap + 0.5 then
+        pcall(Bridge.Hitch.halt, env, task.drive, dt)
+        return "FAILED", "REATTACH_NOT_IN_RANGE"
+    end
+    local conflict = Bridge.Hitch.driverConflict and Bridge.Hitch.driverConflict(v)
+    if conflict ~= nil then pcall(Bridge.Hitch.halt, env, task.drive, dt); return "FAILED", conflict end
+    if not v:getIsMotorStarted() and v:getCanMotorRun() then v:startMotor() end
+    Bridge.Hitch.holdActive(task.drive)
+    v:raiseActive()
+    -- Steer the joint onto the input joint: GIANTS' driveToPoint at the input joint, in the steering frame.
+    local node = v:getAISteeringNode()
+    local lx, _, lz = env.worldToLocal(node, pair.ix, 0, pair.iz)
+    Bridge.Hitch.drive(env, task.drive, dt, true, lx, math.max(lz, 1))
+    return nil
+end
+
+function aborts.reattach(env, task) pcall(Bridge.Hitch.halt, env, task.drive, 0) end
+
 -- ----------------------------------------------------------------- detach
 -- GIANTS' own detach behind GIANTS' own permission, for the reserved, idle
 -- tractor: the implement must be its (AttacherJoints:getImplementByObject
@@ -2922,7 +3027,7 @@ function aborts.stop() end
 -- --------------------------------------------------------------- runner
 
 Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true, load = true,
-                       overload = true, alongside = true, backoff = true, escort = true }
+                       overload = true, alongside = true, backoff = true, escort = true, reattach = true }
 -- Ops that run beside the others (each keeps its own state on its task): one per machine, many
 -- machines at once. Every other op runs alone in the active slot, as before.
 Bridge.CONCURRENT = { escort = true, stop = true }
@@ -3637,6 +3742,10 @@ Bridge.REASONS = {
     COMBINE_NOT_HARVESTING = "the combine's helper is not harvesting",
     COMBINE_NOT_AT_THE_FIELD = "the combine did not get to the field",
     NO_HEADER_FOR_THE_CROP = "no header on the farm cuts that contract's crop",
+    REATTACH_NOT_IN_RANGE = "the machine did not stand close enough to attach it again",
+    NO_MATCHING_JOINT = "the machine has no free joint that takes it",
+    EQUIPMENT_UNAVAILABLE = "the machine or the implement is busy, moving or not this farm's",
+    ATTACH_NOT_OBSERVED = "GIANTS was asked to attach it, but it was not seen attached",
     FIELD_NOT_REACHABLE = "GIANTS finds no route to that field for this machine",
     MOVING_AWAY = "it was driving away from where it was going, so it stopped",
     COMBINE_NOT_OWNED = "the combine is not this farm's",

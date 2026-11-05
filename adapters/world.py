@@ -75,6 +75,11 @@ class World(Protocol):
         combine (PASSED); AGENTS.md exception 6."""
         ...
 
+    def reattach(self, vehicle_id: str, implement_id: str, owner: str) -> str:
+        """REATTACH: the reserved machine attaches the reserved loose implement it stands at
+        (GIANTS' attach range); ATTACHED, or REATTACH_NOT_IN_RANGE with nothing moved."""
+        ...
+
     def reach(self, vehicle_id: str, pose: Pose, owner: str, width: float = 0.0) -> str:
         """REACH: whether GIANTS' agent plans a route for the reserved vehicle to ``pose``; never drives.
         REACHABLE, NOT_REACHABLE, REACH_BLOCKED or REACH_UNDECIDED."""

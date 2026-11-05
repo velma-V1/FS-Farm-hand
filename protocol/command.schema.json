@@ -171,7 +171,8 @@
         "mixer_wagon",
         "water_trailer",
         "salt_spreader",
-        "tree_planter"
+        "tree_planter",
+        "cutter"
       ]
     }
   },
