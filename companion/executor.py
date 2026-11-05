@@ -1042,7 +1042,9 @@ class Executor:
             moved = True
             self.world.reattach(vehicle.id, implement.id, owner)
             enter("VERIFY")
-            vehicle, implement = self._pair(ids, farm_id, owner, attached=True)
+            # The capability rule detaching uses (a driven machine and its implement), never the tractor-only
+            # hitch pairing (live 2026-11-05: attached, yet COMPATIBILITY_CHANGED).
+            vehicle, implement = self._pair(ids, farm_id, owner, attached=True, check=detachable)
             self._front_attachments.pop(implement.id, None)
             status, reason = "COMPLETE", "HITCH_OBSERVED"
         except Cancelled:

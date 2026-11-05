@@ -389,3 +389,9 @@ Save 1 (Riverbend Springs). AutoDrive installed, never used.
 - LIVE: the 379 truck and the 951 forestry harvester are now driven machines. Before, they were "unknown" for lack of a reported hitch.
 - LIVE: "drive the 951 to field 3" was refused truthfully as NO_ROUTE after 45 s (own drive, GIANTS' agent, reposition). The 951 is boxed in by tree trunks on every side, so getting it out is forestry work.
 - REACH (diagnostic): GIANTS plans the Series 9 normally, but refuses every MF 8570 target in 33 ms (RELEASE_BACKLOG.md).
+
+## Combine header off and on (builds d7c3468, 0455b84; 2026-11-05)
+
+- LIVE-PROVEN: "unhitch the header from the mf 8570" → GIANTS detached the MF 8570 Header (isDetachAllowed held with the header as it was). Farmhand recorded the combine 3.23 m behind it, 0.00 m aside, 0.011 rad.
+- LIVE-PROVEN: "hitch the header to the mf 8570" → REATTACH found joint 1 to input 1 (CUTTER) 0.26 m across and 0.44 m up, and GIANTS attached it. Observed afterwards: 598 attached to 616 and 616 to 598. Farmhand reported UNVERIFIED COMPATIBILITY_CHANGED from a tractor-only pair check, fixed after the run.
+- OPEN: after the detach, UNPARK refused UNPARK_START_NOT_CLEAR (the header touching the combine counts against its start), so the combine did not back clear. The forward creep from a few metres away is not yet exercised live.
