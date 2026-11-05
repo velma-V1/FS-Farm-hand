@@ -3519,6 +3519,7 @@ Bridge.REASONS = {
     ALONGSIDE_TOO_FAR = "the trailer is too far behind the combine's pipe",
     COMBINE_NOT_HARVESTING = "the combine's helper is not harvesting",
     COMBINE_NOT_AT_THE_FIELD = "the combine did not get to the field",
+    NO_HEADER_FOR_THE_CROP = "no header on the farm cuts that contract's crop",
     COMBINE_NOT_OWNED = "the combine is not this farm's",
     COMBINE_STOPPED = "the combine's helper stopped",
     ESCORT_AHEAD_OF_COMBINE = "the grain cart is ahead of the combine",

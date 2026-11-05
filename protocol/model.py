@@ -95,6 +95,7 @@ class Equipment:
     size: tuple[float, float, float, float] | None = None  # GIANTS size box: length, width, height, length offset
     brand: str | None = None              # the store's brand (brandNameRaw), e.g. DEUTZFAHR
     seeds: tuple[str, ...] = ()           # a seeder's crops (GIANTS fruit names), in its order
+    cuts: tuple[str, ...] = ()            # a header's crops (GIANTS fruit names)
     pipe: tuple[bool, float, float] | None = None   # a combine's pipe: out, where it discharges (x, z)
     ai_stop: str | None = None            # how GIANTS ended the vehicle's last AI job (FINISHED, COULD_NOT_PREPARE, ...)
     ai_blocked: bool = False              # its AI job's agent reports BLOCKED (waits for an obstacle)
@@ -165,6 +166,7 @@ class Contract:
     mine: bool
     reward: float | None
     completion: float | None = None    # GIANTS' own: the field share done over its success factor (1: done)
+    fruit: str | None = None           # a harvest contract's crop (GIANTS fruit name)
 
 
 @dataclass(frozen=True)

@@ -850,6 +850,22 @@ class ContractTests(unittest.TestCase):
         self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "CONTRACT_PAID"))
         self.assertEqual(world.farm().money, FARM.money + 2000.0)
 
+    def test_a_harvest_contract_is_taken_only_for_a_crop_a_farm_header_cuts(self):
+        # Live 2026-11-05, save 1: field 9's harvest contract was spinach; the farm's only header
+        # (the MF 8570's) cuts grain. Taken, it could never be done.
+        from companion.coordinator import choose_contract
+        from protocol.model import Contract
+        header = Equipment("h-1", "implement", "farm-a", (0.0, 0.0), kinds=frozenset({"cutter", "ai_implement"}),
+                           cuts=("WHEAT", "BARLEY", "CANOLA", "OAT"))
+        combine = Equipment("c-1", "harvester", "farm-a", (0.0, 0.0), kinds=frozenset({"combine"}), attached_to="h-1")
+        spinach = Contract(9, "harvestmission", "CREATED", False, 2280.0, fruit="SPINACH")
+        oats = Contract(10, "harvestmission", "CREATED", False, 2000.0, fruit="OAT")
+        unknown = Contract(11, "harvestmission", "CREATED", False, 9000.0)
+        items = (header, combine)
+        self.assertEqual(choose_contract((spinach,), items, "farm-a"), (None, "NO_HEADER_FOR_THE_CROP"))
+        self.assertEqual(choose_contract((unknown,), items, "farm-a"), (None, "NO_HEADER_FOR_THE_CROP"))
+        self.assertEqual(choose_contract((spinach, oats, unknown), items, "farm-a")[0], oats)
+
     def test_nothing_is_taken_or_moved_when_no_contract_fits(self):
         for work, reason in (({"field": 20}, "CONTRACT_NOT_SUPPORTED"), ({"field": 31}, "NO_IMPLEMENT_FOR_FERTILIZE"),
                              ({"field": 40}, "NO_CONTRACT_ON_FIELD"), ({"kind": "mow"}, "NO_CONTRACT")):

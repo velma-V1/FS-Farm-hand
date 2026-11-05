@@ -680,6 +680,19 @@ function Observe.vehicle(env, v)
         end
         return out
     end)
+    -- The crops a header cuts (Cutter spec.fruitTypeIndices, from its fruitTypes / categories): which
+    -- harvest it can do, and which harvest contract.
+    local cuts = try(function()
+        local spec = v.spec_cutter
+        if spec == nil or type(spec.fruitTypeIndices) ~= "table" then return nil end
+        local out = Observe.array()
+        for _, index in ipairs(spec.fruitTypeIndices) do
+            local desc = env.g_fruitTypeManager:getFruitTypeByIndex(index)
+            local name = token(desc and desc.name)
+            if name ~= nil and #out < Observe.MAX_SEEDS then out[#out + 1] = name end
+        end
+        return out
+    end)
     -- A combine's pipe (GIANTS Pipe: getCurrentPipeState 763-765, 1 folded; out when the state
     -- is one of spec.unloadingStates) and where it discharges (getCurrentDischargeNode, as
     -- AIDriveStrategyCombine:getDriveData 105-108): the point a trailer stands under.
@@ -724,6 +737,7 @@ function Observe.vehicle(env, v)
         name = nullable(observedName),
         brand = nullable(text(brand)),
         seeds = nullable(seeds),
+        cuts = nullable(cuts),
         pipe = nullable(pipe),
         -- How GIANTS ended its last AI job, as the bridge's onAIJobStopped listener recorded it
         -- (Observe.aiStop is set by FarmhandBridge; the message class, e.g. FINISHED).
@@ -1113,7 +1127,14 @@ function Observe.contracts(env, farmId)
             local completion = mine and try(function()
                 return m.mission.fieldPercentageDone / env.AbstractMission.SUCCESS_FACTOR
             end) or nil
-            list[#list + 1] = { field = m.id, kind = m.kind, status = m.status, mine = mine,
+            -- A harvest contract's crop (HarvestMission fruitTypeIndex): only a header that cuts it can do it.
+            local fruit = try(function()
+                local index = m.mission.fruitTypeIndex
+                if index == nil then return nil end
+                local desc = env.g_fruitTypeManager:getFruitTypeByIndex(index)
+                return token(desc and desc.name)
+            end)
+            list[#list + 1] = { field = m.id, kind = m.kind, status = m.status, mine = mine, fruit = fruit or Observe.NULL,
                                 reward = finite(reward) and reward or Observe.NULL,
                                 completion = finite(completion) and math.max(0, math.min(100, completion)) or Observe.NULL }
         end

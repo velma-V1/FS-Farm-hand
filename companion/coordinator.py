@@ -519,6 +519,15 @@ def contract_operation(kind: str) -> str | None:
     return next((op for stem, op in CONTRACT_WORK if kind.casefold().startswith(stem)), None)
 
 
+def cuts_contract_crop(items, contract, farm_id: str) -> bool:
+    """A harvest contract only when one of the farm's headers cuts its crop (live 2026-11-05, save 1:
+    field 9's harvest contract was spinach, taken with only a grain header on the farm). Other
+    contracts: True."""
+    if contract_operation(contract.kind) != "harvest":
+        return True
+    return contract.fruit is not None and any(item.farm_id == farm_id and contract.fruit in item.cuts for item in items)
+
+
 def choose_contract(contracts, items, farm_id: str, field=None, kind=None):
     """The contract to work: this farm's own first (finish what was taken), else the best
     paid available one Farmhand can do with the farm's implements, on ``field`` and of
@@ -536,8 +545,12 @@ def choose_contract(contracts, items, farm_id: str, field=None, kind=None):
     workable = [c for c in offers if contract_operation(c.kind)]
     if not workable:
         return None, "CONTRACT_NOT_SUPPORTED"
-    doable = [c for c in workable if implement_kind(items, contract_operation(c.kind), farm_id)[0] is not None]
+    doable = [c for c in workable if implement_kind(items, contract_operation(c.kind), farm_id)[0] is not None
+              and cuts_contract_crop(items, c, farm_id)]
     if not doable:
+        if any(contract_operation(c.kind) == "harvest" for c in workable) \
+                and all(contract_operation(c.kind) == "harvest" for c in workable):
+            return None, "NO_HEADER_FOR_THE_CROP"
         return None, implement_kind(items, contract_operation(workable[0].kind), farm_id)[1]
     return max(doable, key=lambda c: (c.reward or 0.0, -c.field)), None
 

@@ -210,6 +210,7 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
         belt_markers=tuple(tuple(m) for m in (vehicle.get("belts") or {}).get("markers", ())),
         brand=vehicle.get("brand"),
         seeds=tuple(vehicle.get("seeds") or ()),
+        cuts=tuple(vehicle.get("cuts") or ()),
         pipe=None if vehicle.get("pipe") is None else (vehicle["pipe"]["out"], vehicle["pipe"]["x"], vehicle["pipe"]["z"]),
         ai_stop=vehicle.get("ai_stop"),
         ai_blocked=vehicle.get("ai_blocked") is True,
@@ -255,7 +256,8 @@ def observation_from_snapshot(frame: dict, categories: dict[str, str] | None = N
         field_places=tuple(Destination(f"field-{f['id']}", (f["x"], f["z"]), f"field {f['id']}",
                                        tuple((p[0], p[1]) for p in f.get("outline", ())))
                            for f in sorted(frame.get("field_places", ()), key=lambda f: f["id"])),
-        contracts=tuple(Contract(c["field"], c["kind"], c["status"], c["mine"], c["reward"], c.get("completion"))
+        contracts=tuple(Contract(c["field"], c["kind"], c["status"], c["mine"], c["reward"], c.get("completion"),
+                                        c.get("fruit"))
                         for c in frame.get("contracts", ())),
         land=tuple(LandParcel(f["id"], f.get("farmland"), f.get("owner"), f.get("price"), f.get("area_ha"))
                    for f in sorted(frame.get("field_places", ()), key=lambda f: f["id"])),
