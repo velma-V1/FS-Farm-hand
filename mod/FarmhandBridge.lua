@@ -1275,11 +1275,12 @@ function starters.reposition(env, spec)
     if tx == nil then return nil, "NO_OPEN_SPOT" end
     log("reposition: the %s from %.1f,%.1f to open ground at %.1f,%.1f yaw %.2f", tostring(v.getName and v:getName() or "vehicle"),
         x, z, tx, tz, tyaw)
-    -- At its heading only for a combine (a trailer comes along its pipe line); anything moved out
-    -- of the way arrives at any heading (live 21a5e70740024850-1: the 3650 2 m from its spot, 24
-    -- degrees off that heading, corrected until OBSTACLE_AHEAD).
+    -- At the heading the spot was found clear at (live 8611351ac09e4a1b-1: arrived at any heading,
+    -- the GMC rig's nose against an object). 21a5e70740024850-1 (24 degrees off, corrected until
+    -- OBSTACLE_AHEAD) was the old lattice search, which reached a heading only by chance; the exact
+    -- goal curve (Drive.dubins) plans it.
     return starters.farm_drive(env, { tractor = v, x = tx, z = tz, area = 0,
-                                      yaw = (v.spec_pipe ~= nil or lane ~= nil) and tyaw or 10, farmId = spec.farmId,
+                                      yaw = tyaw, farmId = spec.farmId,
                                       owned = spec.owned, ghost = spec.ghost })
 end
 steppers.reposition = function(env, task, dt) return steppers.farm_drive(env, task, dt) end
