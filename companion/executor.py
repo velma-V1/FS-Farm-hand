@@ -437,6 +437,7 @@ def detachable(tractor: Equipment, implement: Equipment, kind: str | None = None
 # area (AbstractFieldMission:getCompletion 452-456 divides by it); its value is not
 # documented, so ours is fixed here: 95 % of the field's measured area.
 COVERAGE_REQUIRED = 0.95
+FIELD_MEASURE_WAIT_S = 60.0   # a field-work step waits this long at most for the field's first reading
 
 # Ground types (GIANTS FieldGroundType names, as the running game defines them) that
 # each operation leaves. Names the game does not define simply never match.
@@ -2980,6 +2981,15 @@ class Executor:
                     raise ObservationMismatch("EQUIPMENT_MOVING")
                 self._origins.setdefault(implement.id, _pose_of(tractor))
                 before = self._field(field.id)
+                # Never judged against nothing (live 057826b2bbb9485c-1, right after a reload: "before: unmeasured",
+                # 395 m2 worked counted as the field's whole plowed 8934 m2): the mod measures one field
+                # every few seconds (Observe.FIELD_REFRESH_MS), so wait for this one's reading.
+                deadline = time.monotonic() + FIELD_MEASURE_WAIT_S
+                while before.coverage is None and time.monotonic() < deadline:
+                    time.sleep(1.0)
+                    before = self._field(field.id)
+                if before.coverage is None and command.get("area_m2"):
+                    raise ObservationMismatch("FIELD_NOT_OBSERVED")
                 before_done = operation.done(before.coverage) if before.coverage else None
                 material = _material(implement, operation.material)
                 money = (self.world.farm() or FarmInfo(None, None, None, None)).money

@@ -73,6 +73,22 @@ class FieldWorkTests(unittest.TestCase):
                 self.assertEqual(result.states, ("FIND", "RESERVE", "FIELD_WORK", "VERIFY", "STOP", "RELEASE"))
                 self.assertTrue(all(i.reserved_by is None for i in world.snapshot()))
 
+    def test_a_field_not_yet_measured_is_waited_for_before_the_work(self):
+        # Live, right after a reload: "before: unmeasured", 395 m2 worked counted as 8934 m2.
+        class Late(MockWorld):
+            reads = 0
+
+            def fields(self):
+                self.reads += 1
+                out = super().fields()
+                return tuple(replace(f, coverage=None) for f in out) if self.reads <= 3 else out
+
+        world = self.world("cultivator", cls=Late)
+        with mock.patch("time.sleep"):
+            result = Executor(world).execute(work("cultivate"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "FIELD_WORK_OBSERVED"), result)
+        self.assertGreater(world.reads, 3)
+
     def test_fieldwork_does_not_preemptively_teleport_nearby_equipment(self):
         # Live 2026-11-04: the field-2 scan moved a parked canola trailer even
         # though the helper had not reported that trailer as an obstruction.
