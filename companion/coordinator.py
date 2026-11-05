@@ -1532,6 +1532,10 @@ class Coordinator:
                         tractor = next((i for i in self.world.snapshot() if i.id == result.equipment_ids[0]), None)
                         name = _words(tractor.name) if tractor is not None else None
                         cleared = self._clear_of_dropped_implement(job, cancel, entered, name) if name else None
+                        if (cleared is not None and cleared.reason == "DETACHED_NOT_CLEAR"
+                                and "WAIT_PERSON" in cleared.states):
+                            # Waited for the player in its way, in vain (live 4f113568bf4845a4-1): said.
+                            return Result("BLOCKED", "PERSON_IN_THE_WAY", tuple(equipment), tuple(states))
                         if cleared is not None and cleared.status == "COMPLETE":
                             retry = True
                             break

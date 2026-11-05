@@ -3688,6 +3688,7 @@ Bridge.REASONS = {
     DIVERGED = "the tractor could not follow its line to the implement",
     WAGON_MOVED = "the implement moved",
     AGAINST_IMPLEMENT = "the tractor stands against an unhitched implement; drive it clear first",
+    PERSON_IN_THE_WAY = "you are standing in the tractor's way; step aside and ask again",
     IMPLEMENT_MOVED = "the unhitched implement moved, so Farmhand stopped",
     SEPARATION_LOST = "the tractor did not pull away from the implement, so Farmhand stopped",
     NOT_JUST_DETACHED = "the tractor can only pull clear straight after unhitching",

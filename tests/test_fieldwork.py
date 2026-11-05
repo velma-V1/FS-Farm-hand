@@ -368,6 +368,13 @@ class PlanTests(unittest.TestCase):
         self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", "AGAINST_IMPLEMENT"))
         self.assertEqual(len(freed), 1)
 
+        seen.clear(); freed.clear()       # waited for the player in its way, in vain: said so
+        c._clear_of_dropped_implement = lambda *a: (freed.append(a[-1]), Result(
+            "COMPLETE", "DETACHED_NOT_CLEAR", ("t-1", "k-1"), ("DETACH", "PULL_CLEAR", "WAIT_PERSON")))[1]
+        c.submit({"version": 1, "command": "field_work", "field": "smallest", "operations": ["sow"]})
+        c.wait(20)
+        self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", "PERSON_IN_THE_WAY"))
+
 class ReturnToOriginTests(unittest.TestCase):
     """The user: "you have to take the plow back to where you got it, you can't just
     leave it in the field". move_pair to origin goes back to the tractor's pose when
