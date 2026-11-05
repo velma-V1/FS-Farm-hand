@@ -382,3 +382,10 @@ Save 1 (Riverbend Springs). AutoDrive installed, never used.
 - LIVE DEFECT, fixed in d25e36a: the cart gave up before GIANTS' helper had taken the combine.
 - NOT LIVE-PROVEN: ESCORT (unloading on the move). The MF 8570 never reached a ripe field: fields 2, 5 and 7 were stubble (Farmhand rightly said done), and GIANTS answered NOT_REACHABLE for fields 90 and 64 (RELEASE_BACKLOG.md).
 - STOPPED by me: the stationary under-pipe approach (16 min of searches beside the combine) and two own-drive long-range attempts with the combine.
+
+## Navigation correction and driven-machine classification (builds 6fbc6ed..fa360b8, 2026-11-05)
+
+- LIVE-PROVEN (regression): "drive the mt635 to field 8" completed on 6fbc6ed (barn to field 8 entrance).
+- LIVE: the 379 truck and the 951 forestry harvester are now driven machines. Before, they were "unknown" for lack of a reported hitch.
+- LIVE: "drive the 951 to field 3" was refused truthfully as NO_ROUTE after 45 s (own drive, GIANTS' agent, reposition). The 951 is boxed in by tree trunks on every side, so getting it out is forestry work.
+- REACH (diagnostic): GIANTS plans the Series 9 normally, but refuses every MF 8570 target in 33 ms (RELEASE_BACKLOG.md).
