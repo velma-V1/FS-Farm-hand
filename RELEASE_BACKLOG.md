@@ -166,13 +166,6 @@ Acceptance:
 - completion, failure, STOP, cancellation, link loss and provider handoff restore the exact original wheel flags;
 - no hardcoded map/route coordinates or external gameplay-mod requirement.
 
-## Bounded-area acceptance measure
-Status: OPEN
-Priority: MEDIUM
-Found: 2026-11-04
-
-Overshoot fixed live (45b7de3: 408 m2 of 400 with a ~450 m2/s plow; checks every 250 ms, every frame near the request; the companion waits for the field's first reading). Still two measures: the mod stops on any ground/spray share change (Bridge.changedArea), the companion accepts on the operation's own share. They agree for plowing stubble; for work over already-worked ground (abf1610fc62543be-1: cultivating plowed ground, 414 vs 192 m2) they can disagree. Needed: the mod told the operation's target ground types, so stop and acceptance use one measure.
-
 ## Sell equipment
 Status: OPEN
 Priority: MEDIUM
