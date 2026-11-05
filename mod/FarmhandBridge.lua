@@ -615,6 +615,18 @@ function starters.reach(env, spec)
     if task == nil then return nil, code end
     local ok, w, l, lo, fo = pcall(function() return spec.tractor:getAIAgentSize() end)
     local radius = spec.tractor.maxTurningRadius
+    -- Where its width comes from: the vehicle's own agent, or an attachment (AIDrivable getAIAgentSize:
+    -- the widest of them), each as GIANTS registered it (updateAIAgentAttachments, AIVehicle).
+    local okParts, parts = pcall(function()
+        local ai = spec.tractor.spec_aiDrivable
+        local out = { string.format("own=%.2f", ai.agentInfo.width or -1) }
+        for i, a in ipairs(ai.attachments or {}) do
+            local name = a.vehicle ~= nil and a.vehicle.getName ~= nil and a.vehicle:getName() or "?"
+            out[#out + 1] = string.format("%d:%s=%.2fx%.2f", i, tostring(name), a.width or -1, a.length or -1)
+        end
+        return table.concat(out, " ")
+    end)
+    log("reach: agent widths %s", okParts and parts or "?")
     local okId, id = pcall(function() return env.NetworkUtil.getObjectId(spec.tractor) end)
     log("reach: agent %s to %.1f,%.1f yaw %.2f (width %s length %s offsets %s/%s radius %s)",
         okId and tostring(id) or "?", spec.x, spec.z, spec.yaw or 0,
