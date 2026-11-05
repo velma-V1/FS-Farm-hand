@@ -1446,6 +1446,7 @@ class Coordinator:
         states, equipment, started = [], [], []
         n = 0
         teleported = False
+        freed_joint = False          # the dropped-implement rescue, once per job
 
         def fresh():
             return next((f for f in self.world.fields() if f.id == field.id), field)
@@ -1522,6 +1523,18 @@ class Coordinator:
                         teleported = True
                         retry = True
                         break
+                    if (result.status == "BLOCKED" and result.reason == "AGAINST_IMPLEMENT"
+                            and step["task"] == "hitch_pair" and not freed_joint and result.equipment_ids):
+                        # The tractor stands on the joint of an implement it dropped (live
+                        # 6ccefa7bf9c34797-1: the 3650 on its cultivator's, PULL_CLEAR refused for
+                        # the player): that one hitched back and unhitched clear, then the plan again.
+                        freed_joint = True
+                        tractor = next((i for i in self.world.snapshot() if i.id == result.equipment_ids[0]), None)
+                        name = _words(tractor.name) if tractor is not None else None
+                        cleared = self._clear_of_dropped_implement(job, cancel, entered, name) if name else None
+                        if cleared is not None and cleared.status == "COMPLETE":
+                            retry = True
+                            break
                     if (result.status == "BLOCKED" and step["task"] == "hitch_pair" and ahead is not None
                             and attempt == 1):
                         # No free tractor while the one ahead works: it comes back first.

@@ -328,6 +328,46 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(c.last.state, "COMPLETE")
 
 
+    def test_a_tractor_on_its_dropped_implements_joint_is_freed_and_the_plan_runs_again(self):
+        # Live 6ccefa7bf9c34797-1: the 3650 stood on the cultivator it had dropped (PULL_CLEAR
+        # refused for the player), the seeder's hitch BLOCKED AGAINST_IMPLEMENT and the sowing
+        # ended there. Once a job: hitched back and unhitched clear, then the plan again.
+        from companion import coordinator as coordination
+        from protocol.model import Result
+        class Settled(MockWorld):
+            def retained(self):
+                return ()
+
+        items = list(self.items("sowing_machine"))
+        items[0] = replace(items[0], name="3650")
+        world = Settled(items, PLAYERS, fields=(field(7, 0.4),), farm=FARM)
+        seen, freed = [], []
+
+        class Scripted:
+            def execute(self, intent, cancel=None, on_state=None, job=None):
+                seen.append(intent["task"])
+                if intent["task"] == "hitch_pair" and seen.count("hitch_pair") == 1:
+                    return Result("BLOCKED", "AGAINST_IMPLEMENT", ("t-1", "w-1"), ("FIND",))
+                return Result("COMPLETE", "OK", ("t-1",), ("FIND",))
+
+        c = coordination.Coordinator(world, Scripted(), lambda n, s=False: None, lambda: "farm-a", lambda: "s1")
+        def clear(job, cancel, entered, name):
+            freed.append(name)
+            return Result("COMPLETE", "DETACH_OBSERVED")
+        c._clear_of_dropped_implement = clear
+        c.submit({"version": 1, "command": "field_work", "field": "smallest", "operations": ["sow"]})
+        c.wait(20)
+        self.assertEqual(len(freed), 1)
+        self.assertEqual(seen[:2], ["hitch_pair", "hitch_pair"])
+        self.assertEqual(c.last.state, "COMPLETE")
+
+        seen.clear(); freed.clear()
+        c._clear_of_dropped_implement = lambda *a: (freed.append(a[-1]), Result("BLOCKED", "AGAINST_IMPLEMENT"))[1]
+        c.submit({"version": 1, "command": "field_work", "field": "smallest", "operations": ["sow"]})
+        c.wait(20)
+        self.assertEqual((c.last.state, c.last.reason), ("BLOCKED", "AGAINST_IMPLEMENT"))
+        self.assertEqual(len(freed), 1)
+
 class ReturnToOriginTests(unittest.TestCase):
     """The user: "you have to take the plow back to where you got it, you can't just
     leave it in the field". move_pair to origin goes back to the tractor's pose when
