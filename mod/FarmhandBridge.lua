@@ -470,8 +470,8 @@ local function agentEnd(env, task, dt)
     end
 end
 
--- GIANTS' agent for the vehicle (AIDrivable:createAgent). `cap` > 0: planned at most that wide,
--- never narrower than the vehicle's own agent. GIANTS sizes it by the widest attachment
+-- GIANTS' agent for the vehicle (AIDrivable:createAgent). `cap` > 0 (REACH only, a diagnostic probe
+-- that never drives): planned at most that wide, never narrower than the vehicle's own agent. GIANTS sizes it by the widest attachment
 -- (getAIAgentSize, static XML widths: the MF 8570's header 6.80 m on a 3.99 m combine, live
 -- 2026-11-05), wider than the 6 m its roads default to (AISystem:addRoadSpline), so no route
 -- crosses the map. A header overhangs a road's edges for a player too; Farmhand's own watch
@@ -531,7 +531,7 @@ local function startAgent(env, spec)
     local ok, why = pcall(function()
         local cruise = v.spec_drivable and v.spec_drivable.cruiseControl
         task.cruiseBefore = cruise and cruise.speed
-        Bridge.createAgent(v, spec.area)
+        Bridge.createAgent(v, spec.op == "reach" and spec.area or nil)
         task.agentMade = true
         local mission = env.g_currentMission
         local y = env.getTerrainHeightAtWorldPos(mission.terrainRootNode, spec.x, 0, spec.z)
@@ -3638,7 +3638,6 @@ Bridge.REASONS = {
     COMBINE_NOT_AT_THE_FIELD = "the combine did not get to the field",
     NO_HEADER_FOR_THE_CROP = "no header on the farm cuts that contract's crop",
     FIELD_NOT_REACHABLE = "GIANTS finds no route to that field for this machine",
-    FIELD_TOO_NARROW_FOR_THE_HEADER = "the roads to that field are too narrow for the combine with its header",
     COMBINE_NOT_OWNED = "the combine is not this farm's",
     COMBINE_STOPPED = "the combine's helper stopped",
     ESCORT_AHEAD_OF_COMBINE = "the grain cart is ahead of the combine",

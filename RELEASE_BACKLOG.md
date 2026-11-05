@@ -221,19 +221,13 @@ Acceptance (live, still open):
 - The combine moving and threshing while grain flows into the cart (game log `escort end ... moving=<litres>` > 0, standing ~0), several lanes including headland turns, no contact, full cart delivered and back.
 - First live attempts (2026-11-05, save 1): field 7 was already harvested (Farmhand rightly refused). Field 90: GIANTS' helper could not leave because the MT635 + RZK 300H stood against the MF 8570's header; Farmhand's reposition only reversed it 4 m (see "Equipment left against a combine").
 
-## GIANTS' helper cannot route the MF 8570 (NOT_REACHABLE)
-Status: OPEN
-Priority: HIGH (blocks the live moving-unload gate in save 1)
+## GIANTS' planner refuses the MF 8570
+Status: RECORDED; NOT A PRIORITY (owner direction 2026-11-05: stop fighting GIANTS' planner for one machine)
 Found: 2026-11-05
 
-Live: at 09:38 and 09:40 GIANTS' field-work helper planned the MF 8570's route to field 90; its agent was "blocked on its way" by the MT635, 774 m out. From 09:45 every request answered NOT_REACHABLE within 3 s. That covered field 90 and field 64 (opposite directions), from two different start spots, with the MT635 moved to the barn and no Farmhand navigation blocks. Farmhand's own drive then took over. The first time it planned for 10 minutes with the combine braked. The second time it drove the combine 130 m the wrong way, north, at up to 27 km/h, until its no-progress guard stopped it.
+The REACH probe (diagnostic; it never drives) shows GIANTS' agent planner refuses every target for the MF 8570, within 33 ms. That held from three spots, for the combine alone and with the header, at its own width and at 6 m, with room at both ends. The Series 9 plans normally (551 ms). The combine's agent front offset is -3.70 m (the Series 9's is +3.26 m), a likely cause, but taking it as ahead did not change the answer. The REACH probe stays to pick a field start GIANTS can route. Planning narrower than the rig was removed from navigation (owner: never represent equipment narrower than it is).
 
-Diagnosis so far (adapters/EVIDENCE.md, "GIANTS' navigation agent"): the REACH probe (01808296) sizes the combine with its header at 6.8 m wide. GIANTS' roads default to 6 m. All six field 64 starts came back NOT_REACHABLE within 1.5 s, and Farmhand now says FIELD_NOT_REACHABLE at once instead of driving.
-
-Acceptance:
-- Prove the width cause: REACH with the header on its MF 8570 transport trailer. If it routes, carry the header that way for trips that are not reachable (see "Combine transport for long trips").
-- Farmhand's own drive starts useful motion within seconds or says why; it never drives away from the goal for minutes.
-- Consider carrying the header on its MF 8570 trailer for long trips (see "Combine transport for long trips").
+The proven way stays: GIANTS' helper, then Farmhand's own drive onto the field (_to_field). For long trips the owner's standing instruction applies: transport a slow combine rather than drive it across the map (see "Combine transport for long trips").
 
 ## Harvest contract left in the save
 Status: NEEDS PLAYER DECISION

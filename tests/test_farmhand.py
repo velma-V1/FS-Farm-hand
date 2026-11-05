@@ -375,7 +375,7 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(world.snapshot(), before)
 
     def test_action_time_compatibility_change_prevents_delivery(self):
-        for change in ({"pto_torque_capacity": 0.1}, {"category": "truck"},
+        for change in ({"pto_torque_capacity": 0.1}, {"category": "implement"},
                        {"capabilities": frozenset({"move", "attach"})}, {"pto_torque_capacity": None}):
             with self.subTest(change=change):
                 class CompatibilityChangeWorld(FaultWorld):

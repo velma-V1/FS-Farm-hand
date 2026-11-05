@@ -63,7 +63,7 @@ class FieldWorkTests(unittest.TestCase):
     def world(self, kind, level=0.0, coverage=STUBBLE, farm=FARM, cls=MockWorld):
         return cls(rig(kind, level), PLAYERS, fields=(field(7, 0.4, coverage), field(9, 1.2)), farm=farm)
 
-    def test_the_helper_starts_where_giants_finds_a_route_and_a_far_field_without_one_is_said_at_once(self):
+    def test_the_helper_starts_where_giants_finds_a_route_and_without_one_goes_the_usual_way(self):
         # Live 2026-11-05 (save 1): GIANTS answered NOT_REACHABLE for the MF 8570 to field 90 and 64,
         # then Farmhand's own drive planned for minutes and drove the wrong way. GIANTS never checks
         # a field-work target (AIJobFieldWork:validate): Farmhand asks its planner first (REACH).
@@ -76,51 +76,14 @@ class FieldWorkTests(unittest.TestCase):
         self.assertEqual((result.status, result.reason), ("COMPLETE", "FIELD_WORK_OBSERVED"), result)
         self.assertEqual(world.mock_reached[0], (200.0, 300.0))
         self.assertEqual(len(world.mock_reached), 2)                    # the nearest corner's inside point next
-        far = self.world("cultivator")
-        far.mock_field_places = (place,)
-        far.mock_unreachable = ((200.0, 300.0),) + tuple(world.mock_reached[1:]) + tuple(
+        # None reachable: never refused for it; the helper's own drive, then Farmhand's (_to_field), as before.
+        none = self.world("cultivator")
+        none.mock_field_places = (place,)
+        none.mock_unreachable = ((200.0, 300.0),) + tuple(world.mock_reached[1:]) + tuple(
             (c[0] + (200.0 - c[0]) * 10.0 / math.dist(c, (200.0, 300.0)),
              c[1] + (300.0 - c[1]) * 10.0 / math.dist(c, (200.0, 300.0))) for c in outline)
-        t1 = far.items["t-1"]
-        far.items["t-1"] = replace(t1, position=(900.0, 900.0), ai_root=Pose(900.0, 900.0, 0.0))
-        i1 = far.items["i-1"]
-        far.items["i-1"] = replace(i1, position=(900.0, 897.0))
-        result = Executor(far).execute(work("cultivate"))
-        self.assertEqual((result.status, result.reason), ("FAILED", "FIELD_NOT_REACHABLE"), result)
-        self.assertEqual(far.items["t-1"].position, (900.0, 900.0))       # nothing drove
-
-    def test_a_combine_wider_than_the_roads_is_driven_there_on_a_road_wide_agent(self):
-        # Live 2026-11-05: the MF 8570's header made GIANTS' agent 6.80 m, its roads are 6 m: no route at
-        # full width; at the road width GIANTS routes it, Farmhand drives it along that agent.
-        combine, header = HarvestTests().combine()
-        far = (900.0, 900.0)
-        combine = replace(combine, position=far, ai_root=Pose(*far, 0.0))
-        header = replace(header, position=(far[0], far[1] + 4.0))
-        outline = ((150.0, 250.0), (250.0, 250.0), (250.0, 350.0), (150.0, 350.0))
-        driven = []
-
-        class Roads(MockWorld):
-            def navigate(self, tractor_id, pose, owner, width=0.0):
-                # Mock-only: the combine (and its header) carried to the pose, as GIANTS' agent drives it.
-                driven.append(width)
-                with self._lock:
-                    c = self.items[tractor_id]
-                    self.items[tractor_id] = replace(c, position=(pose.x, pose.z), heading=pose.yaw,
-                                                     ai_root=Pose(pose.x, pose.z, pose.yaw))
-                    h = self.items[c.attached_to]
-                    self.items[h.id] = replace(h, position=(pose.x, pose.z + 4.0))
-
-        world = Roads([combine, header], PLAYERS, fields=(field(7, 0.4, HarvestTests.READY),), farm=FARM)
-        world.mock_field_places = (Destination("field-7", (200.0, 300.0), "field 7", outline),)
-        world.mock_unreachable = ((200.0, 300.0),) + tuple(
-            (c[0] + (200.0 - c[0]) * 10.0 / math.dist(c, (200.0, 300.0)),
-             c[1] + (300.0 - c[1]) * 10.0 / math.dist(c, (200.0, 300.0))) for c in outline)
-        world.mock_road_width = 6.0
-        result = Executor(world).execute(work("harvest", hand_off=True))
-        self.assertEqual((result.status, result.reason), ("COMPLETE", "WORKER_STARTED"), result)
-        self.assertIn("TO_FIELD", result.states)
-        self.assertEqual(driven, [6.0])
-        self.assertLess(math.dist(world.items[combine.id].position, (200.0, 300.0)), 1.0)
+        result = Executor(none).execute(work("cultivate"))
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "FIELD_WORK_OBSERVED"), result)
 
     def test_each_operation_completes_on_the_measured_field(self):
         for operation, kind, level in (("cultivate", "cultivator", 0.0), ("sow", "sowing_machine", 500.0),
@@ -2113,6 +2076,17 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertEqual(c.last.state, "CANCELLED")
         self.assertNotIn("t-5", getattr(world, "mock_escorting", ()))
         self.assertIsNone(world.items["t-5"].reserved_by)
+
+    def test_any_machine_that_drives_and_tows_a_trailer_is_a_grain_cart(self):
+        # Capabilities, not a "tractor" label: a truck (the 379 is category unknown in save 1) tows the cart.
+        world, unit = self.cart_world()
+        world.items["t-5"] = replace(world.items["t-5"], category="unknown")
+        c, notices = coordinated(world)
+        c.grain_cart = True
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        self.assertTrue(until(lambda: "t-5" in getattr(world, "mock_escorting", ())), notices)
+        world.finish_worker("c-1")
+        self.assertTrue(until(lambda: "COMPLETE_GRAIN_CART" in notices), notices)
 
     def test_the_cart_works_beside_the_next_job_and_stop_ends_both(self):
         # FINAL_FARMHAND_PRODUCT_SPEC.md 4: concurrent workers, not a queue. The cart rides beside the

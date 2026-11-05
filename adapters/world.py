@@ -137,7 +137,7 @@ class World(Protocol):
     # time, is bounded, and its normal return is never evidence: the executor
     # verifies every step from a fresh snapshot. Sources: adapters/EVIDENCE.md.
 
-    def navigate(self, tractor_id: str, pose: Pose, owner: str, width: float = 0.0) -> None:
+    def navigate(self, tractor_id: str, pose: Pose, owner: str) -> None:
         """TRAVEL_NEAR or DELIVER: GIANTS' navigation agent, under Farmhand, takes the
         reserved tractor's AI root to ``pose``, with the wagon if attached (GIANTS plans
         the path for the whole combination)."""

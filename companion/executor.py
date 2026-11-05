@@ -918,12 +918,8 @@ class Executor:
                 return None, None, "LOADED_NO_DRIVER"
         return (tractor, wagon), route, None
 
-    # A field this far off that GIANTS' agent finds no route to is said at once (live 2026-11-05: Farmhand's own
-    # drive planned 10 minutes for the MF 8570 to field 90, then drove it 130 m the wrong way toward field 8).
-    FIELD_OWN_DRIVE_MAX_M = 400.0
     FIELD_START_PROBES = 6        # field points GIANTS' planner is asked about at most
     FIELD_START_INSIDE_M = 10.0   # an outline point moved this far toward the field's centre
-    TRANSPORT_WIDTH_M = 6.0       # GIANTS' default road width (AISystem:addRoadSpline): a combine's header plans at it
 
     def _field_starts(self, tractor, field, center: Pose) -> list:
         """Where GIANTS' helper may start a field's work: its centre, then points just inside its
@@ -948,8 +944,8 @@ class Executor:
     def _reachable_start(self, tractor, field, center: Pose, owner, enter) -> Pose:
         """The first field start GIANTS' own planner routes the reserved pair to (REACH), checked
         before the helper drives (it is never checked by GIANTS: AIJobFieldWork:validate). None
-        reachable: far off, FIELD_NOT_REACHABLE at once; near, the centre (the helper's refusal
-        then brings Farmhand's own drive, _to_field). A world without the probe: the centre."""
+        reachable: the centre, and the helper's refusal brings Farmhand's own drive (_to_field).
+        A world without the probe: the centre."""
         if getattr(type(self.world), "reach", None) is None:
             return center
         answers = []
@@ -962,43 +958,8 @@ class Executor:
             if answer == "REACHABLE":
                 log.info("field %s: GIANTS routes to %s (%s)", field.id, start, answers)
                 return start
-        log.info("field %s: GIANTS routes to none of its starts %s", field.id, answers)
-        if self.TRANSPORT_WIDTH_M and tractor.category == "harvester":
-            # Its header makes GIANTS' agent wider than the roads (live: 6.80 m over a 3.99 m MF 8570, roads 6 m):
-            # planned at the road width, Farmhand drives it there along that agent, the helper starts on the field.
-            for start in self._field_starts(tractor, field, center)[:2]:
-                try:
-                    answer = self.world.reach(tractor.id, start, owner, width=self.TRANSPORT_WIDTH_M)
-                except (StepFailed, StepUnverified) as failure:
-                    answer = getattr(failure, "code", "REACH_FAILED")
-                log.info("field %s: at %.1f m wide GIANTS says %s for %s", field.id, self.TRANSPORT_WIDTH_M, answer, start)
-                # REACH_BLOCKED: a route, with something at its start (live 2026-11-05 at field 64): the drive's
-                # own start recovery (_navigate's UNPARK) handles that.
-                if answer in ("REACHABLE", "REACH_BLOCKED"):
-                    enter("TO_FIELD")
-                    self._navigate(tractor.id, start, owner, width=self.TRANSPORT_WIDTH_M)
-                    now = next(i for i in self.world.snapshot() if i.id == tractor.id)
-                    return Pose(now.position[0], now.position[1], now.heading or start.yaw)
-        if math.dist(tractor.position, field.center) > self.FIELD_OWN_DRIVE_MAX_M:
-            if tractor.category == "harvester":
-                # The combine alone (a cap under a metre plans no attachment): whether only
-                # the header keeps it off the roads there, said as such.
-                try:
-                    alone = self.world.reach(tractor.id, center, owner, width=0.1)
-                except (StepFailed, StepUnverified) as failure:
-                    alone = getattr(failure, "code", "REACH_FAILED")
-                log.info("field %s: at the combine's own width GIANTS says %s", field.id, alone)
-                # And whether it can leave where it stands at all: 30 m straight on.
-                yaw = tractor.heading or 0.0
-                near = Pose(tractor.position[0] + math.sin(yaw) * 30.0, tractor.position[1] + math.cos(yaw) * 30.0, yaw)
-                try:
-                    ahead = self.world.reach(tractor.id, near, owner, width=0.1)
-                except (StepFailed, StepUnverified) as failure:
-                    ahead = getattr(failure, "code", "REACH_FAILED")
-                log.info("field %s: 30 m straight on (%s) GIANTS says %s", field.id, near, ahead)
-                if alone in ("REACHABLE", "REACH_BLOCKED"):
-                    raise StepFailed("FIELD_TOO_NARROW_FOR_THE_HEADER")
-            raise StepFailed("FIELD_NOT_REACHABLE")
+        log.info("field %s: GIANTS routes to none of its starts %s (the helper, then Farmhand's own drive)",
+                 field.id, answers)
         return center
 
     def _to_field(self, tractor, field, ids, owner, enter) -> bool:
@@ -1983,7 +1944,9 @@ class Executor:
             rigs = []
             for tractor in items:
                 trailer = observed.get(tractor.attached_to)
-                if not (tractor.category == "tractor" and trailer is not None and trailer.attached_to == tractor.id
+                # Any machine that drives and stops towing a trailer (a tractor, a truck), never a combine.
+                if not (tractor.category != "harvester" and {"move", "stop"} <= tractor.capabilities
+                        and trailer is not None and trailer.attached_to == tractor.id
                         and "trailer" in trailer.kinds and trailer.fill_units and trailer.size is not None
                         and not transport.is_transport(trailer) and named(tractor, command.get("tractor_name"))
                         and all(usable(x, farm_id) and x.stopped for x in (tractor, trailer))):
@@ -2356,7 +2319,7 @@ class Executor:
                 raise StepFailed("UNPARK_HANDOFF_BLOCKED")
         return moved
 
-    def _navigate(self, tractor_id, pose, owner, partner_id=None, free=True, width=0.0):
+    def _navigate(self, tractor_id, pose, owner, partner_id=None, free=True):
         """GIANTS GOTO to ``pose``, routing around what physically stops it (see
         MAX_DETOURS): the stuck spot just ahead of the vehicle is blocked for GIANTS'
         planner and the same GOTO asked again. With ``free``, a GOTO GIANTS took that
@@ -2367,10 +2330,7 @@ class Executor:
             start = self._position(tractor_id)
             failed = None
             try:
-                if width:
-                    self.world.navigate(tractor_id, pose, owner, width=width)
-                else:
-                    self.world.navigate(tractor_id, pose, owner)
+                self.world.navigate(tractor_id, pose, owner)
             except StepFailed as failure:
                 if failure.code == "NAVIGATE_STUCK" and detours < MAX_DETOURS:
                     self._block_ahead(tractor_id, detours)

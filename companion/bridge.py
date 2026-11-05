@@ -656,10 +656,9 @@ class FS25World:
         return self._run("fieldwork", tractor=int(tractor_id), field=int(field_id), x=pose.x, z=pose.z,
                          yaw=pose.yaw, area=float(area_m2), seed=int(seed), hand=1 if hand else 0)
 
-    def navigate(self, tractor_id: str, pose: Pose, owner: str, width: float = 0.0) -> None:
-        """``width`` > 0: GIANTS' agent planned at most that wide (never narrower than the vehicle's own)."""
+    def navigate(self, tractor_id: str, pose: Pose, owner: str) -> None:
         self._reserved(tractor_id, owner)
-        self._run("navigate", tractor=int(tractor_id), x=pose.x, z=pose.z, yaw=pose.yaw, area=float(width))
+        self._run("navigate", tractor=int(tractor_id), x=pose.x, z=pose.z, yaw=pose.yaw)
 
     def stage(self, tractor_id: str, wagon_id: str, pose: Pose, owner: str) -> None:
         self._reserved(tractor_id, owner, wagon_id)

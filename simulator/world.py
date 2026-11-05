@@ -585,7 +585,8 @@ class MockWorld:
     @staticmethod
     def _compatible(tractor, wagon):
         # Independent mock-side check at mutation time, under the world lock.
-        if (tractor.category != "tractor" or wagon.category not in ("forage_wagon", "implement")
+        # Any self-propelled machine (as the real bridge, which checks reservations, not a label).
+        if (tractor.category in ("forage_wagon", "implement") or wagon.category not in ("forage_wagon", "implement")
                 or not {"move", "attach", "stop"} <= tractor.capabilities
                 or wagon.required_pto_torque is None
                 or not math.isfinite(wagon.required_pto_torque)
@@ -640,7 +641,7 @@ class MockWorld:
         self.items[tractor.id] = replace(tractor, position=(pose.x, pose.z), ai_root=pose,
                                          heading=pose.yaw, stopped=True)
 
-    def navigate(self, tractor_id, pose, owner, width=0.0):
+    def navigate(self, tractor_id, pose, owner):
         # Mock-only teleport standing in for GIANTS GOTO; an attached wagon lands
         # MOCK_TRAILER_OFFSET_M behind the tractor's AI root.
         with self._lock:
