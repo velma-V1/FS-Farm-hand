@@ -200,6 +200,16 @@ Next:
 Acceptance:
 - sells only the named item when told; never on its own unless the setting is on; works from Alt+K.
 
+## Own drive cannot hold a slow speed downhill
+Status: OPEN
+Priority: HIGH (safety, all machines)
+Found: 2026-11-05
+
+Live: the MF 8570 reached 17 km/h downhill on a 10-13 degree slope while Farmhand's own drive was in its 3 km/h final approach; it ended OVERSPEED, 56 m from where it was meant to stop. Hitch.drive brakes above its limit but cannot hold a heavy machine on a steep grade.
+
+Acceptance:
+- On a slope the commanded speed is held: stronger braking, and refusing or slowing the approach before the grade instead of after the overspeed. Verified live on that slope with a heavy machine.
+
 ## Combine transport for long trips
 Status: IN PROGRESS (owner priority 2026-11-05)
 Priority: HIGH (also the way to the moving-unload gate in save 1)
