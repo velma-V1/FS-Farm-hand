@@ -41,6 +41,12 @@ Next:
 - Towed rigs plan no reverse moves: with the nose against an object and the trailer behind (the GMC at (-980,-14)), only the bounded straightening reverse can leave. Decide from live evidence whether planned towed reverses (the reverse kinematics are the same step) are needed.
 - The Dubins goal shot (757f4bd) is unit-tested and its steps rebuild as follower arcs; a live hitch approach by Farmhand's own drive with it is still to be observed.
 
+## Turn around in place instead of looping
+Status: OPEN
+Found: 2026-11-04 (live f460004990284cd1-1)
+
+Farmhand's first route search plans forward moves only; facing away from a goal 12 m off, the Series 9 + plow drove a 33-point ~150 m loop (88 s) where a worker makes a three-point turn. Shuffles (forward/reverse) are searched only after a forward search fails. Candidate: let the first search use reverse moves for rigs that can reverse (no towed unit), costed as now.
+
 ## Reposition "open ground" arrives at any heading
 Status: OPEN
 Found: 2026-11-04 (live 8611351ac09e4a1b-1)

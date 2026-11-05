@@ -81,6 +81,18 @@ cloud gateway's runner, no PC input. Positions are the companion's final observa
 | Same words | 8611351ac09e4a1b-1 | 159896e | **FAIL** NO_ROUTE | GIANTS NOT_REACHABLE; "open ground first" drove the rig 18 m and ARRIVED touching an object (open defect); the articulated search judged by unit boxes (blocked unit1:6), nose against the object; the straightening reverse stopped by the rectangle (fixed f8355da) |
 | Same words | 5d29c5999c864530-1 | f8355da | **PASS** COMPLETE DELIVERY_OBSERVED, 1 min 25 s | GIANTS' navigation with the belted cargo out of its AI obstacles, 77 s, peak 44 km/h, 0.3 m from its target; all four units stopped at field 5, GMC on the Deckover, Series 9 and plow aboard. Farmhand's own drive not needed (its articulated search and reverse not yet proven live on a move) |
 
+### Builds 1f2a6c9 → dc99ee7 (2026-11-04 night): Farmhand drives GIANTS' navigation agent itself
+
+| Request | Test id | Build | Result | Observed |
+| --- | --- | --- | --- | --- |
+| "take the GMC to the farm barn" (loaded GMC rig at field 5) | ea25553eda864859-1 | 1f2a6c9 | **PASS** COMPLETE DELIVERY_OBSERVED, 29 s | navigate on GIANTS' agent with Farmhand's own loop (no AI job, no helper): first aim not_reachable at once, the next 21 s driving, target_reached 0.3 m; all four units stopped and linked |
+| "unhitch the trailer from the gmc" | 058d1ca14df04245-1 | 6877a2d | **PASS** COMPLETE DETACHED_NOT_CLEAR | pull-clear refused unmoved for a vehicle near its line |
+| "take the GMC to field 5" (empty, under the Deckover's gooseneck) | 058d1ca14df04245-2 / a34770b22e2a46fa-1 | 6877a2d / b8e9dbd | **FAIL** UNKNOWN_OBSERVATION, then **PASS** COMPLETE DELIVERY_OBSERVED, 76 s | the Deckover's drivable deck read as GRADE (fixed b8e9dbd); then a 1.71 m departure off it and Farmhand's own 30-point route, peak 29.8 km/h, no contact |
+| "hitch the deckover to the gmc" (truck at field 5) | a34770b22e2a46fa-2 | b8e9dbd | **PASS** COMPLETE HITCH_OBSERVED, 2 min 23 s | own route back 90 m; stage on the agent unmoved 33 s while it replanned (fixed 7982bde); own drive to the approach, ALIGN 5.8 -> 0.71 m, ATTACHED |
+| "use the gmc to take the deutz to field 5 and unload it" | e3e4f50db5174dc2-1 | 7982bde | **PASS** COMPLETE HAULED_AND_UNLOADED, 2 min 15 s | own drive with the loaded rig, belts released, ramps down, UNLOADED, ramps up |
+| "plow a small test area of field 5" | e3e4f50db5174dc2-2 / 57022e28117b42d8-1 / d31adaad67914c65-1 / fdc69c298fa64d99-1 | 7982bde → 629c1bd | **FAIL** FIELDWORK_STALLED (5 min helper "planning"), then NOT_REACHABLE x3 | helper unreached now ended in 31 s (ab11966); the rigid rig's rectangle (fixed cb2d9c2); the real blocker named by the new log: the Deckover's ramps 4 m ahead, a tree behind |
+| Same words | f460004990284cd1-1 | dc99ee7 | **PASS** COMPLETE AREA_WORK_OBSERVED, 2 min 35 s | helper NOT_REACHABLE at 31 s, own drive NO_ROUTE, the GMC rig moved 20 m to open ground by Farmhand's own drive, own drive onto the field (a 33-point loop for 12 m: no planned shuffle), GIANTS' helper plowed, 2016 m2 measured changed of 400, stopped |
+
 ## Hitch / attachment
 
 | Case | Test id | Build | Result | Observed |
