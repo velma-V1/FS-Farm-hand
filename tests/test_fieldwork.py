@@ -1986,16 +1986,17 @@ class UnloadAndSellTests(unittest.TestCase):
         c, notices = coordinated(world)
         c.grain_cart = True
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
-        self.assertTrue(until(lambda: c.current is not None and c.current.command == "grain_cart"), notices)
-        self.assertTrue(until(lambda: "t-5" in getattr(world, "mock_escorting", ())))
+        self.assertTrue(until(lambda: "t-5" in getattr(world, "mock_escorting", ())), notices)
+        self.assertIn("ACCEPTED_GRAIN_CART", notices)
+        self.assertTrue(until(lambda: c.current is None))                  # Farmhand is free meanwhile
         self.fill(world, unit, 6000.0)                     # harvested while the cart rides beside it
         self.assertTrue(until(lambda: world.items["w-5"].fill_units[0].level == 6000.0))
         self.assertEqual(world.items["c-1"].fill_units[1].level, 0.0)
         self.assertEqual([w.tractor for w in c.workers if w.operation == "harvest"], ["c-1"])   # never paused
         self.assertTrue(world.items["c-1"].busy)
         world.finish_worker("c-1")                          # the field harvested
-        self.assertTrue(until(lambda: c.current is None and c.last.command == "grain_cart"))
-        self.assertEqual((c.last.state, c.last.reason), ("COMPLETE", "HARVEST_ENDED"), c.last)
+        self.assertTrue(until(lambda: "COMPLETE_GRAIN_CART" in notices), notices)
+        self.assertFalse(c._carts)
         self.assertNotIn("COMBINE_FULL", notices)
         self.assertIsNone(world.items["t-5"].reserved_by)
 
@@ -2014,7 +2015,7 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertTrue(until(lambda: world.farm().money == FARM.money + 6000.0 * world.mock_price), notices)
         self.assertTrue(until(lambda: world.items["w-5"].fill_units[0].level == 1000.0))
         self.assertIn("COMPLETE_SELL", notices)
-        self.assertEqual(c.current.command, "grain_cart")
+        self.assertIn(7, c._carts)
         self.assertTrue(world.items["c-1"].busy)
         self.assertNotIn("COMBINE_FULL", notices)
         world.finish_worker("c-1")
@@ -2038,6 +2039,25 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertNotIn("t-5", getattr(world, "mock_escorting", ()))
         self.assertIsNone(world.items["t-5"].reserved_by)
 
+    def test_the_cart_works_beside_the_next_job_and_stop_ends_both(self):
+        # FINAL_FARMHAND_PRODUCT_SPEC.md 4: concurrent workers, not a queue. The cart rides beside the
+        # harvesting combine while the player's next job runs; STOP ends the job, the cart and the helper.
+        world, unit = self.cart_world()
+        c, notices = coordinated(world)
+        c.grain_cart = True
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
+        self.assertTrue(until(lambda: "t-5" in getattr(world, "mock_escorting", ())), notices)
+        self.assertTrue(until(lambda: c.current is None))
+        c.submit({"version": 1, "command": "save_game"})
+        self.assertTrue(until(lambda: c.last is not None and c.last.command == "save_game" and c.current is None),
+                        c.last)
+        self.assertIn("t-5", world.mock_escorting)                         # still at work beside it
+        c.stop()
+        self.assertTrue(until(lambda: not c._carts), notices)
+        self.assertNotIn("t-5", world.mock_escorting)
+        self.assertFalse(world.items["c-1"].busy)
+        self.assertTrue(until(lambda: world.items["t-5"].reserved_by is None))
+
     def test_with_no_cart_rig_one_is_hitched_for_the_harvest(self):
         # The trailer left unhitched: a free tractor is hitched to it (never bought unasked).
         world, unit = self.cart_world()
@@ -2052,8 +2072,7 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertTrue(until(lambda: "t-5" in getattr(world, "mock_escorting", ())), (c.last, notices))
         self.assertEqual(world.items["w-5"].attached_to, "t-5")
         world.finish_worker("c-1")
-        self.assertTrue(until(lambda: c.current is None and c.last.command == "grain_cart"))
-        self.assertEqual(c.last.state, "COMPLETE")
+        self.assertTrue(until(lambda: "COMPLETE_GRAIN_CART" in notices), notices)
 
     def test_the_harvest_policy_is_saved_from_the_players_words(self):
         from companion.language import RuleInterpreter

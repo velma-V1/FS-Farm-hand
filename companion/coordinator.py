@@ -616,6 +616,14 @@ class Coordinator:
         self._blocked_since: dict[str, float] = {}   # worker owner -> when its helper was first seen BLOCKED
         self._cleared: set[str] = set()             # workers whose way was cleared (once each)
         self._after: list[list] = []              # their follow-up steps, run when Farmhand is free
+        # Grain carts: workers of their own beside the job (one per harvested field), each with its own
+        # executor (an executor runs one task at a time); STOP ends them with everything else.
+        self._carts: dict = {}                     # field -> (thread, cancel, job)
+        self._cart_running: dict[str, str] = {}    # cart job owner -> the request id it runs now
+        self._cart_count = 0
+        self._harvest_fields: set = set()          # fields a combine harvests in a job's own step
+        self._local = threading.local()            # a cart thread's executor
+        self.cart_executor = None
         self._watcher: threading.Thread | None = None
 
     @property
@@ -716,11 +724,13 @@ class Coordinator:
                 self._cancel.set()
                 send = not job.stop_sent and job.step not in ("STOP", "RELEASE")
                 job.stop_sent = job.stop_sent or send
-        # STOP stops everything Farmhand started: the job and every helper working on.
+        # STOP stops everything Farmhand started: the job, every grain cart and every helper working on.
+        carts = self._stop_carts()
         workers = self._stop_workers()
         if job is None:
-            retained = [o for o in self.world.retained() if o not in {w.owner for w in workers}]
-            self.notify("STOPPING" if retained or workers else "NOTHING_TO_STOP", spoken)
+            cart_owners = {self._cart_running.get(j.owner) for _, _, j in carts}
+            retained = [o for o in self.world.retained() if o not in {w.owner for w in workers} and o not in cart_owners]
+            self.notify("STOPPING" if retained or workers or carts else "NOTHING_TO_STOP", spoken)
             for owner in retained:                 # an earlier job's unconfirmed stop
                 threading.Thread(target=self.world.recover, args=(owner,), daemon=True).start()
             return
@@ -736,8 +746,9 @@ class Coordinator:
     WORKER_BLOCKED_S = 90.0
 
     def _worker_owners(self) -> set:
+        """Reservations a working helper or grain cart holds (never recovered as an earlier job's)."""
         with self._lock:
-            return {w.owner for w in self.workers}
+            return {w.owner for w in self.workers} | set(self._cart_running.values())
 
     def _stop_workers(self) -> list:
         """Every handed-off helper stopped (its job ended through the game) and released
@@ -1480,10 +1491,20 @@ class Coordinator:
                     # A hitch the teleport can still rescue ends at its first refused line-up.
                     self.executor.teleport_fallback = (step["task"] == "hitch_pair" and not teleported
                                                        and getattr(self.world, "teleport_recovery", False))
+                    # A harvest worked in this job's own step (a contract's): its grain cart beside it.
+                    foreground = step["task"] == "field_work" and step.get("operation") == "harvest" \
+                        and not step.get("hand_off")
+                    if foreground:
+                        with self._lock:
+                            self._harvest_fields.add(field.id)
+                        self._start_cart(field.id, work.get("destination"), job.spoken)
                     try:
                         result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
                     finally:
                         self.executor.teleport_fallback = False
+                        if foreground:
+                            with self._lock:
+                                self._harvest_fields.discard(field.id)
                     states += [f"{step['task']}:{s}" for s in result.states]
                     equipment += [e for e in result.equipment_ids if e not in equipment]
                     log.info("job %d step %d result %s %s", job.number, n, result.status, result.reason)
@@ -1531,11 +1552,8 @@ class Coordinator:
                         self._add_worker(worker)
                         started.append(worker)
                         self.notify("WORKER_STARTED", job.spoken)
-                        if step["operation"] == "harvest" and self.grain_cart:
-                            # Its grain cart, as soon as Farmhand is free (the watch starts it).
-                            with self._lock:
-                                self._after.append({"job": "grain_cart", "work": {
-                                    "field": field.id, "destination": work.get("destination")}})
+                        if step["operation"] == "harvest":
+                            self._start_cart(field.id, work.get("destination"), job.spoken)
                         break
                 if not retry:
                     break
@@ -1582,8 +1600,12 @@ class Coordinator:
     def _execute(self, job: Job, cancel: threading.Event, entered, tag: str, **fields) -> Result:
         intent = {"version": 1, "request_id": f"{job.owner}-{tag}", "farm_id": self.farm(),
                   "target": "player_at_acceptance", **{k: v for k, v in fields.items() if v is not None}}
-        self.running = intent["request_id"]
-        result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
+        executor = getattr(self._local, "executor", None) or self.executor
+        if executor is self.executor:
+            self.running = intent["request_id"]
+        else:
+            self._cart_running[job.owner] = intent["request_id"]
+        result = executor.execute(intent, cancel=cancel, on_state=entered, job=job.owner)
         log.info("job %d %s: %s %s", job.number, fields.get("task"), result.status, result.reason)
         return result
 
@@ -1737,7 +1759,56 @@ class Coordinator:
 
     def _harvesting(self, field_id=None) -> bool:
         with self._lock:
-            return any(w.operation == "harvest" and (field_id is None or w.field == field_id) for w in self.workers)
+            return any(w.operation == "harvest" and (field_id is None or w.field == field_id) for w in self.workers) \
+                or (field_id in self._harvest_fields if field_id is not None else bool(self._harvest_fields))
+
+    def _start_cart(self, field_id: int, destination, spoken: bool = False) -> None:
+        """The field's grain cart as a worker of its own (_grain_cart on its thread, its own executor),
+        unless it has one already or carts are off. It ends with the harvest, or at STOP."""
+        if not self.grain_cart:
+            return
+        with self._lock:
+            running = self._carts.get(field_id)
+            if running is not None and running[0].is_alive():
+                return
+            self._cart_count += 1
+            job = Job(self._cart_count, f"{self.session()}-cart{self._cart_count}", spoken=spoken, command="grain_cart")
+            cancel = threading.Event()
+            if self.cart_executor is None:
+                self.cart_executor = Executor(self.world)
+
+            def run():
+                self._local.executor = self.cart_executor
+                try:
+                    result = self._grain_cart(job, cancel, lambda state: None,
+                                              {"field": field_id, "destination": destination})
+                    log.info("grain cart for field %s: %s %s", field_id, result.status, result.reason)
+                    self.notify(result_notice(result.status, result.reason, "COMPLETE_GRAIN_CART"), spoken)
+                except Exception:
+                    log.exception("grain cart for field %s", field_id)
+                finally:
+                    with self._lock:
+                        if self._carts.get(field_id, (None,))[0] is threading.current_thread():
+                            self._carts.pop(field_id)
+                        self._cart_running.pop(job.owner, None)
+
+            thread = threading.Thread(target=run, daemon=True, name=f"farmhand-cart-{field_id}")
+            self._carts[field_id] = (thread, cancel, job)
+        self.notify("ACCEPTED_GRAIN_CART", spoken)
+        log.info("grain cart for field %s started (%s)", field_id, job.owner)
+        thread.start()
+
+    def _stop_carts(self) -> list:
+        """Every grain cart cancelled and its running operation pre-empted (its own cleanup confirms)."""
+        with self._lock:
+            carts = list(self._carts.values())
+            running = [self._cart_running.get(job.owner) for _, _, job in carts]
+        for (_, cancel, _), owner in zip(carts, running):
+            cancel.set()
+            if owner:
+                threading.Thread(target=self._stop_reserved, args=(owner,), daemon=True,
+                                 name="farmhand-stop-cart").start()
+        return carts
 
     def _grain_cart(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """A grain cart for the field's harvesting combine (FINAL_FARMHAND_PRODUCT_SPEC.md 5): its trailer
@@ -1802,6 +1873,10 @@ class Coordinator:
         if field_id not in fields:
             return Result("BLOCKED", "NO_COMBINE_HARVESTING")
         worker = next(w for w in harvesting if w.field == field_id)
+        with self._lock:
+            cart = self._carts.get(field_id)
+        if cart is not None and cart[0].is_alive():
+            return Result("COMPLETE", "GRAIN_CART_WORKING")      # its cart is already at it
         if self.grain_cart:
             # On the move first (a release gate); stopping the combine is only the recovery.
             moving = self._grain_cart(job, cancel, entered, {"field": field_id, "destination": worker.destination})
