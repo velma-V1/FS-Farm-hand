@@ -559,6 +559,27 @@ local function agentBlocked(env, v)
     end)
 end
 
+-- GIANTS' field worker holding for something in its collision triggers (AIFieldWorker).
+local function fieldWorkerBlocked(v)
+    return pcall(function() assert(v:getAIFieldWorkerIsBlocked() == true) end)
+end
+
+-- The player on foot within `radius` m of x, z (seated in a vehicle is not on foot).
+Bridge.HELPER_PLAYER_M = 20
+local function playerOnFootNear(env, x, z, radius)
+    local ok, near = pcall(function()
+        local player = env.g_localPlayer
+        if player == nil or (type(player.getIsInVehicle) == "function" and player:getIsInVehicle() == true) then
+            return false
+        end
+        local px, _, pz
+        if type(player.getPosition) == "function" then px, _, pz = player:getPosition()
+        else px, _, pz = env.getWorldTranslation(player.rootNode) end
+        return finite(px) and finite(pz) and math.sqrt((px - x) ^ 2 + (pz - z) ^ 2) <= radius
+    end)
+    return ok and near == true
+end
+
 -- Ends the job (prefix .. BLOCKED_AT_START) once GIANTS' agent has reported BLOCKED for
 -- BLOCKED_START_MS while the vehicle never got NAVIGATE_PROGRESS_M from where the job
 -- started; the companion then looks for a closed door or a way out (UNPARK).
@@ -2470,6 +2491,20 @@ function steppers.fieldwork(env, task, dt)
             -- GMC left on the road, 8 min); the companion moves what stands near it.
             logAgent(env, v, "fieldwork blocked on its way")
             return "FAILED", "FIELDWORK_BLOCKED"
+        elseif task.elapsed - task.fromAt > Bridge.BLOCKED_START_MS and fieldWorkerBlocked(v) then
+            -- GIANTS' helper holds for what is in its collision triggers, the player on foot
+            -- among them (AICollisionTriggerHandler:countHitObject; live 87ec310879a546ea-1: the
+            -- player 6 m ahead of the cultivating 615, FIELDWORK_STALLED after 5 min). For the
+            -- player it waits, as GIANTS does, and says so once; anything else is moved by the
+            -- companion, as a blocked agent.
+            if not playerOnFootNear(env, x, z, Bridge.HELPER_PLAYER_M) then
+                logAgent(env, v, "fieldwork blocked by an obstacle")
+                return "FAILED", "FIELDWORK_BLOCKED"
+            end
+            if not task.toldPlayer then
+                task.toldPlayer = true
+                Bridge:notify(Bridge.NOTICES.HELPER_WAITS_FOR_PLAYER, false)
+            end
         elseif task.elapsed - task.fromAt > Bridge.FIELDWORK_STALL_MS then
             logAgent(env, v, "fieldwork stalled")
             Bridge.logFieldWork(env, v, "stalled")
@@ -3427,6 +3462,7 @@ Bridge.NOTICES = {
     CONNECTED = "Farmhand: companion connected",
     TELEPORTED = "Farmhand: the rig could not move, so it was teleported to open ground nearby",
     GHOSTED = "Farmhand: passing through scenery beside the rig (your setting); its collision returns once clear",
+    HELPER_WAITS_FOR_PLAYER = "Farmhand: the helper has stopped for you - step out of its way and it carries on",
     ACCEPTED = "Farmhand: fetching a tractor and the implement",
     BUSY = "Farmhand: already working on a request",
     QUEUED = "Farmhand: busy; your request is next in line",

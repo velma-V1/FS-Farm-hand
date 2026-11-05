@@ -1051,6 +1051,27 @@ class LuaBridgeTests(unittest.TestCase):
         self.W.run(self.w, 300)
         self.assertEqual(self.results(2)[-1], (2, "DONE", "STOPPED"))
 
+    def test_a_helper_holding_for_the_player_waits_and_says_so_anything_else_is_blocked(self):
+        # Live 87ec310879a546ea-1: GIANTS' helper held for the player 6 m ahead (its collision
+        # triggers count a player); Farmhand ended it FIELDWORK_STALLED after 5 min.
+        for near, result in ((True, (1, "ACCEPTED", "ACCEPTED")), (False, (1, "FAILED", "FIELDWORK_BLOCKED"))):
+            with self.subTest(near=near):
+                self.w = self.W.new()
+                self.adopt()
+                self.fieldwork_stubs()
+                self.w.gotoStarts = True
+                self.bridge.BLOCKED_START_MS = 2000
+                self.lua.execute("""local w, near = ...
+                    function w.tractor:getAIFieldWorkerIsBlocked() return true end
+                    w.env.g_localPlayer = { getIsInVehicle = function() return false end,
+                        getPosition = function() if near then return 1, 0, 6 end return 300, 0, 0 end }""",
+                                 self.w, near)
+                self.send(1, "fieldwork", self.FIELD)
+                self.beating(5000)
+                self.assertEqual(self.results(1)[-1], result)
+                told = [n for n in self.w.notices.values() if "stopped for you" in n]
+                self.assertEqual(len(told), 1 if near else 0)
+
     def test_a_combine_always_lays_a_straw_swath_where_it_can(self):
         for available, honest, result in ((True, True, ("ACCEPTED", "ACCEPTED")), (False, True, ("ACCEPTED", "ACCEPTED")),
                                           (True, False, ("FAILED", "SWATH_NOT_SET"))):
