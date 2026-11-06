@@ -13,7 +13,7 @@
       "const": 1
     },
     "command": {
-      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to, the pair nearest the requester, where it stands. unsupported: understood, but not something Farmhand does yet (reason). load_tractor: drive a free tractor (tractor_name) up a transport trailer's ramps (implement_name), belt it and raise the ramps ('load the tractor and secure it'). unload_tractor: release the belts and back the tractor off ('unload it'). sequence: several job commands in order (steps). follow_me: the named rig (tractor_name) follows the vehicle the player drives, with FollowMe, until stopped; only on the player's explicit 'follow me'. resume: continue the goal that was stopped, taken over or blocked, from what is already done ('continue'). retarget: give the goal a new destination ('take it to field 2 instead'). haul_tractor: take the named tractor (tractor_name) to the target on a transport and unload it there, from whatever is already done ('take the deutz to field 3 and unload it'). sell: the rig with the most cargo (tractor_name if said) takes it to the best paid sell point ('sell the grain'). store: the rig with the most cargo (tractor_name if said) takes it to the farm's own storage ('store the grain', 'put the grain in the silo'). harvest_policy: where harvested crop goes from now on, saved (destination; 'from now on sell the harvest'). contract: a GIANTS field contract taken, worked and collected (field, kind optional; 'do a contract', 'do the plow contract on field 12'). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop. land: buy or sell the farmland parcel a field lies on (land_action, field; 'buy field 12', 'sell field 12').",
+      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to, the pair nearest the requester, where it stands. unsupported: understood, but not something Farmhand does yet (reason). load_tractor: drive a free tractor (tractor_name) up a transport trailer's ramps (implement_name), belt it and raise the ramps ('load the tractor and secure it'). unload_tractor: release the belts and back the tractor off ('unload it'). sequence: several job commands in order (steps). follow_me: the named rig (tractor_name) follows the vehicle the player drives, with FollowMe, until stopped; only on the player's explicit 'follow me'. resume: continue the goal that was stopped, taken over or blocked, from what is already done ('continue'). retarget: give the goal a new destination ('take it to field 2 instead'). haul_tractor: take the named tractor (tractor_name) to the target on a transport and unload it there, from whatever is already done ('take the deutz to field 3 and unload it'). sell: the rig with the most cargo (tractor_name if said) takes it to the best paid sell point ('sell the grain'). store: the rig with the most cargo (tractor_name if said) takes it to the farm's own storage ('store the grain', 'put the grain in the silo'). harvest_policy: where harvested crop goes from now on, saved (destination; 'from now on sell the harvest'). route: Farmhand's learned routes (action, name): the player's own driving recorded and kept ('record this route', 'stop recording and save as farm to shop', 'delete the route farm to shop'). contract: a GIANTS field contract taken, worked and collected (field, kind optional; 'do a contract', 'do the plow contract on field 12'). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop. land: buy or sell the farmland parcel a field lies on (land_action, field; 'buy field 12', 'sell field 12').",
       "enum": [
         "fetch_pair",
         "move_pair",
@@ -40,7 +40,8 @@
         "store",
         "harvest_policy",
         "land",
-        "join_fields"
+        "join_fields",
+        "route"
       ]
     },
     "into_field": {"description": "join_fields: the field the other is joined to ('add field 4 to field 5': 5).", "type": "integer", "minimum": 1, "maximum": 100000},
@@ -131,6 +132,10 @@
     "cargo_name": {"description": "move_pair inside a goal: the rig carrying this belted vehicle.", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
     "together": {"description": "hitch_pair in a sequence: the tractor and the implement just bought ('hitch them together').", "const": true},
     "carry": {"description": "load_tractor: the implement mounted on the tractor goes along ('load the tractor and plow'): hitched first if it is not.", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
+    "action": {"description": "route: what to do: record the way the player drives from now on (start; name optional), pause, resume, stop recording and keep it (save; name optional), discard it, rename the named route (name, new_name), delete the named route, or list them ('record this route', 'stop recording and save as farm to shop').", "enum": ["start", "pause", "resume", "save", "discard", "rename", "delete", "list"]},
+    "name": {"description": "route: the route's name as the player said it ('farm to shop').", "type": "string", "minLength": 1, "maxLength": 60, "pattern": "^[a-z0-9][a-z0-9 '-]*$"},
+    "new_name": {"description": "route rename: the new name.", "type": "string", "minLength": 1, "maxLength": 60, "pattern": "^[a-z0-9][a-z0-9 '-]*$"},
+    "remember_route": {"description": "move_pair with a named vehicle: the journey's observed line is kept as a learned route ('take the gmc to the farm and remember the route'); follow_me: the player's own line as they lead ('follow me and remember the way').", "type": "boolean"},
     "tractor_name": {"description": "fetch_pair, hitch_pair: the towing vehicle must have all these words in its name ('with the gmc').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
     "implement_name": {"description": "fetch_pair, hitch_pair: the implement must have all these words in its name ('the gooseneck').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
     "kind": {"description": "contract: the start of the contract type's name ('plow', 'cultiv', 'fertili').", "type": "string", "pattern": "^[a-z]{3,12}$"},
@@ -197,7 +202,8 @@
               "sell",
               "unload_combine",
               "store",
-              "harvest_policy"
+              "harvest_policy",
+              "route"
             ]
           }
         }
@@ -302,6 +308,19 @@
       "if": {"properties": {"command": {"const": "land"}}},
       "then": {"required": ["field", "land_action"], "properties": {"field": {"type": "integer"}}},
       "else": {"not": {"required": ["land_action"]}}
+    },
+    {
+      "if": {"properties": {"command": {"const": "route"}}},
+      "then": {"required": ["action"]},
+      "else": {"not": {"anyOf": [{"required": ["action"]}, {"required": ["name"]}, {"required": ["new_name"]}]}}
+    },
+    {
+      "if": {"required": ["action"], "properties": {"action": {"const": "rename"}}},
+      "then": {"required": ["name", "new_name"]}
+    },
+    {
+      "if": {"required": ["remember_route"]},
+      "then": {"properties": {"command": {"enum": ["move_pair", "follow_me"]}}}
     },
     {
       "if": {"properties": {"command": {"const": "join_fields"}}},

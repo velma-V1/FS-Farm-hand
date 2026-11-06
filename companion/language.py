@@ -781,12 +781,65 @@ def _merge_field_work(steps: list) -> list:
     return out
 
 
+# Learned routes (FINAL_FARMHAND_PRODUCT_SPEC.md): the player's own driving recorded, kept, named.
+# Checked before STOP: "stop recording" ends a recording, it stops no machine.
+_ROUTE_NOUN = r"(?:route|road|way|drive|path)"
+_ROUTE_NAME = r"(?P<name>[a-z0-9][a-z0-9 ]{0,58}?)"
+_ROUTE_RULES = (
+    ("start", re.compile(rf"^(?:please\s+)?(?:start\s+|begin\s+)?record(?:ing)?(?:\s+(?:this|the|my|a))?(?:\s+{_ROUTE_NOUN})?"
+                         rf"(?:\s+(?:to|for)\s+(?:the\s+)?{_ROUTE_NAME})?(?:\s+please)?$")),
+    ("start", re.compile(rf"^(?:please\s+)?(?:remember|learn)\s+(?:this|the)\s+{_ROUTE_NOUN}"
+                         rf"(?:\s+(?:to|for)\s+(?:the\s+)?{_ROUTE_NAME})?$")),
+    ("save", re.compile(rf"^(?:please\s+)?(?:stop|end|finish)\s+recording(?:\s+(?:and\s+)?(?:save|keep)(?:\s+(?:it|this|that))?)?"
+                        rf"(?:\s+(?:as|called|named)\s+(?:the\s+)?{_ROUTE_NAME})?$")),
+    ("save", re.compile(rf"^(?:please\s+)?(?:save|keep)\s+(?:this|the|that|my)\s+(?:{_ROUTE_NOUN}|recording)"
+                        rf"(?:\s+i\s+(?:just\s+)?drove)?(?:\s+(?:as|called|named)\s+(?:the\s+)?{_ROUTE_NAME})?$")),
+    ("pause", re.compile(r"^(?:please\s+)?pause\s+(?:the\s+|my\s+)?recording$")),
+    ("resume", re.compile(r"^(?:please\s+)?(?:resume|continue|restart)\s+(?:the\s+|my\s+)?recording$")),
+    ("discard", re.compile(rf"^(?:please\s+)?(?:discard|cancel|throw away|scrap|drop)\s+(?:that|the|this|my)\s+"
+                           rf"(?:recording|recorded\s+{_ROUTE_NOUN})$")),
+    ("rename", re.compile(rf"^(?:please\s+)?rename\s+(?:the\s+)?route\s+{_ROUTE_NAME}\s+(?:to|as)\s+"
+                          rf"(?P<new_name>[a-z0-9][a-z0-9 ]{{0,58}})$")),
+    ("delete", re.compile(rf"^(?:please\s+)?(?:delete|remove|forget)\s+(?:the\s+)?route\s+(?:called\s+|named\s+)?{_ROUTE_NAME}$")),
+    ("list", re.compile(rf"^(?:please\s+)?(?:list|show)(?:\s+me)?\s+(?:my\s+|the\s+|all\s+)?(?:saved\s+|learned\s+)?routes$")),
+)
+# "... and remember the route": a journey (or a lead) kept as a learned route.
+_REMEMBER = re.compile(rf"\s+(?:and\s+)?(?:(?:please\s+)?(?:remember|learn|save|record|memorize)"
+                       rf"|(?:don\s*t|do\s+not)\s+forget)\s+(?:the|this|that|your)\s+{_ROUTE_NOUN}(?:\s+there)?$")
+
+
+def route(words: str) -> dict | None:
+    for action, rule in _ROUTE_RULES:
+        match = rule.match(words)
+        if match is None:
+            continue
+        proposal = {"version": 1, "command": "route", "action": action}
+        for key in ("name", "new_name"):
+            value = match.groupdict().get(key)
+            if value:
+                proposal[key] = value.strip()
+        return proposal
+    return None
+
+
 class RuleInterpreter:
     """Deterministic wording rules for the supported commands."""
 
     def interpret(self, text: str) -> dict | None:
         if not isinstance(text, str):
             return None
+        words = normalize(text)
+        learned = route(words)
+        if learned is not None:
+            return learned
+        remember = _REMEMBER.search(words)
+        if remember is not None:
+            # The journey itself first; only a drive of a named machine (or a lead) is recorded.
+            rest = self.interpret(words[:remember.start()])
+            if rest is not None and (rest["command"] == "follow_me"
+                                     or (rest["command"] == "move_pair" and rest.get("tractor_name"))):
+                return {**rest, "remember_route": True}
+            return rest if rest is not None and rest["command"] in ("stop", "status") else None
         # Several commands in one go win over one reading of the whole sentence (live words
         # of the final acceptance request read as a single fetch); a clause not understood
         # leaves the whole sentence to the single reading ("buy a plow, the gmc truck ...").

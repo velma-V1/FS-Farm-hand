@@ -57,7 +57,7 @@ CONTACT_RESTARTS = 2
 STUCK_CODES = frozenset({"EGRESS_LIMIT", "EGRESS_DIVERGED", "EGRESS_BLOCKED", "EGRESS_NOT_CLEAR",
                          "EGRESS_NOT_AHEAD", "EGRESS_NOT_BEHIND", "START_NOT_CLEAR"})
 CONTACT_SETTLE_S = 10.0     # waited for it to stand before a restart
-DONE_TIMEOUT_S = {"pay": 15.0, "charge": 15.0, "teleport": 20.0, "worktool": 25.0, "reposition": 14700.0, "farm_drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "escort": 7300.0, "reach": 30.0, "reattach": 50.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
+DONE_TIMEOUT_S = {"pay": 15.0, "charge": 15.0, "teleport": 20.0, "place": 20.0, "worktool": 25.0, "reposition": 14700.0, "farm_drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "escort": 7300.0, "reach": 30.0, "reattach": 50.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -446,6 +446,17 @@ class FS25World:
             (TELEPORT_HERE, TELEPORT_HERE, ANY_HEADING)
         self._run("teleport", tractor=int(vehicle_id), area=float(min_m), x=float(x), z=float(z), yaw=float(yaw))
         self.link.notice("TELEPORTED")          # never silent (AGENTS.md 19)
+
+    def place(self, implement_id: str, owner: str, at: Pose) -> None:
+        """A reserved loose implement set down at exactly ``at`` (refused, nothing moved, unless
+        that pose is clear); visible as a teleport (AGENTS.md 19)."""
+        with self._lock:
+            reservation = self._reservations.get(owner)
+        if reservation is None or implement_id not in reservation[1]:
+            raise StepFailed("NOT_RESERVED")
+        self._run("place", tractor=int(implement_id), x=float(at.x), z=float(at.z),
+                  yaw=float(math.remainder(float(at.yaw), math.tau)))
+        self.link.notice("PLACED")              # never silent (AGENTS.md 19)
 
     def _farm_drive(self, vehicle_id, target, owner, area, yaw, via=None):
         # Ended against something on the way (live f4fb84d66f9e4191-1: a traffic cone on the road),

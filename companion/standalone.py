@@ -108,8 +108,9 @@ class StandaloneMove:
             from companion.route_memory import RouteMemory
             route_memory = RouteMemory(data_dir() / "routes.json")
         self.route_memory = route_memory
-        self._route_used = None
+        self._route_used = None                 # (route id, driven reversed, rig extent) once driven
         self._route_failed = set()
+        self._recovery = []                     # what this journey needed beyond driving (a learned route's quality)
         self._outline, self._area = (), 0.0     # the target's field outline / approach radius
 
     def _rest_of_leg(self, goal):
@@ -150,14 +151,16 @@ class StandaloneMove:
             farm = self.world.farm()
             scope = (f"{farm.savegame_dir}#{farm.savegame}" if farm is not None
                      and farm.savegame_dir and farm.savegame else None)
-            chosen = self.route_memory.choose(self.world.map_id(), scope, here, goal.target) if scope else None
+            from companion.route_memory import rig_extent
+            rig = rig_extent(items, goal.vehicle_id)
+            chosen = self.route_memory.choose(self.world.map_id(), scope, here, goal.target, rig) if scope else None
             if chosen is not None and chosen[0] in self._route_failed:
                 chosen = None
             log.info("learned route lookup path=%s map=%s scope=%s start=%s target=%s selected=%s",
                      self.route_memory.path, self.world.map_id(), scope, here, goal.target,
                      chosen[0] if chosen else None)
             if chosen is not None:
-                route_id, points = chosen
+                route_id, points, reverse = chosen
                 try:
                     # Walking samples describe a centre line, not parking poses.
                     # Stop once at its far end; the game-side driver refines the
@@ -168,7 +171,7 @@ class StandaloneMove:
                     if observed is None or math.dist(observed, points[-1]) > ARRIVE_M:
                         raise GoalError("LEARNED_ROUTE_UNVERIFIED")
                     here = observed
-                    self._route_used = route_id
+                    self._route_used = (route_id, reverse, rig)
                     route_done = True
                     rest = self._rest_of_leg(goal)
                     if rest is None:
@@ -178,6 +181,7 @@ class StandaloneMove:
                     if getattr(failure, "code", None) in {"STOPPED", "CANCELLED"}:
                         raise
                     self._route_failed.add(route_id)
+                    self._recovery.append("learned route failed")
                     self.route_memory.reject(route_id)
                     log.info("learned farm route %s ended at %s; replanning", route_id,
                              getattr(failure, "code", failure))
@@ -449,6 +453,8 @@ class StandaloneMove:
         owner, farm_id = command["request_id"], command["farm_id"]
         self._route_used = None
         self._route_failed = set()
+        self._recovery = []
+        recorder = None
         ids = ()
         reserved = attempted = False
         status, reason = "BLOCKED", "INVALID_GOAL"
@@ -479,6 +485,11 @@ class StandaloneMove:
             else:
                 enter("DRIVE")
                 attempted = True
+                if command.get("remember_route"):
+                    # "... and remember the way": the journey's own observed line, judged by how it went.
+                    from companion.route_memory import RouteRecorder
+                    recorder = RouteRecorder(self.world, self.route_memory)
+                    recorder.start("journey", goal.vehicle_id)
                 try:
                     self._drive(goal, owner, area)
                 except Exception as failure:
@@ -491,7 +502,9 @@ class StandaloneMove:
                     code = getattr(failure, "code", None)
                     if code not in FALLBACK_CODES | GOTO_START_CODES or not hasattr(self.world, "reposition"):
                         raise
+                    self._recovery.append(f"replanned after {code}")
                     if self._move_blockers(ids, farm_id, owner):
+                        self._recovery.append("blockers moved")
                         try:
                             self._drive(goal, owner, area)
                             failure = None
@@ -507,6 +520,7 @@ class StandaloneMove:
                             log.info("no way out by driving (%s): teleport recovery, %.0f m out at least",
                                      getattr(failure, "code", failure), min_m)
                             self.world.teleport(goal.vehicle_id, owner, min_m)
+                            self._recovery.append("teleported")
                             try:
                                 self._drive(goal, owner, area)
                                 break
@@ -554,5 +568,13 @@ class StandaloneMove:
                 except Exception as error:
                     status, reason = "UNVERIFIED", getattr(error, "code", type(error).__name__)
         if status == "COMPLETE" and self._route_used is not None:
-            self.route_memory.promote(self._route_used)
+            route_id, reverse, rig = self._route_used
+            self.route_memory.promote(route_id, reverse, rig)
+        if recorder is not None:
+            from companion.route_memory import rig_extent
+            arrived = status == "COMPLETE"
+            rig = rig_extent(tuple(self.world.snapshot()), ids[0]) if arrived else None
+            # Kept whatever happened (the player asked for it), with the truth of how it went.
+            notice, route_id = recorder.finish(clean=arrived, recovery=tuple(self._recovery), verified_rig=rig)
+            log.info("journey route: %s %s", notice, route_id)
         return Result(status, reason, ids, tuple(states))

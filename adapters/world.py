@@ -80,6 +80,11 @@ class World(Protocol):
         (GIANTS' attach range); ATTACHED, or REATTACH_NOT_IN_RANGE with nothing moved."""
         ...
 
+    def place(self, implement_id: str, owner: str, at: Pose) -> None:
+        """PLACE: the reserved loose implement set down at exactly ``at`` (teleport recovery, visible);
+        StepFailed PLACE_NOT_CLEAR with nothing moved when that pose is not clear."""
+        ...
+
     def reach(self, vehicle_id: str, pose: Pose, owner: str, width: float = 0.0) -> str:
         """REACH: whether GIANTS' agent plans a route for the reserved vehicle to ``pose``; never drives.
         REACHABLE, NOT_REACHABLE, REACH_BLOCKED or REACH_UNDECIDED."""

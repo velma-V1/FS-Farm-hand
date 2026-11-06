@@ -1442,6 +1442,40 @@ end
 
 function aborts.teleport() end
 
+-- A loose implement set down at exactly the pose the companion computed (a combine's header
+-- in front of the machine, at the pose its recorded cutter joint attaches from), by the same
+-- GIANTS teleportVehicle path as the teleport recovery. Never slid, turned or moved to "any
+-- open spot": the pose is either clear (its own boxes, water, grade, scenery within
+-- TELEPORT.clearM) or refused, and nothing moves.
+function starters.place(env, spec)
+    local v = spec.tractor
+    if v.spec_enterable ~= nil then return nil, "NOT_LOOSE" end
+    local denied = looseIdle(v, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    if not (finite(spec.x) and finite(spec.z) and finite(spec.yaw)) then return nil, "INVALID_TARGET" end
+    local H = Bridge.Hitch
+    local own = H.routeFootprint(env, v)
+    if own == nil then return nil, "RIG_GEOMETRY_UNKNOWN" end
+    local clear, reason = H.routePoseClear(env, own, spec.x, spec.z, spec.yaw, 0)
+    if clear ~= true then
+        log("place: %.1f,%.1f yaw %.2f not clear (%s)", spec.x, spec.z, spec.yaw, tostring(reason))
+        return nil, clear == false and "PLACE_NOT_CLEAR" or "PLACE_UNREADABLE"
+    end
+    local near = H.staticNear(env, own, spec.x, spec.z, spec.yaw, H.TELEPORT.clearM)
+    if near ~= false then
+        log("place: %.1f,%.1f yaw %.2f scenery within %.1f m", spec.x, spec.z, spec.yaw, H.TELEPORT.clearM)
+        return nil, near == true and "PLACE_NOT_CLEAR" or "PLACE_UNREADABLE"
+    end
+    local x, _, z = env.getWorldTranslation(v.rootNode)
+    local moved, units, belted = Bridge.teleportRig(env, v, spec.x, spec.z, spec.yaw)
+    log("place: %s from %.1f,%.1f to %.1f,%.1f yaw %.2f (%d unit(s))", tostring(v:getName()), x, z,
+        spec.x, spec.z, spec.yaw, moved)
+    return { tx = spec.x, tz = spec.z, waited = 0, units = units, belted = belted }
+end
+
+steppers.place = steppers.teleport
+aborts.place = aborts.teleport
+
 function starters.unpark(env, spec)
     local denied = idle(env, spec.tractor, spec.farmId)
     if denied ~= nil then return nil, denied end
@@ -3412,6 +3446,22 @@ end
 -- ------------------------------------------------------- player requests
 
 Bridge.NOTICES = {
+    PLACED = "Farmhand: the machine could not reach the implement, so it was teleported in front of it (teleport recovery)",
+    ROUTE_RECORDING = "Farmhand: recording your route - drive it, then say \"stop recording and save\"",
+    ROUTE_ALREADY_RECORDING = "Farmhand: a route is already being recorded",
+    ROUTE_PAUSED = "Farmhand: route recording paused",
+    ROUTE_RESUMED = "Farmhand: route recording resumed",
+    ROUTE_DISCARDED = "Farmhand: the recording was discarded",
+    ROUTE_NOT_RECORDING = "Farmhand: no route is being recorded",
+    ROUTE_SAVED = "Farmhand: route saved (recorded; it is validated once a machine drives it to the end)",
+    ROUTE_SAVED_CLEAN = "Farmhand: route saved - a clean drive, no unplanned stops",
+    ROUTE_TOO_SHORT = "Farmhand: the recording is too short to keep (10 m at least)",
+    ROUTE_NOT_SAVED = "Farmhand: the route could not be saved",
+    ROUTE_RECORDING_GOES_ON = "Farmhand: nothing could follow you, but your route is still being recorded",
+    ROUTE_RENAMED = "Farmhand: route renamed",
+    ROUTE_DELETED = "Farmhand: route deleted",
+    ROUTE_NOT_FOUND = "Farmhand: no saved route has that name",
+    ROUTES_NOT_LINKED = "Farmhand: routes are kept per save - load a save first",
     CONNECTED = "Farmhand: companion connected",
     TELEPORTED = "Farmhand: the rig could not move, so it was teleported to open ground nearby",
     GHOSTED = "Farmhand: passing through scenery beside the rig (your setting); its collision returns once clear",
@@ -3898,6 +3948,10 @@ Bridge.REASONS = {
     NO_GOTO_JOB = "the game's driver is not available",
     NO_HITCH_OPTION = "that model has no such hitch in the store",
     NO_OPEN_SPOT = "there is no open ground nearby",
+    PLACE_NOT_CLEAR = "there is no clear ground in front of the machine for it",
+    PLACE_UNREADABLE = "the ground in front of the machine could not be checked",
+    NOT_LOOSE = "only a loose implement can be set down",
+    INVALID_TARGET = "that position is not valid",
     NO_PLOW_HITCHED = "no tractor with a plow hitched is free",
     NO_RIG_TO_FOLLOW = "no free hitched rig is there to follow you",
     NO_ROUTE = "no way there was found for the rig",
@@ -3974,6 +4028,8 @@ function Bridge.noticeText(notice)
     if waiting ~= nil then
         return "Farmhand: " .. (Bridge.STEPS[waiting] or waiting) .. " - not moving yet", false
     end
+    local routes = notice:match("^ROUTES_SAVED_(%d+)$")
+    if routes ~= nil then return "Farmhand: " .. routes .. " saved route(s) on this save", false end
     local last = notice:match("^STATUS_LAST_(%u+)$")
     if last ~= nil then return "Farmhand: idle; last job " .. (Bridge.OUTCOMES[last] or last), false end
     local status, reason = notice:match("^(%u+)_([%w_]+)$")

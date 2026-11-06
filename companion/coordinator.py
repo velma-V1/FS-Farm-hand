@@ -233,6 +233,8 @@ def work_for(proposal: dict) -> dict | None:
     if command in ("fetch_pair", "hitch_pair", "move_pair", "load_tractor", "unload_tractor", "follow_me", "sell",
                    "store"):
         work = {k: proposal[k] for k in NAMES if k in proposal}
+        if command in ("move_pair", "follow_me") and proposal.get("remember_route"):
+            work["remember_route"] = True
         if command == "load_tractor" and proposal.get("carry"):
             work["carry"] = proposal["carry"]
         return work or None
@@ -641,6 +643,8 @@ class Coordinator:
         self._local = threading.local()            # a cart thread's executor
         self.cart_executor = None
         self._watcher: threading.Thread | None = None
+        self.route_memory = None                   # companion/route_memory.py RouteMemory (data_dir's when unset)
+        self._recorder = None
 
     @property
     def busy(self) -> bool:
@@ -669,10 +673,60 @@ class Coordinator:
             return self.retarget(proposal["target"], spoken)
         elif command == "harvest_policy":
             self.notify(self._save_policy(proposal["destination"]), spoken)
+        elif command == "route":
+            self.notify(self._route(proposal), spoken)
         else:
             return self.start(command, proposal.get("target", "here"), spoken, proposal.get("implement"),
                               work_for(proposal))
         return None
+
+    # ------------------------------------------------------------------ routes
+    @property
+    def recorder(self):
+        """The one route recording (companion/route_memory.py), passive beside any job."""
+        if self._recorder is None:
+            from companion.route_memory import RouteMemory, RouteRecorder
+            if self.route_memory is None:
+                from companion.ai import data_dir
+                self.route_memory = RouteMemory(data_dir() / "routes.json")
+            self._recorder = RouteRecorder(self.world, self.route_memory)
+        return self._recorder
+
+    def _route(self, proposal) -> str:
+        """Record, pause, resume, save, discard, rename, delete or count the learned routes."""
+        action, name = proposal["action"], proposal.get("name")
+        recorder = self.recorder
+        if action == "start":
+            return recorder.start("player", name=name)
+        if action in ("pause", "resume"):
+            return recorder.pause(action == "pause")
+        if action == "discard":
+            return recorder.discard()
+        if action == "save":
+            return recorder.finish(name=name)[0]
+        try:
+            farm = self.world.farm()
+            scope = f"{farm.savegame_dir}#{farm.savegame}" if farm and farm.savegame_dir and farm.savegame else None
+            map_id = self.world.map_id()
+        except (StepUnverified, AttributeError):
+            return "ROUTES_NOT_LINKED"
+        memory = self.route_memory
+        if action == "list":
+            return token(f"ROUTES_SAVED_{len(memory.listed(map_id, scope))}")
+        route, new_name = memory.named(map_id, scope, name), proposal.get("new_name")
+        if route is None and action == "rename":
+            # "rename route farm to shop to shop run": the split whose left part names a route.
+            words = f"{name} to {new_name}".split(" to ")
+            for i in range(1, len(words)):
+                route = memory.named(map_id, scope, " to ".join(words[:i]))
+                if route is not None:
+                    new_name = " to ".join(words[i:])
+                    break
+        if route is None:
+            return "ROUTE_NOT_FOUND"
+        if action == "rename":
+            return "ROUTE_RENAMED" if memory.rename(route["id"], new_name) else "ROUTE_NOT_FOUND"
+        return "ROUTE_DELETED" if memory.delete(route["id"]) else "ROUTE_NOT_FOUND"
 
     # ------------------------------------------------------------------ policy
     def _save_policy(self, destination: str) -> str:
@@ -1239,9 +1293,20 @@ class Coordinator:
         if implement is not None:
             intent["implement"] = implement
         intent.update({k: v for k, v in (work or {}).items() if k in NAMES})   # tractor_name / implement_name
+        lead = command == "follow_me" and bool((work or {}).get("remember_route"))
+        if command == "move_pair" and (work or {}).get("remember_route"):
+            intent["remember_route"] = True
+        if lead:
+            # "Follow me and remember the way": the player's own line is the route (never the follower's).
+            self.notify(self.recorder.start("follow"), job.spoken)
         log.info("job %d intent %s", job.number, json.dumps(intent))
         self.running = intent["request_id"]
-        return self.executor.execute(intent, cancel=cancel, on_state=entered, job=parent or job.owner)
+        result = self.executor.execute(intent, cancel=cancel, on_state=entered, job=parent or job.owner)
+        if lead and "FOLLOW" in result.states:
+            self.notify(self.recorder.finish()[0], job.spoken)
+        elif lead:
+            self.notify("ROUTE_RECORDING_GOES_ON", job.spoken)     # no follower: the player's drive is still recorded
+        return result
 
     def _sequence(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
         """The player's commands in order, one job: each step starts only after the one

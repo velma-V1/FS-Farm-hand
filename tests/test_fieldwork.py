@@ -1389,6 +1389,67 @@ class HarvestTests(unittest.TestCase):
         self.assertEqual(drives[0][1], 0.0)                                  # at the heading it carried it
         self.assertAlmostEqual(drives[0][0][1], 100.0 - Executor.REATTACH_BEHIND_M, places=6)
 
+    def test_an_unreachable_header_is_set_down_in_front_of_the_combine_and_attached(self):
+        # Live 2026-11-06: NO_ROUTE to the loose header beside a tree, at every staging distance. With
+        # teleport recovery allowed the header is set down where the combine, as it stands, carries it
+        # (the recorded geometry), the first clear gap behind; then GIANTS' attach as always.
+        placed = []
+
+        class Unreachable(MockWorld):
+            teleport_recovery = True
+            refuse = 1                                        # the nearest pose is not clear
+
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None, via=None):
+                raise StepFailed("NO_ROUTE")
+
+            def place(self, implement_id, owner, at):
+                with self._lock:
+                    self._owned(implement_id, owner)
+                    if len(placed) < self.refuse:
+                        placed.append(None)
+                        raise StepFailed("PLACE_NOT_CLEAR")
+                    placed.append(at)
+                    self.items[implement_id] = replace(self.items[implement_id], position=(at.x, at.z), heading=at.yaw)
+
+        combine, header = self.combine()
+        world = Unreachable([combine, replace(header, required_pto_torque=0.0)], PLAYERS,
+                            fields=(field(7, 0.4, self.READY),), farm=FARM)
+        executor = Executor(world)
+        base = {"version": 1, "farm_id": "farm-a", "target": "player_at_acceptance", "implement": "cutter"}
+        self.assertEqual(executor.execute(dict(base, request_id="r1", task="detach_pair")).status, "COMPLETE")
+        world.items["h-1"] = replace(world.items["h-1"], position=(160.0, 140.0), heading=1.0)   # far, turned
+        world.items["c-1"] = replace(world.items["c-1"], position=(100.0, 80.0), ai_root=Pose(100.0, 80.0, 0.0))
+        on = executor.execute(dict(base, request_id="r2", task="hitch_pair"))
+        self.assertEqual((on.status, on.reason), ("COMPLETE", "HITCH_OBSERVED"), on)
+        self.assertIn("PLACE", on.states)
+        at = placed[-1]
+        along = executor._front_attachments.get("h-1")                   # dropped once attached
+        self.assertIsNone(along)
+        self.assertAlmostEqual(at.x, 100.0, places=6)                     # lined up ahead of it
+        self.assertAlmostEqual(at.yaw, 0.0, places=6)
+        self.assertAlmostEqual(at.z, 80.0 + Executor.REATTACH_PLACE_GAPS_M[1] + 4.0, places=6)
+
+    def test_an_unreachable_header_stays_where_it_lies_without_teleport_recovery(self):
+        class Unreachable(MockWorld):
+            teleport_recovery = False
+
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None, via=None):
+                raise StepFailed("NO_ROUTE")
+
+            def place(self, implement_id, owner, at):
+                raise AssertionError("placed without teleport recovery")
+
+        combine, header = self.combine()
+        world = Unreachable([combine, replace(header, required_pto_torque=0.0)], PLAYERS,
+                            fields=(field(7, 0.4, self.READY),), farm=FARM)
+        executor = Executor(world)
+        base = {"version": 1, "farm_id": "farm-a", "target": "player_at_acceptance", "implement": "cutter"}
+        self.assertEqual(executor.execute(dict(base, request_id="r1", task="detach_pair")).status, "COMPLETE")
+        world.items["c-1"] = replace(world.items["c-1"], position=(100.0, 80.0), ai_root=Pose(100.0, 80.0, 0.0))
+        on = executor.execute(dict(base, request_id="r2", task="hitch_pair"))
+        self.assertEqual((on.status, on.reason), ("FAILED", "NO_ROUTE"), on)
+        self.assertIsNone(world.items["h-1"].attached_to)
+
     def test_the_combine_harvests_and_the_field_shows_it_cut(self):
         world = MockWorld(self.combine(), PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
         result = Executor(world).execute(work("harvest"))

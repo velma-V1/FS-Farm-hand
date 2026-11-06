@@ -2580,6 +2580,41 @@ class TeleportRigTests(unittest.TestCase):
         deck.spec_tensionBelts.objectsToJoint = lua.table()
         self.assertFalse(bridge.beltsHold(belted))
 
+    def test_a_loose_implement_is_placed_at_exactly_the_pose_asked_or_not_at_all(self):
+        # A combine's header set down in front of it at the pose its cutter joint attaches from:
+        # never slid along a lane or turned to any open heading (that pose would not attach).
+        import math
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        lua.globals().print = lambda *a: None
+        bridge = lua.execute((ROOT / "mod/FarmhandBridge.lua").read_text())
+        env, truck, deck, cargo, events = lua.execute(self.RIG)
+        header = deck
+        header.spec_tensionBelts = None
+        lua.eval("""function(h) h.ownerFarmId = 1
+            function h:getAttacherVehicle() return nil end
+            function h:getLastSpeed() return 0 end
+            function h:getName() return "header" end end""")(header)
+        hitch = lua.eval("{TELEPORT = {clearM = 1.0}}")
+        bridge.Hitch = hitch
+        seen = []
+        lua.eval("""function(h, clear, seen)
+            h.routeFootprint = function() return {} end
+            h.routePoseClear = function(env, foot, x, z, yaw) seen(x, z, yaw); return clear(x, z) end
+            h.staticNear = function() return false end
+        end""")(hitch, lambda x, z: False, lambda x, z, yaw: seen.append((x, z, yaw)))
+        spec = lua.eval("function(h, x, z, yaw) return { op = 'place', tractor = h, x = x, z = z, yaw = yaw, farmId = 1 } end")
+        task, code = bridge.start(env, spec(header, -817.0, 255.0, 0.4))[:2]
+        self.assertIsNone(task)
+        self.assertEqual(code, "PLACE_NOT_CLEAR")
+        self.assertEqual(seen, [(-817.0, 255.0, 0.4)])                       # the one pose, nothing else tried
+        self.assertEqual((header.rootNode.x, header.rootNode.z), (0, -8))    # nothing moved
+        lua.eval("""function(h, clear) h.routePoseClear = function() return true end end""")(hitch, None)
+        task = bridge.start(env, spec(header, -817.0, 255.0, 0.4))
+        self.assertIsNotNone(task)
+        self.assertEqual((header.rootNode.x, header.rootNode.z, header.rootNode.yaw), (-817.0, 255.0, 0.4))
+        truck.spec_enterable = lua.table()
+        self.assertEqual(bridge.start(env, spec(truck, 1.0, 2.0, 0.0))[1], "NOT_LOOSE")
+
     def test_a_teleported_rig_lands_with_a_lane_for_giants_helper_to_start(self):
         # Live 5e0f5dc02a834ae2-1: set down 4 m off inside the yard pocket, GIANTS' helper "blocked
         # by an object" at once; the landing box is the rig's own grown by a lane ahead and beside.

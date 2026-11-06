@@ -1040,7 +1040,17 @@ class Executor:
                 fx, fz = math.sin(vehicle.heading or root.yaw), math.cos(vehicle.heading or root.yaw)
                 ahead = (root.x - vehicle.position[0]) * fx + (root.z - vehicle.position[1]) * fz
                 target = (back.x - math.sin(back.yaw) * ahead, back.z - math.cos(back.yaw) * ahead)
-                self.world.farm_drive(vehicle.id, target, owner, 0.0, yaw=back.yaw)
+                try:
+                    self.world.farm_drive(vehicle.id, target, owner, 0.0, yaw=back.yaw)
+                except StepFailed as failure:
+                    # The machine cannot be brought to it (live 2026-11-06: NO_ROUTE to a header lying
+                    # beside a tree on a cross-slope, every staging distance): with teleport recovery
+                    # allowed, the implement is set down in front of the machine where it stands.
+                    if not (getattr(self.world, "teleport_recovery", False)
+                            and self._place_front(ids, owner, enter)):
+                        raise
+                    log.info("front reattach: %s unreachable (%s); %s set down in front of it",
+                             vehicle.id, failure.code, implement.id)
             enter("REATTACH")
             moved = True
             self.world.reattach(vehicle.id, implement.id, owner)
@@ -1076,6 +1086,37 @@ class Executor:
         self.active = ()
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, ids, tuple(states))
+
+    REATTACH_PLACE_GAPS_M = (1.5, 3.0, 4.5)   # how far behind the carried pose the machine is left, nearest first
+
+    def _place_front(self, ids, owner, enter) -> bool:
+        """The loose front implement set down where the machine, as it stands now, would have carried
+        it, REATTACH_PLACE_GAPS_M behind (inside the creep's window, lined up): the first pose the game
+        finds clear. False when none is (nothing moved) or nothing was recorded."""
+        getattr(self.world, "await_stopped", lambda _id: None)(ids[0])     # the failed drive may still roll
+        observed = {i.id: i for i in self.world.snapshot()}
+        vehicle, implement = observed.get(ids[0]), observed.get(ids[1])
+        kept = self._front_attachments.get(ids[1])
+        if vehicle is None or implement is None or kept is None or vehicle.heading is None or not vehicle.stopped:
+            return False
+        _, along, lateral, turn = kept
+        root = vehicle.ai_root or Pose(vehicle.position[0], vehicle.position[1], vehicle.heading)
+        yaw = root.yaw - turn
+        hx, hz = math.sin(yaw), math.cos(yaw)
+        enter("PLACE")
+        for gap in self.REATTACH_PLACE_GAPS_M:
+            cx, cz = root.x + math.sin(root.yaw) * gap, root.z + math.cos(root.yaw) * gap
+            at = Pose(cx - along * hx - lateral * hz, cz - along * hz + lateral * hx, yaw)
+            try:
+                self.world.place(implement.id, owner, at)
+            except StepFailed as failure:
+                log.info("front implement %s not placed %.1f m ahead of %s: %s", implement.id, gap, vehicle.id,
+                         failure.code)
+                if failure.code not in ("PLACE_NOT_CLEAR", "PLACE_UNREADABLE"):
+                    return False
+                continue
+            return True
+        return False
 
     def _remember_front_attachment(self, vehicle, implement) -> None:
         """A just-detached implement that hung in front of its machine (its middle ahead of the
