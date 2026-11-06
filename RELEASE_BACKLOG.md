@@ -211,7 +211,7 @@ Acceptance:
 - On a slope the commanded speed is held: stronger braking, and refusing or slowing the approach before the grade instead of after the overspeed. Verified live on that slope with a heavy machine.
 
 ## Combine transport for long trips
-Status: IN PROGRESS (owner priority 2026-11-05)
+Status: HEADER-TRAILER WORKFLOW LIVE-PROVEN 2026-11-06 (see tests/LIVE_QUALIFICATION.md); lowboy haul of the combine itself NOT YET LIVE-PROVEN
 Priority: HIGH (also the way to the moving-unload gate in save 1)
 Found: 2026-10-31 ("do not drive the combine to field 90 ... it should be transported")
 
@@ -231,7 +231,9 @@ Plan (reuse detach_pair, unpark, load_tractor, move_pair, unload_tractor, the ha
 1. Record the combine-to-header geometry (the AI root relative to the header's input joint) when detaching. Re-attaching returns to that pose by Farmhand's own drive, then does check-only align plus GIANTS attach. This avoids planning from a joint that drifts.
 2. After a front detach, the combine backs clear with UNPARK (nothing attached, so it may reverse).
 3. In the haul, a header on a cutter joint becomes a "detach first" step instead of LOAD_IMPLEMENT_NOT_MOUNTED.
-4. Optional later: the header onto its MF 8570 Trailer (dynamic mount).
+4. DONE 2026-11-06: the header onto its MF 8570 Trailer by GIANTS' DynamicMountAttacher lock position (mount_front), the trailer towed by the combine's rear joint, taken off again at the field (unmount_front). Live-proven end to end, store to field 2.
+
+Still open: the combine itself on the 379 + LB 56 26 for cross-map trips, and the drive-or-haul decision (owner directive 2026-11-06 section 7).
 
 To verify live: isDetachAllowed for the header (lowered?); the height gap at re-attach (Farmhand caps it at 0.5 m); the load fit; belts.
 
@@ -244,6 +246,7 @@ ESCORT (mod/FarmhandHitch.lua Hitch.newEscort/escortStep) holds a tractor's trai
 
 Acceptance (live, still open):
 - The combine moving and threshing while grain flows into the cart (game log `escort end ... moving=<litres>` > 0, standing ~0), several lanes including headland turns, no contact, full cart delivered and back.
+- 2026-11-06: the owner's field 2 workflow brought the MF 8570 with its header to field 2, but field 2 measured 101/101 samples cut (stubble, confirmed by screenshot); owned fields 5, 6 and 7 are cut too and field 3 is growing wheat. No owned field is ripe in save 1 now; the accepted field 64 canola contract is the nearest ripe crop. Blocked on a ripe field, not on code.
 - First live attempts (2026-11-05, save 1): field 7 was already harvested (Farmhand rightly refused). Field 90: GIANTS' helper could not leave because the MT635 + RZK 300H stood against the MF 8570's header; Farmhand's reposition only reversed it 4 m (see "Equipment left against a combine").
 
 ## GIANTS' planner refuses the MF 8570
