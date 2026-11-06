@@ -942,7 +942,7 @@ function aborts.attach() end
 -- Farmhand does not observe (a combine's cutter joint moves with its feeder): no plan of joints
 -- is needed. DONE ATTACHED once the implement names it; REATTACH_NOT_IN_RANGE (the nearest pair's
 -- gap logged) when nothing is in range; nothing moves.
-Bridge.REATTACH = { xzM = 0.7, yM = 1.4, settleMs = 5000, creepM = 9.0, creepKmh = 3.0, lateralM = 1.0,
+Bridge.REATTACH = { xzM = 0.7, yM = 1.4, settleMs = 5000, creepM = 9.0, creepKmh = 3.0, lateralM = 2.0,
                      headingDeg = 6, timeoutMs = 40000, implementMovedM = 0.3, lookaheadM = 3, extraM = 1.5 }
 
 -- The free attacher joint of `v` and input joint of `impl` of one type nearest each other, their gap
