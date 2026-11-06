@@ -2080,6 +2080,17 @@ function Probe:logSpecInventory()
             local fx, _, fz = env.localDirectionToWorld(node, 0, 0, 1)
             return string.format("(%.3f,%.3f,%.3f yaw %.3f)", x, y, z, math.atan2(fx, fz))
         end
+        local okReady, ready, blocker = pcall(function() return vehicle:getIsAIReadyToDrive() end)
+        local okPrep, preparing = pcall(function() return vehicle:getIsAIPreparingToDrive() end)
+        local fold = vehicle.spec_foldable
+        local pipe = vehicle.spec_pipe
+        log("spec inventory id=%s aiReady=%s blocker=%s preparing=%s fold=%s turnOnDir=%s pipe=%s/%s turnedOn=%s",
+            tostring(id), okReady and tostring(ready) or "?",
+            okReady and blocker ~= nil and tostring(env.NetworkUtil.getObjectId(blocker)) or "-",
+            okPrep and tostring(preparing) or "?", fold and tostring(fold.foldAnimTime) or "-",
+            fold and tostring(fold.turnOnFoldDirection) or "-",
+            pipe and tostring(pipe.currentState) or "-", pipe and tostring(pipe.targetState) or "-",
+            tostring(type(vehicle.getIsTurnedOn) == "function" and vehicle:getIsTurnedOn()))
         log("spec inventory id=%s root=%s mountedTo=%s", tostring(id), pose(vehicle.rootNode),
             tostring(type(vehicle.getDynamicMountObject) == "function" and vehicle:getDynamicMountObject() ~= nil
                      and env.NetworkUtil.getObjectId(vehicle:getDynamicMountObject()) or nil))
