@@ -942,8 +942,20 @@ function aborts.attach() end
 -- Farmhand does not observe (a combine's cutter joint moves with its feeder): no plan of joints
 -- is needed. DONE ATTACHED once the implement names it; REATTACH_NOT_IN_RANGE (the nearest pair's
 -- gap logged) when nothing is in range; nothing moves.
-Bridge.REATTACH = { xzM = 0.7, yM = 1.4, settleMs = 5000, creepM = 9.0, creepKmh = 3.0, lateralM = 2.0,
-                     headingDeg = 6, timeoutMs = 40000, implementMovedM = 0.3, lookaheadM = 3, extraM = 1.5 }
+-- A machine nearer than the S onto the line needs (reattachNeedM) backs straight off first, no more
+-- than backM and only while the ground behind is clear, then creeps (live 2026-11-06: the Colossus 7.7 m
+-- short and 2.07 m aside; its S at 6 m radius needs 6.7 m plus the straight finish).
+Bridge.REATTACH = { xzM = 0.7, yM = 1.4, settleMs = 5000, creepM = 9.0, creepKmh = 3.0, lateralM = 3.0,
+                     headingDeg = 6, timeoutMs = 40000, implementMovedM = 0.3, lookaheadM = 3, extraM = 1.5,
+                     straightM = 1.5, backM = 6.0, behindM = 1.5 }
+
+-- The length an S of two arcs at `radius` needs to move a joint `across` onto its line, plus the
+-- straight finish (lateral 2R(1 - cos t), along 2R sin t). Infinite when no such S exists.
+function Bridge.reattachNeedM(across, radius)
+    local d = math.abs(across or 0)
+    if not (finite(d) and finite(radius) and radius > 0) or d >= 2 * radius then return math.huge end
+    return 2 * math.sqrt(d * radius - d * d / 4) + Bridge.REATTACH.straightM
+end
 
 -- The free attacher joint of `v` and input joint of `impl` of one type nearest each other, their gap
 -- across and up, and the input joint's node.
@@ -994,13 +1006,47 @@ function starters.reattach(env, spec)
         local jl, _, jz = env.worldToLocal(node, pair.jx, 0, pair.jz)
         local ahead, across = lz - jz, lx - jl
         log("reattach: %.2f m off (%.2f ahead, %.2f across, %.2f up)", pair.gap, ahead, across, pair.dy)
-        if ahead <= 0 or ahead > R.creepM or math.abs(across) > R.lateralM or math.abs(pair.dy) > R.yM then
+        local back = math.max(0, Bridge.reattachNeedM(across, v.maxTurningRadius) - ahead)
+        if ahead <= 0 or ahead > R.creepM or math.abs(across) > R.lateralM or math.abs(pair.dy) > R.yM
+                or back > R.backM then
             return nil, "REATTACH_NOT_IN_RANGE"
+        end
+        if back > 0 then
+            local ok, foot = pcall(Bridge.Hitch.routeFootprint, env, v)
+            if not ok or foot == nil then return nil, "RIG_GEOMETRY_UNKNOWN" end
+            task.back, task.foot = back, foot
+            log("reattach: %.2f m back first (an S onto the line needs %.2f m)", back, back + ahead)
         end
         task.creep = true
         Bridge.Hitch.watchDriver(env, v)
     end
     return task
+end
+
+-- Straight back at creep speed until task.back is driven or the pose behindM further back is not clear,
+-- then the creep from there (its own limits measured from where it starts).
+local function reattachBack(env, task, pair, dt)
+    local v, R = task.spec.tractor, Bridge.REATTACH
+    local vx, _, vz = env.getWorldTranslation(v.rootNode)
+    local hx, _, hz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
+    task.backFrom = task.backFrom or { vx, vz }
+    local moved = math.sqrt((vx - task.backFrom[1]) ^ 2 + (vz - task.backFrom[2]) ^ 2)
+    local yaw = math.atan2(hx, hz)
+    local open = Bridge.Hitch.routePoseClear(env, task.foot, vx - hx * R.behindM, vz - hz * R.behindM, yaw, 0, true)
+    if moved < task.back and open == true and task.elapsed <= R.timeoutMs then
+        if not v:getIsMotorStarted() and v:getCanMotorRun() then v:startMotor() end
+        task.drive.maxSpeedKmh = R.creepKmh
+        Bridge.Hitch.holdActive(task.drive)
+        v:raiseActive()
+        Bridge.Hitch.drive(env, task.drive, dt, false, 0, -10)
+        return nil
+    end
+    pcall(Bridge.Hitch.halt, env, task.drive, dt)
+    if not stopped(v) then return nil end
+    log("reattach: backed %.2f m of %.2f (%s); creep from %.2f m off", moved, task.back,
+        open == true and "its length" or "behind not clear", pair.gap)
+    task.back, task.from, task.startGap, task.drive.driveStartMs = nil, nil, pair.gap, nil
+    return nil
 end
 
 function steppers.reattach(env, task, dt)
@@ -1021,6 +1067,7 @@ function steppers.reattach(env, task, dt)
     if pair == nil then pcall(Bridge.Hitch.halt, env, task.drive, dt); return "FAILED", "NO_MATCHING_JOINT" end
     if pair.gap <= R.xzM and math.abs(pair.dy) <= R.yM then return reattachNow(env, task, pair) end
     if not task.creep then return "FAILED", "REATTACH_NOT_IN_RANGE" end
+    if task.back ~= nil then return reattachBack(env, task, pair, dt) end
     -- Never pushes it (live 2026-11-05: the MF 8570 shoved its loose header 14.5 m, the gap unchanged):
     -- the implement moving at all ends it, and so does driving farther than the gap it started at.
     local ix, _, iz = env.getWorldTranslation(impl.rootNode)

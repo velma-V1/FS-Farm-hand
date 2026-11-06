@@ -5,6 +5,7 @@ pattern and AutoDrive's external interface. Observe.snapshot is replaced by a
 one-field stub because test_lua_contract.py covers it. These tests prove the
 session, framing and drive/stop lifecycle, not FS25 or AutoDrive behaviour.
 """
+import math
 import json
 from pathlib import Path
 import unittest
@@ -1854,6 +1855,26 @@ class LuaBridgeTests(unittest.TestCase):
         probe.consoleProbe(probe, "11", "12")
         self.assertTrue(any("BUSY" in line for line in output))
         self.assertIsNone(probe.task)
+
+
+class ReattachGeometryTests(unittest.TestCase):
+    """The S a front reattach creep needs onto its line, and so whether the machine backs off first."""
+
+    def test_the_s_onto_the_line_needs_its_two_arcs_plus_the_straight_finish(self):
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        lua.globals().print = lambda *a: None
+        load = lambda n: lua.execute((ROOT / "mod" / n).read_text())
+        load("FarmhandObserve.lua"), load("FarmhandHitch.lua")
+        bridge = load("FarmhandBridge.lua")
+        need = bridge.reattachNeedM
+        straight = bridge.REATTACH.straightM
+        # Live 2026-11-06, the Colossus at 6 m: 2.07 m aside needs ~8.2 m, so 7.7 m short of it is too near.
+        self.assertAlmostEqual(need(2.07, 6.0), 2 * math.sqrt(2.07 * 6.0 - 2.07 ** 2 / 4) + straight, places=6)
+        self.assertGreater(need(-2.07, 6.0), 7.7)
+        self.assertLess(need(2.07, 6.0) - 7.7, bridge.REATTACH.backM)     # backs off, not refused
+        self.assertEqual(need(0.0, 6.0), straight)                         # lined up: straight on
+        self.assertEqual(need(13.0, 6.0), math.inf)                        # beyond any S
+        self.assertEqual(need(1.0, None), math.inf)
 
 
 class Lua51BridgeTests(LuaBridgeTests):
