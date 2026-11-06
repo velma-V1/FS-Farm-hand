@@ -372,15 +372,16 @@ class RouteRecorder:
 
     @staticmethod
     def _stops(samples):
-        """Standing still STOP_S or longer anywhere but at the end: [(x, z, seconds)]."""
-        stops, since = [], None
+        """Standing still STOP_S or longer anywhere but before the first motion (a planner's start)
+        or at the end: [(x, z, seconds)]."""
+        stops, since, moved = [], None, False
         for s in samples:
             if s[3] < STOP_KMH:
-                since = since or s
+                since = since or (s if moved else None)
             else:
                 if since is not None and s[5] - since[5] >= STOP_S:
                     stops.append((round(since[0], 1), round(since[1], 1), round(s[5] - since[5], 1)))
-                since = None
+                since, moved = None, True
         return stops
 
     def _end(self):
