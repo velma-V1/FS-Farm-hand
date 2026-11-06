@@ -2982,10 +2982,24 @@ class RootArcFollowingTests(unittest.TestCase):
             self.assertAlmostEqual(2 * lx / (lx * lx + lz * lz), k, places=6)
 
     def test_closed_loop_the_root_stays_on_planned_arcs_where_pursuit_left_them(self):
-        # Kinematic bicycle, the reference `behind` m behind the root, steering rate-limited
-        # to the live 0.889 s to full lock, 3 km/h; on a real Drive.plan path at the rig's
-        # drivable root radius (Drive.begin: sqrt(R^2 + behind^2)).
-        behind, own = 2.2, 3.9
+        gap, worst, _aside = self.closed_loop(2.2, 3.9)
+        self.assertLess(gap, 2.5)
+        self.assertLess(worst, 0.4)
+
+    def test_closed_loop_a_rear_steered_combine_whose_fixed_axle_is_ahead_of_its_root(self):
+        # Live 2026-11-06, the Colossus 9000: the offset clamped to 0 planned 6.0 m arcs, its root drove
+        # 6.45 m and left the loop 2.9 m wide, its staging pose 2.1 m aside. Tracked at its root this
+        # model leaves the path 8.9 m; at the fixed axle it comes back, lined up where it arrives.
+        gap, worst, aside = self.closed_loop(-2.4, 6.0)
+        self.assertLess(gap, 2.5)
+        self.assertLess(worst, 2.6)          # the start: a root on an arc cannot begin at its heading
+        self.assertLess(aside, 0.3)
+
+    def closed_loop(self, behind, own):
+        # Kinematic bicycle, the reference `behind` m behind the root (negative: ahead), steering
+        # rate-limited to the live 0.889 s to full lock, 3 km/h; on a real Drive.plan path at the
+        # rig's drivable root radius (Drive.begin: sqrt(R^2 + behind^2)). Returns the gap to the
+        # goal, the worst offset from the path and the offset from the final pose's line.
         radius = math.sqrt(own * own + behind * behind)
         start, goal = self.lua.table_from((0.0, 0.0, 1.24)), self.lua.table_from((16.9, 23.0))
         path = self.drive.plan(start, goal, radius, self.open, None, 2.0004, True, 6000)[0]
@@ -3025,8 +3039,9 @@ class RootArcFollowingTests(unittest.TestCase):
             worst = max(worst, off(x, z))
             if math.hypot(x - goal[1], z - goal[2]) < 2:
                 break
-        self.assertLess(math.hypot(x - goal[1], z - goal[2]), 2.5)
-        self.assertLess(worst, 0.4)
+        fx, fz, fyaw = pts[-1]
+        aside = abs((x - fx) * math.cos(fyaw) - (z - fz) * math.sin(fyaw))
+        return math.hypot(x - goal[1], z - goal[2]), worst, aside
 
 
 class Lua51RootArcFollowingTests(RootArcFollowingTests):

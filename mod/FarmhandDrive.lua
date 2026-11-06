@@ -1360,9 +1360,14 @@ end
 Drive.TRACK_GAIN_LATERAL = 0.25     -- 1/m^2 per m off the path
 Drive.TRACK_GAIN_HEADING = 0.8      -- 1/m per radian off the arc's heading
 function Drive.trackCurvature(path, nextIndex, x, z, yaw, behind, maxCurvature)
-    local d, ox, oz, pathYaw, curve, gear = Drive.arcNearest(path, nextIndex, x, z)
+    behind = finite(behind) and behind or 0
+    -- A fixed axle ahead of the root (a rear-steered combine): the root swings out before it follows,
+    -- so that axle itself is steered along the path (its own circle: no offset feed or heading).
+    local lead = math.max(0, -behind)
+    if lead > 0 then behind = 0 end
+    local d, ox, oz, pathYaw, curve, gear = Drive.arcNearest(path, nextIndex,
+                                                              x + math.sin(yaw) * lead, z + math.cos(yaw) * lead)
     if d == math.huge or gear ~= 1 or not finite(pathYaw) then return nil end
-    behind = finite(behind) and behind > 0 and behind or 0
     local feed = 0
     if math.abs(curve) > 1e-6 then
         local radius = 1 / math.abs(curve)
@@ -1822,7 +1827,9 @@ function Drive.referenceBehind(env, v)
         if center == nil then return 0 end
         local cx, cy, cz = env.getWorldTranslation(center)
         local _, _, ahead = env.worldToLocal(v.rootNode, cx, cy, cz)
-        return finite(ahead) and math.max(0, -ahead) or 0
+        -- Signed: a rear-steered combine's fixed axle stands ahead of its root (live 2026-11-06, the
+        -- Colossus 9000 clamped to 0: 6.0 m arcs planned, its root drove 6.45 m, 2.9 m off the loop).
+        return finite(ahead) and -ahead or 0
     end)
     return ok and behind or 0
 end
@@ -1851,7 +1858,7 @@ function Drive.begin(env, args, Hitch)
         local foot = Hitch.routeFootprint(env, v)
         if foot == nil then return nil, "RIG_GEOMETRY_UNKNOWN" end
         -- Root arcs the vehicle can actually drive: its steering reference turns at no less
-        -- than its own radius, so the root (`behind` ahead of it) at sqrt(R^2 + behind^2).
+        -- than its own radius, so the root (`behind` ahead of it, or behind it) at sqrt(R^2 + behind^2).
         -- Planned tighter, the follower saturates and the rig leaves the cleared arc (offline,
         -- the live 0390b41df0e14112-2 geometry: 1.06 m off at 3.9 m planned, 0.20 m at 4.48 m).
         local behind = Drive.referenceBehind(env, v)
