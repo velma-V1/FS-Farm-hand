@@ -260,7 +260,7 @@ class LuaEscortTests(unittest.TestCase):
         self.assertEqual(code, "CONTINUE", self.hitch.describeEscort(s))
         self.assertEqual(s.mode, "alongside", self.hitch.describeEscort(s))
         self.assertGreater(s.tL, s.slotL + 0.3)
-        self.assertLessEqual(s.tL - s.slotL, TRAILER["width"] / 2 - 0.8 + 1e-9)    # the spout still over it
+        self.assertLessEqual(s.tL - s.slotL, TRAILER["width"] / 2 - self.hitch.ESCORT.spoutMarginM + 1e-9)    # the spout still over it
         self.assertEqual(s.brakes.close, 0, self.hitch.describeEscort(s))
         self.assertTrue(w.pipeOut)
         self.assertGreater(s.movingL, 1000)
