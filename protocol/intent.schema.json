@@ -139,7 +139,7 @@
     "once": {"description": "escort: done when the combine's tank is empty (a one-time unloading).", "type": "boolean"},
     "cart_start": {"description": "escort: the combine's tank share before the cart comes alongside (it shadows the combine until then).", "type": "number", "minimum": 0, "maximum": 1},
     "remember_route": {"description": "move_pair: the journey's observed line kept as a learned route.", "type": "boolean"},
-    "tractor_name": {"description": "fetch_pair, hitch_pair: the towing vehicle must have all these words in its name ('with the gmc').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
+    "tractor_name": {"description": "field_work: the machine that does it. fetch_pair, hitch_pair: the towing vehicle must have all these words in its name ('with the gmc').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
     "cargo_name": {"description": "move_pair: the rig whose trailer carries this belted vehicle (by its name or brand words).", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
     "implement_name": {"description": "fetch_pair, hitch_pair: the implement must have all these words in its name ('the gooseneck').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
     "crop": {"description": "field_work (sow), hitch_pair: the crop to sow in the player's words; a seeder that can sow it, set to it.", "type": "string", "minLength": 2, "maxLength": 30, "pattern": "^[a-z][a-z -]*$"},

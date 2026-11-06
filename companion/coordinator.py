@@ -256,7 +256,8 @@ def work_for(proposal: dict) -> dict | None:
         return {"field": proposal["field"], "operations": proposal["operations"],
                 "area_m2": proposal.get("area_m2"), "over_crop": proposal.get("over_crop", False),
                 "crop": proposal.get("crop"), "destination": proposal.get("destination"),
-                "cart_start": proposal.get("cart_start"), "stop_at": proposal.get("stop_at")}
+                "cart_start": proposal.get("cart_start"), "stop_at": proposal.get("stop_at"),
+                "tractor_name": proposal.get("tractor_name")}
     if command == "buy":
         return {"wants": proposal["wants"]}
     if command in ("fetch_pair", "hitch_pair", "move_pair", "load_tractor", "unload_tractor", "follow_me", "sell",
@@ -486,21 +487,24 @@ def _tractor_to_free(items, kind: str, farm_id: str) -> str | None:
     return _words(min(choices, key=lambda c: (c[0], c[1]))[2].name)
 
 
-def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: str, area_m2=None, crop=None):
+def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: str, area_m2=None, crop=None,
+                tractor_name=None):
     """The steps for one operation on ``field`` (an id or "smallest"), as executor
-    intent fragments, or (None, why). ``crop`` (sowing only): the player's crop."""
+    intent fragments, or (None, why). ``crop`` (sowing only): the player's crop.
+    ``tractor_name``: the machine the player named does it ("harvest field 91 with the colossus")."""
     crop = crop if operation == "sow" else None
+    by = {"tractor_name": tractor_name} if tractor_name else {}
     if operation == "harvest":
         # A combine with its header on, free: harvested where it stands ready, then brought
         # back where it was taken from with its header on (the user 2026-10-23: never left
         # in the field; live ab2795521e884f2d-4 said "bringing the equipment back" and left it).
         observed = {i.id: i for i in items}
         if not any(i.category == "harvester" and usable(i, farm_id) and observed.get(i.attached_to) is not None
-                   and of_kind(observed[i.attached_to], "cutter") for i in items):
+                   and of_kind(observed[i.attached_to], "cutter") and named(i, tractor_name) for i in items):
             return None, "NO_HARVESTER_WITH_HEADER"
         return [{"task": "field_work", "field": field, "operation": "harvest", "implement": "cutter",
-                 **({"area_m2": area_m2} if area_m2 else {})},
-                {"task": "move_pair", "implement": "cutter", "target": {"type": "origin"}}], None
+                 **({"area_m2": area_m2} if area_m2 else {}), **by},
+                {"task": "move_pair", "implement": "cutter", "target": {"type": "origin"}, **by}], None
     kind, note = implement_kind(items, operation, farm_id, crop)
     if kind is None:
         return None, note
@@ -509,8 +513,10 @@ def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: st
     steps = []
     was_hitched = _hitched(items, kind, crop)
     if not was_hitched:
-        freed = _tractor_to_free(items, kind, farm_id)
-        if freed is not None:
+        freed = None if tractor_name else _tractor_to_free(items, kind, farm_id)
+        if tractor_name:
+            steps.append({"task": "hitch_pair", "implement": kind, **by, **with_crop})
+        elif freed is not None:
             # Every tractor has something hitched (live 7dada469b72f44ed-3, a contract taken):
             # the one nearest the implement needed leaves what it has where it stands.
             steps.append({"task": "detach_pair", "tractor_name": freed})
@@ -518,13 +524,13 @@ def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: st
         else:
             steps.append({"task": "hitch_pair", "implement": kind, **with_crop})
     steps.append({"task": "field_work", "field": field, "operation": work_op, "implement": kind,
-                  **({"area_m2": area_m2} if area_m2 else {}), **with_crop})
+                  **({"area_m2": area_m2} if area_m2 else {}), **with_crop, **by})
     # A bounded test-area request ends when its measured area is done. Keep an
     # already assembled player rig intact instead of returning and detaching it.
     # Full-field/background workers retain their existing return workflow.
     if not was_hitched or area_m2 is None:
-        steps.append({"task": "move_pair", "implement": kind, "target": {"type": "origin"}})
-        steps.append({"task": "detach_pair", "implement": kind})
+        steps.append({"task": "move_pair", "implement": kind, "target": {"type": "origin"}, **by})
+        steps.append({"task": "detach_pair", "implement": kind, **by})
     return steps, note
 
 
@@ -1668,7 +1674,7 @@ class Coordinator:
                     log.info("job %d %s: field %s %s", job.number, operation, field.id, crop)
                     return Result("BLOCKED", crop, tuple(equipment), tuple(states))
                 steps, note = field_steps(tuple(self.world.snapshot()), operation, field.id, self.farm(),
-                                          work.get("area_m2"), work.get("crop"))
+                                          work.get("area_m2"), work.get("crop"), work.get("tractor_name"))
                 if steps is None:
                     return Result("BLOCKED", note, tuple(equipment), tuple(states))
                 if note is not None:

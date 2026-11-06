@@ -146,7 +146,7 @@
     "stop_at": {"description": "field_work with harvest: the combine stopped where it stands once its tank holds this share ('harvest field 91 and stop at 10 percent'), nothing after.", "type": "number", "minimum": 0.05, "maximum": 0.95},
     "cart_start": {"description": "field_work with harvest: the combine's tank share at which the grain cart goes alongside ('harvest field 91 and unload at 10 percent'); default 0.65.", "type": "number", "minimum": 0.05, "maximum": 0.95},
     "remember_route": {"description": "move_pair with a named vehicle: the journey's observed line is kept as a learned route ('take the gmc to the farm and remember the route'); follow_me: the player's own line as they lead ('follow me and remember the way').", "type": "boolean"},
-    "tractor_name": {"description": "fetch_pair, hitch_pair: the towing vehicle must have all these words in its name ('with the gmc').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
+    "tractor_name": {"description": "field_work: the machine that does it ('harvest field 91 with the colossus'). fetch_pair, hitch_pair: the towing vehicle must have all these words in its name ('with the gmc').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
     "implement_name": {"description": "fetch_pair, hitch_pair: the implement must have all these words in its name ('the gooseneck').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
     "kind": {"description": "contract: the start of the contract type's name ('plow', 'cultiv', 'fertili').", "type": "string", "pattern": "^[a-z]{3,12}$"},
     "destination": {

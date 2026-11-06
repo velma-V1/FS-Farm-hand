@@ -3313,8 +3313,7 @@ class Executor:
                 plan = travel = None
                 aims = ()
             elif detaching or working:
-                pair, failure = self._choose_attached(items, farm_id, requester or target,
-                                                      command.get("tractor_name") if detaching else None)
+                pair, failure = self._choose_attached(items, farm_id, requester or target, command.get("tractor_name"))
                 plan = travel = None
                 aims = ()
                 if working and pair is not None:

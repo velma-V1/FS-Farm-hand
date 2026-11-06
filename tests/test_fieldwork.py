@@ -311,6 +311,9 @@ class PlanTests(unittest.TestCase):
         self.assertEqual((steps[1]["operation"], steps[1]["implement"], note),
                          ("cultivate", "cultivator", "NO_PLOW_CULTIVATING"))
         self.assertEqual(field_steps(items, "fertilize", 7, "farm-a"), (None, "NO_IMPLEMENT_FOR_FERTILIZE"))
+        # The machine the player named does every step of it.
+        steps, _ = field_steps(items, "sow", 7, "farm-a", tractor_name="series 9")
+        self.assertTrue(all(step["tractor_name"] == "series 9" for step in steps), steps)
 
     def test_the_coordinator_runs_the_plan_and_stops_at_the_first_step_not_complete(self):
         from companion import coordinator as coordination
@@ -2700,6 +2703,13 @@ class UnloadAndSellTests(unittest.TestCase):
         # The unloader hitched by the store names (live save 1: the Fliegl EDK 650, the 3650).
         self.assertEqual(r.interpret("hitch the edk 650 to the 3650"),
                          {"version": 1, "command": "hitch_pair", "implement_name": "edk 650", "tractor_name": "3650"})
+        # Field work by the machine named (2026-11-06: the Colossus at field 91 beside the MF 8570 with its header).
+        self.assertEqual(r.interpret("harvest field 91 with the colossus"),
+                         {"version": 1, "command": "field_work", "field": 91, "operations": ["harvest"],
+                          "tractor_name": "colossus"})
+        self.assertEqual(r.interpret("plow field 3 with the series 9")["tractor_name"], "series 9")
+        self.assertNotIn("tractor_name", r.interpret("harvest field 91 with the combine"))
+        self.assertEqual(r.interpret("plant field 3 with corn")["crop"], "corn")
         # A header names its harvester by any word (live 2026-11-06: "the colossus" read as a place).
         self.assertEqual(r.interpret("hitch the header to the colossus"),
                          {"version": 1, "command": "hitch_pair", "implement": "cutter", "tractor_name": "colossus"})

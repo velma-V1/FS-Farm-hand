@@ -532,6 +532,12 @@ def field_work(words: str) -> dict | None:
     over_crop = re.search(r"\s+(?:anyway|anyways|regardless)$", words)
     if over_crop is not None:
         words = words[:over_crop.start()]
+    # "harvest field 91 with the colossus": that machine does it (never a crop: "with" + the/my/our).
+    machine = re.search(r"\s+(?:with|using)\s+(?:the|my|our)\s+(?P<name>[a-z0-9][a-z0-9 -]{0,39}?)$", words)
+    named_by = None
+    if machine is not None and not implement_kind(machine["name"]) and not re.search(r"\bfield\b", machine["name"]):
+        named_by = re.sub(r"\s*\b(?:tractor|combine|harvester)\b\s*", " ", machine["name"]).strip() or None
+        words = words[:machine.start()]
     collect = _COLLECT.match(words)
     if collect is not None:
         field = int(collect["number"])
@@ -558,6 +564,8 @@ def field_work(words: str) -> dict | None:
         work["destination"] = destination
     if over_crop is not None:
         work["over_crop"] = True
+    if named_by:
+        work["tractor_name"] = named_by
     if match["test"]:
         work["area_m2"] = TEST_AREA_M2
     elif match["m2"]:
