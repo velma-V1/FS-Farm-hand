@@ -1866,6 +1866,11 @@ function Drive.begin(env, args, Hitch)
             for _, node in ipairs(hits) do
                 local object = env.g_currentMission:getNodeObject(node)
                 local other = object ~= nil and object.rootVehicle or nil
+                -- What a carrier holds by GIANTS' DynamicMountAttacher (a header locked on its trailer) is
+                -- that carrier's (live 40d0c96fdc20405a-1: the MF 8570 left against both after loading).
+                local carrier = other ~= nil and type(other.getDynamicMountObject) == "function"
+                                and other:getDynamicMountObject() or nil
+                if carrier ~= nil and carrier.rootVehicle ~= nil then other = carrier.rootVehicle end
                 if other ~= nil then
                     if vehicle ~= nil and vehicle ~= other then return nil, "START_NOT_CLEAR" end
                     vehicle = other
@@ -1891,6 +1896,8 @@ function Drive.begin(env, args, Hitch)
             for item, value in pairs(foot.excluded) do excluded[item] = value end
             if vehicle ~= nil then
                 excluded[vehicle] = true
+                local mounts = vehicle.spec_dynamicMountAttacher
+                for object in pairs(mounts ~= nil and mounts.dynamicMountedObjects or {}) do excluded[object] = true end
             else
                 for _, node in ipairs(hits) do excluded[node] = true end
                 for object in pairs(fixedObjects) do excluded[object] = true end
