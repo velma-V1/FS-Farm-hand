@@ -424,9 +424,14 @@ end
 function Bridge.beltedCargo(v)
     local out, seen = {}, {}
     local function add(u)
+        local held = {}
         local belts = u.spec_tensionBelts
-        for _, data in pairs(belts ~= nil and belts.objectsToJoint or {}) do
-            local o = data.object
+        for _, data in pairs(belts ~= nil and belts.objectsToJoint or {}) do held[#held + 1] = data.object end
+        -- And what a carrier holds by GIANTS' DynamicMountAttacher (live 2026-11-06: the MF 8570 towing
+        -- its header trailer, GIANTS' agent BLOCKED at once by the header locked on it).
+        local mounts = u.spec_dynamicMountAttacher
+        for o in pairs(mounts ~= nil and mounts.dynamicMountedObjects or {}) do held[#held + 1] = o end
+        for _, o in ipairs(held) do
             if o ~= nil and not seen[o] and type(o.removeAIVehicleObstacle) == "function" then
                 seen[o] = true
                 out[#out + 1] = o

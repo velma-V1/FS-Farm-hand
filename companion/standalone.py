@@ -143,7 +143,7 @@ class StandaloneMove:
             return
         items = self.world.snapshot()
         here = next((i.position for i in items if i.id == goal.vehicle_id), None)
-        loaded = any(i.belted_to in goal.rig_ids for i in items)
+        loaded = any(i.belted_to in goal.rig_ids or getattr(i, "mounted_to", None) in goal.rig_ids for i in items)
         rest = None
         start_contact = False
         route_done = False
