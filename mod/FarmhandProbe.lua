@@ -597,6 +597,31 @@ function Probe:update(dt)
                 local ok, err = pcall(Probe.logTurnReferences, self)
                 if not ok then log("turn reference UNVERIFIED %s", tostring(err)) end
             end
+            -- Every owned root vehicle with something attached: the route box Farmhand's own drive plans
+            -- with, and each unit's rectangle (2026-11-06: the Colossus towing its header found no way
+            -- out of an open dealership lot).
+            local rigFootprint = bridge.dir .. "rig_footprint.flag"
+            if env.fileExists(rigFootprint) then
+                env.deleteFile(rigFootprint)
+                for _, v in ipairs(vehicles(env)) do
+                    if v.rootVehicle == v and type(v.getAttachedImplements) == "function"
+                            and #(v:getAttachedImplements() or {}) > 0 then
+                        local ok, foot = pcall(self.Hitch.routeFootprint, env, v)
+                        if ok and foot ~= nil then
+                            log("rig footprint %s: ahead %.2f..%.2f side %.2f..%.2f (%.2f x %.2f m) tow %.2f units %d",
+                                tostring(v:getFullName()), foot.aMin, foot.aMax, foot.lMin, foot.lMax,
+                                foot.aMax - foot.aMin, foot.lMax - foot.lMin, foot.towLength or 0, #foot.units)
+                            for i, r in ipairs(foot.unitRects or {}) do
+                                log("rig footprint %s unit %d: ahead %.2f side %.2f yaw %.1f size %s",
+                                    tostring(v:getFullName()), i, r.ahead, r.side, math.deg(r.yaw),
+                                    r.size and string.format("%.2fx%.2f", r.size.width or 0, r.size.length or 0) or "?")
+                            end
+                        else
+                            log("rig footprint %s UNREADABLE", tostring(v:getFullName()))
+                        end
+                    end
+                end
+            end
             local physicalPair = bridge.dir .. "physical_pair.flag"
             if env.fileExists(physicalPair) then
                 env.deleteFile(physicalPair)
