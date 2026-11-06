@@ -1047,7 +1047,7 @@ class Executor:
                 ahead = (root.x - vehicle.position[0]) * fx + (root.z - vehicle.position[1]) * fz
                 target = (back.x - math.sin(back.yaw) * ahead, back.z - math.cos(back.yaw) * ahead)
                 try:
-                    self.world.farm_drive(vehicle.id, target, owner, 0.0, yaw=back.yaw)
+                    self._line_up(vehicle.id, target, back.yaw, owner)
                 except StepFailed as failure:
                     # The machine cannot be brought to it (live 2026-11-06: NO_ROUTE to a header lying
                     # beside a tree on a cross-slope, every staging distance): with teleport recovery
@@ -1164,6 +1164,18 @@ class Executor:
             log.info("front attachments not saved: %s", error)
 
     LEAVE_IMPLEMENT_M = 6.0  # a machine against a loose implement backs this far off it before a hitch
+    def _line_up(self, vehicle_id, target, yaw, owner) -> None:
+        """A short approach to a lined-up pose: Farmhand's own drive; where its search finds no way (live
+        2026-11-06: the MF 8570 beside its header trailer on a field-edge grade, 8000 nodes, NO_ROUTE),
+        GIANTS' navigation agent, driven by Farmhand. What follows checks the pose it reached."""
+        try:
+            self.world.farm_drive(vehicle_id, target, owner, 0.0, yaw=yaw)
+        except StepFailed as failure:
+            if failure.code != "NO_ROUTE" or not hasattr(self.world, "navigate"):
+                raise
+            log.info("approach %s: %s by Farmhand's own drive; GIANTS' navigation", vehicle_id, failure.code)
+            self.world.navigate(vehicle_id, Pose(target[0], target[1], yaw), owner)
+
     MOUNT_BEHIND_M = 7.0     # the machine lines up this far behind where it sets its implement down on a carrier
 
     @staticmethod
@@ -1232,7 +1244,7 @@ class Executor:
             enter("APPROACH")
             moved = True
             ahead = (root.x - vehicle.position[0]) * fx + (root.z - vehicle.position[1]) * fz
-            self.world.farm_drive(vehicle.id, (back.x - hx * ahead, back.z - hz * ahead), owner, 0.0, yaw=back.yaw)
+            self._line_up(vehicle.id, (back.x - hx * ahead, back.z - hz * ahead), back.yaw, owner)
             enter("MOUNT")
             self.world.mount(vehicle.id, carrier.id, owner)
             enter("VERIFY")

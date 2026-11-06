@@ -1507,6 +1507,9 @@ class HarvestTests(unittest.TestCase):
             def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None, via=None):
                 raise StepFailed("NO_ROUTE")
 
+            def navigate(self, vehicle_id, pose, owner):
+                raise StepFailed("NAVIGATE_BLOCKED_AT_START")
+
             def place(self, implement_id, owner, at):
                 with self._lock:
                     self._owned(implement_id, owner)
@@ -1541,6 +1544,9 @@ class HarvestTests(unittest.TestCase):
             def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None, via=None):
                 raise StepFailed("NO_ROUTE")
 
+            def navigate(self, vehicle_id, pose, owner):
+                raise StepFailed("NAVIGATE_BLOCKED_AT_START")
+
             def place(self, implement_id, owner, at):
                 raise AssertionError("placed without teleport recovery")
 
@@ -1552,8 +1558,34 @@ class HarvestTests(unittest.TestCase):
         self.assertEqual(executor.execute(dict(base, request_id="r1", task="detach_pair")).status, "COMPLETE")
         world.items["c-1"] = replace(world.items["c-1"], position=(100.0, 80.0), ai_root=Pose(100.0, 80.0, 0.0))
         on = executor.execute(dict(base, request_id="r2", task="hitch_pair"))
-        self.assertEqual((on.status, on.reason), ("FAILED", "NO_ROUTE"), on)
+        self.assertEqual((on.status, on.reason), ("FAILED", "NAVIGATE_BLOCKED_AT_START"), on)
         self.assertIsNone(world.items["h-1"].attached_to)
+
+    def test_an_approach_farmhands_search_cannot_find_goes_by_giants_navigation(self):
+        # Live 2026-11-06: the MF 8570 beside its header trailer on a field-edge grade, NO_ROUTE.
+        went = []
+
+        class Searchless(MockWorld):
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None, via=None):
+                raise StepFailed("NO_ROUTE")
+
+            def navigate(self, vehicle_id, pose, owner):
+                went.append(pose)
+                with self._lock:
+                    v = self._owned(vehicle_id, owner)
+                    self.items[vehicle_id] = replace(v, position=(pose.x, pose.z), heading=pose.yaw,
+                                                     ai_root=Pose(pose.x, pose.z, pose.yaw))
+
+        combine, header = self.combine()
+        world = Searchless([combine, replace(header, required_pto_torque=0.0)], PLAYERS,
+                           fields=(field(7, 0.4, self.READY),), farm=FARM)
+        executor = Executor(world)
+        base = {"version": 1, "farm_id": "farm-a", "target": "player_at_acceptance", "implement": "cutter"}
+        self.assertEqual(executor.execute(dict(base, request_id="r1", task="detach_pair")).status, "COMPLETE")
+        world.items["c-1"] = replace(world.items["c-1"], position=(100.0, 80.0), ai_root=Pose(100.0, 80.0, 0.0))
+        on = executor.execute(dict(base, request_id="r2", task="hitch_pair"))
+        self.assertEqual((on.status, on.reason), ("COMPLETE", "HITCH_OBSERVED"), on)
+        self.assertAlmostEqual(went[0].yaw, 0.0)
 
     def test_the_combine_harvests_and_the_field_shows_it_cut(self):
         world = MockWorld(self.combine(), PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
