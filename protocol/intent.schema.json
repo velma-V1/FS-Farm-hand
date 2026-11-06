@@ -131,6 +131,8 @@
           "options": {"description": "Other configuration choices by their words ('25m unrealistic', '25 mph').", "type": "array", "minItems": 1, "maxItems": 4, "items": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"}}
       }
     },
+    "player_combine": {"description": "escort: the combine the player drives (only watched, never driven).", "type": "boolean"},
+    "once": {"description": "escort: done when the combine's tank is empty (a one-time unloading).", "type": "boolean"},
     "cart_start": {"description": "escort: the combine's tank share before the cart comes alongside (it shadows the combine until then).", "type": "number", "minimum": 0, "maximum": 1},
     "remember_route": {"description": "move_pair: the journey's observed line kept as a learned route.", "type": "boolean"},
     "tractor_name": {"description": "fetch_pair, hitch_pair: the towing vehicle must have all these words in its name ('with the gmc').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},

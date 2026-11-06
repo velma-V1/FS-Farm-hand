@@ -53,9 +53,10 @@ w.combineCrop = o.combineCrop or 7
 function combine:getFillUnitFillType() return w.combineCrop end
 function combine:getFillUnitFillLevel() return w.grain end
 function combine:getFillUnitCapacity() return o.capacity or 10000 end
-function combine:getLastSpeed() return w.combineAi and w.combineKmh or 0 end
+function combine:getLastSpeed() return (w.combineAi or w.playerDriving == true) and w.combineKmh or 0 end
 function combine:getIsAIActive() return w.combineAi end
-function combine:getIsTurnedOn() return w.combineAi end
+function combine:getIsTurnedOn() return w.combineAi or w.playerDriving == true end
+function combine:getIsEntered() return w.playerDriving == true end
 function combine:getAIFieldWorkerIsTurning() return w.turning end
 local header = nil
 if o.header then
@@ -274,6 +275,24 @@ class LuaEscortTests(unittest.TestCase):
         self.assertEqual(s.alongsideMs, 0)
         self.assertEqual(s.brakes.close, 0, self.hitch.describeEscort(s))
         self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
+
+    def test_the_players_combine_is_served_without_its_helper_and_once_ends_when_empty(self):
+        # The owner, 2026-11-06: "come unload my combine" - the player drives it, Farmhand only watches it.
+        w = self.world(ai=False)
+        w.playerDriving = True
+        w.combineKmh = 8
+        args = self.W.args(w, self.lua.table(combine=w.combine))
+        args.playerCombine, args.once = True, True
+        out = self.hitch.newEscort(w.env, args)
+        s = out[0] if isinstance(out, tuple) else out
+        self.assertIsNotNone(s, out)
+        code, _ = self.runner(w, s, 300 * 20, None)
+        self.assertGreater(s.alongsideMs, 0, self.hitch.describeEscort(s))
+        self.assertIn(code, ("COMBINE_EMPTIED", "TRAILER_FULL"), self.hitch.describeEscort(s))
+        w2 = self.world(ai=False)
+        args = self.W.args(w2, self.lua.table(combine=w2.combine))
+        args.playerCombine = True
+        self.assertEqual(self.hitch.newEscort(w2.env, args)[1], "PLAYER_NOT_IN_COMBINE")   # nobody in it
 
     def test_the_cover_lets_grain_in_only_while_the_combine_moves_threshing_beside_it(self):
         # Live 2026-11-06, field 91: 1082 l went in while both stood at a headland (the owner: never standing).

@@ -4152,7 +4152,9 @@ Hitch.ESCORT = {
                                 -- 0.8 m no spot kept the cart its clearance from the header, NO_SAFE_SLOT)
     triggerMarginM = 0.3,       -- the folded pipe's trigger point this far inside it (GIANTS swings the pipe out)
     fullShare = 0.98,
-    idleAiMs = 3000,            -- the combine's helper off this long: COMBINE_STOPPED
+    idleAiMs = 3000,            -- the combine's helper off (the player out of it) this long: COMBINE_STOPPED (PLAYER_LEFT)
+    playerTurnDegS = 6,         -- a player's combine turning this fast: no slot beside it
+    emptyShare = 0.03,          -- a one-time unloading is done with the tank this empty
     noSlotMs = 30000,           -- no clear slot beside the combine this long: NO_SAFE_SLOT
     stallMs = 30000, stallM = 1.0,
     checkMs = 250, traceMs = 1000, traceMax = 900,
@@ -4285,6 +4287,7 @@ function Hitch.newEscort(env, args)
     local s = { tractor = args.tractor, combine = args.combine, wagon = args.combine, farmId = args.farmId,
                 isReserved = args.isReserved, maxSpeedKmh = E.maxSpeedKmh, timeoutMs = E.timeoutMs,
                 startShare = tonumber(args.startShare) or 0,
+                playerCombine = args.playerCombine == true, once = args.once == true,
                 pushedOnly = true, elapsed = 0, result = nil, mode = "follow", trail = {}, trailIdx = 1,
                 checkAt = 0, aiOffMs = 0, steadyMs = 0, noSlotMs = 0, stallMs = 0, rows = {}, traceAt = 0,
                 moved = 0, movingL = 0, standingL = 0, alongsideMs = 0, pipeOutMovingMs = 0,
@@ -4301,7 +4304,11 @@ function Hitch.newEscort(env, args)
             return "NO_PIPE"
         end
         s.trigger = pipe.unloadingTriggers[1].node
-        if combine:getIsAIActive() ~= true then return "COMBINE_NOT_HARVESTING" end
+        -- The player's own combine (the owner, 2026-11-06: "come unload my combine"): never taken over, only
+        -- watched; else GIANTS' helper must be harvesting with it.
+        if s.playerCombine then
+            if type(combine.getIsEntered) ~= "function" or combine:getIsEntered() ~= true then return "PLAYER_NOT_IN_COMBINE" end
+        elseif combine:getIsAIActive() ~= true then return "COMBINE_NOT_HARVESTING" end
         local units = rigUnits(tractor)
         if #units ~= 2 then return "ESCORT_NOT_ONE_TRAILER" end
         s.units, s.trailer = units, units[2]
@@ -4395,19 +4402,32 @@ local function escortDrive(env, s, dt)
     if #units ~= 2 or units[2] ~= s.trailer then return "RIG_CHANGED" end
     if s.elapsed > s.timeoutMs then return "TIMEOUT" end
     local combine = s.combine
-    if combine:getIsAIActive() ~= true then
+    if s.playerCombine then
+        -- The player left the combine: nothing more to serve.
+        if combine:getIsEntered() ~= true then
+            s.aiOffMs = s.aiOffMs + dt
+            if s.aiOffMs >= E.idleAiMs then return "PLAYER_LEFT" end
+        else
+            s.aiOffMs = 0
+        end
+    elseif combine:getIsAIActive() ~= true then
         s.aiOffMs = s.aiOffMs + dt
         if s.aiOffMs >= E.idleAiMs then return "COMBINE_STOPPED" end
     else
         s.aiOffMs = 0
     end
     local cx, cz = combineFrame(env, s)
+    -- A player's turn is seen, not told (no helper reports it): its heading changing faster than playerTurnDegS.
+    local yawRate = 0
+    if s.prevYaw ~= nil and dt > 0 then yawRate = math.abs(angleDiff(s.yaw, s.prevYaw)) / dt * 1000 end
+    s.prevYaw = s.yaw
     local vc = math.abs(combine:getLastSpeed() or 0)
     assert(finite(vc))
     local root = combine.rootVehicle or combine
     -- Turning, reversing, or not threshing (its helper still driving to the field, or stopped full):
     -- no slot beside it, the cart behind it.
     local turning = (type(root.getAIFieldWorkerIsTurning) == "function" and root:getAIFieldWorkerIsTurning() == true)
+        or (s.playerCombine and yawRate > math.rad(E.playerTurnDegS))
         or (combine.movingDirection ~= nil and combine.movingDirection < 0)
         or (type(combine.getIsTurnedOn) == "function" and combine:getIsTurnedOn() ~= true)
     if math.abs(angleDiff(s.yaw, s.lineYaw)) > math.rad(E.lineDeg) or turning then
@@ -4447,6 +4467,8 @@ local function escortDrive(env, s, dt)
     end
     s.lastLevel = level
     if level >= E.fullShare * s.capacity then return "TRAILER_FULL" end
+    -- Asked once ("come unload my combine"): done when what it held came over and its tank is empty.
+    if s.once and (s.harvestingL or 0) + s.movingL > 0 and (s.tankShare or 1) < E.emptyShare then return "COMBINE_EMPTIED" end
     local node = s.tractor:getAISteeringNode()
     local x, wy, z = world(env, node)
     local ta, tl = inFrame(s, x, z)

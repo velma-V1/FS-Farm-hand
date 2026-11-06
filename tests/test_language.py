@@ -416,3 +416,19 @@ class SafetyWordingTests(unittest.TestCase):
         self.assertNotEqual(self.command("combine field 4 and 5"), "join_fields")
         self.assertEqual(self.command("combine field 4 with field 5"), "join_fields")
         self.assertEqual(self.command("merge field 4 and 5"), "join_fields")
+
+
+class PlayerCombineCartTests(unittest.TestCase):
+    """The owner, 2026-11-06: a grain cart for the combine the player drives, once or for as long as asked."""
+
+    def test_the_players_requests(self):
+        from companion.language import RuleInterpreter
+        said = RuleInterpreter().interpret
+        once = {"version": 1, "command": "unload_combine"}
+        self.assertEqual(said("Farmhand, bring me a grain trailer."), once)
+        self.assertEqual(said("Send a tractor and grain cart to my field."), once)
+        self.assertEqual(said("Come unload my combine."), once)
+        self.assertEqual(said("Follow me and unload while I'm harvesting."), {**once, "keep": True})
+        self.assertEqual(said("Take this grain to the silo and come back."),
+                         {**once, "keep": True, "destination": "store"})
+        self.assertEqual(said("follow me")["command"], "follow_me")

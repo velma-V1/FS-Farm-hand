@@ -864,6 +864,31 @@ def teleport(words: str) -> dict | None:
             "target": {"type": "field_entrance", "field": int(match["field"])}}
 
 
+# The player's own combine served by a grain cart (the owner, 2026-11-06). Once: "bring me a grain trailer",
+# "come unload my combine". Keep at it: "follow me and unload while i'm harvesting", "keep unloading me";
+# with where full loads go: "take this grain to the silo and come back".
+_CART_WORDS = r"(?:grain\s+)?(?:trailer|cart|wagon|tipper)"
+_PLAYER_CART_ONCE = re.compile(rf"^(?:please\s+)?(?:(?:bring|send)\s+(?:me\s+)?(?:a\s+|the\s+)?(?:tractor\s+and\s+)?(?:a\s+|the\s+)?{_CART_WORDS}"
+                               rf"(?:\s+(?:to\s+(?:me|my\s+(?:field|combine)|the\s+combine)))?"
+                               r"|come\s+(?:and\s+)?unload\s+(?:me|my\s+(?:combine|harvester)))(?:\s+please)?$")
+_PLAYER_CART_KEEP = re.compile(r"^(?:please\s+)?(?:follow\s+me\s+and\s+unload(?:\s+me)?|keep\s+unloading(?:\s+me|\s+my\s+combine)?"
+                               r"|unload\s+me)(?:\s+(?:while|as)\s+i\s*(?:m|am)?\s+(?:harvesting|harvest|combining|cutting))?$")
+_PLAYER_CART_DELIVER = re.compile(r"^(?:please\s+)?take\s+(?:this|the|my)\s+(?:grain|crop|load)\s+to\s+(?:the\s+)?"
+                                  r"(?P<where>silo|storage|farm|sell\s+point|buyer|market)\s+and\s+come\s+back$")
+
+
+def player_cart(words: str) -> dict | None:
+    if _PLAYER_CART_ONCE.match(words):
+        return {"version": 1, "command": "unload_combine"}
+    if _PLAYER_CART_KEEP.match(words):
+        return {"version": 1, "command": "unload_combine", "keep": True}
+    deliver = _PLAYER_CART_DELIVER.match(words)
+    if deliver:
+        where = "store" if deliver["where"] in ("silo", "storage", "farm") else "sell"
+        return {"version": 1, "command": "unload_combine", "keep": True, "destination": where}
+    return None
+
+
 def route(words: str) -> dict | None:
     for action, rule in _ROUTE_RULES:
         match = rule.match(words)
@@ -885,7 +910,7 @@ class RuleInterpreter:
         if not isinstance(text, str):
             return None
         words = normalize(text)
-        learned = route(words) or teleport(words)
+        learned = route(words) or teleport(words) or player_cart(words)
         if learned is not None:
             return learned
         for rule, key in ((_CART_START, "cart_start"), (_STOP_AT, "stop_at")):

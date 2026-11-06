@@ -276,7 +276,8 @@ def work_for(proposal: dict) -> dict | None:
     if command == "contract":
         return {"field": proposal.get("field"), "kind": proposal.get("kind")}
     if command == "unload_combine":
-        return {"field": proposal.get("field")}
+        return {"field": proposal.get("field"), "keep": proposal.get("keep", False),
+                "destination": proposal.get("destination")}
     if command == "land":
         return {"field": proposal["field"], "land_action": proposal["land_action"]}
     if command == "join_fields":
@@ -2101,6 +2102,9 @@ class Coordinator:
             harvesting = [w for w in self.workers if w.operation == "harvest"]
         fields = sorted({w.field for w in harvesting})
         field_id = work.get("field")
+        mine = [i for i in self.world.snapshot() if i.category == "harvester" and i.ridden and not i.busy]
+        if mine and field_id is None:
+            return self._player_cart(job, cancel, entered, work)
         if not fields:
             return self._service_combine(job, cancel, entered)
         if field_id is None and len(fields) != 1:
@@ -2126,6 +2130,31 @@ class Coordinator:
             return Result("UNVERIFIED", "STOP_NOT_CONFIRMED")
         return self._combine_full(job, cancel, entered, {"field": field_id, "destination": worker.destination,
                                                          "combine": combine.name if combine is not None else None})
+
+    def _player_cart(self, job: Job, cancel: threading.Event, entered, work: dict) -> Result:
+        """The combine the player drives unloaded on the move (the owner, 2026-11-06: "come unload my combine",
+        "follow me and unload while I'm harvesting"): never taken over, only watched. Asked once, it ends with
+        the tank emptied; asked to keep at it, a full cart takes its load where it was told (else says so)
+        and comes back, until the player leaves the combine or says stop."""
+        keep = bool(work.get("keep"))
+        destination = self._destination(work.get("destination"))
+        result = Result("BLOCKED", "PLAYER_NOT_IN_COMBINE")
+        for n in range(self.GRAIN_CART_LOADS):
+            if cancel.is_set():
+                return Result("CANCELLED", "CANCELLED_BY_REQUESTER")
+            result = self._execute(job, cancel, entered, f"pc{n}", task="escort", player_combine=True, once=not keep,
+                                   cart_start=0.0)
+            if result.status != "COMPLETE" or not keep or result.reason != "CART_FULL":
+                return result
+            cart = next((i for i in self.world.snapshot() if result.equipment_ids and i.id == result.equipment_ids[0]), None)
+            if not destination or cart is None:
+                self.notify("GRAIN_CART_FULL", job.spoken)
+                return result
+            delivered = self._execute(job, cancel, entered, f"pd{n}", task=destination, tractor_name=_words(cart.name))
+            self.notify(result_notice(delivered.status, delivered.reason, f"COMPLETE_{destination.upper()}"), job.spoken)
+            if delivered.status != "COMPLETE":
+                return delivered
+        return result
 
     def _pause_worker(self, w: Worker) -> bool:
         """A harvesting helper stopped and released, no longer watched (it is started again)."""

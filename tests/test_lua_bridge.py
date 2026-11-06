@@ -1671,7 +1671,7 @@ class LuaBridgeTests(unittest.TestCase):
             Hitch.abort = function(env, s, code) table.insert(w.calls, "abort:" .. code) end
         """, self.w, self.hitch)
         self.adopt()
-        self.send(1, "escort", {"tractor": 11, "wagon": 12})
+        self.send(1, "escort", {"tractor": 11, "wagon": 12, "area": 0.0, "direction": 0})
         self.assertEqual(self.results(1), [(1, "ACCEPTED", "ACCEPTED")])
         self.send(2, "navigate", {**self.POSE, "tractor": 11})
         self.assertIn((2, "REJECTED", "BUSY"), self.results())

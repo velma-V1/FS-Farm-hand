@@ -1843,6 +1843,7 @@ function starters.escort(env, spec)
     local session, reason, refused = Bridge.Hitch.newEscort(env, {
         tractor = spec.tractor, combine = spec.wagon, farmId = spec.farmId, isReserved = spec.owned,
         startShare = spec.area,
+        playerCombine = spec.direction == 1 or spec.direction == 3, once = spec.direction == 2 or spec.direction == 3,
     })
     if session == nil then
         log("escort refused %s: %s", tostring(reason), Bridge.Hitch.describeEscort(refused))
@@ -1870,7 +1871,8 @@ function steppers.escort(env, task, dt)
             end
         end
     end
-    if code ~= "TRAILER_FULL" and code ~= "COMBINE_STOPPED" and code ~= "TRAILER_WRONG_CROP" then
+    if code ~= "TRAILER_FULL" and code ~= "COMBINE_STOPPED" and code ~= "TRAILER_WRONG_CROP"
+            and code ~= "COMBINE_EMPTIED" and code ~= "PLAYER_LEFT" then
         return code == "UNKNOWN_OBSERVATION" and "UNVERIFIED" or "FAILED", code
     end
     return settle(task, code)
@@ -4163,6 +4165,9 @@ Bridge.REASONS = {
     NO_GOTO_JOB = "the game's driver is not available",
     NO_HITCH_OPTION = "that model has no such hitch in the store",
     NO_OPEN_SPOT = "there is no open ground nearby",
+    COMBINE_EMPTIED = "the combine's tank was emptied into the cart",
+    PLAYER_LEFT = "you left the combine, so unloading it ended",
+    PLAYER_NOT_IN_COMBINE = "you are not in a combine to unload",
     NOTHING_ON_A_CARRIER = "no header is on a trailer for that machine",
     NO_CARRIER_FOR_IMPLEMENT = "no trailer here takes that implement",
     NOT_A_CARRIER = "that trailer has nothing to lock an implement on",

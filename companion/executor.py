@@ -2420,9 +2420,11 @@ class Executor:
             enter("FIND")
             items = sorted(self.world.snapshot(), key=lambda i: i.id)
             observed = {i.id: i for i in items}
+            player = bool(command.get("player_combine"))
             combines = [c for c in items if c.category == "harvester" and c.pipe is not None and c.farm_id == farm_id
-                        and c.busy and c.busy_reason == "AI_ACTIVE" and valid_position(c.position)]
-            field = command.get("field")
+                        and valid_position(c.position)
+                        and ((c.ridden and not c.busy) if player else (c.busy and c.busy_reason == "AI_ACTIVE"))]
+            field = None if player else command.get("field")
             place = next((p for p in self.world.field_places() if p.id == f"field-{field}"), None) if field else None
             if place is not None and valid_position(place.position):
                 combines.sort(key=lambda c: (math.dist(c.position, place.position), c.id))
@@ -2486,7 +2488,8 @@ class Executor:
             enter("ESCORT")
             moved = True
             try:
-                done = self.world.escort(tractor.id, combine.id, owner, float(command.get("cart_start") or 0.0))
+                done = self.world.escort(tractor.id, combine.id, owner, float(command.get("cart_start") or 0.0),
+                                         player=player, once=bool(command.get("once")))
             except StepFailed as failure:
                 # The helper ended and the watcher's stop of the combine ended the escort with it.
                 now = next((i for i in self.world.snapshot() if i.id == combine.id), None)
@@ -2499,7 +2502,8 @@ class Executor:
             log.info("ESCORT %s: trailer %.0f -> %.0f l", done, before, before + got)
             if got <= 0 and done == "TRAILER_FULL":
                 raise ObservationMismatch("GRAIN_NOT_MOVED")
-            status, reason = "COMPLETE", {"TRAILER_FULL": "CART_FULL", "TRAILER_WRONG_CROP": "CART_WRONG_CROP"}.get(
+            status, reason = "COMPLETE", {"TRAILER_FULL": "CART_FULL", "TRAILER_WRONG_CROP": "CART_WRONG_CROP",
+                                          "COMBINE_EMPTIED": "COMBINE_EMPTIED", "PLAYER_LEFT": "PLAYER_LEFT"}.get(
                 done, "HARVEST_ENDED" if got > 0 else "HARVEST_ENDED_NOTHING_TAKEN")
         except Cancelled:
             status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"

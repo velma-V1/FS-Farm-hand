@@ -637,12 +637,14 @@ class FS25World:
         self._reserved(vehicle_id, owner)
         return self._run("reach", tractor=int(vehicle_id), x=pose.x, z=pose.z, yaw=pose.yaw, area=float(width))
 
-    def escort(self, tractor_id: str, combine_id: str, owner: str, start: float = 0.0) -> str:
+    def escort(self, tractor_id: str, combine_id: str, owner: str, start: float = 0.0, player: bool = False,
+               once: bool = False) -> str:
         """ESCORT: the reserved tractor's trailer held under the pipe of the combine harvesting
         under GIANTS' helper, at its speed, until the trailer is full or the helper ends
         (mod/FarmhandBridge.lua starters.escort). The combine stays its helper's; only read here."""
         self._reserved(tractor_id, owner)
-        return self._run("escort", tractor=int(tractor_id), wagon=int(combine_id), area=float(start))
+        return self._run("escort", tractor=int(tractor_id), wagon=int(combine_id), area=float(start),
+                         direction=(1 if player else 0) + (2 if once else 0))
 
     def backoff(self, tractor_id: str, trailer_id: str, owner: str) -> str:
         """BACKOFF (AGENTS.md exception 5): the reserved tractor straight back from the reserved

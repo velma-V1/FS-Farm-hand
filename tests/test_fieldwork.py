@@ -2443,9 +2443,9 @@ class UnloadAndSellTests(unittest.TestCase):
         starts = []
         escort = world.escort
 
-        def recorded(tractor_id, combine_id, owner, start=0.0):
+        def recorded(tractor_id, combine_id, owner, start=0.0, **flags):
             starts.append(start)
-            return escort(tractor_id, combine_id, owner, start)
+            return escort(tractor_id, combine_id, owner, start, **flags)
 
         world.escort = recorded
         c, notices = coordinated(world)
