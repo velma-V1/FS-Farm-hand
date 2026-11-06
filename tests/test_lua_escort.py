@@ -55,6 +55,7 @@ function combine:getFillUnitFillLevel() return w.grain end
 function combine:getFillUnitCapacity() return o.capacity or 10000 end
 function combine:getLastSpeed() return w.combineAi and w.combineKmh or 0 end
 function combine:getIsAIActive() return w.combineAi end
+function combine:getIsTurnedOn() return w.combineAi end
 function combine:getAIFieldWorkerIsTurning() return w.turning end
 local header = nil
 if o.header then
@@ -273,6 +274,23 @@ class LuaEscortTests(unittest.TestCase):
         self.assertEqual(s.alongsideMs, 0)
         self.assertEqual(s.brakes.close, 0, self.hitch.describeEscort(s))
         self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
+
+    def test_the_cover_lets_grain_in_only_while_the_combine_moves_threshing_beside_it(self):
+        # Live 2026-11-06, field 91: 1082 l went in while both stood at a headland (the owner: never standing).
+        w = self.world()
+        covers = self.lua.eval("""function(t) t.spec_cover = { hasCovers = true, state = 1 }; t.sets = {}
+            function t:setCoverState(v) self.spec_cover.state = v; self.sets[#self.sets + 1] = v end end""")
+        s, why, _ = self.start(w)
+        self.assertIsNotNone(s, why)
+        covers(s.trailer)
+        self.runner(w, s, 120 * 20, None)
+        self.assertGreater(s.alongsideMs, 0, self.hitch.describeEscort(s))
+        self.assertEqual(s.trailer.spec_cover.state, 1)                  # alongside, moving: open
+        w.combineKmh = 0                                                 # it stops at a headland
+        self.runner(w, s, 10, None)
+        self.assertEqual(s.trailer.spec_cover.state, 0)                  # closed: GIANTS discharges into nothing
+        self.hitch.escortRestore(s)
+        self.assertEqual(s.trailer.spec_cover.state, 1)                  # as it was found
 
     def test_it_shadows_the_combine_and_comes_alongside_only_from_the_tank_share_asked(self):
         # The owner, 2026-11-06: the cart starts right after the combine and unloads from 60-70 % (test 10 %).

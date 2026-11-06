@@ -4417,6 +4417,26 @@ local function escortDrive(env, s, dt)
     end
     trailAdd(s, cx, cz)
     -- The grain: what came into the trailer, and how much of it while the combine moved.
+    -- Grain only while the combine moves threshing on its lane with the cart alongside (the owner, 2026-11-06:
+    -- no unloading without movement; live, field 91: 1082 l went in while both stood at a headland). GIANTS'
+    -- own control: a closed cover refuses the combine's discharge (Cover:getFillUnitSupportsToolType), so
+    -- nothing has to be driven near the header to stop it.
+    local threshingNow = type(combine.getIsTurnedOn) == "function" and combine:getIsTurnedOn() == true
+    local transfer = s.mode == "alongside" and vc > 1.5 and threshingNow and not turning
+    local cover = s.trailer.spec_cover
+    if cover ~= nil and cover.hasCovers and type(s.trailer.setCoverState) == "function" then
+        s.coverStart = s.coverStart or cover.state
+        local open = s.coverOpen or (cover.state > 0 and cover.state or 1)
+        s.coverOpen = open
+        local want = transfer and open or 0
+        if cover.state ~= want and (type(s.trailer.getIsNextCoverStateAllowed) ~= "function"
+                                    or s.trailer:getIsNextCoverStateAllowed(want)) then
+            pcall(s.trailer.setCoverState, s.trailer, want)
+            s.coverChanges = (s.coverChanges or 0) + 1
+        end
+    else
+        s.noCover = true
+    end
     local level = cartLevel(s.trailer)
     if level > s.lastLevel then
         if vc > 1.5 then s.movingL = s.movingL + (level - s.lastLevel) else s.standingL = s.standingL + (level - s.lastLevel) end
@@ -4548,8 +4568,17 @@ function Hitch.escortStep(env, s, dt)
     if code ~= "CONTINUE" then
         s.result = code
         Hitch.halt(env, s, dt)
+        Hitch.escortRestore(s)
     end
     return code
+end
+
+-- The cart's cover back as the escort found it (every end, STOP's abort too).
+function Hitch.escortRestore(s)
+    if s ~= nil and s.coverStart ~= nil and s.trailer ~= nil and type(s.trailer.setCoverState) == "function" then
+        pcall(s.trailer.setCoverState, s.trailer, s.coverStart)
+        s.coverStart = nil
+    end
 end
 
 function Hitch.describeEscort(s)
@@ -4558,11 +4587,12 @@ function Hitch.describeEscort(s)
     local b = s.brakes or {}
     return string.format("mode=%s slot=(%s,%s,%s) target=(%s,%s) trailer=(%s,%s) tractor=(%s,%s) err=%s vc=%s v=%s "
         .. "desired=%s turning=%s steady=%dms alongside=%dms pipeOutMoving=%dms grain=%s->%s moving=%s harvesting=%s standing=%s "
-        .. "brakes=close:%d,person:%d,vehicle:%d,gap:%d,slow:%d t=%dms%s",
+        .. "brakes=close:%d,person:%d,vehicle:%d,gap:%d,slow:%d cover=%s t=%dms%s",
         tostring(s.mode), f(s.slotA), f(s.slotL), tostring(s.slotSource), f(s.tA), f(s.tL), f(s.ma), f(s.ml),
         f(s.ta), f(s.tl), f(s.err), f(s.vc), f(s.measuredKmh), f(s.desired), tostring(s.turning), s.steadyMs or 0,
         s.alongsideMs or 0, s.pipeOutMovingMs or 0, f(s.startLevel), f(s.lastLevel), f(s.movingL), f(s.harvestingL or 0), f(s.standingL),
-        b.close or 0, b.person or 0, b.vehicle or 0, b.gap or 0, b.slow or 0, s.elapsed or 0,
+        b.close or 0, b.person or 0, b.vehicle or 0, b.gap or 0, b.slow or 0,
+        s.noCover and "none" or tostring(s.coverChanges or 0), s.elapsed or 0,
         s.error and (" error=" .. s.error) or "")
 end
 

@@ -1878,6 +1878,7 @@ end
 
 function aborts.escort(env, task)
     abortMotion("escort", env, task, Bridge.Hitch.describeEscort)
+    pcall(Bridge.Hitch.escortRestore, task.session)
 end
 
 -- ----------------------------------------------------------------- follow
