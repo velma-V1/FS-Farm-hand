@@ -1163,6 +1163,7 @@ class Executor:
         except OSError as error:
             log.info("front attachments not saved: %s", error)
 
+    LEAVE_IMPLEMENT_M = 6.0  # a machine against a loose implement backs this far off it before a hitch
     MOUNT_BEHIND_M = 7.0     # the machine lines up this far behind where it sets its implement down on a carrier
 
     @staticmethod
@@ -3407,6 +3408,20 @@ class Executor:
                 # straight after Farmhand's own detach may Farmhand pull it clear:
                 # refused before any motion, never a GOTO that cannot start.
                 tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
+                if against_loose_implement(tractor, [i for i in self.world.snapshot() if i.id != ids[1]]) \
+                        and self._farm_drives() and tractor.heading is not None:
+                    # Farmhand's own drive leaves what it stands against by a measured reverse (Drive.begin:
+                    # contact first; live 40d0c96fdc20405a-1: the MF 8570's front still at the header just
+                    # set down on the very trailer it was to tow): straight back, then the plan as before.
+                    back = (tractor.position[0] - math.sin(tractor.heading) * self.LEAVE_IMPLEMENT_M,
+                            tractor.position[1] - math.cos(tractor.heading) * self.LEAVE_IMPLEMENT_M)
+                    log.info("hitch: %s stands against a loose implement; backing off %.0f m first", tractor.id,
+                             self.LEAVE_IMPLEMENT_M)
+                    try:
+                        self.world.farm_drive(tractor.id, back, owner, 2.0, yaw=tractor.heading)
+                    except StepFailed as failure:
+                        log.info("hitch: backing off: %s", failure.code)
+                    tractor, _ = self._hitch_state(ids, farm_id, owner, plan)
                 if against_loose_implement(tractor, [i for i in self.world.snapshot() if i.id != ids[1]]):
                     raise _Blocked("AGAINST_IMPLEMENT")
                 self._tailgate_down(tractor, plan.tractor_joint, owner)
