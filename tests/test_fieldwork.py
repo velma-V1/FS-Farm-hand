@@ -1015,17 +1015,21 @@ class WorkerTests(unittest.TestCase):
         c, notices = coordinated(world)
         w = Worker("worker-a", "t-1", 7, "plow", [{"task": "detach_pair"}])
         with mock.patch.object(world, "stop", return_value=True), mock.patch.object(world, "release"):
+            c.workers.append(w)
             c._worker_ended(w)
             self.assertEqual([x["job"] for x in c._after], ["clear_worker", "field_work"])
             self.assertEqual(c._after[1]["work"]["operations"], ["plow"])
             self.assertNotIn([{"task": "detach_pair"}], c._after)
             c._after.clear()
+            c.workers.append(w)
             c._worker_ended(w)
             self.assertEqual([x["job"] for x in c._after], ["clear_worker", "field_work"])
             c._after.clear()
+            c.workers.append(w)
             c._worker_ended(w)
             self.assertEqual([x["job"] for x in c._after], ["clear_worker", "field_work"])
             c._after.clear()
+            c.workers.append(w)
             c._worker_ended(w)
         self.assertNotIn("field_work", [x.get("job") for x in c._after if isinstance(x, dict)])
         self.assertIn("WORKER_STOPPED", notices)
@@ -1034,8 +1038,20 @@ class WorkerTests(unittest.TestCase):
         c._resume_progress.clear()
         world.items["t-1"] = replace(world.items["t-1"], ai_stop="NOT_REACHABLE")
         with mock.patch.object(world, "stop", return_value=True), mock.patch.object(world, "release"):
+            c.workers.append(w)
             c._worker_ended(w)
         self.assertEqual([x["job"] for x in c._after], ["field_work"])
+
+    def test_a_worker_ending_after_stop_queues_nothing(self):
+        from companion.coordinator import Worker
+        world = self.world("plow")
+        world.items["t-1"] = replace(world.items["t-1"], ai_stop="BLOCKED_BY_OBJECT")
+        c, _ = coordinated(world)
+        w = Worker("worker-a", "t-1", 7, "plow", [{"task": "detach_pair"}])
+        # STOP emptied the worker list while the watch was still measuring this worker.
+        with mock.patch.object(world, "stop", return_value=True), mock.patch.object(world, "release"):
+            c._worker_ended(w)
+        self.assertEqual(c._after, [])
 
     def test_worker_watch_survives_a_stale_game_snapshot(self):
         from companion.coordinator import Coordinator

@@ -894,10 +894,16 @@ class Coordinator:
             log.info("worker %s: not released (%s)", w.tractor, getattr(error, "code", error))
             return                                 # watched again next round
         with self._lock:
-            if w in self.workers:
+            ours = w in self.workers
+            if ours:
                 self.workers.remove(w)
             self._blocked_since.pop(w.owner, None)
             self._cleared.discard(w.owner)
+        if not ours:
+            # STOP took it while it was being measured: nothing it would have done next (a
+            # resume, a return, a delivery) is queued after the player's STOP.
+            log.info("worker %s ended after STOP: nothing follows", w.tractor)
+            return
         if w.operation == "collect":
             self._collect_ended(w, done, full)
             return
