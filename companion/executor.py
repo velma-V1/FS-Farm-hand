@@ -1508,6 +1508,18 @@ class Executor:
         z = implement.position[1] + along * hz - lateral * hx
         return Pose(x, z, implement.heading + turn)
 
+    def _on_field(self, position, field) -> bool:
+        """Whether ``position`` lies on ``field``: inside GIANTS' own outline of it (a long field reaches far from
+        its middle: live 2026-11-06, field 91's MF 8570 192 m from it, the helper sent to the middle by a drive
+        GIANTS cannot prepare a half-full combine for), else within half the side of its area's square."""
+        place = next((p for p in self.world.field_places() if p.id == f"field-{field.id}"), None) \
+            if hasattr(self.world, "field_places") else None
+        outline = tuple(place.outline or ()) if place is not None else ()
+        if len(outline) >= 3:
+            from companion.standalone import _inside
+            return _inside(outline, position)
+        return bool(field.area_ha) and math.dist(position, field.center) <= math.sqrt(field.area_ha * 10000.0) / 2
+
     def _to_field(self, tractor, field, ids, owner, enter) -> bool:
         """GIANTS' helper did not start its own drive to the field (NOT_REACHABLE: its
         planner; COULD_NOT_PREPARE: never ready to drive, live 9211b19abaa24cce-3, the combine
@@ -3405,8 +3417,7 @@ class Executor:
                 enter("FIELD_WORK")
                 yaw = math.atan2(field.center[0] - tractor.position[0], field.center[1] - tractor.position[1])
                 start = Pose(field.center[0], field.center[1], yaw)
-                if (field.area_ha and tractor.heading is not None
-                        and math.dist(tractor.position, field.center) <= math.sqrt(field.area_ha * 10000.0) / 2):
+                if tractor.heading is not None and self._on_field(tractor.position, field):
                     # Already on the field (a harvest partly done): on from where it stands, GIANTS'
                     # own default (live bc801c056bac4966-1: the field's point was not_reachable).
                     start = Pose(tractor.position[0], tractor.position[1], tractor.heading)

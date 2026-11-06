@@ -1700,6 +1700,19 @@ class HarvestTests(unittest.TestCase):
             Executor(world).execute(work("harvest"))
             self.assertEqual((world.poses[0].x, world.poses[0].z), expected)
 
+    def test_a_combine_far_down_a_long_field_works_on_from_where_it_stands(self):
+        # Live 2026-11-06, field 91 (4.2 ha, long): the MF 8570 192 m from its middle, yet on it; sent to the
+        # middle, GIANTS' drive could not be prepared for the half-full, unfolded combine (COULD_NOT_PREPARE).
+        class Recording(MockWorld):
+            def fieldwork(self, tractor_id, field_id, pose, owner, area_m2=0.0, seed=None, hand=False):
+                self.poses = getattr(self, "poses", []) + [pose]
+                return super().fieldwork(tractor_id, field_id, pose, owner, area_m2, seed, hand)
+        world = Recording(self.combine(at=(390.0, 300.0)), PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
+        world.mock_field_places = (Destination("field-7", (200.0, 300.0), "field 7",
+                                               ((0.0, 280.0), (400.0, 280.0), (400.0, 320.0), (0.0, 320.0))),)
+        Executor(world).execute(work("harvest"))
+        self.assertEqual((world.poses[0].x, world.poses[0].z), (390.0, 300.0))
+
     def test_a_crop_not_ready_or_no_combine_moves_nothing(self):
         from companion.coordinator import field_steps
         growing = FieldCoverage((("SOWN", 1.0),), (), 4000.0, (("WHEAT", 9),), 9)
