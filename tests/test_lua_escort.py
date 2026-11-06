@@ -65,6 +65,7 @@ function combine:getAttachedImplements() return header and { { object = header }
 local function place()
     local r = combine.rootNode
     local tx, ty, tz = pipeWorld()
+    if o.triggerL then tx, ty, tz = W.env.localToWorld(r, o.triggerL, 4, pipeA) end   -- the folded pipe's trigger
     trigger.x, trigger.y, trigger.z, trigger.yaw = tx, ty, tz, r.yaw
     if header then
         header.rootNode.x, header.rootNode.z = W.env.localToWorld(r, 0, 0, 5.3)
@@ -271,6 +272,23 @@ class LuaEscortTests(unittest.TestCase):
         self.assertEqual(s.alongsideMs, 0)
         self.assertEqual(s.brakes.close, 0, self.hitch.describeEscort(s))
         self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
+
+    def test_the_folded_pipe_aims_the_cart_at_where_the_pipe_was_seen_out(self):
+        # Live 2026-11-06, field 91: the folded pipe's trigger 4.55 m out, inside the MF 8570's 6.8 m header
+        # and its clearance: NO_SAFE_SLOT twice. The pipe-out point the stationary unload saw is used.
+        w = self.world(header=6.8, triggerL=4.5)
+        s, why, _ = self.start(w)
+        self.assertIsNotNone(s, why)
+        code, _ = self.runner(w, s, 120 * 20, None)
+        self.assertEqual(code, "NO_SAFE_SLOT", self.hitch.describeEscort(s))       # nothing learned yet
+        w = self.world(header=6.8, triggerL=4.5)
+        s, why, _ = self.start(w)
+        self.assertIsNotNone(s, why)
+        w.pipeOut = False
+        self.hitch.pipeOut[w.combine] = self.lua.table(a=-1.0, l=6.5)           # seen out at a stationary unload
+        code, _ = self.runner(w, s, 120 * 20, lambda *_: s.alongsideMs > 3000)
+        self.assertGreater(s.alongsideMs, 3000, self.hitch.describeEscort(s))
+        self.assertEqual(s.slotSource, "learned")
 
     def test_once_the_combine_holds_a_crop_the_trailer_cannot_take_it_stops_and_says_so(self):
         # Live, save 1: the MF 8570 held canola from field 5, sent to the oats of field 90: the

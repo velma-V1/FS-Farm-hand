@@ -3865,6 +3865,12 @@ Hitch.ALONGSIDE = {
     minLookaheadM = 2, reactionS = 1, decelMs2 = 1, movedM = 0.25,
 }
 
+-- Where each combine's unfolded pipe discharges, in its root's frame (ahead, to its +l side), learned
+-- whenever its pipe is seen out (an overload, a pipe-out): GIANTS' harvesting helper keeps the pipe folded
+-- until a trailer is under it, so a moving escort aims at the learned point (live 2026-11-06, field 91:
+-- the folded pipe's trigger 4.55 m out, inside the MF 8570's 6.8 m header plus clearance: NO_SAFE_SLOT).
+Hitch.pipeOut = setmetatable({}, { __mode = "k" })
+
 local function pipePoint(env, combine)
     local spec = combine.spec_pipe
     assert(type(spec) == "table" and type(spec.unloadingStates) == "table")
@@ -3873,6 +3879,14 @@ local function pipePoint(env, combine)
     assert(node ~= nil and node.node ~= nil)
     local x, _, z = env.getWorldTranslation(node.node)
     assert(finite(x) and finite(z))
+    pcall(function()
+        local rx, _, rz = env.getWorldTranslation(combine.rootNode)
+        local fx, _, fz = env.localDirectionToWorld(combine.rootNode, 0, 0, 1)
+        local n = math.sqrt(fx * fx + fz * fz)
+        fx, fz = fx / n, fz / n
+        local dx, dz = x - rx, z - rz
+        Hitch.pipeOut[combine] = { a = dx * fx + dz * fz, l = dx * fz - dz * fx }
+    end)
     return x, z
 end
 
@@ -4195,9 +4209,13 @@ end
 -- last one seen while it is folded again), else the pipe's unloading trigger.
 local function escortSlot(env, s)
     local px, pz = pipePoint(env, s.combine)
+    local learned = Hitch.pipeOut[s.combine]
     if px ~= nil then
         s.slotA, s.slotL = inFrame(s, px, pz)
         s.slotSource = "pipe"
+    elseif learned ~= nil then
+        s.slotA, s.slotL = learned.a, learned.l
+        s.slotSource = "learned"
     elseif s.slotSource ~= "pipe" then
         local x, _, z = world(env, s.trigger)
         s.slotA, s.slotL = inFrame(s, x, z)
