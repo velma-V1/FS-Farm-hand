@@ -61,6 +61,7 @@
                                    "type": "array", "minItems": 6, "maxItems": 6, "items": {"type": "number"}}}}}]},
         "belted_to": {"oneOf": [{"$ref": "#/$defs/objectId"}, {"type": "null"}]},
         "mounted_to": {"oneOf": [{"$ref": "#/$defs/objectId"}, {"type": "null"}]},
+        "ai_ready": {"oneOf": [{"type": "boolean"}, {"type": "null"}]},
         "config_file": {"oneOf": [{"type": "string", "maxLength": 160}, {"type": "null"}]},
         "lock_positions": {"oneOf": [{"type": "null"}, {"type": "array", "maxItems": 16, "items": {
           "type": "object", "additionalProperties": false, "required": ["xml", "x", "z", "yaw", "free"],

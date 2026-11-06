@@ -3394,6 +3394,14 @@ class Executor:
                     # (a helper stopped mid-unload) ends the job COULD_NOT_PREPARE (live 2026-11-06, field 91).
                     enter("PIPE_IN")
                     self.world.pipe(tractor.id, False, owner)
+                    tractor = next((i for i in self.world.snapshot() if i.id == tractor.id), tractor)
+                if tractor.ai_ready is False and tractor.fold is not None:
+                    # And with its own folding parts at their end for driving (Foldable:getIsAIReadyToDrive); a
+                    # helper stopped mid-work leaves the machine unfolded and GIANTS never prepares it (live
+                    # 2026-11-06: the MF 8570 at fold 0, turnOnFoldDirection -1, COULD_NOT_PREPARE). GIANTS
+                    # unfolds it again where the work starts.
+                    enter("FOLD")
+                    self.world.fold(tractor.id, 2, owner)
                 enter("FIELD_WORK")
                 yaw = math.atan2(field.center[0] - tractor.position[0], field.center[1] - tractor.position[1])
                 start = Pose(field.center[0], field.center[1], yaw)

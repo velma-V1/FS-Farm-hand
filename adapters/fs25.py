@@ -210,6 +210,7 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
         belted_to=None if vehicle.get("belted_to") is None else str(vehicle["belted_to"]),
         mounted_to=None if vehicle.get("mounted_to") is None else str(vehicle["mounted_to"]),
         config_file=vehicle.get("config_file"),
+        ai_ready=vehicle.get("ai_ready"),
         lock_positions=tuple(LockPosition(p["xml"], (p["x"], p["z"]), p["yaw"], p["free"])
                              for p in vehicle.get("lock_positions") or ()),
         belt_markers=tuple(tuple(m) for m in (vehicle.get("belts") or {}).get("markers", ())),

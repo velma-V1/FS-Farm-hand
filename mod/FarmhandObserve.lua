@@ -747,6 +747,12 @@ function Observe.vehicle(env, v)
         end
         return out
     end)
+    -- GIANTS' own answer whether its helper could start driving it now (AIDrivable:getIsAIReadyToDrive, over
+    -- its units: a movable pipe folded, Foldable parts at their folded end for driving).
+    local aiReady = try(function()
+        if v.spec_aiDrivable == nil or type(v.getIsAIReadyToDrive) ~= "function" then return nil end
+        return v:getIsAIReadyToDrive() == true
+    end)
     local configFile = try(function()
         assert(type(v.configFileName) == "string")
         return string.sub(v.configFileName, -160)
@@ -762,6 +768,7 @@ function Observe.vehicle(env, v)
         mounted_to = nullable(mountedTo),
         lock_positions = nullable(lockPositions),
         config_file = nullable(configFile),
+        ai_ready = nullable(aiReady),
         size = nullable(size),
         kinds = Observe.kinds(v),
         fill_units = Observe.fillUnits(env, v),

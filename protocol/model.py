@@ -116,6 +116,7 @@ class Equipment:
     heading: float | None = None          # root forward yaw (world)
     ai_root: Pose | None = None           # AI root pose (vehicles with AIDrivable)
     mounted_to: str | None = None         # held by this carrier's DynamicMountAttacher (a header on its trailer)
+    ai_ready: bool | None = None          # GIANTS' helper could start driving it now (AIDrivable:getIsAIReadyToDrive)
     config_file: str | None = None        # GIANTS' vehicle XML (configFileName), to match a carrier's lock positions
     lock_positions: tuple[LockPosition, ...] = ()   # a carrier's GIANTS lock positions
     output_joints: tuple[OutputJoint, ...] = ()
