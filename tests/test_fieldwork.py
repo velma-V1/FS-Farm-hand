@@ -2700,6 +2700,9 @@ class UnloadAndSellTests(unittest.TestCase):
         # The unloader hitched by the store names (live save 1: the Fliegl EDK 650, the 3650).
         self.assertEqual(r.interpret("hitch the edk 650 to the 3650"),
                          {"version": 1, "command": "hitch_pair", "implement_name": "edk 650", "tractor_name": "3650"})
+        # A header names its harvester by any word (live 2026-11-06: "the colossus" read as a place).
+        self.assertEqual(r.interpret("hitch the header to the colossus"),
+                         {"version": 1, "command": "hitch_pair", "implement": "cutter", "tractor_name": "colossus"})
 
 
 class StrawTests(unittest.TestCase):
