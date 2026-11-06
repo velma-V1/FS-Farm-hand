@@ -2061,6 +2061,36 @@ function Probe:logSpecInventory()
         for _, spec in ipairs(vehicle.specializationNames or {}) do names[#names + 1] = spec end
         log("spec inventory id=%s name=%s config=%s specs=%s", tostring(id), tostring(vehicle:getName()),
             tostring(vehicle.configFileName), table.concat(names, ","))
+        local function pose(node)
+            if node == nil or not env.entityExists(node) then return "?" end
+            local x, y, z = env.getWorldTranslation(node)
+            local fx, _, fz = env.localDirectionToWorld(node, 0, 0, 1)
+            return string.format("(%.3f,%.3f,%.3f yaw %.3f)", x, y, z, math.atan2(fx, fz))
+        end
+        log("spec inventory id=%s root=%s mountedTo=%s", tostring(id), pose(vehicle.rootNode),
+            tostring(type(vehicle.getDynamicMountObject) == "function" and vehicle:getDynamicMountObject() ~= nil
+                     and env.NetworkUtil.getObjectId(vehicle:getDynamicMountObject()) or nil))
+        local dma = vehicle.spec_dynamicMountAttacher
+        if dma ~= nil then
+            for i, lock in ipairs(dma.lockPositions or {}) do
+                log("spec inventory id=%s lock %d %s joint=%s state=%s w/l/h=%s/%s/%s", tostring(id), i,
+                    tostring(lock.xmlFilename), pose(lock.jointNode), tostring(lock.state),
+                    tostring(lock.width), tostring(lock.length), tostring(lock.height))
+            end
+            local trigger = dma.dynamicMountAttacherTrigger
+            if trigger ~= nil then
+                log("spec inventory id=%s trigger node=%s joint=%s root=%s allowed=%s", tostring(id), pose(trigger.triggerNode),
+                    pose(trigger.jointNode), pose(trigger.rootNode),
+                    tostring(type(vehicle.getAllowDynamicMountObjects) == "function" and vehicle:getAllowDynamicMountObjects()))
+            end
+        end
+        for i, joint in ipairs(type(vehicle.getAttacherJoints) == "function" and vehicle:getAttacherJoints() or {}) do
+            log("spec inventory id=%s output %d type=%s at %s", tostring(id), i, tostring(joint.jointType), pose(joint.jointTransform))
+        end
+        local attachable = vehicle.spec_attachable
+        for i, input in ipairs(attachable and attachable.inputAttacherJoints or {}) do
+            log("spec inventory id=%s input %d type=%s at %s", tostring(id), i, tostring(input.jointType), pose(input.node))
+        end
         for _, key in ipairs({ "spec_dynamicMountAttacher", "spec_dynamicMountable", "spec_attacherJoints",
                                "spec_tensionBelts", "spec_cutter", "spec_attachable", "spec_foldable" }) do
             local spec = vehicle[key]
