@@ -127,6 +127,27 @@ def combine_full(item: Equipment, share: float) -> bool:
     return bool(grain) and sum(u.level or 0.0 for u in grain) >= share * sum(u.capacity for u in grain)
 
 
+def harvest_logistics(combine: Equipment, field) -> tuple[str, dict]:
+    """Whether harvesting what is left of ``field`` fits in ``combine``'s free tank (the owner, 2026-11-06:
+    no cart for a one-tank field, the cart from the start when it will fill): ONE_TANK, NEEDS_CART or
+    UNCERTAIN, and the numbers. GIANTS' yield is area x literPerSqm x a multiplier from 1 up to the
+    mission's largest (Observe.fieldCoverage): the smallest and largest it can be; never a guess as fact."""
+    grain = [u for u in combine.fill_units if (u.fill_type or "UNKNOWN") not in Executor.NOT_CARGO and u.capacity]
+    c = field.coverage if field is not None else None
+    if not grain or c is None or not c.yield_l_m2 or not c.total_m2:
+        return "UNCERTAIN", {"why": "no tank or yield observed"}
+    free = sum(u.capacity for u in grain) - sum(u.level or 0.0 for u in grain)
+    left_m2 = max(0.0, 1.0 - OPERATIONS["harvest"].done(c)) * c.total_m2
+    low = left_m2 * c.yield_l_m2
+    high = low * max(1.0, c.yield_max_scale or 1.0)
+    numbers = {"free_l": round(free), "left_m2": round(left_m2), "yield_l": (round(low), round(high))}
+    if high <= 0.95 * free:
+        return "ONE_TANK", numbers
+    if low > free:
+        return "NEEDS_CART", numbers
+    return "UNCERTAIN", numbers
+
+
 # ------------------------------------------------------------- sequence context
 # What "it" is in a sequence: the tractor a transport step worked with (by its store name,
 # so a reload's new IDs do not matter), the rig carrying it, and what was just bought.
@@ -577,6 +598,7 @@ class Worker:
     after: list
     destination: str | None = None    # harvest: where the crop goes, as the request said it (else the saved policy)
     stop_share: float | None = None   # harvest: stopped where it stands once its tank holds this share ("stop at 10%")
+    cart: dict | None = None          # harvest: how its grain cart is made when one is needed (Coordinator._plan_cart)
 
 
 # A next operation on the same field starts once the one ahead shows this share done
@@ -921,6 +943,17 @@ class Coordinator:
                         and combine_full(tractor, w.stop_share)):
                     self._worker_paused(w)
                     continue
+                # The tank filling where no cart was sent (a one-tank prediction proved wrong, or the cart
+                # ended): one now, before GIANTS' "nearly full" (0.8) and long before it stands full.
+                if (w.operation == "harvest" and w.cart is not None and tractor.busy
+                        and combine_full(tractor, self.CART_DISPATCH_SHARE)):
+                    with self._lock:
+                        running = self._carts.get(w.field)
+                        idle_cart = running is None or not running[0].is_alive()
+                    if idle_cart:
+                        log.info("worker %s: tank at %.0f %% with no cart working; one sent", w.tractor,
+                                 100 * self.CART_DISPATCH_SHARE)
+                        self._start_cart(w.field, w.cart["destination"], w.cart["spoken"], w.cart["start"])
                 # GIANTS' combine helper waits at a full tank for a trailer under the pipe
                 # (AIDriveStrategyCombine:getDriveData 231-245); none comes on its own.
                 if (w.operation == "harvest" and tractor.busy and tractor.stopped
@@ -1705,7 +1738,7 @@ class Coordinator:
                         started.append(worker)
                         self.notify("WORKER_STARTED", job.spoken)
                         if step["operation"] == "harvest":
-                            self._start_cart(field.id, work.get("destination"), job.spoken, work.get("cart_start"))
+                            self._plan_cart(worker, field, work, job.spoken)
                         break
                 if not retry:
                     break
@@ -1913,6 +1946,21 @@ class Coordinator:
     GRAIN_CART_LOADS = 50            # loads one grain cart job takes away at most
     GRAIN_CART_WAIT_S = 10.0         # between looks for its combine at work (its helper starting, on its way)
     GRAIN_CART_WAITS = 180
+
+    CART_DISPATCH_SHARE = 0.6        # a combine left without a cart gets one at this tank share (before GIANTS'
+                                     # "nearly full" at 0.8, AIDriveStrategyCombine), whatever was predicted
+
+    def _plan_cart(self, worker: Worker, field, work: dict, spoken: bool) -> None:
+        """The grain cart for a harvest the helper starts: from the start when the field will likely not fit
+        in the combine's tank (or that cannot be told), else none until the watch sees the tank fill."""
+        combine = next((i for i in self.world.snapshot() if i.id == worker.tractor), None)
+        verdict, numbers = harvest_logistics(combine, field) if combine is not None else ("UNCERTAIN", {})
+        log.info("harvest of field %s with %s: %s %s", field.id, worker.tractor, verdict, numbers)
+        worker.cart = {"destination": work.get("destination"), "start": work.get("cart_start"), "spoken": spoken}
+        if verdict == "ONE_TANK":
+            self.notify("HARVEST_ONE_TANK", spoken)
+            return
+        self._start_cart(field.id, work.get("destination"), spoken, work.get("cart_start"))
 
     CART_START_SHARE = 0.65          # a grain cart goes alongside once the combine's tank is this full
 

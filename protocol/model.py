@@ -134,6 +134,8 @@ class FieldCoverage:
     sampled: int
     cut: int = 0                  # samples whose crop GIANTS counts as cut (harvested)
     windrow: tuple[tuple[str, float], ...] | None = None   # litres per windrow fill type lying on it
+    yield_l_m2: float | None = None       # GIANTS literPerSqm of the most sampled crop (harvest logistics)
+    yield_max_scale: float | None = None  # the mission's largest harvest multiplier
 
     def share(self, *ground_types: str) -> float:
         return sum(share for name, share in self.ground if name in ground_types)

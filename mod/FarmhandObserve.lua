@@ -1109,8 +1109,28 @@ function Observe.fieldCoverage(env, f, track)
     local sprayShare = measure(env, f, env.FieldDensityMap.SPRAY_LEVEL, levels)
     local fruit, sampled, cut = sampleFruit(env, f, track)
     local okW, windrow = pcall(Observe.fieldWindrow, env, f)
+    -- What harvesting it yields, by GIANTS' own rule (Cutter: area x FruitTypeDesc.literPerSqm x
+    -- FSBaseMission:getHarvestScaleMultiplier): the most sampled crop's litres per m2 and the largest
+    -- multiplier the mission allows (every factor at its best), for a harvest's logistics.
+    local yieldL, yieldMax = try(function()
+        local best, n = nil, -1
+        for name, count in pairs(fruit or {}) do
+            if name ~= "NONE" and count > n then best, n = name, count end
+        end
+        if best == nil then return nil end
+        local desc = env.g_fruitTypeManager:getFruitTypeByName(best)
+        assert(desc ~= nil and finite(desc.literPerSqm) and desc.literPerSqm > 0)
+        local m = env.g_currentMission
+        local scale = 1
+        for _, key in ipairs({ "harvestSprayScaleRatio", "harvestPlowScaleRatio", "harvestLimeScaleRatio",
+                               "harvestWeedScaleRatio", "harvestStubbleScaleRatio", "harvestRollerRatio" }) do
+            if finite(m[key]) then scale = scale + m[key] end
+        end
+        return desc.literPerSqm, scale
+    end)
     return { ground = groundShare, spray = sprayShare, total_m2 = total or Observe.NULL, fruit = fruit or Observe.NULL,
-             sampled = sampled or 0, cut = cut or 0, windrow = okW and windrow or Observe.NULL }
+             sampled = sampled or 0, cut = cut or 0, windrow = okW and windrow or Observe.NULL,
+             yield_l_m2 = yieldL or Observe.NULL, yield_max_scale = yieldMax or Observe.NULL }
 end
 
 -- The owned fields' records; one stale field's coverage is recomputed per call

@@ -2405,6 +2405,37 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertFalse(e._behind_combine(Equipment("t", "tractor", "f", (1.0, 30.0), heading=0.0), combine))
         self.assertFalse(e._behind_combine(Equipment("t", "tractor", "f", (40.0, -60.0), heading=0.0), combine))
 
+    def test_a_harvest_predicts_from_the_tank_and_yield_whether_it_needs_a_cart(self):
+        # The owner, 2026-11-06: no cart for a field the tank holds; the cart from the start when it fills.
+        from companion.coordinator import harvest_logistics
+        combine = Equipment("c", "harvester", "f", (0.0, 0.0),
+                            fill_units=(FillUnit(1, "WHEAT", 1000.0, 11000.0),))           # 10000 l free
+        def field_of(m2, cut=0.0, scale=1.5):
+            cov = FieldCoverage((("HARVEST_READY", 1.0),), (), m2, (("WHEAT", 100),), 100, cut=int(100 * cut),
+                                yield_l_m2=0.6, yield_max_scale=scale)
+            return Field(9, m2 / 10000, (0.0, 0.0), cov, 0.0)
+        self.assertEqual(harvest_logistics(combine, field_of(8000))[0], "ONE_TANK")       # 4800..7200 l
+        self.assertEqual(harvest_logistics(combine, field_of(40000))[0], "NEEDS_CART")    # 24000..36000 l
+        self.assertEqual(harvest_logistics(combine, field_of(14000))[0], "UNCERTAIN")     # 8400..12600 l
+        self.assertEqual(harvest_logistics(combine, field_of(40000, cut=0.9))[0], "ONE_TANK")   # 10 % left
+        unknown = replace(field_of(8000), coverage=replace(field_of(8000).coverage, yield_l_m2=None))
+        self.assertEqual(harvest_logistics(combine, unknown)[0], "UNCERTAIN")              # never guessed
+
+    def test_a_one_tank_harvest_sends_no_cart_until_the_tank_shows_otherwise(self):
+        from companion.coordinator import Worker
+        world, unit = self.cart_world()
+        c, notices = coordinated(world)
+        c.grain_cart = True
+        started = []
+        c._start_cart = lambda *args: started.append(args)
+        field = Field(7, 0.1, (0.0, 0.0), FieldCoverage((("HARVEST_READY", 1.0),), (), 1000.0, (("WHEAT", 9),), 9,
+                                                         yield_l_m2=0.5, yield_max_scale=1.5), 0.0)
+        w = Worker("o", "c-1", 7, "harvest", [])
+        c._plan_cart(w, field, {"field": 7}, False)
+        self.assertEqual(started, [])                                   # 500..750 l: it fits
+        self.assertIn("HARVEST_ONE_TANK", notices)
+        self.assertIsNotNone(w.cart)                                    # the watch may still send one
+
     def test_the_cart_shadows_the_combine_at_once_and_unloads_from_the_share_asked(self):
         # The owner (2026-11-06): unloading starts at about 60-70 % of the combine's tank (a test: at 10 %), and
         # the cart starts right after the combine, close behind it (sent only at 10 %, it came too late).

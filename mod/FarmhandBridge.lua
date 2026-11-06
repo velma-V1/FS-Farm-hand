@@ -3681,6 +3681,7 @@ Bridge.NOTICES = {
     ACCEPTED_HITCH = "Farmhand: hitching a tractor to the implement",
     FIELD_ALREADY_DONE = "Farmhand: the field already shows that done (measured) - nothing to work",
     ACCEPTED_MOUNT = "Farmhand: loading the header onto its trailer",
+    HARVEST_ONE_TANK = "Farmhand: the field fits in the combine's tank - no grain cart needed (it is watched)",
     HARVEST_STOPPED_AT_SHARE = "Farmhand: the combine stopped at the tank share you asked for; it waits there",
     ACCEPTED_TELEPORT = "Farmhand: teleporting it to the field, as you asked",
     COMPLETE_TELEPORT = "Farmhand: teleported to the field's edge",
