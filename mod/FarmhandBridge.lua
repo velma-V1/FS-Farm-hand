@@ -1053,8 +1053,9 @@ function aborts.reattach(env, task) pcall(Bridge.Hitch.halt, env, task.drive, 0)
 -- rest) and locks it into place. Only lined up (lateralM, headingDeg) and short (maxM); the carrier
 -- moving at all (pushed), a drive past the start distance, or the seated player taking over ends it.
 -- DONE MOUNTED once the implement reports the carrier as its dynamic mount (getDynamicMountObject).
-Bridge.MOUNT = { creepKmh = 2.0, maxM = 12, lateralM = 0.6, headingDeg = 6, arriveM = 0.15, carrierMovedM = 0.15,
-                 timeoutMs = 60000, raiseMs = 4000, mountMs = 8000, aboveM = 0.05 }
+Bridge.MOUNT = { creepKmh = 2.0, maxM = 14, lateralM = 1.8, headingDeg = 12, arriveM = 0.15, carrierMovedM = 0.15,
+                 timeoutMs = 60000, raiseMs = 4000, mountMs = 8000, aboveM = 0.05, lookaheadM = 4,
+                 setLateralM = 0.4, setHeadingDeg = 4 }
 
 local function mountPlan(env, v, carrier)
     local spec = carrier.spec_dynamicMountAttacher
@@ -1071,16 +1072,22 @@ local function mountPlan(env, v, carrier)
     return nil, "NO_IMPLEMENT_FOR_CARRIER"
 end
 
--- Where the implement's root still has to go: (ahead along the machine, across, up, heading off).
+local function yawOfNode(env, node)
+    local fx, _, fz = env.localDirectionToWorld(node, 0, 0, 1)
+    return math.atan2(fx, fz)
+end
+
+-- Where the implement's root still has to go, on the line the machine drives in along (the lock's
+-- heading less the implement's turn on the machine): (ahead, across, up, heading off), and that line's yaw.
 local function mountGap(env, v, plan)
     local ix, iy, iz = env.getWorldTranslation(plan.implement.rootNode)
     local lx, ly, lz = env.getWorldTranslation(plan.lock.jointNode)
-    local fx, _, fz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
+    local yaw = yawOfNode(env, plan.lock.jointNode) - plan.turn
+    local fx, fz = math.sin(yaw), math.cos(yaw)
     local dx, dz = lx - ix, lz - iz
-    local ifx, _, ifz = env.localDirectionToWorld(plan.implement.rootNode, 0, 0, 1)
-    local lfx, _, lfz = env.localDirectionToWorld(plan.lock.jointNode, 0, 0, 1)
-    local turned = math.abs((math.atan2(ifx, ifz) - math.atan2(lfx, lfz) + math.pi) % (2 * math.pi) - math.pi)
-    return dx * fx + dz * fz, dx * fz - dz * fx, iy - ly, turned
+    local turned = math.abs((yawOfNode(env, plan.implement.rootNode) - yawOfNode(env, plan.lock.jointNode)
+                             + math.pi) % (2 * math.pi) - math.pi)
+    return dx * fx + dz * fz, dx * fz - dz * fx, iy - ly, turned, yaw
 end
 
 function starters.mount(env, spec)
@@ -1094,6 +1101,8 @@ function starters.mount(env, spec)
     end
     local plan, why = mountPlan(env, v, carrier)
     if plan == nil then return nil, why end
+    -- How the implement sits on the machine (a header faces the way its combine does): held constant.
+    plan.turn = yawOfNode(env, plan.implement.rootNode) - yawOfNode(env, v.rootNode)
     local M = Bridge.MOUNT
     local ahead, across, up, turned = mountGap(env, v, plan)
     log("mount: %s %.2f m ahead, %.2f across, %.2f above its lock, %.1f deg off", tostring(plan.implement:getName()),
@@ -1138,7 +1147,7 @@ function steppers.mount(env, task, dt)
         if task.raising < M.raiseMs then return nil end
         task.raising = nil
     end
-    local ahead, across, up = mountGap(env, v, plan)
+    local ahead, across, up, turned, lineYaw = mountGap(env, v, plan)
     if task.checkedHeight == nil then
         task.checkedHeight = true
         -- Carried no higher than the deck it goes onto, it would be pushed into the carrier.
@@ -1147,6 +1156,10 @@ function steppers.mount(env, task, dt)
     if ahead <= M.arriveM then
         halt()
         if not stopped(v) then return nil end
+        if math.abs(across) > M.setLateralM or turned > math.rad(M.setHeadingDeg) then
+            log("mount: at its lock but %.2f m across, %.1f deg off: not set down", across, math.deg(turned))
+            return "FAILED", "MOUNT_NOT_LINED_UP"
+        end
         if plan.implement:isDetachAllowed() ~= true then return "FAILED", "DETACH_NOT_ALLOWED" end
         local entry = v:getImplementByObject(plan.implement)
         task.joints = entry and { entry.jointDescIndex, entry.inputJointDescIndex } or nil
@@ -1166,10 +1179,17 @@ function steppers.mount(env, task, dt)
     if not v:getIsMotorStarted() and v:getCanMotorRun() then v:startMotor() end
     Bridge.Hitch.holdActive(task.drive)
     v:raiseActive()
+    -- Pure pursuit onto the line through the lock: the implement's aim lookaheadM along it past where the
+    -- implement is now (never beyond the lock), carried over to the steering node.
     local node = v:getAISteeringNode()
-    local lx, _, lz = env.worldToLocal(node, env.getWorldTranslation(plan.lock.jointNode))
-    local ix, _, iz = env.worldToLocal(node, env.getWorldTranslation(plan.implement.rootNode))
-    Bridge.Hitch.drive(env, task.drive, dt, true, lx - ix, math.max(lz - iz, 1))
+    local ix, iy, iz = env.getWorldTranslation(plan.implement.rootNode)
+    local lx, _, lz = env.getWorldTranslation(plan.lock.jointNode)
+    local fx, fz = math.sin(lineYaw), math.cos(lineYaw)
+    local along = math.min(0, (ix - lx) * fx + (iz - lz) * fz + M.lookaheadM)
+    local ax, az = lx + fx * along, lz + fz * along
+    local nx, _, nz = env.getWorldTranslation(node)
+    local px, _, pz = env.worldToLocal(node, nx + ax - ix, iy, nz + az - iz)
+    Bridge.Hitch.drive(env, task.drive, dt, true, px, math.max(pz, 1))
     return nil
 end
 
