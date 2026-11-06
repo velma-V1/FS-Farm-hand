@@ -2405,17 +2405,23 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertFalse(e._behind_combine(Equipment("t", "tractor", "f", (1.0, 30.0), heading=0.0), combine))
         self.assertFalse(e._behind_combine(Equipment("t", "tractor", "f", (40.0, -60.0), heading=0.0), combine))
 
-    def test_the_cart_goes_alongside_only_once_the_tank_holds_the_share_asked(self):
-        # The owner (2026-11-06): unloading starts at about 60-70 % of the combine's tank (a test: at 10 %).
+    def test_the_cart_shadows_the_combine_at_once_and_unloads_from_the_share_asked(self):
+        # The owner (2026-11-06): unloading starts at about 60-70 % of the combine's tank (a test: at 10 %), and
+        # the cart starts right after the combine, close behind it (sent only at 10 %, it came too late).
         world, unit = self.cart_world()
+        starts = []
+        escort = world.escort
+
+        def recorded(tractor_id, combine_id, owner, start=0.0):
+            starts.append(start)
+            return escort(tractor_id, combine_id, owner, start)
+
+        world.escort = recorded
         c, notices = coordinated(world)
         c.grain_cart = True
-        c.GRAIN_CART_WAIT_S = 0.02
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"], "cart_start": 0.1})
-        self.assertTrue(until(lambda: "ACCEPTED_GRAIN_CART" in notices))
-        self.assertFalse(until(lambda: "t-5" in getattr(world, "mock_escorting", ()), 0.5))   # empty: it waits
-        self.fill(world, unit, 2000.0)
-        self.assertTrue(until(lambda: "t-5" in getattr(world, "mock_escorting", ())), notices)
+        self.assertTrue(until(lambda: "t-5" in getattr(world, "mock_escorting", ())), notices)   # empty tank: it goes
+        self.assertEqual(starts[0], 0.1)                     # ESCORT comes alongside from that share
         c.stop()
 
     def test_a_grain_cart_follows_the_harvest_and_takes_the_grain_on_the_move(self):

@@ -2384,6 +2384,7 @@ class Executor:
     # The cart is driven up behind a combine farther than this first (ESCORT starts within 90 m),
     # to its run-up ESCORT_RUN_UP_M behind the combine on its line, at its heading.
     ESCORT_NEAR_M = 70.0
+    ESCORT_FOLLOW_M = 30.0         # this near the combine the escort follows its trail itself, no run-up
     ESCORT_APPROACHES = 4          # run-ups re-aimed at the moving combine before the escort starts anyway
     ESCORT_ALIGN_RAD = math.radians(45)
 
@@ -2473,8 +2474,9 @@ class Executor:
             for _ in range(self.ESCORT_APPROACHES):
                 observed = {i.id: i for i in self.world.snapshot()}
                 now, cart = observed.get(combine.id), observed.get(tractor.id)
-                if now is None or cart is None or self._behind_combine(cart, now):
-                    break
+                if (now is None or cart is None or math.dist(cart.position, now.position) <= self.ESCORT_FOLLOW_M
+                        or self._behind_combine(cart, now)):
+                    break                                  # the escort's own follow takes it from here
                 enter("APPROACH")
                 moved = True
                 yaw = now.heading or 0.0
@@ -2484,7 +2486,7 @@ class Executor:
             enter("ESCORT")
             moved = True
             try:
-                done = self.world.escort(tractor.id, combine.id, owner)
+                done = self.world.escort(tractor.id, combine.id, owner, float(command.get("cart_start") or 0.0))
             except StepFailed as failure:
                 # The helper ended and the watcher's stop of the combine ended the escort with it.
                 now = next((i for i in self.world.snapshot() if i.id == combine.id), None)

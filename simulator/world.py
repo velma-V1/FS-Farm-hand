@@ -445,7 +445,7 @@ class MockWorld:
                 return "NOT_REACHABLE"
             return "REACHABLE"
 
-    def escort(self, tractor_id, combine_id, owner):
+    def escort(self, tractor_id, combine_id, owner, start=0.0):
         # Mock-only: the cart teleported beside the harvesting combine (MOCK_PIPE_REACH_M to its left)
         # takes what its tank holds each poll, until the trailer is full, the helper ends or a stop.
         with self._lock:

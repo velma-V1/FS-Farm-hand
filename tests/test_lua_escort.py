@@ -52,6 +52,7 @@ end
 w.combineCrop = o.combineCrop or 7
 function combine:getFillUnitFillType() return w.combineCrop end
 function combine:getFillUnitFillLevel() return w.grain end
+function combine:getFillUnitCapacity() return o.capacity or 10000 end
 function combine:getLastSpeed() return w.combineAi and w.combineKmh or 0 end
 function combine:getIsAIActive() return w.combineAi end
 function combine:getAIFieldWorkerIsTurning() return w.turning end
@@ -272,6 +273,24 @@ class LuaEscortTests(unittest.TestCase):
         self.assertEqual(s.alongsideMs, 0)
         self.assertEqual(s.brakes.close, 0, self.hitch.describeEscort(s))
         self.assertEqual(list(w.events.values())[-2:], ["brake", "cruise:0"])
+
+    def test_it_shadows_the_combine_and_comes_alongside_only_from_the_tank_share_asked(self):
+        # The owner, 2026-11-06: the cart starts right after the combine and unloads from 60-70 % (test 10 %).
+        w = self.world(grain=500)                                     # 5 % of 10000
+        s, why, _ = self.start_with(w, 0.1)
+        self.assertIsNotNone(s, why)
+        self.runner(w, s, 60 * 20, None)
+        self.assertEqual(s.alongsideMs, 0, self.hitch.describeEscort(s))    # it follows, close behind
+        w.grain = 1500                                                # 15 %
+        self.runner(w, s, 60 * 20, None)
+        self.assertGreater(s.alongsideMs, 0, self.hitch.describeEscort(s))
+
+    def start_with(self, w, share):
+        args = self.W.args(w, self.lua.table(combine=w.combine))
+        args.startShare = share
+        out = self.hitch.newEscort(w.env, args)
+        out = out if isinstance(out, tuple) else (out,)
+        return out + (None,) * (3 - len(out))
 
     def test_the_folded_pipe_aims_the_cart_at_where_the_pipe_was_seen_out(self):
         # Live 2026-11-06, field 91: the folded pipe's trigger 4.55 m out, inside the MF 8570's 6.8 m header

@@ -4282,6 +4282,7 @@ function Hitch.newEscort(env, args)
     local E = Hitch.ESCORT
     local s = { tractor = args.tractor, combine = args.combine, wagon = args.combine, farmId = args.farmId,
                 isReserved = args.isReserved, maxSpeedKmh = E.maxSpeedKmh, timeoutMs = E.timeoutMs,
+                startShare = tonumber(args.startShare) or 0,
                 pushedOnly = true, elapsed = 0, result = nil, mode = "follow", trail = {}, trailIdx = 1,
                 checkAt = 0, aiOffMs = 0, steadyMs = 0, noSlotMs = 0, stallMs = 0, rows = {}, traceAt = 0,
                 moved = 0, movingL = 0, standingL = 0, alongsideMs = 0, pipeOutMovingMs = 0,
@@ -4417,6 +4418,10 @@ local function escortDrive(env, s, dt)
     local level = cartLevel(s.trailer)
     if level > s.lastLevel then
         if vc > 1.5 then s.movingL = s.movingL + (level - s.lastLevel) else s.standingL = s.standingL + (level - s.lastLevel) end
+        -- The test's evidence (the owner, 2026-11-06: "while actually harvesting, not just driving"): grain
+        -- that came while the combine moved threshing on its lane, not in a turn.
+        local threshing = type(combine.getIsTurnedOn) == "function" and combine:getIsTurnedOn() == true
+        if vc > 1.5 and threshing and not turning then s.harvestingL = (s.harvestingL or 0) + (level - s.lastLevel) end
     end
     s.lastLevel = level
     if level >= E.fullShare * s.capacity then return "TRAILER_FULL" end
@@ -4451,7 +4456,19 @@ local function escortDrive(env, s, dt)
     if s.noSlotMs > E.noSlotMs then return "NO_SAFE_SLOT" end
     local cartYaw = yawOf(env, s.tractor.rootNode)
     local aligned = math.abs(angleDiff(cartYaw, s.yaw)) < math.rad(E.alignDeg)
-    local wanted = s.tA ~= nil and not turning and s.steadyMs >= E.steadyMs and aligned
+    -- It shadows the combine on its trail from the harvest's start and comes alongside only once the tank
+    -- holds startShare (the owner, 2026-11-06: unloading from about 60-70 %; waiting for that first and then
+    -- sending the cart, it came too late and the combine filled up).
+    local share = 1
+    pcall(function()
+        local node = combine:getCurrentDischargeNode()
+        local capacity = combine:getFillUnitCapacity(node.fillUnitIndex)
+        if capacity ~= nil and capacity > 0 and capacity < math.huge then
+            share = combine:getFillUnitFillLevel(node.fillUnitIndex) / capacity
+        end
+    end)
+    s.tankShare = share
+    local wanted = s.tA ~= nil and not turning and s.steadyMs >= E.steadyMs and aligned and share >= s.startShare
     if s.mode == "alongside" and not wanted then s.mode = "follow" end
     if s.mode == "follow" and wanted then s.mode = "alongside" end
     local cartFront = -math.huge
@@ -4538,11 +4555,11 @@ function Hitch.describeEscort(s)
     local function f(n) return n and string.format("%.2f", n) or "?" end
     local b = s.brakes or {}
     return string.format("mode=%s slot=(%s,%s,%s) target=(%s,%s) trailer=(%s,%s) tractor=(%s,%s) err=%s vc=%s v=%s "
-        .. "desired=%s turning=%s steady=%dms alongside=%dms pipeOutMoving=%dms grain=%s->%s moving=%s standing=%s "
+        .. "desired=%s turning=%s steady=%dms alongside=%dms pipeOutMoving=%dms grain=%s->%s moving=%s harvesting=%s standing=%s "
         .. "brakes=close:%d,person:%d,vehicle:%d,gap:%d,slow:%d t=%dms%s",
         tostring(s.mode), f(s.slotA), f(s.slotL), tostring(s.slotSource), f(s.tA), f(s.tL), f(s.ma), f(s.ml),
         f(s.ta), f(s.tl), f(s.err), f(s.vc), f(s.measuredKmh), f(s.desired), tostring(s.turning), s.steadyMs or 0,
-        s.alongsideMs or 0, s.pipeOutMovingMs or 0, f(s.startLevel), f(s.lastLevel), f(s.movingL), f(s.standingL),
+        s.alongsideMs or 0, s.pipeOutMovingMs or 0, f(s.startLevel), f(s.lastLevel), f(s.movingL), f(s.harvestingL or 0), f(s.standingL),
         b.close or 0, b.person or 0, b.vehicle or 0, b.gap or 0, b.slow or 0, s.elapsed or 0,
         s.error and (" error=" .. s.error) or "")
 end

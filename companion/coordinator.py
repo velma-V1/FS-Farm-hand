@@ -1997,14 +1997,14 @@ class Coordinator:
                 return Result("CANCELLED", "CANCELLED_BY_REQUESTER")
             if not self._harvesting(field):
                 return result
-            if start > 0 and not self._combine_at(field, start):
-                # Unloading begins once the combine's tank holds ``start`` of its capacity (the owner,
-                # 2026-11-06: about 60-70 %), not from its first litre: the cart is not alongside for nothing.
-                cancel.wait(self.GRAIN_CART_WAIT_S)
-                continue
-            result = self._execute(job, cancel, entered, f"e{n}w{waited}", task="escort", field=field)
-            if result.status == "BLOCKED" and result.reason in ("NO_COMBINE_HARVESTING", "COMBINE_NOT_AT_THE_FIELD") \
-                    and waited < self.GRAIN_CART_WAITS:
+            # The cart shadows the combine from the harvest's start and comes alongside once its tank holds
+            # ``start`` (the owner, 2026-11-06: unloading from about 60-70 %; sent only then, it came too late).
+            result = self._execute(job, cancel, entered, f"e{n}w{waited}", task="escort", field=field,
+                                   cart_start=start)
+            if ((result.status == "BLOCKED" and result.reason in ("NO_COMBINE_HARVESTING", "COMBINE_NOT_AT_THE_FIELD"))
+                    or result.reason in ("ESCORT_TOO_FAR", "NO_SAFE_SLOT")) and waited < self.GRAIN_CART_WAITS:
+                # Still being taken to the field, or left behind (a headland turn, a slot not clear yet):
+                # it comes again rather than giving the combine up.
                 # GIANTS' helper is still taking the combine, or on its way: the cart waits for it.
                 waited += 1
                 cancel.wait(self.GRAIN_CART_WAIT_S)
@@ -2015,7 +2015,7 @@ class Coordinator:
                 rig = self._make_grain_rig(job, cancel, entered)
                 if rig is None or rig.status != "COMPLETE":
                     return rig or result
-                result = self._execute(job, cancel, entered, f"e{n}m", task="escort", field=field)
+                result = self._execute(job, cancel, entered, f"e{n}m", task="escort", field=field, cart_start=start)
             if cancel.is_set():
                 return Result("CANCELLED", "CANCELLED_BY_REQUESTER", result.equipment_ids, result.states)
             if result.status != "COMPLETE":

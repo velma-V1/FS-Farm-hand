@@ -141,7 +141,7 @@ COMMAND_ARGS = {
     "mount": ("tractor", "wagon"),               # the machine's raised front implement carried onto the carrier's GIANTS lock position and set down there
     "reattach": ("tractor", "wagon"),            # the loose implement it stands at attached by GIANTS' own range rule
     "reach": ("tractor", "x", "z", "yaw", "area"),    # area > 0: a diagnostic probe narrower than the rig (never driven)       # whether GIANTS' agent plans a route there for the vehicle (never drives)
-    "escort": ("tractor", "wagon"),              # the trailer held under the pipe of the combine (wagon) harvesting under GIANTS' helper
+    "escort": ("tractor", "wagon", "area"),      # area: the tank share before it comes alongside;              # the trailer held under the pipe of the combine (wagon) harvesting under GIANTS' helper
     "deliver": ("tractor", "direction"),        # GIANTS' Deliver helper: the cargo to the best paid selling station (1) or the farm's storage (-1)
     "backoff": ("tractor", "wagon"),             # the tractor straight back from the transport's ramps it waits behind
     "stop": ("tractor",),

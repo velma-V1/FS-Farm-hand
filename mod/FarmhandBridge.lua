@@ -1842,6 +1842,7 @@ function starters.escort(env, spec)
     if spec.tractor.ownerFarmId ~= spec.farmId then return nil, "NOT_OWNED" end
     local session, reason, refused = Bridge.Hitch.newEscort(env, {
         tractor = spec.tractor, combine = spec.wagon, farmId = spec.farmId, isReserved = spec.owned,
+        startShare = spec.area,
     })
     if session == nil then
         log("escort refused %s: %s", tostring(reason), Bridge.Hitch.describeEscort(refused))

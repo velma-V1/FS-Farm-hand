@@ -99,7 +99,7 @@ class World(Protocol):
         REACHABLE, NOT_REACHABLE, REACH_BLOCKED or REACH_UNDECIDED."""
         ...
 
-    def escort(self, tractor_id: str, combine_id: str, owner: str) -> str:
+    def escort(self, tractor_id: str, combine_id: str, owner: str, start: float = 0.0) -> str:
         """ESCORT: the reserved tractor's trailer held under the pipe of the combine harvesting
         under GIANTS' helper, at its speed, behind it while it turns, until TRAILER_FULL or
         COMBINE_STOPPED (the helper ended); the combine is never driven. The caller checks the grain."""
