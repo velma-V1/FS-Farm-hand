@@ -4147,7 +4147,9 @@ Hitch.ESCORT = {
     trailStepM = 1, trailBackM = 60, trailMax = 900, trailSearch = 60,
     lineDeg = 8, steadyMs = 2500,    -- the combine this straight this long before the cart comes alongside
     alignDeg = 25,              -- the cart within this of the combine's heading to come alongside
-    spoutMarginM = 0.8,         -- the spout kept this far inside the trailer's box when the slot shifts
+    spoutMarginM = 0.3,         -- the spout kept this far inside the trailer's box when the slot shifts (live
+                                -- 2026-11-06, field 91: the MF 8570's pipe reaches 4.76 m, its header 3.4 m; at
+                                -- 0.8 m no spot kept the cart its clearance from the header, NO_SAFE_SLOT)
     triggerMarginM = 0.3,       -- the folded pipe's trigger point this far inside it (GIANTS swings the pipe out)
     fullShare = 0.98,
     idleAiMs = 3000,            -- the combine's helper off this long: COMBINE_STOPPED
