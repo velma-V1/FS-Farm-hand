@@ -968,8 +968,8 @@ class Executor:
                  field.id, answers)
         return center
 
-    REATTACH_BEHIND_M = 3.0        # the machine comes back this far behind where it carried it, then creeps on
-    REATTACH_CREEP_M = 5.5         # lined up within this behind it: the creep alone (= the mod's creepM, less margin)
+    REATTACH_BEHIND_M = 5.5        # the machine comes back this far behind where it carried it, then creeps on (live: 3 m lay inside the planner's margin round the implement, NO_ROUTE)
+    REATTACH_CREEP_M = 6.0         # lined up within this behind it: the creep alone (the mod's creepM is 6.5)
 
     def _front_reattach_ids(self, command):
         """(machine, implement) for "hitch the header to the mf 8570": a loose implement this
