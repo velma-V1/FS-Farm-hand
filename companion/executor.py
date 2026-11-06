@@ -1005,22 +1005,7 @@ class Executor:
                              and self._front_joint_pose(vehicle, implement) is not None))
             if joined:
                 return joined[0][1], joined[0][2]
-        if command.get("tractor_name") and command.get("implement"):
-            for vehicle in observed.values():
-                if not (vehicle.category in DRIVEN and vehicle.attached_to is None and vehicle.heading is not None
-                        and named(vehicle, command["tractor_name"])):
-                    continue
-                fx, fz = math.sin(vehicle.heading), math.cos(vehicle.heading)
-                for implement in observed.values():
-                    if not (implement.attached_to is None and of_kind(implement, command["implement"])
-                            and named(implement, command.get("implement_name"))):
-                        continue
-                    dx, dz = implement.position[0] - vehicle.position[0], implement.position[1] - vehicle.position[1]
-                    if 0 < dx * fx + dz * fz <= self.REATTACH_NEAR_M and abs(dx * fz - dz * fx) <= 1.5:
-                        return vehicle.id, implement.id
         return None
-
-    REATTACH_NEAR_M = 9.0          # an unrecorded loose implement this far ahead of the machine is tried
 
     def _front_reattach(self, command, enter, states) -> Result:
         """A front implement this Farmhand detached (a combine's header) attached again: RESERVE ->
