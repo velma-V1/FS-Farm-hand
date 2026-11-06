@@ -969,7 +969,7 @@ class Executor:
         return center
 
     REATTACH_BEHIND_M = 5.5        # the machine comes back this far behind where it carried it, then creeps on (live: 3 m lay inside the planner's margin round the implement, NO_ROUTE)
-    REATTACH_CREEP_M = 6.0         # lined up within this behind it: the creep alone (the mod's creepM is 6.5)
+    REATTACH_CREEP_M = 8.5         # lined up within this behind it: the creep alone (the mod's creepM is 9.0: the 5.5 m stage plus the drive's 3 m arrival)
 
     def _front_reattach_ids(self, command):
         """(machine, implement) for "hitch the header to the mf 8570": a loose implement this
