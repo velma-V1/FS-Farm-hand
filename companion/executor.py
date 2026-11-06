@@ -3389,6 +3389,11 @@ class Executor:
                 material = _material(implement, operation.material)
                 money = (self.world.farm() or FarmInfo(None, None, None, None)).money
                 physical_attempted = True
+                if tractor.pipe is not None and tractor.pipe[0]:
+                    # GIANTS' helper drives only with the pipe folded (Pipe:getIsAIReadyToDrive): one left out
+                    # (a helper stopped mid-unload) ends the job COULD_NOT_PREPARE (live 2026-11-06, field 91).
+                    enter("PIPE_IN")
+                    self.world.pipe(tractor.id, False, owner)
                 enter("FIELD_WORK")
                 yaw = math.atan2(field.center[0] - tractor.position[0], field.center[1] - tractor.position[1])
                 start = Pose(field.center[0], field.center[1], yaw)
