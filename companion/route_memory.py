@@ -353,7 +353,7 @@ class RouteRecorder:
         reverse_m = sum(math.dist(a[:2], b[:2]) for a, b in zip(samples, samples[1:]) if b[4])
         judged = not stops and not recovery
         quality = "clean" if (judged if clean is None else (clean and judged)) else "recorded"
-        meta = {"length_m": round(_length(points), 1), "seconds": round(seconds, 1), "stops": stops,
+        meta = {"arrived": verified_rig is not None, "length_m": round(_length(points), 1), "seconds": round(seconds, 1), "stops": stops,
                 "reverse_m": round(reverse_m, 1), "recovery": list(recovery),
                 "vehicle": recording["vehicle_name"], "samples": len(samples)}
         try:

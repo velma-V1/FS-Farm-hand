@@ -1142,6 +1142,10 @@ function Hitch.rigContacts(env, vehicle, foot)
         for _, data in pairs(belts ~= nil and belts.objectsToJoint or {}) do
             if data.object ~= nil then excluded[data.object] = true end
         end
+        -- And what a carrier holds by GIANTS' DynamicMountAttacher (live 2026-11-06: the MF 8570 Header
+        -- locked on its trailer read as fixed contact, NAVIGATE_START_CONTACT).
+        local mounts = unit.spec_dynamicMountAttacher
+        for object in pairs(mounts ~= nil and mounts.dynamicMountedObjects or {}) do excluded[object] = true end
     end
     local masks = collisionMasks(env)
     local out = {}
