@@ -13,7 +13,7 @@
       "const": 1
     },
     "command": {
-      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to, the pair nearest the requester, where it stands. unsupported: understood, but not something Farmhand does yet (reason). load_tractor: drive a free tractor (tractor_name) up a transport trailer's ramps (implement_name), belt it and raise the ramps ('load the tractor and secure it'). unload_tractor: release the belts and back the tractor off ('unload it'). sequence: several job commands in order (steps). follow_me: the named rig (tractor_name) follows the vehicle the player drives, with FollowMe, until stopped; only on the player's explicit 'follow me'. resume: continue the goal that was stopped, taken over or blocked, from what is already done ('continue'). retarget: give the goal a new destination ('take it to field 2 instead'). haul_tractor: take the named tractor (tractor_name) to the target on a transport and unload it there, from whatever is already done ('take the deutz to field 3 and unload it'). sell: the rig with the most cargo (tractor_name if said) takes it to the best paid sell point ('sell the grain'). store: the rig with the most cargo (tractor_name if said) takes it to the farm's own storage ('store the grain', 'put the grain in the silo'). harvest_policy: where harvested crop goes from now on, saved (destination; 'from now on sell the harvest'). mount_front: the named machine's front implement set down on its carrier ('load the header onto its trailer'). unmount_front: that implement taken off its carrier onto the named machine ('take the header off its trailer'). route: Farmhand's learned routes (action, name): the player's own driving recorded and kept ('record this route', 'stop recording and save as farm to shop', 'delete the route farm to shop'). contract: a GIANTS field contract taken, worked and collected (field, kind optional; 'do a contract', 'do the plow contract on field 12'). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop. land: buy or sell the farmland parcel a field lies on (land_action, field; 'buy field 12', 'sell field 12').",
+      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to, the pair nearest the requester, where it stands. unsupported: understood, but not something Farmhand does yet (reason). load_tractor: drive a free tractor (tractor_name) up a transport trailer's ramps (implement_name), belt it and raise the ramps ('load the tractor and secure it'). unload_tractor: release the belts and back the tractor off ('unload it'). sequence: several job commands in order (steps). follow_me: the named rig (tractor_name) follows the vehicle the player drives, with FollowMe, until stopped; only on the player's explicit 'follow me'. resume: continue the goal that was stopped, taken over or blocked, from what is already done ('continue'). retarget: give the goal a new destination ('take it to field 2 instead'). haul_tractor: take the named tractor (tractor_name) to the target on a transport and unload it there, from whatever is already done ('take the deutz to field 3 and unload it'). sell: the rig with the most cargo (tractor_name if said) takes it to the best paid sell point ('sell the grain'). store: the rig with the most cargo (tractor_name if said) takes it to the farm's own storage ('store the grain', 'put the grain in the silo'). harvest_policy: where harvested crop goes from now on, saved (destination; 'from now on sell the harvest'). teleport: the named rig teleported to a field's edge, only on the player's explicit 'teleport ... to field N'. mount_front: the named machine's front implement set down on its carrier ('load the header onto its trailer'). unmount_front: that implement taken off its carrier onto the named machine ('take the header off its trailer'). route: Farmhand's learned routes (action, name): the player's own driving recorded and kept ('record this route', 'stop recording and save as farm to shop', 'delete the route farm to shop'). contract: a GIANTS field contract taken, worked and collected (field, kind optional; 'do a contract', 'do the plow contract on field 12'). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop. land: buy or sell the farmland parcel a field lies on (land_action, field; 'buy field 12', 'sell field 12').",
       "enum": [
         "fetch_pair",
         "move_pair",
@@ -43,7 +43,8 @@
         "join_fields",
         "route",
         "mount_front",
-        "unmount_front"
+        "unmount_front",
+        "teleport"
       ]
     },
     "into_field": {"description": "join_fields: the field the other is joined to ('add field 4 to field 5': 5).", "type": "integer", "minimum": 1, "maximum": 100000},
@@ -137,6 +138,8 @@
     "action": {"description": "route: what to do: record the way the player drives from now on (start; name optional), pause, resume, stop recording and keep it (save; name optional), discard it, rename the named route (name, new_name), delete the named route, or list them ('record this route', 'stop recording and save as farm to shop').", "enum": ["start", "pause", "resume", "save", "discard", "rename", "delete", "list"]},
     "name": {"description": "route: the route's name as the player said it ('farm to shop').", "type": "string", "minLength": 1, "maxLength": 60, "pattern": "^[a-z0-9][a-z0-9 '-]*$"},
     "new_name": {"description": "route rename: the new name.", "type": "string", "minLength": 1, "maxLength": 60, "pattern": "^[a-z0-9][a-z0-9 '-]*$"},
+    "stop_at": {"description": "field_work with harvest: the combine stopped where it stands once its tank holds this share ('harvest field 91 and stop at 10 percent'), nothing after.", "type": "number", "minimum": 0.05, "maximum": 0.95},
+    "cart_start": {"description": "field_work with harvest: the combine's tank share at which the grain cart goes alongside ('harvest field 91 and unload at 10 percent'); default 0.65.", "type": "number", "minimum": 0.05, "maximum": 0.95},
     "remember_route": {"description": "move_pair with a named vehicle: the journey's observed line is kept as a learned route ('take the gmc to the farm and remember the route'); follow_me: the player's own line as they lead ('follow me and remember the way').", "type": "boolean"},
     "tractor_name": {"description": "fetch_pair, hitch_pair: the towing vehicle must have all these words in its name ('with the gmc').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
     "implement_name": {"description": "fetch_pair, hitch_pair: the implement must have all these words in its name ('the gooseneck').", "type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9][a-z0-9 -]*$"},
@@ -312,6 +315,14 @@
       "if": {"properties": {"command": {"const": "land"}}},
       "then": {"required": ["field", "land_action"], "properties": {"field": {"type": "integer"}}},
       "else": {"not": {"required": ["land_action"]}}
+    },
+    {
+      "if": {"properties": {"command": {"const": "teleport"}}},
+      "then": {"required": ["tractor_name", "target"], "properties": {"target": {"required": ["type", "field"], "properties": {"type": {"const": "field_entrance"}}}}}
+    },
+    {
+      "if": {"anyOf": [{"required": ["cart_start"]}, {"required": ["stop_at"]}]},
+      "then": {"properties": {"command": {"const": "field_work"}}}
     },
     {
       "if": {"properties": {"command": {"const": "route"}}},

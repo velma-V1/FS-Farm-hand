@@ -861,7 +861,7 @@ end
 -- through getValueByType), so no enum value is assumed. Crop identity comes from
 -- FieldState point samples (FieldState.new 33-56; FieldManager 327-336 samples the
 -- same way). Read-only; recomputed one field per FIELD_REFRESH_MS.
-Observe.MAX_FIELDS = 64
+Observe.MAX_FIELDS = 256      -- every field a farm can own on a large map (live 2026-11-06: fields 78+ cut off at 64)
 Observe.FIELD_REFRESH_MS = 3000
 Observe.fieldCache = {}          -- field id -> last coverage record
 Observe.fieldTimer = 0

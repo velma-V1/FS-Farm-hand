@@ -56,6 +56,7 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "hitch_pair": ("hitch_pair", "ACCEPTED_HITCH", "COMPLETE_HITCH"),
         "mount_front": ("mount_front", "ACCEPTED_MOUNT", "COMPLETE_MOUNT"),
         "unmount_front": ("unmount_front", "ACCEPTED_UNMOUNT", "COMPLETE_UNMOUNT"),
+        "teleport": ("teleport_rig", "ACCEPTED_TELEPORT", "COMPLETE_TELEPORT"),
         "detach_pair": ("detach_pair", "ACCEPTED_DETACH", "COMPLETE_DETACH"),
         "field_work": ("field_work", "ACCEPTED_FIELD_WORK", "COMPLETE_FIELD_WORK"),
         "buy": ("buy", "ACCEPTED_BUY", "COMPLETE_BUY"),
@@ -231,11 +232,12 @@ def work_for(proposal: dict) -> dict | None:
     if command == "field_work":
         return {"field": proposal["field"], "operations": proposal["operations"],
                 "area_m2": proposal.get("area_m2"), "over_crop": proposal.get("over_crop", False),
-                "crop": proposal.get("crop"), "destination": proposal.get("destination")}
+                "crop": proposal.get("crop"), "destination": proposal.get("destination"),
+                "cart_start": proposal.get("cart_start"), "stop_at": proposal.get("stop_at")}
     if command == "buy":
         return {"wants": proposal["wants"]}
     if command in ("fetch_pair", "hitch_pair", "move_pair", "load_tractor", "unload_tractor", "follow_me", "sell",
-                   "store", "mount_front", "unmount_front"):
+                   "store", "mount_front", "unmount_front", "teleport"):
         work = {k: proposal[k] for k in NAMES if k in proposal}
         if command in ("move_pair", "follow_me") and proposal.get("remember_route"):
             work["remember_route"] = True
@@ -574,6 +576,7 @@ class Worker:
     operation: str
     after: list
     destination: str | None = None    # harvest: where the crop goes, as the request said it (else the saved policy)
+    stop_share: float | None = None   # harvest: stopped where it stands once its tank holds this share ("stop at 10%")
 
 
 # A next operation on the same field starts once the one ahead shows this share done
@@ -914,6 +917,10 @@ class Coordinator:
                 if self._blocked_long(w.owner, stuck):
                     with self._lock:
                         self._after.append({"job": "clear_worker", "work": {"tractor": w.tractor, "owner": w.owner}})
+                if (w.operation == "harvest" and w.stop_share is not None and tractor.busy
+                        and combine_full(tractor, w.stop_share)):
+                    self._worker_paused(w)
+                    continue
                 # GIANTS' combine helper waits at a full tank for a trailer under the pipe
                 # (AIDriveStrategyCombine:getDriveData 231-245); none comes on its own.
                 if (w.operation == "harvest" and tractor.busy and tractor.stopped
@@ -935,6 +942,24 @@ class Coordinator:
             elif steps:
                 self.start("worker_return", "here", work={"steps": steps})
             time.sleep(self.WATCH_S)
+
+    def _worker_paused(self, w: Worker) -> None:
+        """A harvest asked to stop at a tank share ("harvest field 91 and stop at 10%", a test of the
+        unloading): its helper stopped where it stands and released; nothing follows (no return, no
+        delivery), the combine and what it holds stay there for the player's next order."""
+        try:
+            if not self.world.stop(w.tractor, w.owner):
+                raise StepFailed("STOP_NOT_CONFIRMED")
+            self.world.release(w.owner)
+        except (StepFailed, StepUnverified, ValueError) as error:
+            log.info("worker %s: not released (%s)", w.tractor, getattr(error, "code", error))
+            return                                 # watched again next round
+        with self._lock:
+            if w in self.workers:
+                self.workers.remove(w)
+        log.info("worker %s on field %s stopped at %.0f %% of its tank, as asked", w.tractor, w.field,
+                 100 * w.stop_share)
+        self.notify("HARVEST_STOPPED_AT_SHARE")
 
     def _worker_ended(self, w: Worker, full: bool = False) -> None:
         field = next((f for f in self.world.fields() if f.id == w.field), None)
@@ -1674,12 +1699,13 @@ class Coordinator:
                     if result.reason == "WORKER_STARTED":
                         worker = Worker(intent["request_id"], result.equipment_ids[0], field.id, step["operation"],
                                         steps[i + 1:], work.get("destination")
-                                        if step["operation"] in ("harvest", "collect") else None)
+                                        if step["operation"] in ("harvest", "collect") else None,
+                                        work.get("stop_at") if step["operation"] == "harvest" else None)
                         self._add_worker(worker)
                         started.append(worker)
                         self.notify("WORKER_STARTED", job.spoken)
                         if step["operation"] == "harvest":
-                            self._start_cart(field.id, work.get("destination"), job.spoken)
+                            self._start_cart(field.id, work.get("destination"), job.spoken, work.get("cart_start"))
                         break
                 if not retry:
                     break
@@ -1888,12 +1914,25 @@ class Coordinator:
     GRAIN_CART_WAIT_S = 10.0         # between looks for its combine at work (its helper starting, on its way)
     GRAIN_CART_WAITS = 180
 
+    CART_START_SHARE = 0.65          # a grain cart goes alongside once the combine's tank is this full
+
+    def _combine_at(self, field_id, share: float) -> bool:
+        """Whether a combine harvesting ``field_id`` for Farmhand holds ``share`` of its tank (unobserved: no)."""
+        with self._lock:
+            ids = {w.tractor for w in self.workers if w.operation == "harvest" and w.field == field_id}
+        try:
+            items = self.world.snapshot()
+        except StepUnverified:
+            return False
+        combines = [i for i in items if i.id in ids] or [i for i in items if i.category == "harvester" and i.busy]
+        return any(combine_full(c, share) for c in combines)
+
     def _harvesting(self, field_id=None) -> bool:
         with self._lock:
             return any(w.operation == "harvest" and (field_id is None or w.field == field_id) for w in self.workers) \
                 or (field_id in self._harvest_fields if field_id is not None else bool(self._harvest_fields))
 
-    def _start_cart(self, field_id: int, destination, spoken: bool = False) -> None:
+    def _start_cart(self, field_id: int, destination, spoken: bool = False, start: float | None = None) -> None:
         """The field's grain cart as a worker of its own (_grain_cart on its thread, its own executor),
         unless it has one already or carts are off. It ends with the harvest, or at STOP."""
         if not self.grain_cart:
@@ -1912,7 +1951,7 @@ class Coordinator:
                 self._local.executor = self.cart_executor
                 try:
                     result = self._grain_cart(job, cancel, lambda state: None,
-                                              {"field": field_id, "destination": destination})
+                                              {"field": field_id, "destination": destination, "start": start})
                     log.info("grain cart for field %s: %s %s", field_id, result.status, result.reason)
                     self.notify(result_notice(result.status, result.reason, "COMPLETE_GRAIN_CART"), spoken)
                 except Exception:
@@ -1950,6 +1989,7 @@ class Coordinator:
         it: said, and it ends there (the combine's own full stop is handled by the watch)."""
         field = work.get("field")
         destination = self._destination(work.get("destination"))
+        start = work["start"] if work.get("start") is not None else self.CART_START_SHARE
         made, result = False, Result("COMPLETE", "HARVEST_ENDED")
         waited, n = 0, 0
         while n < self.GRAIN_CART_LOADS:
@@ -1957,6 +1997,11 @@ class Coordinator:
                 return Result("CANCELLED", "CANCELLED_BY_REQUESTER")
             if not self._harvesting(field):
                 return result
+            if start > 0 and not self._combine_at(field, start):
+                # Unloading begins once the combine's tank holds ``start`` of its capacity (the owner,
+                # 2026-11-06: about 60-70 %), not from its first litre: the cart is not alongside for nothing.
+                cancel.wait(self.GRAIN_CART_WAIT_S)
+                continue
             result = self._execute(job, cancel, entered, f"e{n}w{waited}", task="escort", field=field)
             if result.status == "BLOCKED" and result.reason in ("NO_COMBINE_HARVESTING", "COMBINE_NOT_AT_THE_FIELD") \
                     and waited < self.GRAIN_CART_WAITS:
@@ -2022,7 +2067,9 @@ class Coordinator:
             return Result("COMPLETE", "GRAIN_CART_WORKING")      # its cart is already at it
         if self.grain_cart:
             # On the move first (a release gate); stopping the combine is only the recovery.
-            moving = self._grain_cart(job, cancel, entered, {"field": field_id, "destination": worker.destination})
+            # Asked to unload now: the cart goes alongside whatever the tank holds.
+            moving = self._grain_cart(job, cancel, entered, {"field": field_id, "destination": worker.destination,
+                                                             "start": 0.0})
             if moving.status in ("COMPLETE", "CANCELLED") or not self._harvesting(field_id):
                 return moving
             log.info("job %d grain cart: %s %s; the combine paused instead", job.number, moving.status, moving.reason)

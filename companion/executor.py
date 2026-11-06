@@ -1287,6 +1287,69 @@ class Executor:
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, ids, tuple(states))
 
+    TELEPORT_ARRIVE_M = 30.0     # the rig is observed within this of the field-edge point it was sent to
+
+    def _teleport_rig(self, command, enter, states) -> Result:
+        """"Teleport the mf 8570 to field 91" (the player's own order; the teleport_recovery setting is only
+        for Farmhand's own rescues): FIND the named rig and the field's edge point nearest it -> RESERVE the
+        whole rig -> TELEPORT (GIANTS' teleportVehicle, every unit at its offset, facing the field's middle;
+        never silent) -> VERIFY (observed there, nothing unhitched or loose) -> RELEASE."""
+        from companion.drive_goal import GoalError, resolve_drive_goal
+        from companion.standalone import _edge_point
+        owner, farm_id = command["request_id"], command["farm_id"]
+        ids, reserved = (), False
+        try:
+            enter("FIND")
+            items = tuple(self.world.snapshot())
+            number = command["target"]["field"]
+            place = next((p for p in self.world.field_places() if p.id == f"field-{number}"), None)
+            if place is None or not valid_position(place.position):
+                return Result("BLOCKED", "FIELD_NOT_FOUND", states=tuple(states))
+            try:
+                rig = resolve_drive_goal(items, farm_id, command.get("tractor_name"), None, place.position)
+            except GoalError as error:
+                return Result("BLOCKED", error.code, states=tuple(states))
+            ids = rig.rig_ids
+            before = {i.id: i for i in items if i.id in ids}
+            root = before[rig.vehicle_id]
+            outline = tuple(place.outline or ())
+            point = (_edge_point(outline, root.position)[0] if len(outline) >= 3 else None) or place.position
+            yaw = math.atan2(place.position[0] - point[0], place.position[1] - point[1])
+            enter("RESERVE")
+            if not self.world.reserve_rig(ids, owner):
+                return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
+            reserved = True
+            self.active = ids
+            enter("TELEPORT")
+            log.info("teleport (the player's order): %s to field %s's edge at (%.1f, %.1f)", ids, number, *point)
+            self.world.teleport(rig.vehicle_id, owner, 0.0, Pose(point[0], point[1], yaw))
+            enter("VERIFY")
+            after = {i.id: i for i in self.world.snapshot()}
+            if any(i not in after for i in ids) or math.dist(after[rig.vehicle_id].position, point) > self.TELEPORT_ARRIVE_M:
+                raise ObservationMismatch("TELEPORT_NOT_OBSERVED")
+            if any(after[i].attached_to != before[i].attached_to or after[i].belted_to != before[i].belted_to
+                   or after[i].mounted_to != before[i].mounted_to for i in ids):
+                raise ObservationMismatch("RIG_CHANGED")
+            status, reason = "COMPLETE", "TELEPORTED"
+        except Cancelled:
+            status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
+        except ObservationMismatch as error:
+            status, reason = "UNVERIFIED", str(error)
+        except StepUnverified as error:
+            status, reason = "UNVERIFIED", error.code
+        except StepFailed as error:
+            status, reason = "FAILED", error.code
+        finally:
+            if reserved:
+                try:
+                    enter("RELEASE")
+                    self.world.release(owner)
+                except Exception as error:
+                    log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
+                    status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        self.active = ()
+        return Result(status, reason, ids, tuple(states))
+
     UNMOUNT_LANE_M = 18.0    # the clear lane a carrier needs on its unloading side (approach, machine, implement)
 
     def _unmount_front(self, command, enter, states) -> Result:
@@ -3027,6 +3090,8 @@ class Executor:
             return self._mount_front(command, enter, states)
         if command["task"] == "unmount_front":
             return self._unmount_front(command, enter, states)
+        if command["task"] == "teleport_rig":
+            return self._teleport_rig(command, enter, states)
         if command["task"] == "save_game":
             try:
                 enter("SAVE")

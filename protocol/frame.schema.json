@@ -178,7 +178,7 @@
                          "outline": {"type": "array", "minItems": 3, "maxItems": 64, "items": {
                            "type": "array", "minItems": 2, "maxItems": 2,
                            "items": {"$ref": "#/$defs/coordinate"}}}}}},
-        "fields": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/field"}},
+        "fields": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/field"}},
         "contracts": {"type": "array", "maxItems": 50, "items": {
           "type": "object", "additionalProperties": false, "required": ["field", "kind", "status", "mine", "reward"],
           "properties": {"field": {"type": "integer", "minimum": 1, "maximum": 100000},

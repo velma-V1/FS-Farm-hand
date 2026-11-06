@@ -845,6 +845,25 @@ _REMEMBER = re.compile(rf"\s+(?:and\s+)?(?:(?:please\s+)?(?:remember|learn|save|
                        rf"|(?:don\s*t|do\s+not)\s+forget)\s+(?:the|this|that|your)\s+{_ROUTE_NOUN}(?:\s+there)?$")
 
 
+# "... and unload at 10 percent": when the grain cart goes alongside (the combine's tank share).
+_CART_START = re.compile(r"[ ,]+(?:and\s+)?(?:start\s+)?(?:unload(?:ing)?|the\s+cart|cart)(?:\s+(?:it|the\s+combine|on\s+the\s+move))?"
+                         r"\s+(?:at|from)\s+(?P<pct>\d{1,2})(?:\s*(?:percent|pc|per\s+cent))?(?:\s+full)?$")
+# "... and stop at 10 percent": the harvest stopped where it stands once the combine's tank holds that much.
+_STOP_AT = re.compile(r"[ ,]+(?:and\s+)?(?:then\s+)?stop(?:\s+(?:it|the\s+combine|harvesting))?\s+(?:at|when\s+it\s+is)\s+"
+                      r"(?P<pct>\d{1,2})(?:\s*(?:percent|pc|per\s+cent))?(?:\s+full)?$")
+# "teleport the mf 8570 to field 91": the player's own order (never the teleport_recovery setting's).
+_TELEPORT = re.compile(r"^(?:please\s+)?teleport\s+(?:the\s+|my\s+)?(?P<name>[a-z0-9 ]{1,40}?)\s+to\s+field\s+(?P<field>\d{1,6})$")
+
+
+def teleport(words: str) -> dict | None:
+    match = _TELEPORT.match(words)
+    if match is None:
+        return None
+    name = re.sub(r"\s+(?:and\s+(?:its|the)\s+\S+(?:\s+\S+)?)$", "", match["name"]).strip()
+    return {"version": 1, "command": "teleport", "tractor_name": name,
+            "target": {"type": "field_entrance", "field": int(match["field"])}}
+
+
 def route(words: str) -> dict | None:
     for action, rule in _ROUTE_RULES:
         match = rule.match(words)
@@ -866,9 +885,16 @@ class RuleInterpreter:
         if not isinstance(text, str):
             return None
         words = normalize(text)
-        learned = route(words)
+        learned = route(words) or teleport(words)
         if learned is not None:
             return learned
+        for rule, key in ((_CART_START, "cart_start"), (_STOP_AT, "stop_at")):
+            share = rule.search(words)
+            if share is not None and 5 <= int(share["pct"]) <= 95:
+                rest = self.interpret(words[:share.start()])
+                if rest is not None and rest["command"] == "field_work" and "harvest" in rest["operations"]:
+                    return {**rest, key: int(share["pct"]) / 100}
+                return None
         remember = _REMEMBER.search(words)
         if remember is not None:
             # The journey itself first; only a drive of a named machine (or a lead) is recorded.

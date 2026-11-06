@@ -997,6 +997,19 @@ class WorkerTests(unittest.TestCase):
     def unit(self, world, unit_id):
         return next(i for i in world.snapshot() if i.id == unit_id)
 
+    def test_a_harvest_asked_to_stop_at_a_tank_share_stops_there_and_queues_nothing(self):
+        from companion.coordinator import Worker
+        world = self.world("plow")
+        c, notices = coordinated(world)
+        w = Worker("worker-a", "t-1", 7, "harvest", [{"task": "move_pair", "target": {"type": "origin"}}],
+                   stop_share=0.1)
+        c.workers.append(w)
+        with mock.patch.object(world, "stop", return_value=True) as stopped, mock.patch.object(world, "release"):
+            c._worker_paused(w)
+        stopped.assert_called_once_with("t-1", "worker-a")
+        self.assertEqual((c.workers, c._after), ([], []))         # no drive back to where it came from
+        self.assertIn("HARVEST_STOPPED_AT_SHARE", notices)
+
     def test_a_field_already_done_is_said_so_never_as_work_completed(self):
         # Live 2026-11-06: "harvest field 2" on stubble answered "field work complete".
         from companion.coordinator import result_notice
@@ -1513,6 +1526,31 @@ class HarvestTests(unittest.TestCase):
         self.assertEqual([c[0] for c in calls[:4]], ["reserve", "park", "detach", "pull_clear"])
         self.assertEqual(calls[1][2], Executor.UNMOUNT_LANE_M)
         self.assertEqual(world.items["h-1"].attached_to, "c-1")
+
+    def test_the_players_teleport_order_moves_the_whole_rig_to_the_fields_edge(self):
+        sent = []
+
+        class Teleports(MockWorld):
+            def reserve_rig(self, ids, owner, loose=False, carrier=False):
+                return self.reserve(ids[:2], owner)
+
+            def teleport(self, vehicle_id, owner, min_m=0.0, at=None):
+                sent.append(at)
+                with self._lock:
+                    for i in ("c-1", "h-1"):
+                        self.items[i] = replace(self.items[i], position=(at.x, at.z))
+
+        outline = ((-760.0, 650.0), (-660.0, 650.0), (-660.0, 750.0), (-760.0, 750.0))
+        world = Teleports(self.combine(at=(-850.0, 160.0)), PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
+        world.mock_field_places = (Destination("field-91", (-710.0, 700.0), "field 91", outline),)
+        world.items["c-1"] = replace(world.items["c-1"], name="MF 8570")
+        result = Executor(world).execute({"version": 1, "farm_id": "farm-a", "request_id": "r1", "task": "teleport_rig",
+                                          "tractor_name": "mf 8570",
+                                          "target": {"type": "field_entrance", "field": 91}})
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "TELEPORTED"), result)
+        self.assertEqual(set(result.equipment_ids), {"c-1", "h-1"})
+        self.assertAlmostEqual(sent[0].z, 650.0)            # the edge nearest it, facing the middle
+        self.assertGreater(sent[0].yaw, 0.0)
 
     def test_a_combine_carrying_nothing_a_trailer_takes_is_not_loaded(self):
         world = MockWorld(self.combine(), PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
@@ -2358,12 +2396,25 @@ class UnloadAndSellTests(unittest.TestCase):
         combine = world.items["c-1"]
         world.items["c-1"] = replace(combine, fill_units=(combine.fill_units[0], replace(unit, level=level)))
 
+    def test_the_cart_goes_alongside_only_once_the_tank_holds_the_share_asked(self):
+        # The owner (2026-11-06): unloading starts at about 60-70 % of the combine's tank (a test: at 10 %).
+        world, unit = self.cart_world()
+        c, notices = coordinated(world)
+        c.grain_cart = True
+        c.GRAIN_CART_WAIT_S = 0.02
+        c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"], "cart_start": 0.1})
+        self.assertTrue(until(lambda: "ACCEPTED_GRAIN_CART" in notices))
+        self.assertFalse(until(lambda: "t-5" in getattr(world, "mock_escorting", ()), 0.5))   # empty: it waits
+        self.fill(world, unit, 2000.0)
+        self.assertTrue(until(lambda: "t-5" in getattr(world, "mock_escorting", ())), notices)
+        c.stop()
+
     def test_a_grain_cart_follows_the_harvest_and_takes_the_grain_on_the_move(self):
         # FINAL_FARMHAND_PRODUCT_SPEC.md 5: a separate worker unloads the combine while it harvests;
         # the combine is never stopped for it.
         world, unit = self.cart_world()
         c, notices = coordinated(world)
-        c.grain_cart = True
+        c.grain_cart, c.CART_START_SHARE = True, 0.0     # the escort itself (the tank-share wait: below)
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
         self.assertTrue(until(lambda: "t-5" in getattr(world, "mock_escorting", ())), notices)
         self.assertIn("ACCEPTED_GRAIN_CART", notices)
@@ -2384,7 +2435,7 @@ class UnloadAndSellTests(unittest.TestCase):
         trailer = world.items["w-5"]
         world.items["w-5"] = replace(trailer, fill_units=(replace(trailer.fill_units[0], capacity=6000.0),))
         c, notices = coordinated(world)
-        c.grain_cart = True
+        c.grain_cart, c.CART_START_SHARE = True, 0.0     # the escort itself (the tank-share wait: below)
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"],
                   "destination": "sell"})
         self.assertTrue(until(lambda: "t-5" in getattr(world, "mock_escorting", ())))
@@ -2406,7 +2457,7 @@ class UnloadAndSellTests(unittest.TestCase):
         c, notices = coordinated(world)
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
         c.wait(10)
-        c.grain_cart = True
+        c.grain_cart, c.CART_START_SHARE = True, 0.0     # the escort itself (the tank-share wait: below)
         self.fill(world, unit, 5000.0)
         c.submit({"version": 1, "command": "unload_combine"})
         self.assertTrue(until(lambda: world.items["w-5"].fill_units[0].level == 5000.0))
@@ -2423,7 +2474,7 @@ class UnloadAndSellTests(unittest.TestCase):
         world, unit = self.cart_world()
         world.items["t-5"] = replace(world.items["t-5"], category="unknown")
         c, notices = coordinated(world)
-        c.grain_cart = True
+        c.grain_cart, c.CART_START_SHARE = True, 0.0     # the escort itself (the tank-share wait: below)
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
         self.assertTrue(until(lambda: "t-5" in getattr(world, "mock_escorting", ())), notices)
         world.finish_worker("c-1")
@@ -2434,7 +2485,7 @@ class UnloadAndSellTests(unittest.TestCase):
         # harvesting combine while the player's next job runs; STOP ends the job, the cart and the helper.
         world, unit = self.cart_world()
         c, notices = coordinated(world)
-        c.grain_cart = True
+        c.grain_cart, c.CART_START_SHARE = True, 0.0     # the escort itself (the tank-share wait: below)
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
         self.assertTrue(until(lambda: "t-5" in getattr(world, "mock_escorting", ())), notices)
         self.assertTrue(until(lambda: c.current is None))
@@ -2457,7 +2508,7 @@ class UnloadAndSellTests(unittest.TestCase):
         world.items["w-5"] = replace(world.items["w-5"], attached_to=None, position=free_at, heading=0.0,
                                      input_joints=(InputJoint(1, "trailer", (free_at[0], free_at[1] + 3.0), True),))
         c, notices = coordinated(world)
-        c.grain_cart = True
+        c.grain_cart, c.CART_START_SHARE = True, 0.0     # the escort itself (the tank-share wait: below)
         c.submit({"version": 1, "command": "field_work", "field": 7, "operations": ["harvest"]})
         self.assertTrue(until(lambda: "t-5" in getattr(world, "mock_escorting", ())), (c.last, notices))
         self.assertEqual(world.items["w-5"].attached_to, "t-5")
