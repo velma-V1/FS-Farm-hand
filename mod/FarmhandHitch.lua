@@ -2255,7 +2255,15 @@ function Hitch.routeFootprint(env, tractor)
         local initial = #units
         for index = 1, initial do
             local belts = units[index].spec_tensionBelts
-            for _, data in pairs(belts ~= nil and belts.objectsToJoint or {}) do
+            local held = {}
+            for _, data in pairs(belts ~= nil and belts.objectsToJoint or {}) do held[#held + 1] = data end
+            -- What a carrier holds by GIANTS' DynamicMountAttacher (a header locked on its trailer)
+            -- moves with the rig as belted cargo does.
+            local mounts = units[index].spec_dynamicMountAttacher
+            for object in pairs(mounts ~= nil and mounts.dynamicMountedObjects or {}) do
+                if type(object) == "table" and object.rootNode ~= nil then held[#held + 1] = { object = object } end
+            end
+            for _, data in ipairs(held) do
                 if data.object ~= nil and not excluded[data.object] then
                     -- Belt cargo may itself carry implements; they move with the rig too.
                     local carried = rigUnits(data.object)

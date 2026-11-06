@@ -723,6 +723,34 @@ function Observe.vehicle(env, v)
         assert(integer(mountId))
         return mountId
     end)
+    -- Held by a carrier's DynamicMountAttacher (Mountable:getDynamicMountObject): a header on its trailer.
+    local mountedTo = try(function()
+        if type(v.getDynamicMountObject) ~= "function" then return nil end
+        local carrier = v:getDynamicMountObject()
+        if carrier == nil then return nil end
+        local mountId = env.NetworkUtil.getObjectId(carrier)
+        assert(integer(mountId))
+        return mountId
+    end)
+    -- A carrier's GIANTS lock positions (DynamicMountAttacher lockPosition): where the root of a vehicle
+    -- whose config file ends with ``xml`` is set when it mounts there, and whether it is free.
+    local lockPositions = try(function()
+        local spec = v.spec_dynamicMountAttacher
+        if spec == nil or type(spec.lockPositions) ~= "table" or #spec.lockPositions == 0 then return nil end
+        local out = Observe.array()
+        for i, lock in ipairs(spec.lockPositions) do
+            if i > Observe.MAX_JOINTS then break end
+            local x, _, z = env.getWorldTranslation(lock.jointNode)
+            local yaw = yawOf(env, lock.jointNode)
+            assert(finite(x) and finite(z) and finite(yaw) and type(lock.xmlFilename) == "string")
+            out[#out + 1] = { xml = string.sub(lock.xmlFilename, -120), x = x, z = z, yaw = yaw, free = lock.state ~= true }
+        end
+        return out
+    end)
+    local configFile = try(function()
+        assert(type(v.configFileName) == "string")
+        return string.sub(v.configFileName, -160)
+    end)
 
     return {
         id = id,
@@ -731,6 +759,9 @@ function Observe.vehicle(env, v)
         fold = nullable(fold),
         belts = nullable(belts),
         belted_to = nullable(beltedTo),
+        mounted_to = nullable(mountedTo),
+        lock_positions = nullable(lockPositions),
+        config_file = nullable(configFile),
         size = nullable(size),
         kinds = Observe.kinds(v),
         fill_units = Observe.fillUnits(env, v),

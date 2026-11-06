@@ -85,6 +85,11 @@ class World(Protocol):
         StepFailed PLACE_NOT_CLEAR with nothing moved when that pose is not clear."""
         ...
 
+    def mount(self, vehicle_id: str, carrier_id: str, owner: str) -> str:
+        """MOUNT: the reserved machine's raised front implement set down on the reserved carrier's GIANTS
+        lock position; MOUNTED, or StepFailed with nothing set down when not lined up or pushed."""
+        ...
+
     def reach(self, vehicle_id: str, pose: Pose, owner: str, width: float = 0.0) -> str:
         """REACH: whether GIANTS' agent plans a route for the reserved vehicle to ``pose``; never drives.
         REACHABLE, NOT_REACHABLE, REACH_BLOCKED or REACH_UNDECIDED."""

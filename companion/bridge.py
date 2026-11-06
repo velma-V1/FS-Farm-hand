@@ -57,7 +57,7 @@ CONTACT_RESTARTS = 2
 STUCK_CODES = frozenset({"EGRESS_LIMIT", "EGRESS_DIVERGED", "EGRESS_BLOCKED", "EGRESS_NOT_CLEAR",
                          "EGRESS_NOT_AHEAD", "EGRESS_NOT_BEHIND", "START_NOT_CLEAR"})
 CONTACT_SETTLE_S = 10.0     # waited for it to stand before a restart
-DONE_TIMEOUT_S = {"pay": 15.0, "charge": 15.0, "teleport": 20.0, "place": 20.0, "worktool": 25.0, "reposition": 14700.0, "farm_drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "escort": 7300.0, "reach": 30.0, "reattach": 50.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
+DONE_TIMEOUT_S = {"pay": 15.0, "charge": 15.0, "teleport": 20.0, "place": 20.0, "worktool": 25.0, "reposition": 14700.0, "farm_drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "escort": 7300.0, "reach": 30.0, "reattach": 50.0, "mount": 80.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -366,9 +366,10 @@ class FS25World:
             log.info("reserved tractor=%s wagon=%s for %s", ids[0], ids[1], owner)
             return True
 
-    def reserve_rig(self, ids: tuple[str, ...], owner: str, loose: bool = False) -> bool:
-        """Atomically reserve an observed root vehicle and every attached/belted unit; ``loose``: a
-        lone implement hitched to nothing (for the teleport recovery)."""
+    def reserve_rig(self, ids: tuple[str, ...], owner: str, loose: bool = False, carrier: bool = False) -> bool:
+        """Atomically reserve an observed root vehicle and every attached/belted/mounted unit; ``loose``: a
+        lone implement hitched to nothing (for the teleport recovery); ``carrier``: the last id is a
+        standing unit hitched to nothing that the rig loads onto (a header trailer), with what it holds."""
         with self._lock:
             if not owner or not 1 <= len(ids) <= 6 or len(set(ids)) != len(ids) or owner in self._reservations:
                 return False
@@ -385,12 +386,15 @@ class FS25World:
                    or i.busy or i.occupied or not i.stopped for i in rig):
                 return False
             members = set(ids)
-            if any(i.attached_to not in (None, *members) or i.belted_to not in (None, *members) for i in rig):
+            if any(i.attached_to not in (None, *members) or i.belted_to not in (None, *members)
+                   or i.mounted_to not in (None, *members) for i in rig):
                 return False
-            if any(i.id not in members and (i.attached_to in members or i.belted_to in members)
+            if any(i.id not in members and (i.attached_to in members or i.belted_to in members or i.mounted_to in members)
                    for i in observed.values()):
                 return False
-            if any(i.id != rig[0].id and i.attached_to is None and i.belted_to is None for i in rig):
+            spare = rig[-1].id if carrier and len(rig) > 1 and rig[-1].attached_to is None else None
+            if any(i.id not in (rig[0].id, spare) and i.attached_to is None and i.belted_to is None
+                   and i.mounted_to is None for i in rig):
                 return False
             self._reservations[owner] = (farm, tuple(ids))
             log.info("reserved rig %s for %s", ids, owner)
@@ -738,6 +742,13 @@ class FS25World:
         UNLOADED only braked at rest where planned. The companion verifies from a snapshot."""
         self._reserved(tractor_id, owner, trailer_id)
         return self._run("load", tractor=int(tractor_id), wagon=int(trailer_id), direction=int(direction))
+
+    def mount(self, vehicle_id: str, carrier_id: str, owner: str) -> str:
+        """MOUNT: the reserved machine's raised front implement carried straight onto the reserved
+        carrier's free GIANTS lock position and set down there; MOUNTED once GIANTS' DynamicMountAttacher
+        holds it (mod/FarmhandBridge.lua starters.mount). The companion verifies from a snapshot."""
+        self._reserved(vehicle_id, owner, carrier_id)
+        return self._run("mount", tractor=int(vehicle_id), wagon=int(carrier_id))
 
     def follow(self, tractor_id: str, owner: str) -> str:
         """FollowMe: the reserved vehicle follows the one the player drives, until that ends

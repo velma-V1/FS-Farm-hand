@@ -1045,6 +1045,136 @@ end
 
 function aborts.reattach(env, task) pcall(Bridge.Hitch.halt, env, task.drive, 0) end
 
+-- ------------------------------------------------------------------ mount
+-- The machine's raised front implement (a header) carried straight onto the free GIANTS lock position
+-- a carrier keeps for it (DynamicMountAttacher lockPosition, matched by the implement's config file,
+-- as DynamicMountAttacher:addDynamicMountedObject matches it), set down there by GIANTS' own detach;
+-- the carrier mounts what stands still in its trigger (DynamicMountAttacher:onUpdateTick, 1 s at
+-- rest) and locks it into place. Only lined up (lateralM, headingDeg) and short (maxM); the carrier
+-- moving at all (pushed), a drive past the start distance, or the seated player taking over ends it.
+-- DONE MOUNTED once the implement reports the carrier as its dynamic mount (getDynamicMountObject).
+Bridge.MOUNT = { creepKmh = 2.0, maxM = 12, lateralM = 0.6, headingDeg = 6, arriveM = 0.15, carrierMovedM = 0.15,
+                 timeoutMs = 60000, raiseMs = 4000, mountMs = 8000, aboveM = 0.05 }
+
+local function mountPlan(env, v, carrier)
+    local spec = carrier.spec_dynamicMountAttacher
+    if spec == nil then return nil, "NOT_A_CARRIER" end
+    for _, entry in ipairs(v:getAttachedImplements() or {}) do
+        local implement = entry.object
+        local file = implement ~= nil and implement.configFileName or nil
+        for _, lock in ipairs(spec.lockPositions or {}) do
+            if type(file) == "string" and lock.state ~= true and file:sub(-#lock.xmlFilename) == lock.xmlFilename then
+                return { implement = implement, lock = lock, joint = entry.jointDescIndex }
+            end
+        end
+    end
+    return nil, "NO_IMPLEMENT_FOR_CARRIER"
+end
+
+-- Where the implement's root still has to go: (ahead along the machine, across, up, heading off).
+local function mountGap(env, v, plan)
+    local ix, iy, iz = env.getWorldTranslation(plan.implement.rootNode)
+    local lx, ly, lz = env.getWorldTranslation(plan.lock.jointNode)
+    local fx, _, fz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
+    local dx, dz = lx - ix, lz - iz
+    local ifx, _, ifz = env.localDirectionToWorld(plan.implement.rootNode, 0, 0, 1)
+    local lfx, _, lfz = env.localDirectionToWorld(plan.lock.jointNode, 0, 0, 1)
+    local turned = math.abs((math.atan2(ifx, ifz) - math.atan2(lfx, lfz) + math.pi) % (2 * math.pi) - math.pi)
+    return dx * fx + dz * fz, dx * fz - dz * fx, iy - ly, turned
+end
+
+function starters.mount(env, spec)
+    local v, carrier = spec.tractor, spec.wagon
+    local denied = idle(env, v, spec.farmId)
+    if denied ~= nil then return nil, denied end
+    if spec.owned() ~= true then return nil, "RESERVATION_LOST" end
+    if not stopped(carrier) then return nil, "NOT_STOPPED" end
+    if type(carrier.getAllowDynamicMountObjects) ~= "function" or carrier:getAllowDynamicMountObjects() ~= true then
+        return nil, "CARRIER_NOT_READY"
+    end
+    local plan, why = mountPlan(env, v, carrier)
+    if plan == nil then return nil, why end
+    local M = Bridge.MOUNT
+    local ahead, across, up, turned = mountGap(env, v, plan)
+    log("mount: %s %.2f m ahead, %.2f across, %.2f above its lock, %.1f deg off", tostring(plan.implement:getName()),
+        ahead, across, up, math.deg(turned))
+    if ahead < -M.arriveM or ahead > M.maxM or math.abs(across) > M.lateralM or turned > math.rad(M.headingDeg) then
+        return nil, "MOUNT_NOT_LINED_UP"
+    end
+    local cx, _, cz = env.getWorldTranslation(carrier.rootNode)
+    local vx, _, vz = env.getWorldTranslation(v.rootNode)
+    local task = { plan = plan, drive = { tractor = v, maxSpeedKmh = M.creepKmh, elapsed = 0 },
+                   carrierAt = { cx, cz }, from = { vx, vz }, startAhead = ahead }
+    -- Raised to carry it over the deck (GIANTS' own lift of that joint), never lowered onto it.
+    if type(v.getJointMoveDown) == "function" and v:getJointMoveDown(plan.joint) then
+        v:setJointMoveDown(plan.joint, false)
+        task.raising = 0
+    end
+    Bridge.Hitch.watchDriver(env, v)
+    return task
+end
+
+function steppers.mount(env, task, dt)
+    local v, carrier, plan, M = task.spec.tractor, task.spec.wagon, task.plan, Bridge.MOUNT
+    local function halt() pcall(Bridge.Hitch.halt, env, task.drive, dt) end
+    if task.spec.owned() ~= true then halt(); return "FAILED", "RESERVATION_LOST" end
+    task.drive.elapsed = task.elapsed
+    if task.detached then
+        halt()
+        if plan.implement:getDynamicMountObject() == carrier then return settle(task, "MOUNTED") end
+        if task.elapsed - task.detached > M.mountMs then return "UNVERIFIED", "MOUNT_NOT_OBSERVED" end
+        return nil
+    end
+    local cx, _, cz = env.getWorldTranslation(carrier.rootNode)
+    if math.sqrt((cx - task.carrierAt[1]) ^ 2 + (cz - task.carrierAt[2]) ^ 2) > M.carrierMovedM then
+        halt()
+        return "FAILED", "CARRIER_MOVED"
+    end
+    local conflict = Bridge.Hitch.driverConflict and Bridge.Hitch.driverConflict(v)
+    if conflict ~= nil then halt(); return "FAILED", conflict end
+    if task.raising ~= nil then
+        halt()
+        task.raising = task.raising + dt
+        if task.raising < M.raiseMs then return nil end
+        task.raising = nil
+    end
+    local ahead, across, up = mountGap(env, v, plan)
+    if task.checkedHeight == nil then
+        task.checkedHeight = true
+        -- Carried no higher than the deck it goes onto, it would be pushed into the carrier.
+        if up < M.aboveM then halt(); log("mount: carried %.2f m above its lock, too low", up); return "FAILED", "CARRIED_TOO_LOW" end
+    end
+    if ahead <= M.arriveM then
+        halt()
+        if not stopped(v) then return nil end
+        if plan.implement:isDetachAllowed() ~= true then return "FAILED", "DETACH_NOT_ALLOWED" end
+        local entry = v:getImplementByObject(plan.implement)
+        task.joints = entry and { entry.jointDescIndex, entry.inputJointDescIndex } or nil
+        log("mount: at its lock (%.2f ahead, %.2f across, %.2f above): set down", ahead, across, up)
+        v:detachImplementByObject(plan.implement)
+        task.detached = task.elapsed
+        -- A pull-clear may back the machine off it, as after any detach.
+        Bridge.lastDetach = { tractor = v, implement = plan.implement, joints = task.joints, age = 0 }
+        return nil
+    end
+    local vx, _, vz = env.getWorldTranslation(v.rootNode)
+    if task.elapsed > M.timeoutMs or math.abs(across) > M.lateralM
+            or math.sqrt((vx - task.from[1]) ^ 2 + (vz - task.from[2]) ^ 2) > task.startAhead + 0.5 then
+        halt()
+        return "FAILED", "MOUNT_NOT_LINED_UP"
+    end
+    if not v:getIsMotorStarted() and v:getCanMotorRun() then v:startMotor() end
+    Bridge.Hitch.holdActive(task.drive)
+    v:raiseActive()
+    local node = v:getAISteeringNode()
+    local lx, _, lz = env.worldToLocal(node, env.getWorldTranslation(plan.lock.jointNode))
+    local ix, _, iz = env.worldToLocal(node, env.getWorldTranslation(plan.implement.rootNode))
+    Bridge.Hitch.drive(env, task.drive, dt, true, lx - ix, math.max(lz - iz, 1))
+    return nil
+end
+
+function aborts.mount(env, task) pcall(Bridge.Hitch.halt, env, task.drive, 0) end
+
 -- ----------------------------------------------------------------- detach
 -- GIANTS' own detach behind GIANTS' own permission, for the reserved, idle
 -- tractor: the implement must be its (AttacherJoints:getImplementByObject
@@ -3080,7 +3210,7 @@ function aborts.stop() end
 -- --------------------------------------------------------------- runner
 
 Bridge.NEEDS_WAGON = { maneuver = true, align = true, attach = true, detach = true, pull_clear = true, load = true,
-                       overload = true, alongside = true, backoff = true, escort = true, reattach = true }
+                       overload = true, alongside = true, backoff = true, escort = true, reattach = true, mount = true }
 -- Ops that run beside the others (each keeps its own state on its task): one per machine, many
 -- machines at once. Every other op runs alone in the active slot, as before.
 Bridge.CONCURRENT = { escort = true, stop = true }
@@ -3474,6 +3604,9 @@ Bridge.NOTICES = {
     COMPLETE = "Farmhand: tractor and implement delivered",
     ACCEPTED_MOVE = "Farmhand: on my way",
     ACCEPTED_HITCH = "Farmhand: hitching a tractor to the implement",
+    ACCEPTED_MOUNT = "Farmhand: loading the header onto its trailer",
+    COMPLETE_MOUNT = "Farmhand: the header is locked on its trailer",
+    COMPLETE_MOUNT_NOT_CLEAR = "Farmhand: the header is locked on its trailer; the machine could not back off it",
     COMPLETE_HITCH = "Farmhand: tractor and implement hitched",
     ACCEPTED_DETACH = "Farmhand: unhitching the implement",
     COMPLETE_DETACH = "Farmhand: implement unhitched",
@@ -3948,6 +4081,14 @@ Bridge.REASONS = {
     NO_GOTO_JOB = "the game's driver is not available",
     NO_HITCH_OPTION = "that model has no such hitch in the store",
     NO_OPEN_SPOT = "there is no open ground nearby",
+    NO_CARRIER_FOR_IMPLEMENT = "no trailer here takes that implement",
+    NOT_A_CARRIER = "that trailer has nothing to lock an implement on",
+    NO_IMPLEMENT_FOR_CARRIER = "the machine carries nothing that trailer takes",
+    CARRIER_NOT_READY = "the trailer is not ready to take it (fold it out first)",
+    MOUNT_NOT_LINED_UP = "the machine is not lined up with the trailer",
+    CARRIER_MOVED = "the trailer moved, so loading stopped before pushing it",
+    CARRIED_TOO_LOW = "the implement is carried too low to clear the trailer",
+    MOUNT_NOT_OBSERVED = "it was set down but the trailer did not lock it",
     PLACE_NOT_CLEAR = "there is no clear ground in front of the machine for it",
     PLACE_UNREADABLE = "the ground in front of the machine could not be checked",
     NOT_LOOSE = "only a loose implement can be set down",

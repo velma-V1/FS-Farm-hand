@@ -675,6 +675,24 @@ _USE = re.compile(r"^(?:please\s+)?(?:and\s+)?use\s+(?:the|my|our)\s+(?P<name>[a
                   r"\s+to\s+(?P<rest>.+)$")
 
 
+# "load the header onto its trailer", "put the header on the header trailer with the mf 8570": a front
+# implement set down on the carrier that keeps a lock position for it.
+_MOUNT = re.compile(r"^(?:please\s+)?(?:load|put|set|place|lay)\s+(?:the\s+|my\s+|its\s+)?(?P<thing>[a-z0-9 ]{1,40}?)\s+"
+                    r"(?:on|onto|on\s+to|up\s+on)\s+(?:the\s+|its\s+|my\s+|a\s+)?(?P<carrier>[a-z0-9 ]*?(?:trailer|cart|carrier|wagon))"
+                    r"(?:\s+(?:with|using)\s+(?:the\s+|my\s+)?(?P<machine>[a-z0-9 ]{1,40}))?(?:\s+please)?$")
+
+
+def mount_front(words: str) -> dict | None:
+    match = _MOUNT.match(words)
+    if match is None or implement_kind(match["thing"]) != "cutter":
+        return None
+    proposal = {"version": 1, "command": "mount_front", "implement": "cutter"}
+    machine = match["machine"] or re.sub(r"\b(?:header|cutter|table)\b", "", match["thing"]).strip()
+    if machine and machine not in ("the", "its", "my"):
+        proposal["tractor_name"] = re.sub(r"^(?:the|my)\s+", "", machine).strip()
+    return proposal
+
+
 def hitch_named(words: str) -> dict | None:
     if _TOGETHER.match(words):
         return {"version": 1, "command": "hitch_pair", "together": True}
@@ -1052,7 +1070,7 @@ class RuleInterpreter:
         if re.fullmatch(r"(?:please\s+)?save(?:\s+the)?(?:\s+(?:game|farm|progress))?(?:\s+now)?", words):
             return {"version": 1, "command": "save_game"}
         work = (harvest_policy(words) or field_work(words) or plant(words) or sell(words) or store(words)
-                or unload_combine(words) or hitch_named(words) or buy(words) or transport(words))
+                or unload_combine(words) or mount_front(words) or hitch_named(words) or buy(words) or transport(words))
         if work is not None:
             return work
         # "... with the gmc": the towing vehicle by its name.

@@ -45,6 +45,16 @@ class InputJoint:
 
 
 @dataclass(frozen=True)
+class LockPosition:
+    """Where a carrier's DynamicMountAttacher sets the root of a vehicle whose config file ends with
+    ``xml`` when it mounts there (world), and whether nothing is locked there yet."""
+    xml: str
+    position: Position
+    yaw: float
+    free: bool
+
+
+@dataclass(frozen=True)
 class FillUnit:
     """One of GIANTS' fill units (FillUnit spec). None = unreadable."""
     index: int
@@ -105,6 +115,9 @@ class Equipment:
     # Joint types are compared per joint pair (companion/hitch.py), as GIANTS does.
     heading: float | None = None          # root forward yaw (world)
     ai_root: Pose | None = None           # AI root pose (vehicles with AIDrivable)
+    mounted_to: str | None = None         # held by this carrier's DynamicMountAttacher (a header on its trailer)
+    config_file: str | None = None        # GIANTS' vehicle XML (configFileName), to match a carrier's lock positions
+    lock_positions: tuple[LockPosition, ...] = ()   # a carrier's GIANTS lock positions
     output_joints: tuple[OutputJoint, ...] = ()
     input_joints: tuple[InputJoint, ...] = ()
 

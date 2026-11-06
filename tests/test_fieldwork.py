@@ -1389,6 +1389,62 @@ class HarvestTests(unittest.TestCase):
         self.assertEqual(drives[0][1], 0.0)                                  # at the heading it carried it
         self.assertAlmostEqual(drives[0][0][1], 100.0 - Executor.REATTACH_BEHIND_M, places=6)
 
+    def test_the_header_is_set_down_on_the_trailer_lock_its_combine_lines_up_for(self):
+        # Live 2026-11-06: the MF 8570 Trailer keeps a GIANTS lock position for mf8570Header.xml (header
+        # root there facing west); the combine carries the header 5.2 m ahead of its AI root.
+        from protocol.model import LockPosition
+        calls = []
+
+        class Carrier(MockWorld):
+            def reserve_rig(self, ids, owner, loose=False, carrier=False):
+                calls.append(("reserve", ids, carrier))
+                return self.reserve(ids[:2], owner)
+
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None, via=None):
+                calls.append(("drive", tuple(round(t, 3) for t in target), yaw))
+                with self._lock:
+                    v = self._owned(vehicle_id, owner)
+                    self.items[vehicle_id] = replace(v, position=tuple(target), heading=yaw,
+                                                     ai_root=Pose(target[0], target[1], yaw))
+                return "ARRIVED"
+
+            def mount(self, vehicle_id, carrier_id, owner):
+                calls.append(("mount", vehicle_id, carrier_id))
+                with self._lock:
+                    self.items[vehicle_id] = replace(self.items[vehicle_id], attached_to=None)
+                    self.items["h-1"] = replace(self.items["h-1"], attached_to=None, mounted_to=carrier_id)
+                return "MOUNTED"
+
+            def pull_clear(self, vehicle_id, implement_id, owner):
+                calls.append(("pull_clear", vehicle_id, implement_id))
+
+        combine, header = self.combine(at=(0.0, 0.0))
+        combine = replace(combine, name="MF 8570")
+        header = replace(header, position=(0.0, 5.2), config_file="data/vehicles/masseyFerguson/mf8570Header/mf8570Header.xml",
+                         required_pto_torque=0.0)
+        lock = LockPosition("vehicles/masseyFerguson/mf8570Header/mf8570Header.xml", (-118.3, -159.4), -math.pi / 2, True)
+        trailer = Equipment("t-9", "implement", "farm-a", (-117.5, -158.0), heading=0.0, name="MF 8570 Trailer",
+                            lock_positions=(lock,))
+        other = replace(trailer, id="t-8", position=(-700.0, 160.0),
+                        lock_positions=(replace(lock, position=(-700.0, 160.0)),))
+        world = Carrier([combine, header, trailer, other], PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
+        result = Executor(world).execute({"version": 1, "farm_id": "farm-a", "target": "player_at_acceptance",
+                                          "implement": "cutter", "tractor_name": "mf 8570", "request_id": "r1",
+                                          "task": "mount_front"})
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "MOUNTED"), result)
+        self.assertEqual(calls[0], ("reserve", ("c-1", "h-1", "t-9"), True))           # the nearer trailer
+        _, (x, z), yaw = calls[1]
+        self.assertAlmostEqual(yaw, -math.pi / 2)                                       # facing west, like the header
+        self.assertAlmostEqual(z, -159.4, places=3)                                     # on the lock's line
+        self.assertAlmostEqual(x, -118.3 + 5.2 + Executor.MOUNT_BEHIND_M, places=3)     # east of it, header over the lock
+        self.assertEqual([c[0] for c in calls[2:]], ["mount", "pull_clear"])
+
+    def test_a_combine_carrying_nothing_a_trailer_takes_is_not_loaded(self):
+        world = MockWorld(self.combine(), PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
+        result = Executor(world).execute({"version": 1, "farm_id": "farm-a", "target": "player_at_acceptance",
+                                          "implement": "cutter", "request_id": "r1", "task": "mount_front"})
+        self.assertEqual((result.status, result.reason), ("BLOCKED", "NO_CARRIER_FOR_IMPLEMENT"))
+
     def test_a_header_never_carried_is_approached_from_the_observed_joints(self):
         # Live 2026-11-06: the MF 8570 and its header reset at the store, nothing recorded; the combine's
         # free CUTTER joint 1.78 m ahead of its AI root goes onto the header's CUTTER input joint, at

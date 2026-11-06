@@ -1170,6 +1170,116 @@ class Executor:
         except OSError as error:
             log.info("front attachments not saved: %s", error)
 
+    MOUNT_BEHIND_M = 7.0     # the machine lines up this far behind where it sets its implement down on a carrier
+
+    @staticmethod
+    def _carrier_lock(carrier, implement):
+        """The carrier's free GIANTS lock position for ``implement`` (its config file ends with the
+        lock's), else None."""
+        if not implement.config_file:
+            return None
+        return next((lock for lock in carrier.lock_positions
+                     if lock.free and implement.config_file.endswith(lock.xml)), None)
+
+    def _mount_ids(self, command, observed):
+        """(machine, implement, carrier, lock): the named driven machine carrying an implement (of the kind
+        said) that a standing carrier (named, if said) keeps a free lock position for, nearest carrier."""
+        options = []
+        for vehicle in observed.values():
+            implement = observed.get(vehicle.attached_to)
+            if not (vehicle.category in DRIVEN and implement is not None and implement.attached_to == vehicle.id
+                    and named(vehicle, command.get("tractor_name"))
+                    and (not command.get("implement") or of_kind(implement, command["implement"]))):
+                continue
+            for carrier in observed.values():
+                lock = self._carrier_lock(carrier, implement)
+                if (lock is not None and carrier.id not in (vehicle.id, implement.id) and carrier.attached_to is None
+                        and named(carrier, command.get("implement_name"))):
+                    options.append((math.dist(vehicle.position, carrier.position), carrier.id, vehicle, implement,
+                                    carrier, lock))
+        return min(options, key=lambda o: o[:2])[2:] if options else None
+
+    def _mount_front(self, command, enter, states) -> Result:
+        """"Load the header onto its trailer": FIND the machine carrying it and the carrier that keeps a GIANTS
+        lock position for it -> RESERVE all three -> APPROACH (Farmhand's drive to MOUNT_BEHIND_M behind the
+        pose that puts the carried implement on the lock, lined up) -> MOUNT (a straight creep, GIANTS' own
+        detach there; the carrier locks it) -> VERIFY (observed held by the carrier, nothing attached) ->
+        PULL_CLEAR (straight back off it) -> STOP -> RELEASE."""
+        owner, farm_id = command["request_id"], command["farm_id"]
+        ids, reserved, moved = (), False, False
+        status, reason = "BLOCKED", "NO_CARRIER_FOR_IMPLEMENT"
+        try:
+            enter("FIND")
+            found = self._mount_ids(command, {i.id: i for i in self.world.snapshot()})
+            if found is None:
+                return Result("BLOCKED", "NO_CARRIER_FOR_IMPLEMENT", states=tuple(states))
+            vehicle, implement, carrier, lock = found
+            ids = (vehicle.id, implement.id, carrier.id)
+            if not all(usable(x, farm_id) or x.id == implement.id for x in (vehicle, carrier)) \
+                    or not all(x.stopped for x in (vehicle, implement, carrier)):
+                return Result("BLOCKED", "EQUIPMENT_UNAVAILABLE", ids, tuple(states))
+            enter("RESERVE")
+            if not self.world.reserve_rig(ids, owner, carrier=True):
+                return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
+            reserved = True
+            self.active = ids
+            # The carried implement's root in the machine's AI-root frame, as observed now.
+            root = vehicle.ai_root or Pose(vehicle.position[0], vehicle.position[1], vehicle.heading or 0.0)
+            fx, fz = math.sin(root.yaw), math.cos(root.yaw)
+            dx, dz = implement.position[0] - root.x, implement.position[1] - root.z
+            along, lateral = dx * fx + dz * fz, dx * fz - dz * fx
+            turn = (implement.heading - root.yaw + math.pi) % (2 * math.pi) - math.pi if implement.heading is not None else 0.0
+            yaw = lock.yaw - turn
+            hx, hz = math.sin(yaw), math.cos(yaw)
+            carry = Pose(lock.position[0] - along * hx - lateral * hz, lock.position[1] - along * hz + lateral * hx, yaw)
+            back = Pose(carry.x - hx * self.MOUNT_BEHIND_M, carry.z - hz * self.MOUNT_BEHIND_M, yaw)
+            log.info("mount: %s carries %s %.2f m ahead, %.2f aside; on %s's lock at %s from %s", vehicle.id,
+                     implement.id, along, lateral, carrier.id, lock.position, back)
+            enter("APPROACH")
+            moved = True
+            ahead = (root.x - vehicle.position[0]) * fx + (root.z - vehicle.position[1]) * fz
+            self.world.farm_drive(vehicle.id, (back.x - hx * ahead, back.z - hz * ahead), owner, 0.0, yaw=back.yaw)
+            enter("MOUNT")
+            self.world.mount(vehicle.id, carrier.id, owner)
+            enter("VERIFY")
+            observed = {i.id: i for i in self.world.snapshot()}
+            held = observed.get(implement.id)
+            if held is None or held.mounted_to != carrier.id or held.attached_to is not None:
+                raise ObservationMismatch("MOUNT_NOT_OBSERVED")
+            enter("PULL_CLEAR")
+            try:
+                self.world.pull_clear(vehicle.id, implement.id, owner)
+                status, reason = "COMPLETE", "MOUNTED"
+            except StepFailed as failure:
+                # Mounted is the outcome asked for; the machine standing at it is said, never undone.
+                log.info("mount: pull-clear %s", failure.code)
+                status, reason = "COMPLETE", "MOUNTED_NOT_CLEAR"
+        except Cancelled:
+            status, reason = "CANCELLED", "CANCELLED_BY_REQUESTER"
+        except ObservationMismatch as error:
+            status, reason = "UNVERIFIED", str(error)
+        except StepUnverified as error:
+            status, reason = "UNVERIFIED", error.code
+        except StepFailed as error:
+            status, reason = "FAILED", error.code
+        except (RuntimeError, ValueError, KeyError) as error:
+            status, reason = "FAILED", getattr(error, "code", None) or type(error).__name__
+        finally:
+            try:
+                if moved:
+                    enter("STOP")
+                    if not self.world.stop(ids[0], owner):
+                        raise ObservationMismatch("STOP_NOT_CONFIRMED")
+                if reserved:
+                    enter("RELEASE")
+                    self.world.release(owner)
+            except Exception as error:
+                log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
+                status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        self.active = ()
+        log.info("result %s %s states %s", status, reason, ",".join(states))
+        return Result(status, reason, ids, tuple(states))
+
     @staticmethod
     def _front_joint_pose(vehicle, implement) -> Pose | None:
         """Where ``vehicle``'s AI root stands carrying ``implement`` in front, from the observed joints:
@@ -2849,6 +2959,8 @@ class Executor:
             return self._escort(command, enter, states)
         if command["task"] == "hitch_pair" and self._front_reattach_ids(command) is not None:
             return self._front_reattach(command, enter, states)
+        if command["task"] == "mount_front":
+            return self._mount_front(command, enter, states)
         if command["task"] == "save_game":
             try:
                 enter("SAVE")

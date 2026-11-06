@@ -60,6 +60,12 @@
                                  "markers": {"type": "array", "maxItems": 16, "items": {
                                    "type": "array", "minItems": 6, "maxItems": 6, "items": {"type": "number"}}}}}]},
         "belted_to": {"oneOf": [{"$ref": "#/$defs/objectId"}, {"type": "null"}]},
+        "mounted_to": {"oneOf": [{"$ref": "#/$defs/objectId"}, {"type": "null"}]},
+        "config_file": {"oneOf": [{"type": "string", "maxLength": 160}, {"type": "null"}]},
+        "lock_positions": {"oneOf": [{"type": "null"}, {"type": "array", "maxItems": 16, "items": {
+          "type": "object", "additionalProperties": false, "required": ["xml", "x", "z", "yaw", "free"],
+          "properties": {"xml": {"type": "string", "maxLength": 120}, "x": {"type": "number"}, "z": {"type": "number"},
+                         "yaw": {"type": "number"}, "free": {"type": "boolean"}}}}]},
         "brand": {"oneOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
         "seeds": {"oneOf": [{"type": "null"}, {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/token"}}]},
         "cuts": {"oneOf": [{"type": "null"}, {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/token"}}]},

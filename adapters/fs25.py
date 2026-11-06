@@ -6,7 +6,7 @@ upstream data is unproven, the mapping fails closed (ineligible equipment).
 """
 from dataclasses import dataclass
 
-from protocol.model import (Contract, Destination, LandParcel, Equipment, FarmInfo, Field, FieldCoverage, FillUnit, InputJoint, OutputJoint,
+from protocol.model import (Contract, Destination, LandParcel, Equipment, FarmInfo, Field, FieldCoverage, FillUnit, InputJoint, LockPosition, OutputJoint,
                             Pose, Position)
 
 # AutoDrive treats ``lastSpeedReal * 3600 < 1`` (km/h) as not moving
@@ -208,6 +208,10 @@ def equipment_from_vehicle(vehicle: dict, categories: dict[str, str],
         belts_fastened=(vehicle.get("belts") or {}).get("fastened"),
         belted=tuple(str(i) for i in (vehicle.get("belts") or {}).get("held", ())),
         belted_to=None if vehicle.get("belted_to") is None else str(vehicle["belted_to"]),
+        mounted_to=None if vehicle.get("mounted_to") is None else str(vehicle["mounted_to"]),
+        config_file=vehicle.get("config_file"),
+        lock_positions=tuple(LockPosition(p["xml"], (p["x"], p["z"]), p["yaw"], p["free"])
+                             for p in vehicle.get("lock_positions") or ()),
         belt_markers=tuple(tuple(m) for m in (vehicle.get("belts") or {}).get("markers", ())),
         brand=vehicle.get("brand"),
         seeds=tuple(vehicle.get("seeds") or ()),
