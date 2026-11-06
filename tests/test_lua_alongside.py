@@ -179,7 +179,9 @@ class LuaAlongsideTests(unittest.TestCase):
         self.assert_refused(self.world(cyaw=0.35), "ALONGSIDE_NOT_LINED_UP")             # 20 deg off its heading
         self.assert_refused(self.world(pipeA=-9), "ALONGSIDE_PAST_THE_PIPE")
         self.assert_refused(self.world(pipeA=20), "ALONGSIDE_TOO_FAR")   # 20 ahead + 7 behind > 25
-        self.assert_refused(self.world(trailer=dict(TRAILER, turn=0.6)), "ALONGSIDE_RIG_NOT_STRAIGHT")   # 34 deg
+        self.assert_refused(self.world(trailer=dict(TRAILER, turn=1.1)), "ALONGSIDE_RIG_NOT_STRAIGHT")   # 63 deg
+        # 34 deg with this long a run to the pipe straightens on the way (live 2026-11-06, field 91: 46.7).
+        self.assertIsNotNone(self.start(self.world(trailer=dict(TRAILER, turn=0.6)))[0])
         w = self.world()
         w.box(4.0, 5.0, -1.0, 1.0, 0, 2.0, None, "bale")                 # in the way
         self.assert_refused(w, "ALONGSIDE_PATH_BLOCKED")

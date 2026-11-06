@@ -3853,7 +3853,9 @@ Hitch.ALONGSIDE = {
     startLateralM = 2.5,      -- the steering node at most this far off the pipe's line at the start
     headingStartDeg = 15,     -- the tractor at most this far off the line's heading (live 75ef60d7f5ad4735-1:
                               -- GIANTS reached the aim 0.3 m off but turned about 7 deg, the pipe 1.9 m aside)
-    trailerStartDeg = 30,     -- the trailer at most this far swung (live 6c66894767044432-1: 19-21 deg)
+    trailerStartDeg = 30,     -- the trailer at most this far swung (live 6c66894767044432-1: 19-21 deg) within
+    straightenDegPerM = 2.5,  -- 6 m of the pipe; this much more per metre farther it still runs straight on,
+    trailerMaxStartDeg = 55,  -- and never more than this
     lateralTolM = 0.8,        -- the trailer's middle this close to the pipe point at the end
     passClearM = 2,           -- pass: on until the rig's rear is this far past the combine's front (live
                               -- 15dbb6c7eb994721-1: GIANTS' deliver helper would not start the rig beside it)
@@ -3943,9 +3945,14 @@ function Hitch.newAlongside(env, args)
         if math.abs(s.startLateral) > D.startLateralM or math.abs(s.turn) > D.headingStartDeg then
             return "ALONGSIDE_NOT_LINED_UP"
         end
-        if math.abs(s.trailerTurn) > D.trailerStartDeg then return "ALONGSIDE_RIG_NOT_STRAIGHT" end
         local mx, mz = middleOf(env, s.trailer)
         s.middleAlong, s.middleLateral = inFrame(s, mx, mz)
+        -- Driving straight on straightens a towed trailer within about its own length: the farther its
+        -- middle still has to go to the pipe, the more swing it may start with (live 2026-11-06, field 91:
+        -- the 3650 lined up on the pipe's line 13.9 m back, its Z 18051 swung 46.7 and 33.8 degrees).
+        local togo = s.pass and 0 or math.max(0, -s.middleAlong)
+        local allowed = math.min(D.trailerMaxStartDeg, D.trailerStartDeg + D.straightenDegPerM * math.max(0, togo - 6))
+        if math.abs(s.trailerTurn) > allowed then return "ALONGSIDE_RIG_NOT_STRAIGHT" end
         if not s.pass then
             if s.middleAlong >= 0 then return "ALONGSIDE_PAST_THE_PIPE" end
             s.travelM = -s.middleAlong
