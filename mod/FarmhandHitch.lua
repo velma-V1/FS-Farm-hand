@@ -453,7 +453,8 @@ function Hitch.drive(env, s, dt, forwards, lx, lz)
         if #s.speedRows < S.traceMax then
             local okP, pitch = pcall(pitchDeg, env, s.tractor)
             s.speedRows[#s.speedRows + 1] = { t = s.elapsed or 0, along = s.lastAlong, lateral = s.lastLateral, v = v,
-                                      flat = flat, reported = reported, pitch = okP and pitch or nil, mode = mode }
+                                      flat = flat, reported = reported, pitch = okP and pitch or nil, mode = mode,
+                                      cmd = command }
         end
     end
     if mode == "over" then
@@ -497,8 +498,8 @@ function Hitch.speedTrace(s, per)
     local lines, row = {}, {}
     local function f(n) return n and string.format("%.2f", n) or "?" end
     for _, p in ipairs((s and s.speedRows) or {}) do
-        row[#row + 1] = string.format("%d:%s/%s/%s/%s/%s/%s/%s", p.t, f(p.along), f(p.lateral), f(p.v), f(p.flat),
-                                      f(p.reported), p.pitch and string.format("%.1f", p.pitch) or "?", p.mode)
+        row[#row + 1] = string.format("%d:%s/%s/%s/%s/%s/%s/%s/%s", p.t, f(p.along), f(p.lateral), f(p.v), f(p.flat),
+                                      f(p.reported), p.pitch and string.format("%.1f", p.pitch) or "?", p.mode, f(p.cmd))
         if #row >= (per or 8) then lines[#lines + 1] = table.concat(row, " "); row = {} end
     end
     if #row > 0 then lines[#lines + 1] = table.concat(row, " ") end

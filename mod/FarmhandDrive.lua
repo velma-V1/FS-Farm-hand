@@ -2799,6 +2799,11 @@ function Drive.step(env, s, dt, Hitch)
             pcall(Hitch.halt, env, s, dt)
             s.commandedAt = s.elapsed
             s.heldFrames = (s.heldFrames or 0) + 1
+            if (s.elapsed or 0) >= (s.heldTraceAt or 0) and s.speedRows ~= nil and #s.speedRows < 240 then
+                s.heldTraceAt = (s.elapsed or 0) + 500
+                local okR, reported = pcall(function() return math.abs(s.tractor:getLastSpeed()) end)
+                s.speedRows[#s.speedRows + 1] = { t = s.elapsed or 0, reported = okR and reported or nil, mode = "held" }
+            end
         end
         return result
     end)

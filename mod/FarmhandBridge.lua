@@ -218,6 +218,14 @@ end
 
 function aborts.farm_drive(env, task)
     Bridge.Drive.abort(env, task.session, Bridge.Hitch)
+    if task.session ~= nil and not task.endLogged then
+        -- A stopped drive keeps its record too (its speed trace: what the governor commanded and observed).
+        task.endLogged = true
+        pcall(logMotionEnd, "farm_drive", "STOPPED", task.session, function(s)
+            return string.format("target=(%.1f,%.1f) route=%d held=%d", s.targetX, s.targetZ, #(s.path or {}),
+                                 s.heldFrames or 0)
+        end)
+    end
     Bridge.restoreTransportCrops(task.cropWheels)
     task.cropWheels = nil
 end
