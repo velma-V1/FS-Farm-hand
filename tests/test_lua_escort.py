@@ -279,8 +279,10 @@ class LuaEscortTests(unittest.TestCase):
         w = self.world(header=6.8, triggerL=4.5)
         s, why, _ = self.start(w)
         self.assertIsNotNone(s, why)
-        code, _ = self.runner(w, s, 120 * 20, None)
-        self.assertEqual(code, "NO_SAFE_SLOT", self.hitch.describeEscort(s))       # nothing learned yet
+        code, _ = self.runner(w, s, 120 * 20, lambda *_: s.alongsideMs > 0)
+        # Nothing learned yet: the trailer goes under the folded pipe's trigger, beside the header, clear of it.
+        self.assertGreater(s.alongsideMs, 0, self.hitch.describeEscort(s))
+        self.assertEqual(s.brakes.close, 0, self.hitch.describeEscort(s))
         w = self.world(header=6.8, triggerL=4.5)
         s, why, _ = self.start(w)
         self.assertIsNotNone(s, why)

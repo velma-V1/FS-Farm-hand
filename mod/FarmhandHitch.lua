@@ -4148,6 +4148,7 @@ Hitch.ESCORT = {
     lineDeg = 8, steadyMs = 2500,    -- the combine this straight this long before the cart comes alongside
     alignDeg = 25,              -- the cart within this of the combine's heading to come alongside
     spoutMarginM = 0.8,         -- the spout kept this far inside the trailer's box when the slot shifts
+    triggerMarginM = 0.3,       -- the folded pipe's trigger point this far inside it (GIANTS swings the pipe out)
     fullShare = 0.98,
     idleAiMs = 3000,            -- the combine's helper off this long: COMBINE_STOPPED
     noSlotMs = 30000,           -- no clear slot beside the combine this long: NO_SAFE_SLOT
@@ -4239,7 +4240,11 @@ end
 local function escortTarget(s)
     local E, c = Hitch.ESCORT, s.cart
     local side = s.slotL >= 0 and 1 or -1
-    for _, shift in ipairs(s.shifts) do
+    -- The folded pipe's trigger only has to see the trailer: GIANTS' combine strategy then swings the pipe
+    -- out over it (AIDriveStrategyCombine, nearestObjectInTriggers -> setPipeState(2)) and the slot follows
+    -- the real discharge point with the full margin (live 2026-11-06, field 91: the trigger 4.55 m out, the
+    -- MF 8570's header 3.4 m: no spot kept the spout 0.8 m inside the trailer and the cart clear of it).
+    for _, shift in ipairs(s.slotSource == "trigger" and s.triggerShifts or s.shifts) do
         local a, l = s.slotA + shift[1], s.slotL + side * shift[2]
         local clear = true
         for _, b in ipairs(s.combineBoxes) do
@@ -4254,9 +4259,10 @@ local function escortTarget(s)
 end
 
 -- The along/outward shifts a slot may take with the spout still inside the trailer, cheapest first.
-local function slotShifts(c)
+local function slotShifts(c, margin)
     local E, out = Hitch.ESCORT, {}
-    local maxA, maxL = math.max(0, c.trailerHalfLen - E.spoutMarginM), math.max(0, c.trailerHalfW - E.spoutMarginM)
+    margin = margin or E.spoutMarginM
+    local maxA, maxL = math.max(0, c.trailerHalfLen - margin), math.max(0, c.trailerHalfW - margin)
     for i = -math.floor(maxA / 0.5 + 1e-6), math.floor(maxA / 0.5 + 1e-6) do
         for j = 0, math.floor(maxL / 0.25 + 1e-6) do
             out[#out + 1] = { i * 0.5, j * 0.25 }
@@ -4315,6 +4321,7 @@ function Hitch.newEscort(env, args)
         local tb = unitBox(env, s, s.trailer)
         cart.trailerHalfLen, cart.trailerHalfW = (tb.aMax - tb.aMin) / 2, (tb.lMax - tb.lMin) / 2
         s.cart, s.shifts = cart, slotShifts(cart)
+        s.triggerShifts = slotShifts(cart, Hitch.ESCORT.triggerMarginM)
         local okMasks, masks = pcall(collisionMasks, env)
         if not okMasks then return "ESCORT_QUERY_UNKNOWN" end
         s.masks = masks
