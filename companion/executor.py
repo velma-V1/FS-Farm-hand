@@ -299,7 +299,8 @@ def compatible(tractor: Equipment, wagon: Equipment, kind: str = "forage_wagon",
         return False
     # A combine tows only when the player named it ("hook the header trailer to the mf 8570"): the
     # nearest machine for an ordinary hitch stays a tractor.
-    towing = tractor.category == "tractor" or (tractor.category == "harvester" and named(tractor, driver) and bool(driver))
+    towing = tractor.category == "tractor" or (tractor.category == "harvester" and named(tractor, driver) and bool(driver)
+                                               and of_kind(wagon, kind))   # never its own header by a name
     return (towing and fits
             and power_sufficient(tractor, wagon)
             and {"move", "attach", "stop"} <= tractor.capabilities)
@@ -3049,11 +3050,13 @@ class Executor:
                     if failure is not None:
                         return Result("BLOCKED", failure, tuple(i.id for i in pair), tuple(states))
             else:
+                # A named combine is a towing machine here too (compatible() lets only a named one tow).
+                driving = ("tractor", "harvester") if command.get("tractor_name") else ("tractor",)
                 free = [item for item in items if usable(item, farm_id)
                         and item.attached_to is None and item.stopped and item.id not in self._skip
-                        and named(item, command.get("tractor_name") if item.category == "tractor"
+                        and named(item, command.get("tractor_name") if item.category in driving
                                   else command.get("implement_name"))]
-                named_tractors = [i for i in free if i.category == "tractor"]
+                named_tractors = [i for i in free if i.category in driving]
                 if command.get("tractor_name") and len(named_tractors) == 1:
                     # The named tractor to the nearest of the implements the words fit (live
                     # 4c41d6e784cc445e-1: four trailers of one name, the first by ID chosen while
@@ -3063,9 +3066,9 @@ class Executor:
                     named_tractor = named_tractors[0]
 
                     def nearness(i):
-                        gap = joint_separation(named_tractor, i) if i.category != "tractor" else None
+                        gap = joint_separation(named_tractor, i) if i.category not in driving else None
                         return gap if gap is not None else math.dist(named_tractor.position, i.position)
-                    free.sort(key=lambda i: (i.category != "tractor", nearness(i), i.id))
+                    free.sort(key=lambda i: (i.category not in driving, nearness(i), i.id))
                 for item in items:
                     if item not in free and (item.category == "tractor" or of_kind(item, self._kind)):
                         log.info("candidate %s %s rejected: %s", item.id, item.category,
