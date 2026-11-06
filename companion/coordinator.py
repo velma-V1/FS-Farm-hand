@@ -57,6 +57,7 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "mount_front": ("mount_front", "ACCEPTED_MOUNT", "COMPLETE_MOUNT"),
         "unmount_front": ("unmount_front", "ACCEPTED_UNMOUNT", "COMPLETE_UNMOUNT"),
         "teleport": ("teleport_rig", "ACCEPTED_TELEPORT", "COMPLETE_TELEPORT"),
+        "fold_implement": ("fold_implement", "ACCEPTED_FOLD", "COMPLETE_FOLD"),
         "detach_pair": ("detach_pair", "ACCEPTED_DETACH", "COMPLETE_DETACH"),
         "field_work": ("field_work", "ACCEPTED_FIELD_WORK", "COMPLETE_FIELD_WORK"),
         "buy": ("buy", "ACCEPTED_BUY", "COMPLETE_BUY"),
@@ -258,8 +259,14 @@ def work_for(proposal: dict) -> dict | None:
     if command == "buy":
         return {"wants": proposal["wants"]}
     if command in ("fetch_pair", "hitch_pair", "move_pair", "load_tractor", "unload_tractor", "follow_me", "sell",
-                   "store", "mount_front", "unmount_front", "teleport"):
+                   "store", "mount_front", "unmount_front", "teleport", "fold_implement"):
         work = {k: proposal[k] for k in NAMES if k in proposal}
+        if command == "hitch_pair" and proposal.get("towed"):
+            work["towed"] = True
+        if command == "fold_implement":
+            work["fold"] = proposal["fold"]
+            if proposal.get("implement"):
+                work["implement"] = proposal["implement"]
         if command in ("move_pair", "follow_me") and proposal.get("remember_route"):
             work["remember_route"] = True
         if command == "load_tractor" and proposal.get("carry"):
@@ -1356,6 +1363,10 @@ class Coordinator:
         if implement is not None:
             intent["implement"] = implement
         intent.update({k: v for k, v in (work or {}).items() if k in NAMES})   # tractor_name / implement_name
+        if command == "fold_implement":
+            intent.update({k: work[k] for k in ("fold", "implement") if k in (work or {})})
+        if command == "hitch_pair" and (work or {}).get("towed"):
+            intent["towed"] = True
         lead = command == "follow_me" and bool((work or {}).get("remember_route"))
         if command == "move_pair" and (work or {}).get("remember_route"):
             intent["remember_route"] = True

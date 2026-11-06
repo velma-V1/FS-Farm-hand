@@ -18,6 +18,7 @@ IMPLEMENT_CATEGORIES = frozenset({"forage_wagon", "implement"})
 # off), and what follows is decided by the observed joints (align_problem).
 # 6 m leaves the agent room in front of the drawbar and slack inside ALIGN_REACH_M.
 STAGING_DISTANCE_M = 6.0
+SIDE_DRAWBAR_M = 2.0      # a drawbar this far beside an implement's axis (and more than ahead) tows it sideways
 # A rear joint: behind the AI root, or up to this far ahead of it, where a pickup's
 # gooseneck ball or fifth wheel sits over the rear axle (live: the GMC Sierra's at
 # z = +0.0014 m). Front hitches are metres ahead and stay excluded.
@@ -117,11 +118,20 @@ def plan_hitch(tractor: Equipment, wagon: Equipment,
     for joints in (tractor.output_joints, wagon.input_joints):
         if len({joint.index for joint in joints}) != len(joints):
             return None  # Contradictory observation: joint indices must be unique.
-    fx, fz = math.sin(heading), math.cos(heading)
     wx, wz = wagon.position
 
+    def towing(inp) -> float:
+        """The way ``inp`` is towed: the implement's heading when the joint lies on its axis, else from
+        its root towards the joint (live 2026-11-06: the Colossus 9000's Titan header, folded to its
+        trailer end, has its drawbar 10 m to the side of its root; it is towed sideways)."""
+        dx, dz = inp.position[0] - wx, inp.position[1] - wz
+        along = dx * math.sin(heading) + dz * math.cos(heading)
+        lateral = dx * math.cos(heading) - dz * math.sin(heading)
+        return math.atan2(dx, dz) if abs(lateral) > max(abs(along), SIDE_DRAWBAR_M) else heading
+
     def at_front(inp) -> bool:
-        return (inp.position[0] - wx) * fx + (inp.position[1] - wz) * fz >= -FRONT_JOINT_SLACK_M
+        yaw = towing(inp)
+        return (inp.position[0] - wx) * math.sin(yaw) + (inp.position[1] - wz) * math.cos(yaw) >= -FRONT_JOINT_SLACK_M
 
     pairs = sorted(((out, inp) for out in tractor.output_joints for inp in wagon.input_joints
                     if out.free and inp.active and out.joint_type == inp.joint_type
@@ -131,6 +141,7 @@ def plan_hitch(tractor: Equipment, wagon: Equipment,
     if not pairs:
         return None
     joint, inp = pairs[0]
+    heading = towing(inp)
     target = tuple(inp.position)
     # Place the AI root so that root + rotate(yaw, joint offset) == target.
     jx, jz = Pose(0.0, 0.0, heading).to_world(joint.x, joint.z)

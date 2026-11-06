@@ -1287,6 +1287,45 @@ class Executor:
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, ids, tuple(states))
 
+    def _fold_implement(self, command, enter, states) -> Result:
+        """An implement (of the kind said, on the named machine or loose beside it) to its transport or working
+        configuration by GIANTS' own Foldable: work is the end GIANTS may turn it on at, transport the other
+        (fold: "transport" or "work"; never the menu's names). FIND -> RESERVE -> FOLD -> VERIFY -> RELEASE."""
+        owner, farm_id = command["request_id"], command["farm_id"]
+        observed = {i.id: i for i in self.world.snapshot()}
+        machine = next((v for v in observed.values() if v.category in DRIVEN and named(v, command.get("tractor_name"))),
+                       None)
+        if machine is None:
+            return Result("BLOCKED", "VEHICLE_UNAVAILABLE", states=tuple(states))
+        implement = observed.get(machine.attached_to)
+        if implement is None or not of_kind(implement, command.get("implement") or "cutter"):
+            loose = [i for i in observed.values() if i.attached_to is None and of_kind(i, command.get("implement") or "cutter")
+                     and named(i, command.get("implement_name"))]
+            implement = min(loose, key=lambda i: math.dist(i.position, machine.position)) if loose else None
+        if implement is None:
+            return Result("BLOCKED", "NO_IMPLEMENT_TO_FOLD", states=tuple(states))
+        attached = implement.attached_to == machine.id
+        ids = (machine.id, implement.id) if attached else (implement.id,)
+        enter("RESERVE")
+        ok = self.world.reserve(ids, owner) if attached else self.world.reserve_rig(ids, owner, loose=True)
+        if not ok:
+            return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
+        status, reason = "COMPLETE", "FOLDED"
+        try:
+            enter("FOLD")
+            self.world.fold(implement.id, 2 if command.get("fold") == "transport" else 3, owner)
+        except (StepFailed, StepUnverified) as error:
+            status = "UNVERIFIED" if isinstance(error, StepUnverified) else "FAILED"
+            reason = error.code
+        finally:
+            enter("RELEASE")
+            try:
+                self.world.release(owner)
+            except Exception as error:
+                log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
+                status, reason = "UNVERIFIED", "CLEANUP_NOT_CONFIRMED"
+        return Result(status, reason, ids, tuple(states))
+
     TELEPORT_ARRIVE_M = 30.0     # the rig is observed within this of the field-edge point it was sent to
 
     def _teleport_rig(self, command, enter, states) -> Result:
@@ -3121,7 +3160,7 @@ class Executor:
             return self._part(command, enter, states)
         if command["task"] == "escort":
             return self._escort(command, enter, states)
-        if command["task"] == "hitch_pair" and self._front_reattach_ids(command) is not None:
+        if command["task"] == "hitch_pair" and not command.get("towed") and self._front_reattach_ids(command) is not None:
             return self._front_reattach(command, enter, states)
         if command["task"] == "mount_front":
             return self._mount_front(command, enter, states)
@@ -3129,6 +3168,8 @@ class Executor:
             return self._unmount_front(command, enter, states)
         if command["task"] == "teleport_rig":
             return self._teleport_rig(command, enter, states)
+        if command["task"] == "fold_implement":
+            return self._fold_implement(command, enter, states)
         if command["task"] == "save_game":
             try:
                 enter("SAVE")

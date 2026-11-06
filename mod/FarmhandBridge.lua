@@ -2055,8 +2055,11 @@ function starters.fold(env, spec)
     if foldable == nil or next(foldable.foldingParts or {}) == nil then return nil, "NOT_FOLDABLE" end
     -- 2: folded for transport, away from the end GIANTS calls unfolded (Foldable:getIsUnfolded:
     -- foldAnimTime at turnOnFoldDirection's end), whichever way this implement folds.
+    -- 3: its working configuration, the end GIANTS calls unfolded (where it may be turned on); never the
+    -- menu's word for it (the owner, 2026-11-06: the Colossus 9000's header trailer is "fold" to tow it).
     local direction = (spec.direction == 1 and 1) or (spec.direction == -1 and -1)
-        or (spec.direction == 2 and -(foldable.turnOnFoldDirection == -1 and -1 or 1)) or nil
+        or (spec.direction == 2 and -(foldable.turnOnFoldDirection == -1 and -1 or 1))
+        or (spec.direction == 3 and (foldable.turnOnFoldDirection == -1 and -1 or 1)) or nil
     if direction == nil then return nil, "INVALID_DIRECTION" end
     if not stopped(v) then return nil, "NOT_STOPPED" end
     if v:getIsFoldAllowed(direction, false) ~= true then return nil, "FOLD_NOT_ALLOWED" end
@@ -3685,6 +3688,8 @@ Bridge.NOTICES = {
     ACCEPTED_MOUNT = "Farmhand: loading the header onto its trailer",
     HARVEST_ONE_TANK = "Farmhand: the field fits in the combine's tank - no grain cart needed (it is watched)",
     HARVEST_STOPPED_AT_SHARE = "Farmhand: the combine stopped at the tank share you asked for; it waits there",
+    ACCEPTED_FOLD = "Farmhand: changing the implement's configuration",
+    COMPLETE_FOLD = "Farmhand: the implement is in the configuration asked",
     ACCEPTED_TELEPORT = "Farmhand: teleporting it to the field, as you asked",
     COMPLETE_TELEPORT = "Farmhand: teleported to the field's edge",
     ACCEPTED_UNMOUNT = "Farmhand: taking the header off its trailer",
@@ -4165,6 +4170,7 @@ Bridge.REASONS = {
     NO_GOTO_JOB = "the game's driver is not available",
     NO_HITCH_OPTION = "that model has no such hitch in the store",
     NO_OPEN_SPOT = "there is no open ground nearby",
+    NO_IMPLEMENT_TO_FOLD = "there is no implement of that kind on or beside that machine",
     COMBINE_EMPTIED = "the combine's tank was emptied into the cart",
     PLAYER_LEFT = "you left the combine, so unloading it ended",
     PLAYER_NOT_IN_COMBINE = "you are not in a combine to unload",

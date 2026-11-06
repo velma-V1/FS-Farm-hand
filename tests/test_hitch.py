@@ -339,3 +339,20 @@ class StripLaneTests(unittest.TestCase):
         self.assertEqual(strip_lanes(self.A, ((500.0, 0.0), (600.0, 0.0), (600.0, 60.0), (500.0, 60.0)), 4.0), ())
         corner_only = ((110.0, 70.0), (200.0, 70.0), (200.0, 130.0), (110.0, 130.0))
         self.assertEqual(strip_lanes(self.A, corner_only, 4.0), ())
+
+
+class SideDrawbarTests(unittest.TestCase):
+    def test_an_implement_with_its_drawbar_beside_it_is_towed_sideways(self):
+        # Live 2026-11-06: the Colossus 9000's Titan header folded to its trailer end, the drawbar 10 m
+        # beside its root: the machine stands ahead of that drawbar facing away from the header's root.
+        import math
+        from companion.hitch import plan_hitch
+        from protocol.model import Equipment, InputJoint, OutputJoint, Pose
+        combine = Equipment("c", "harvester", "f", (40.0, 0.0), heading=0.0, ai_root=Pose(40.0, 0.0, 0.0),
+                            output_joints=(OutputJoint(2, "TRAILER", 0.0, -4.1, True),))
+        header = Equipment("h", "implement", "f", (0.0, 0.0), heading=0.0, required_pto_torque=0.0,
+                           input_joints=(InputJoint(2, "TRAILER", (10.0, -2.7), True),))
+        plan = plan_hitch(combine, header)
+        self.assertIsNotNone(plan)
+        self.assertAlmostEqual(plan.final.yaw, math.atan2(10.0, -2.7), places=6)
+        self.assertGreater(plan.staging.x, plan.final.x)                  # staged farther out along that way

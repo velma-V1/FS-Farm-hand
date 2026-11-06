@@ -877,6 +877,31 @@ _PLAYER_CART_DELIVER = re.compile(r"^(?:please\s+)?take\s+(?:this|the|my)\s+(?:g
                                   r"(?P<where>silo|storage|farm|sell\s+point|buyer|market)\s+and\s+come\s+back$")
 
 
+# A front implement that tows on its own wheels (the Colossus 9000's Titan header): "put the header in
+# transport on the colossus" folds it to its transport end, takes it off the front and hitches it behind;
+# "set the header up for work on the colossus" the other way round. The configuration by what it is for.
+_HEADER_CONFIG = re.compile(r"^(?:please\s+)?(?:put|set|get|make)\s+(?:the\s+|my\s+)?(?P<thing>header|cutter|table)"
+                            r"(?:\s+up)?\s+(?:in(?:to)?|for)\s+(?P<mode>transport|road|work|working|harvest(?:ing)?)"
+                            r"(?:\s+(?:mode|position|configuration))?\s+(?:on|with)\s+(?:the\s+|my\s+)?(?P<machine>[a-z0-9 ]{1,40})$")
+
+
+def header_config(words: str) -> dict | None:
+    match = _HEADER_CONFIG.match(words)
+    if match is None:
+        return None
+    machine = match["machine"].strip()
+    on = {"implement": "cutter", "tractor_name": machine}
+    if match["mode"] in ("transport", "road"):
+        steps = [{"version": 1, "command": "fold_implement", "fold": "transport", **on},
+                 {"version": 1, "command": "detach_pair", **on},
+                 {"version": 1, "command": "hitch_pair", "towed": True, **on}]
+    else:
+        steps = [{"version": 1, "command": "detach_pair", **on},
+                 {"version": 1, "command": "fold_implement", "fold": "work", **on},
+                 {"version": 1, "command": "hitch_pair", **on}]
+    return {"version": 1, "command": "sequence", "steps": steps}
+
+
 def player_cart(words: str) -> dict | None:
     if _PLAYER_CART_ONCE.match(words):
         return {"version": 1, "command": "unload_combine"}
@@ -910,7 +935,7 @@ class RuleInterpreter:
         if not isinstance(text, str):
             return None
         words = normalize(text)
-        learned = route(words) or teleport(words) or player_cart(words)
+        learned = route(words) or teleport(words) or player_cart(words) or header_config(words)
         if learned is not None:
             return learned
         for rule, key in ((_CART_START, "cart_start"), (_STOP_AT, "stop_at")):
