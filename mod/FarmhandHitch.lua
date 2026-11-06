@@ -4175,6 +4175,7 @@ Hitch.ESCORT = {
     idleAiMs = 3000,            -- the combine's helper off (the player out of it) this long: COMBINE_STOPPED (PLAYER_LEFT)
     playerTurnDegS = 6,         -- a player's combine turning this fast: no slot beside it
     coverOpenMs = 1500, coverCloseMs = 500,   -- the transfer wanted (or not) this long before the cover moves
+    fullStandingShare = 0.95,   -- a combine standing with its tank this full waits to be unloaded: unloaded standing
     emptyShare = 0.03,          -- a one-time unloading is done with the tank this empty
     noSlotMs = 30000,           -- no clear slot beside the combine this long: NO_SAFE_SLOT
     stallMs = 30000, stallM = 1.0,
@@ -4462,8 +4463,14 @@ local function escortDrive(env, s, dt)
     -- no unloading without movement; live, field 91: 1082 l went in while both stood at a headland). GIANTS'
     -- own control: a closed cover refuses the combine's discharge (Cover:getFillUnitSupportsToolType), so
     -- nothing has to be driven near the header to stop it.
+    -- The owner, 2026-11-06 (clarified): moving-only was the test's rule, not the product's. A combine standing
+    -- because its tank is full (GIANTS' helper waits for a trailer under the pipe) is unloaded standing; only
+    -- a turn (header and pipe swinging) keeps the transfer shut.
+    local helperTurning = type(root.getAIFieldWorkerIsTurning) == "function" and root:getAIFieldWorkerIsTurning() == true
+    s.fullStanding = (s.tankShare or 0) >= E.fullStandingShare and vc < 1.0 and not helperTurning
+        and not (s.playerCombine and yawRate > math.rad(E.playerTurnDegS))
     local threshingNow = type(combine.getIsTurnedOn) == "function" and combine:getIsTurnedOn() == true
-    local transfer = s.mode == "alongside" and vc > 1.5 and threshingNow and not turning
+    local transfer = s.mode == "alongside" and ((vc > 1.5 and threshingNow and not turning) or s.fullStanding)
     local cover = s.trailer.spec_cover
     if cover ~= nil and cover.hasCovers and type(s.trailer.setCoverState) == "function" then
         s.coverStart = s.coverStart or cover.state
@@ -4538,7 +4545,8 @@ local function escortDrive(env, s, dt)
         end
     end)
     s.tankShare = share
-    local wanted = s.tA ~= nil and not turning and s.steadyMs >= E.steadyMs and aligned and share >= s.startShare
+    local wanted = s.tA ~= nil and aligned and share >= s.startShare
+        and ((not turning and s.steadyMs >= E.steadyMs) or s.fullStanding)
     if s.mode == "alongside" and not wanted then s.mode = "follow" end
     if s.mode == "follow" and wanted then s.mode = "alongside" end
     local cartFront = -math.huge

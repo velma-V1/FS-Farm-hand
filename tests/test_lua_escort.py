@@ -308,6 +308,9 @@ class LuaEscortTests(unittest.TestCase):
         w.combineKmh = 0                                                 # it stops at a headland
         self.runner(w, s, 20, None)                                      # 1 s: past the 0.5 s hold
         self.assertEqual(s.trailer.spec_cover.state, 0)                  # closed: GIANTS discharges into nothing
+        w.grain = 9800                                                   # it stands because it is full
+        self.runner(w, s, 60, None)
+        self.assertEqual(s.trailer.spec_cover.state, 1)                  # unloaded standing (the owner: the product)
         self.hitch.escortRestore(s)
         self.assertEqual(s.trailer.spec_cover.state, 1)                  # as it was found
 
