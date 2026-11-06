@@ -103,6 +103,13 @@ def resolve_drive_goal(items: tuple[Equipment, ...], farm_id: str, vehicle_name:
                 raise GoalError("CARGO_STATE_UNREADABLE")
             cargo.append(carried)
             linked.add(carried.id)
+    # What a carrier on the rig holds by GIANTS' DynamicMountAttacher (a header on its trailer) goes too.
+    for item in items:
+        if item.mounted_to in linked and item.id not in linked:
+            if not _usable(item, farm_id) or item.attached_to is not None:
+                raise GoalError("CARGO_STATE_UNREADABLE")
+            cargo.append(item)
+            linked.add(item.id)
     cargo_ids = {item.id for item in cargo}
     if any(item.attached_to is not None and item.attached_to not in cargo_ids for item in cargo):
         raise GoalError("CARGO_STATE_UNREADABLE")

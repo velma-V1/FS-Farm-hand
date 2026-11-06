@@ -542,7 +542,8 @@ class StandaloneMove:
                     raise GoalError("RIG_NOT_STOPPED")
                 if any(after[i].attached_to != before[i].attached_to
                        or after[i].belted_to != before[i].belted_to
-                       or after[i].belted != before[i].belted for i in ids):
+                       or after[i].belted != before[i].belted or after[i].mounted_to != before[i].mounted_to
+                       for i in ids):
                     raise GoalError("RIG_CHANGED")
                 if not reached(outline, goal.target, after[goal.vehicle_id].position,
                                [after[i].position for i in ids], area):

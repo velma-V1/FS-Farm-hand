@@ -27,6 +27,14 @@ class DriveGoalTests(unittest.TestCase):
         self.assertEqual((goal.vehicle_id, goal.rig_ids, goal.cargo_id),
                          ("611", ("611", "620", "622"), "622"))
 
+    def test_a_header_locked_on_the_towed_trailer_goes_with_the_combine(self):
+        from dataclasses import replace
+        combine = unit("689", "MF 8570", "harvester", attached="688")
+        trailer = unit("688", "MF 8570 Trailer", "implement", attached="689")
+        header = replace(unit("690", "MF 8570 Header", "implement"), mounted_to="688")
+        goal = resolve_drive_goal((header, trailer, combine), "1", "mf 8570", None, (-917.0, 183.0))
+        self.assertEqual(goal.rig_ids, ("689", "688", "690"))
+
     def test_belted_tractor_and_mounted_implement_remain_one_cargo_group(self):
         truck = unit("611", "GMC Sierra", "tractor", attached="620")
         deck = unit("620", "1124 Deckover", "implement", attached="611", belted=("621", "622"))
