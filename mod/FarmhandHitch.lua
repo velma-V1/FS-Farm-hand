@@ -44,7 +44,7 @@ Hitch.DEFAULTS = {
     -- candidate distance: the attach-range rule derives its vertical tolerance
     -- from that distance (Manual Attach VehicleAttachmentHandler.lua:462,521:
     -- dy^2 < 4*maxDistanceSq), so a larger radius would otherwise loosen it too.
-    maxVerticalM = 0.5,
+    maxVerticalM = 0.75,     -- live 2026-11-06: the Colossus 9000's rear joint ~0.53 m above its Titan header's drawbar
 }
 
 local atan2 = math.atan2 or math.atan   -- Lua 5.1 (FS25) / 5.4 (tests)
@@ -774,6 +774,8 @@ local function boxQuery(env, rig, x, z, yaw, halfWidth, halfLength, h0, h1, mask
                 q.own = q.own + 1
             elseif not everything and (Hitch.looseSign(env, nodeId) or Hitch.ghostPassable(env, nodeId)) then
                 q.own = q.own + 1                 -- driven through, as AutoDrive / GIANTS' AI do
+            elseif object ~= nil and Hitch.isPipeNode(env, object.rootVehicle or object, nodeId) then
+                q.own = q.own + 1                 -- a machine's unloading pipe: a cart goes under it, a towed unit past it
             else
                 q.hits[#q.hits + 1] = nodeId
             end
@@ -1121,6 +1123,98 @@ function Hitch.openSpot(env, foot, x, z, yaw, minM, accept, maxM)
         end
     end
     return nil
+end
+
+-- A machine's long unloading pipe against what it tows (the owner, 2026-11-06: "the longer pipe gets in the
+-- way on this combo; while hitched turn the pipe collision off"; the Colossus 9000 towing its Titan header
+-- sideways behind it). GIANTS' own pair collision (setPairCollision) off between the pipe's component(s)
+-- and every component of the towed implement while it is hitched, on again the moment it is not; nothing
+-- else changes. Kept in step with the observed hitch state (Hitch.reconcilePipePairs, the bridge's watch), so
+-- a hitch the player makes is covered too.
+Hitch.pipePairs = setmetatable({}, { __mode = "k" })     -- vehicle -> { implement = obj, pairs = {{a, b}} }
+
+local function isAncestor(env, ancestor, node)
+    local n = node
+    for _ = 1, 64 do
+        if n == nil or n == 0 then return false end
+        if n == ancestor then return true end
+        local ok, parent = pcall(env.getParent, n)
+        if not ok then return false end
+        n = parent
+    end
+    return false
+end
+
+local function pipeComponents(env, v)
+    local spec, out, seen = v.spec_pipe, {}, {}
+    for _, pipeNode in ipairs(spec and spec.nodes or {}) do
+        for _, component in ipairs(v.components or {}) do
+            if not seen[component.node] and isAncestor(env, component.node, pipeNode.node) then
+                -- The pipe's own physics component only, never the machine's main body.
+                if component ~= v.components[1] then
+                    seen[component.node] = true
+                    out[#out + 1] = component.node
+                end
+            end
+        end
+    end
+    return out
+end
+
+-- Whether ``nodeId`` is part of ``v``'s unloading pipe (a pipe node or below one, or the pipe's own physics
+-- component): Farmhand's own boxes ignore it (the owner, 2026-11-06: "make farmhand ignore the pipe's collision
+-- box also"), as GIANTS' pair collision does for a towed implement (Hitch.reconcilePipePairs).
+Hitch.pipeNodeCache = setmetatable({}, { __mode = "k" })
+function Hitch.isPipeNode(env, v, nodeId)
+    if type(v) ~= "table" or v.spec_pipe == nil then return false end
+    local cache = Hitch.pipeNodeCache[v]
+    if cache == nil then cache = {}; Hitch.pipeNodeCache[v] = cache end
+    if cache[nodeId] ~= nil then return cache[nodeId] end
+    local found = false
+    for _, pipeNode in ipairs(v.spec_pipe.nodes or {}) do
+        if isAncestor(env, pipeNode.node, nodeId) then found = true; break end
+    end
+    if not found then
+        for _, component in ipairs(pipeComponents(env, v)) do
+            if component == nodeId then found = true; break end
+        end
+    end
+    cache[nodeId] = found
+    return found
+end
+
+function Hitch.reconcilePipePairs(env, vehicles)
+    for _, v in ipairs(vehicles) do
+        local towed = nil
+        if v.spec_pipe ~= nil and type(v.getAttachedImplements) == "function" then
+            for _, entry in ipairs(v:getAttachedImplements() or {}) do
+                local joint = v.getAttacherJointByJointDescIndex and v:getAttacherJointByJointDescIndex(entry.jointDescIndex)
+                if joint ~= nil and joint.jointType == env.AttacherJoints.JOINTTYPE_TRAILER then towed = entry.object end
+            end
+        end
+        local held = Hitch.pipePairs[v]
+        if held ~= nil and held.implement ~= towed then
+            for _, pair in ipairs(held.pairs) do pcall(env.setPairCollision, pair[1], pair[2], true) end
+            Hitch.pipePairs[v] = nil
+            print("[Farmhand] pipe collision with the towed implement restored (unhitched)")
+        end
+        if towed ~= nil and Hitch.pipePairs[v] == nil then
+            local pairs = {}
+            local pipes = pipeComponents(env, v)
+            if #pipes == 0 and v.components ~= nil and v.components[1] ~= nil then
+                -- The pipe built into the machine's main body: that body and the towed implement then.
+                pipes = { v.components[1].node }
+                print("[Farmhand] the pipe has no component of its own: the machine's body and the towed implement")
+            end
+            for _, pipe in ipairs(pipes) do
+                for _, component in ipairs(towed.components or {}) do
+                    if pcall(env.setPairCollision, pipe, component.node, false) then pairs[#pairs + 1] = { pipe, component.node } end
+                end
+            end
+            Hitch.pipePairs[v] = { implement = towed, pairs = pairs }
+            print(string.format("[Farmhand] pipe collision off with the towed implement while hitched (%d pair(s))", #pairs))
+        end
+    end
 end
 
 -- Ghosted rigs no drive holds any more, restored once each stands clear of scenery

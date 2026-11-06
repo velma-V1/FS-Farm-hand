@@ -3640,6 +3640,14 @@ function Bridge:update(dt)
             return false
         end)
     end
+    self.pipePairTimer = (self.pipePairTimer or 0) + dt
+    if self.pipePairTimer >= 1000 then
+        self.pipePairTimer = 0
+        pcall(function()
+            local m = self.env.g_currentMission
+            Bridge.Hitch.reconcilePipePairs(self.env, (m.vehicleSystem and m.vehicleSystem.vehicles) or m.vehicles or {})
+        end)
+    end
     self.snapshotTimer = self.snapshotTimer + dt
     self.Observe.sinceSnapshotMs = self.snapshotTimer   -- Observe.atRest: the sample's real age
     if self.snapshotTimer >= Bridge.SNAPSHOT_MS and self.pipe ~= nil then

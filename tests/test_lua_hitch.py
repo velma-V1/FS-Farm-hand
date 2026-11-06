@@ -341,7 +341,7 @@ class LuaHitchTests(unittest.TestCase):
             "FARM_CHANGED": (dict(gap=4), {}, lambda w: setattr(w.wagon, "ownerFarmId", 2)),
             "AI_ACTIVE": (dict(gap=4), {}, lambda w: setattr(w, "ai", True)),
             "AI_UNKNOWN": (dict(gap=4), {}, lambda w: setattr(w, "ai", None)),
-            "VERTICAL_MISMATCH": (dict(gap=4), {}, lambda w: setattr(w.wagonJoint.node, "y", 0.6)),
+            "VERTICAL_MISMATCH": (dict(gap=4), {}, lambda w: setattr(w.wagonJoint.node, "y", 0.8)),
             # Swung 3.5 m off the wagon's axis: never chased further.
             "DIVERGED": (dict(gap=4), {}, lambda w: setattr(w.tractorJoint.jointTransform, "x", 3.5)),
         }
@@ -684,10 +684,10 @@ class LuaHitchTests(unittest.TestCase):
                 self.assertEqual(w.attachCalls, 0)
 
     def test_vertical_guard_is_independent_of_the_radius(self):
-        for radius, dy, maxVertical, expected in ((None, 0.6, None, "VERTICAL_MISMATCH"),
-                                                  (1.5, 0.6, None, "VERTICAL_MISMATCH"),
-                                                  (1.5, 0.45, None, "CANDIDATE"),
-                                                  (1.5, 0.6, 0.8, "CANDIDATE"),
+        for radius, dy, maxVertical, expected in ((None, 0.8, None, "VERTICAL_MISMATCH"),
+                                                  (1.5, 0.8, None, "VERTICAL_MISMATCH"),
+                                                  (1.5, 0.6, None, "CANDIDATE"),
+                                                  (1.5, 0.8, 0.9, "CANDIDATE"),
                                                   (1.5, 0.3, 0.2, "VERTICAL_MISMATCH")):
             with self.subTest(radius=radius, dy=dy, maxVertical=maxVertical):
                 w = self.world(gap=4, wagonY=dy)
@@ -711,3 +711,43 @@ class LuaHitchTests(unittest.TestCase):
 
 class Lua51HitchTests(LuaHitchTests):
     runtime = lua51
+
+
+class PipeCollisionTests(unittest.TestCase):
+    """The owner, 2026-11-06 (Colossus 9000 towing its Titan header): the long pipe's collision with the towed
+    implement off while hitched, on again after; Farmhand's own boxes ignore a machine's pipe."""
+
+    def setUp(self):
+        self.lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        self.lua.globals().print = lambda *a: None
+        self.hitch = self.lua.execute((ROOT / "mod/FarmhandHitch.lua").read_text())
+        self.w = self.lua.execute(r"""
+            local w = { pairs = {} }
+            local parents = { pipeShape = "pipeNode", pipeNode = "pipeBody", pipeBody = "root", hood = "root" }
+            w.env = { AttacherJoints = { JOINTTYPE_TRAILER = 2 },
+                      getParent = function(n) return parents[n] or 0 end,
+                      setPairCollision = function(a, b, on) w.pairs[a .. "|" .. b] = on end }
+            local header = { components = { { node = "hdr1" }, { node = "hdr2" } } }
+            local combine = { spec_pipe = { nodes = { { node = "pipeNode" } } },
+                              components = { { node = "root" }, { node = "pipeBody" } } }
+            w.attached = true
+            function combine:getAttachedImplements() return w.attached and { { object = header, jointDescIndex = 2 } } or {} end
+            function combine:getAttacherJointByJointDescIndex(i) return { jointType = i } end
+            w.combine, w.header = combine, header
+            return w
+        """)
+
+    def test_the_pipe_ignores_the_towed_implement_only_while_hitched(self):
+        vehicles = self.lua.table_from([self.w.combine])
+        self.hitch.reconcilePipePairs(self.w.env, vehicles)
+        pairs = dict(self.w.pairs.items())
+        self.assertEqual(pairs, {"pipeBody|hdr1": False, "pipeBody|hdr2": False})     # the pipe's own body only
+        self.w.attached = False
+        self.hitch.reconcilePipePairs(self.w.env, vehicles)
+        self.assertEqual(dict(self.w.pairs.items()), {"pipeBody|hdr1": True, "pipeBody|hdr2": True})
+
+    def test_farmhands_boxes_take_a_pipe_as_passable_and_nothing_else_of_the_machine(self):
+        self.assertTrue(self.hitch.isPipeNode(self.w.env, self.w.combine, "pipeShape"))
+        self.assertTrue(self.hitch.isPipeNode(self.w.env, self.w.combine, "pipeBody"))
+        self.assertFalse(self.hitch.isPipeNode(self.w.env, self.w.combine, "hood"))
+        self.assertFalse(self.hitch.isPipeNode(self.w.env, self.w.header, "hdr1"))
