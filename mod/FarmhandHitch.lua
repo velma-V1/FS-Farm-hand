@@ -233,6 +233,26 @@ function Hitch.limits(args)
     return r
 end
 
+-- The way an implement is towed on ``jointNode``: its heading when the joint lies on its axis, else from its
+-- root towards the joint (= companion/hitch.py plan_hitch; live 2026-11-06: the Colossus 9000's Titan header,
+-- folded for the road, has its drawbar 10 m beside its root and is towed sideways; aligned to its heading,
+-- the reverse onto it read 70 degrees off and DIVERGED).
+Hitch.SIDE_DRAWBAR_M = 2.0
+function Hitch.towingDir(env, wagon, jointNode)
+    local fx, _, fz = env.localDirectionToWorld(wagon.rootNode, 0, 0, 1)
+    local n = math.sqrt(fx * fx + fz * fz)
+    fx, fz = fx / n, fz / n
+    local rx, _, rz = env.getWorldTranslation(wagon.rootNode)
+    local jx, _, jz = env.getWorldTranslation(jointNode)
+    local dx, dz = jx - rx, jz - rz
+    local along, lateral = dx * fx + dz * fz, dx * fz - dz * fx
+    if math.abs(lateral) > math.max(math.abs(along), Hitch.SIDE_DRAWBAR_M) then
+        local d = math.sqrt(dx * dx + dz * dz)
+        return dx / d, dz / d
+    end
+    return fx, fz
+end
+
 function Hitch.newAlign(env, args)
     local lim = Hitch.limits(args)
     if lim == nil or type(args.isReserved) ~= "function" then return nil, "INVALID_LIMITS" end
@@ -255,7 +275,7 @@ function Hitch.newAlign(env, args)
         if not finite(speed) or math.abs(speed) >= 1 then return nil, "NOT_STOPPED" end
         local wx, _, wz = world(env, wagonJoint.node)
         local tx, _, tz = world(env, tractorJoint.jointTransform)
-        local fx, _, fz = env.localDirectionToWorld(wagon.rootNode, 0, 0, 1)
+        local fx, fz = Hitch.towingDir(env, wagon, wagonJoint.node)
         assert(finite(fx) and finite(fz))
         local s = { easeSteering = false,   -- the final reverse steers from its first frame
             tractor = tractor, wagon = wagon, farmId = args.farmId, isReserved = args.isReserved,
@@ -1600,7 +1620,7 @@ function Hitch.newManeuver(env, args)
         if not finite(v) or math.abs(v) >= 1 then return nil, "NOT_STOPPED" end
         local radius = turningRadius(tractor)
         if radius == nil then return nil, "TURN_RADIUS_UNKNOWN" end
-        local fx, _, fz = env.localDirectionToWorld(wagon.rootNode, 0, 0, 1)
+        local fx, fz = Hitch.towingDir(env, wagon, wagonJoint.node)
         assert(finite(fx) and finite(fz))
         local s = {
             tractor = tractor, wagon = wagon, farmId = args.farmId, isReserved = args.isReserved,

@@ -885,7 +885,16 @@ _HEADER_CONFIG = re.compile(r"^(?:please\s+)?(?:put|set|get|make)\s+(?:the\s+|my
                             r"(?:\s+(?:mode|position|configuration))?\s+(?:on|with)\s+(?:the\s+|my\s+)?(?P<machine>[a-z0-9 ]{1,40})$")
 
 
+_TOW_HEADER = re.compile(r"^(?:please\s+)?(?:(?:hitch|hook|attach)\s+(?:the\s+|my\s+)?(?:header|cutter|table)\s+"
+                         r"(?:behind|to\s+the\s+back\s+of|on\s+the\s+back\s+of)"
+                         r"|tow\s+(?:the\s+|my\s+)?(?:header|cutter|table)\s+(?:with|behind))\s+(?:the\s+|my\s+)?(?P<machine>[a-z0-9 ]{1,40})$")
+
+
 def header_config(words: str) -> dict | None:
+    tow = _TOW_HEADER.match(words)
+    if tow is not None:
+        return {"version": 1, "command": "hitch_pair", "implement": "cutter", "towed": True,
+                "tractor_name": tow["machine"].strip()}
     match = _HEADER_CONFIG.match(words)
     if match is None:
         return None
