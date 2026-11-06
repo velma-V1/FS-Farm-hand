@@ -2429,10 +2429,10 @@ class UnloadAndSellTests(unittest.TestCase):
         c, notices = coordinated(world)
         calls = []
         c._harvesting = lambda field=None: True
-        c._execute = lambda job, cancel, entered, tag, **f: calls.append(tag) or Result("FAILED", "ESCORT_AHEAD_OF_COMBINE")
+        c._execute = lambda job, cancel, entered, tag, **f: calls.append(tag) or Result("FAILED", "STUCK_ON_OBSTACLE")
         import threading
         result = c._grain_cart(Job(1, "o"), threading.Event(), lambda s: None, {"field": 7})
-        self.assertEqual((result.reason, len(calls)), ("ESCORT_AHEAD_OF_COMBINE", 1))
+        self.assertEqual((result.reason, len(calls)), ("STUCK_ON_OBSTACLE", 1))
         self.assertIn(7, c._cart_failed)                                 # the 60 % watch sends none either
         self.assertIn("GRAIN_CART_STUCK", notices)
 

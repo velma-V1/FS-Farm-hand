@@ -1963,7 +1963,7 @@ class Coordinator:
     GRAIN_CART_WAITS = 180
 
     # A cart ending on one of these waits for the player: the same attempt would meet the same contact.
-    CART_STOP_CODES = frozenset({"ESCORT_AHEAD_OF_COMBINE", "STUCK_ON_OBSTACLE", "CONTACT", "STALLED",
+    CART_STOP_CODES = frozenset({"STUCK_ON_OBSTACLE", "CONTACT", "STALLED",
                                  "NAVIGATE_STUCK", "NAVIGATE_STALLED", "NAVIGATE_START_CONTACT", "OBSTACLE_AHEAD",
                                  "HELD_FAST", "WAGON_MOVED", "COLLISION"})
     CART_DISPATCH_SHARE = 0.6        # a combine left without a cart gets one at this tank share (before GIANTS'
@@ -2076,7 +2076,9 @@ class Coordinator:
                     self._cart_failed.add(field)
                 return result
             if ((result.status == "BLOCKED" and result.reason in ("NO_COMBINE_HARVESTING", "COMBINE_NOT_AT_THE_FIELD"))
-                    or result.reason in ("ESCORT_TOO_FAR", "NO_SAFE_SLOT")) and waited < self.GRAIN_CART_WAITS:
+                    or result.reason in ("ESCORT_TOO_FAR", "NO_SAFE_SLOT", "ESCORT_AHEAD_OF_COMBINE")) \
+                    and waited < self.GRAIN_CART_WAITS:
+                # ESCORT_AHEAD_OF_COMBINE refuses before any motion: the cart stands still until the combine passed.
                 # Still being taken to the field, or left behind (a headland turn, a slot not clear yet):
                 # it comes again rather than giving the combine up.
                 # GIANTS' helper is still taking the combine, or on its way: the cart waits for it.
