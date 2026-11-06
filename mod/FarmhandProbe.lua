@@ -98,6 +98,7 @@ end
 Probe.STAGING_DISTANCE_M = 6.0           -- companion/hitch.py STAGING_DISTANCE_M
 Probe.REAR_JOINT_MAX_Z = 0.5             -- companion/hitch.py REAR_JOINT_MAX_Z
 Probe.FRONT_JOINT_SLACK_M = 0.5          -- companion/hitch.py FRONT_JOINT_SLACK_M
+Probe.SIDE_DRAWBAR_M = 2.0               -- companion/hitch.py SIDE_DRAWBAR_M
 Probe.ALIGN_REACH_M = 9.0                -- companion/hitch.py ALIGN_REACH_M
 Probe.ALIGN_MAX_HEADING_DEG = 30         -- companion/hitch.py ALIGN_MAX_HEADING_RAD
 Probe.ALIGN_MAX_LATERAL_M = 2.0          -- companion/hitch.py ALIGN_MAX_LATERAL_M
@@ -146,11 +147,22 @@ function Probe.plan(tractor, wagon, stagingDistance, null)
         return nil
     end
     local best = nil
-    local hx, hz = math.sin(heading), math.cos(heading)
+    -- The way an input is towed (companion/hitch.py plan_hitch towing): the heading, else root -> joint
+    -- for a drawbar beside the implement's axis.
+    local function towing(inp)
+        local dx, dz = inp.x - wagon.x, inp.z - wagon.z
+        local along = dx * math.sin(heading) + dz * math.cos(heading)
+        local lateral = dx * math.cos(heading) - dz * math.sin(heading)
+        if math.abs(lateral) > math.max(math.abs(along), Probe.SIDE_DRAWBAR_M) then
+            return (math.atan2 or math.atan)(dx, dz)
+        end
+        return heading
+    end
     for _, out in ipairs(tractor.output_joints) do
         for _, inp in ipairs(wagon.input_joint_poses) do
             -- Never an input behind the wagon's root (companion/hitch.py plan_hitch).
-            local front = (inp.x - wagon.x) * hx + (inp.z - wagon.z) * hz >= -Probe.FRONT_JOINT_SLACK_M
+            local yaw = towing(inp)
+            local front = (inp.x - wagon.x) * math.sin(yaw) + (inp.z - wagon.z) * math.cos(yaw) >= -Probe.FRONT_JOINT_SLACK_M
             if out.free and inp.active and out.type == inp.type and out.z < Probe.REAR_JOINT_MAX_Z and front
                     and (need == 0 or ptoConnects(out.pto_names, inp.pto_names, null))
                     and (best == nil or out.index < best[1].index
@@ -161,6 +173,7 @@ function Probe.plan(tractor, wagon, stagingDistance, null)
     end
     if best == nil then return nil end
     local out, inp = best[1], best[2]
+    heading = towing(inp)
     -- Place the AI root so that root + rotate(heading, joint offset) == target.
     local sin, cos = math.sin(heading), math.cos(heading)
     local fx = inp.x - (out.x * cos + out.z * sin)
