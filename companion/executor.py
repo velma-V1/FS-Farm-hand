@@ -283,11 +283,13 @@ def of_kind(item: Equipment, kind: str) -> bool:
     forage wagon (as always), else a towed implement carrying that specialization."""
     if kind == "forage_wagon":
         return item.category == "forage_wagon"
+    if kind == "trailer" and item.lock_positions:
+        return item.category in IMPLEMENT_CATEGORIES          # a carrier on a drawbar (a header trailer)
     return item.category in IMPLEMENT_CATEGORIES and kind in item.kinds
 
 
 def compatible(tractor: Equipment, wagon: Equipment, kind: str = "forage_wagon", name: str | None = None,
-               crop: str | None = None) -> bool:
+               crop: str | None = None, driver: str | None = None) -> bool:
     """Pair-level checks. Joint type and PTO are checked per planned joint pair in
     plan_hitch, which every HITCH step re-runs. With ``name`` (the player named the
     implement, "the gooseneck") any implement of that name will do, whatever its kind;
@@ -295,7 +297,10 @@ def compatible(tractor: Equipment, wagon: Equipment, kind: str = "forage_wagon",
     fits = (wagon.category in IMPLEMENT_CATEGORIES and named(wagon, name)) if name else of_kind(wagon, kind)
     if crop is not None and seed_position(wagon, crop) is None:
         return False
-    return (tractor.category == "tractor" and fits
+    # A combine tows only when the player named it ("hook the header trailer to the mf 8570"): the
+    # nearest machine for an ordinary hitch stays a tractor.
+    towing = tractor.category == "tractor" or (tractor.category == "harvester" and named(tractor, driver) and bool(driver))
+    return (towing and fits
             and power_sufficient(tractor, wagon)
             and {"move", "attach", "stop"} <= tractor.capabilities)
 
@@ -671,7 +676,9 @@ def named(item: Equipment, name: str | None) -> bool:
     brand (live: the Series 9 2019 is DEUTZFAHR's)."""
     if not name:
         return True
-    text = " ".join(t for t in (item.name, item.brand) if t).casefold()
+    # A carrier is also named by what it carries ("the header trailer": its lock position's mf8570Header).
+    carried = " ".join(re.sub(r"\.xml$", "", lock.xml.rsplit("/", 1)[-1]) for lock in item.lock_positions)
+    text = " ".join(t for t in (item.name, item.brand, carried) if t).casefold()
     return bool(text) and all(w in text.split() or w in text for w in name.split())
 
 
@@ -2990,6 +2997,7 @@ class Executor:
         else:
             self._kind = command.get("implement", "forage_wagon")
             self._compatible = functools.partial(compatible, kind=self._kind, name=command.get("implement_name"),
+                                                 driver=command.get("tractor_name"),
                                                  crop=command.get("crop"))
         check = movable if moving else self._compatible
         delivery = None

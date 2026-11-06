@@ -1439,6 +1439,24 @@ class HarvestTests(unittest.TestCase):
         self.assertAlmostEqual(x, -118.3 + 5.2 + Executor.MOUNT_BEHIND_M, places=3)     # east of it, header over the lock
         self.assertEqual([c[0] for c in calls[2:]], ["mount", "pull_clear"])
 
+    def test_a_named_combine_hitches_its_header_trailer_and_a_plain_hitch_still_takes_a_tractor(self):
+        # Live 2026-11-06: the loaded MF 8570 Trailer (no GIANTS Trailer specialization, a carrier with a
+        # lock position for the header) towed by the MF 8570's rear TRAILER joint.
+        from protocol.model import LockPosition
+        combine, header = self.combine(at=(-113.0, -159.4))
+        combine = replace(combine, attached_to=None, name="MF 8570", heading=0.0,
+                          output_joints=(OutputJoint(1, "CUTTER", 0.0, 1.78, True), OutputJoint(2, "TRAILER", 0.0, -4.1, True)))
+        lock = LockPosition("vehicles/masseyFerguson/mf8570Header/mf8570Header.xml", (-118.3, -159.4), -math.pi / 2, False)
+        trailer = Equipment("t-9", "implement", "farm-a", (-117.5, -158.0), heading=0.0, name="MF 8570 Trailer",
+                            kinds=frozenset({"fill_unit", "ai_implement"}), lock_positions=(lock,), required_pto_torque=0.0,
+                            input_joints=(InputJoint(1, "TRAILER", (-117.5, -153.66), True),))
+        from companion.executor import compatible
+        self.assertTrue(compatible(combine, trailer, "trailer", driver="mf 8570"))
+        self.assertFalse(compatible(combine, trailer, "trailer"))                       # not named: not a tow
+        from companion.executor import named, of_kind
+        self.assertTrue(of_kind(trailer, "trailer"))
+        self.assertTrue(named(trailer, "header"))                                        # "the header trailer"
+
     def test_a_combine_carrying_nothing_a_trailer_takes_is_not_loaded(self):
         world = MockWorld(self.combine(), PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
         result = Executor(world).execute({"version": 1, "farm_id": "farm-a", "target": "player_at_acceptance",

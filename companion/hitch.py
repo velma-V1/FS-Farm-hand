@@ -106,7 +106,7 @@ def plan_hitch(tractor: Equipment, wagon: Equipment,
     """
     if not _finite(staging_distance) or not 0 < staging_distance <= MAX_STAGING_DISTANCE_M:
         raise ValueError("Invalid staging distance")
-    if tractor.category != "tractor" or wagon.category not in IMPLEMENT_CATEGORIES:
+    if tractor.category not in ("tractor", "harvester") or wagon.category not in IMPLEMENT_CATEGORIES:
         return None
     root, heading = tractor.ai_root, wagon.heading
     if root is None or not _finite(root.x, root.z, root.yaw, heading):
