@@ -1287,6 +1287,38 @@ class Executor:
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, ids, tuple(states))
 
+    BACK_OFF_M = 8.0
+
+    def _back_off(self, command, enter, states) -> Result:
+        """"Back the mf 8570 off": the named machine and what it carries straight back BACK_OFF_M by Farmhand's own
+        drive, which leaves a contact by a measured reverse first (Drive.begin), at its heading; verified moved."""
+        from companion.drive_goal import GoalError, resolve_drive_goal
+        owner, farm_id = command["request_id"], command["farm_id"]
+        items = tuple(self.world.snapshot())
+        try:
+            rig = resolve_drive_goal(items, farm_id, command.get("tractor_name"), None, (0.0, 0.0))
+        except GoalError as error:
+            return Result("BLOCKED", error.code, states=tuple(states))
+        root = next(i for i in items if i.id == rig.vehicle_id)
+        if root.heading is None:
+            return Result("BLOCKED", "HEADING_UNKNOWN", rig.rig_ids, tuple(states))
+        target = (root.position[0] - math.sin(root.heading) * self.BACK_OFF_M,
+                  root.position[1] - math.cos(root.heading) * self.BACK_OFF_M)
+        enter("RESERVE")
+        if not self.world.reserve_rig(rig.rig_ids, owner):
+            return Result("BLOCKED", "RESERVATION_CONFLICT", rig.rig_ids, tuple(states))
+        status, reason = "COMPLETE", "BACKED_OFF"
+        try:
+            enter("BACK_OFF")
+            self.world.farm_drive(root.id, target, owner, 2.0, yaw=root.heading)
+            now = next((i for i in self.world.snapshot() if i.id == root.id), None)
+            if now is None or math.dist(now.position, root.position) < 2.0:
+                status, reason = "FAILED", "NOT_MOVED"
+        except (StepFailed, StepUnverified) as error:
+            status = "UNVERIFIED" if isinstance(error, StepUnverified) else "FAILED"
+            reason = error.code
+        return self._cleanup(Result(status, reason, rig.rig_ids, tuple(states)), rig.rig_ids, owner, enter)
+
     def _fold_implement(self, command, enter, states) -> Result:
         """An implement (of the kind said, on the named machine or loose beside it) to its transport or working
         configuration by GIANTS' own Foldable: work is the end GIANTS may turn it on at, transport the other
@@ -2423,6 +2455,7 @@ class Executor:
     # The cart is driven up behind a combine farther than this first (ESCORT starts within 90 m),
     # to its run-up ESCORT_RUN_UP_M behind the combine on its line, at its heading.
     ESCORT_NEAR_M = 70.0
+    ESCORT_START_RANGE_M = 85.0    # within Hitch.ESCORT.startRangeM (90): the escort follows from here
     ESCORT_FOLLOW_M = 30.0         # this near the combine the escort follows its trail itself, no run-up
     ESCORT_APPROACHES = 4          # run-ups re-aimed at the moving combine before the escort starts anyway
     ESCORT_ALIGN_RAD = math.radians(45)
@@ -2518,6 +2551,13 @@ class Executor:
                 if (now is None or cart is None or math.dist(cart.position, now.position) <= self.ESCORT_FOLLOW_M
                         or self._behind_combine(cart, now)):
                     break                                  # the escort's own follow takes it from here
+                if not now.stopped:
+                    # Never a run-up at a moving combine: GIANTS' agent drives to a fixed point and the combine
+                    # turns (live 2026-11-06, field 91: head on into its header). The escort's own follow
+                    # (close braking, vehicle checks) takes it from within its range, else it waits.
+                    if math.dist(cart.position, now.position) > self.ESCORT_START_RANGE_M:
+                        return Result("BLOCKED", "ESCORT_TOO_FAR", rig_ids, tuple(states))
+                    break
                 enter("APPROACH")
                 moved = True
                 yaw = now.heading or 0.0
@@ -3170,6 +3210,8 @@ class Executor:
             return self._teleport_rig(command, enter, states)
         if command["task"] == "fold_implement":
             return self._fold_implement(command, enter, states)
+        if command["task"] == "back_off":
+            return self._back_off(command, enter, states)
         if command["task"] == "save_game":
             try:
                 enter("SAVE")

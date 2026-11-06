@@ -890,6 +890,17 @@ _TOW_HEADER = re.compile(r"^(?:please\s+)?(?:(?:hitch|hook|attach)\s+(?:the\s+|m
                          r"|tow\s+(?:the\s+|my\s+)?(?:header|cutter|table)\s+(?:with|behind))\s+(?:the\s+|my\s+)?(?P<machine>[a-z0-9 ]{1,40})$")
 
 
+_BACK_OFF = re.compile(r"^(?:please\s+)?(?:back|reverse|move)\s+(?:up\s+)?(?:the\s+|my\s+)?(?P<machine>[a-z0-9 ]{1,40}?)"
+                       r"\s+(?:off|away|back|clear)(?:\s+(?:from\s+(?:it|there|the\s+\S+(?:\s+\S+)?)))?$")
+
+
+def back_off(words: str) -> dict | None:
+    match = _BACK_OFF.match(words)
+    if match is None or match["machine"] in ("it", "that", "this"):
+        return None
+    return {"version": 1, "command": "back_off", "tractor_name": match["machine"].strip()}
+
+
 def header_config(words: str) -> dict | None:
     tow = _TOW_HEADER.match(words)
     if tow is not None:
@@ -944,7 +955,7 @@ class RuleInterpreter:
         if not isinstance(text, str):
             return None
         words = normalize(text)
-        learned = route(words) or teleport(words) or player_cart(words) or header_config(words)
+        learned = route(words) or teleport(words) or player_cart(words) or header_config(words) or back_off(words)
         if learned is not None:
             return learned
         for rule, key in ((_CART_START, "cart_start"), (_STOP_AT, "stop_at")):

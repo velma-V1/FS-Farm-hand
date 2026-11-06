@@ -58,6 +58,7 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "unmount_front": ("unmount_front", "ACCEPTED_UNMOUNT", "COMPLETE_UNMOUNT"),
         "teleport": ("teleport_rig", "ACCEPTED_TELEPORT", "COMPLETE_TELEPORT"),
         "fold_implement": ("fold_implement", "ACCEPTED_FOLD", "COMPLETE_FOLD"),
+        "back_off": ("back_off", "ACCEPTED_BACK_OFF", "COMPLETE_BACK_OFF"),
         "detach_pair": ("detach_pair", "ACCEPTED_DETACH", "COMPLETE_DETACH"),
         "field_work": ("field_work", "ACCEPTED_FIELD_WORK", "COMPLETE_FIELD_WORK"),
         "buy": ("buy", "ACCEPTED_BUY", "COMPLETE_BUY"),
@@ -259,7 +260,7 @@ def work_for(proposal: dict) -> dict | None:
     if command == "buy":
         return {"wants": proposal["wants"]}
     if command in ("fetch_pair", "hitch_pair", "move_pair", "load_tractor", "unload_tractor", "follow_me", "sell",
-                   "store", "mount_front", "unmount_front", "teleport", "fold_implement"):
+                   "store", "mount_front", "unmount_front", "teleport", "fold_implement", "back_off"):
         work = {k: proposal[k] for k in NAMES if k in proposal}
         if command == "hitch_pair" and proposal.get("towed"):
             work["towed"] = True
@@ -674,6 +675,7 @@ class Coordinator:
         # Grain carts: workers of their own beside the job (one per harvested field), each with its own
         # executor (an executor runs one task at a time); STOP ends them with everything else.
         self._carts: dict = {}                     # field -> (thread, cancel, job)
+        self._cart_failed: set = set()             # fields whose cart ended stuck: none sent again by itself
         self._cart_running: dict[str, str] = {}    # cart job owner -> the request id it runs now
         self._cart_count = 0
         self._harvest_fields: set = set()          # fields a combine harvests in a job's own step
@@ -823,6 +825,7 @@ class Coordinator:
         with self._lock:
             self._queue.clear()
             self._resume_progress.clear()  # a new user request never inherits stale retry failures
+            self._cart_failed.clear()
             self._stops += 1
             if retarget:
                 self._then_stops = self._stops
@@ -957,7 +960,7 @@ class Coordinator:
                         and combine_full(tractor, self.CART_DISPATCH_SHARE)):
                     with self._lock:
                         running = self._carts.get(w.field)
-                        idle_cart = running is None or not running[0].is_alive()
+                        idle_cart = (running is None or not running[0].is_alive()) and w.field not in self._cart_failed
                     if idle_cart:
                         log.info("worker %s: tank at %.0f %% with no cart working; one sent", w.tractor,
                                  100 * self.CART_DISPATCH_SHARE)
@@ -1959,6 +1962,10 @@ class Coordinator:
     GRAIN_CART_WAIT_S = 10.0         # between looks for its combine at work (its helper starting, on its way)
     GRAIN_CART_WAITS = 180
 
+    # A cart ending on one of these waits for the player: the same attempt would meet the same contact.
+    CART_STOP_CODES = frozenset({"ESCORT_AHEAD_OF_COMBINE", "STUCK_ON_OBSTACLE", "CONTACT", "STALLED",
+                                 "NAVIGATE_STUCK", "NAVIGATE_STALLED", "NAVIGATE_START_CONTACT", "OBSTACLE_AHEAD",
+                                 "HELD_FAST", "WAGON_MOVED", "COLLISION"})
     CART_DISPATCH_SHARE = 0.6        # a combine left without a cart gets one at this tank share (before GIANTS'
                                      # "nearly full" at 0.8, AIDriveStrategyCombine), whatever was predicted
 
@@ -2061,6 +2068,13 @@ class Coordinator:
             # ``start`` (the owner, 2026-11-06: unloading from about 60-70 %; sent only then, it came too late).
             result = self._execute(job, cancel, entered, f"e{n}w{waited}", task="escort", field=field,
                                    cart_start=start)
+            if result.reason in self.CART_STOP_CODES:
+                # In contact, stuck or in the combine's way: trying again changes nothing (the owner,
+                # 2026-11-06: "retrying does not help if it is stuck or in contact with something").
+                self.notify("GRAIN_CART_STUCK", job.spoken)
+                with self._lock:
+                    self._cart_failed.add(field)
+                return result
             if ((result.status == "BLOCKED" and result.reason in ("NO_COMBINE_HARVESTING", "COMBINE_NOT_AT_THE_FIELD"))
                     or result.reason in ("ESCORT_TOO_FAR", "NO_SAFE_SLOT")) and waited < self.GRAIN_CART_WAITS:
                 # Still being taken to the field, or left behind (a headland turn, a slot not clear yet):

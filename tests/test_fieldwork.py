@@ -9,7 +9,7 @@ from adapters.world import StepFailed, StepUnverified
 from companion import hitch as transport
 from companion.executor import Executor
 from companion.executor import COVERAGE_REQUIRED, OPERATIONS, resolve_field
-from protocol.model import Destination, Equipment, FarmInfo, Field, FieldCoverage, FillUnit, InputJoint, OutputJoint, Pose
+from protocol.model import Result, Destination, Equipment, FarmInfo, Field, FieldCoverage, FillUnit, InputJoint, OutputJoint, Pose
 from simulator.world import MockWorld
 
 PLAYERS = {"farm-a": (0.0, 0.0)}
@@ -2420,6 +2420,21 @@ class UnloadAndSellTests(unittest.TestCase):
         self.assertEqual(harvest_logistics(combine, field_of(40000, cut=0.9))[0], "ONE_TANK")   # 10 % left
         unknown = replace(field_of(8000), coverage=replace(field_of(8000).coverage, yield_l_m2=None))
         self.assertEqual(harvest_logistics(combine, unknown)[0], "UNCERTAIN")              # never guessed
+
+    def test_a_cart_in_contact_or_in_the_combines_way_is_not_sent_again(self):
+        # Live 2026-11-06, field 91: head on into the header, then 73 relaunches ending ESCORT_AHEAD_OF_COMBINE
+        # (the owner: "retrying does not help if it is stuck or in contact with something").
+        from companion.coordinator import Job
+        world, _ = self.cart_world()
+        c, notices = coordinated(world)
+        calls = []
+        c._harvesting = lambda field=None: True
+        c._execute = lambda job, cancel, entered, tag, **f: calls.append(tag) or Result("FAILED", "ESCORT_AHEAD_OF_COMBINE")
+        import threading
+        result = c._grain_cart(Job(1, "o"), threading.Event(), lambda s: None, {"field": 7})
+        self.assertEqual((result.reason, len(calls)), ("ESCORT_AHEAD_OF_COMBINE", 1))
+        self.assertIn(7, c._cart_failed)                                 # the 60 % watch sends none either
+        self.assertIn("GRAIN_CART_STUCK", notices)
 
     def test_a_one_tank_harvest_sends_no_cart_until_the_tank_shows_otherwise(self):
         from companion.coordinator import Worker
