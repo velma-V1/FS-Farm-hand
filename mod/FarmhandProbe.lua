@@ -507,6 +507,12 @@ function Probe:update(dt)
                 local ok, err = pcall(Probe.logMachineInventory, self)
                 if not ok then log("machine inventory UNVERIFIED %s", tostring(err)) end
             end
+            local specs = bridge.dir .. "spec_inventory.flag"
+            if env.fileExists(specs) then
+                env.deleteFile(specs)
+                local ok, err = pcall(Probe.logSpecInventory, self)
+                if not ok then log("spec inventory UNVERIFIED %s", tostring(err)) end
+            end
             local treeInventory = bridge.dir .. "tree_inventory.flag"
             if env.fileExists(treeInventory) then
                 env.deleteFile(treeInventory)
@@ -2026,6 +2032,44 @@ function Probe:logTurnReferences()
         end
     end
     log("turn reference RESULT read-only rigs=%d", count)
+end
+
+-- Read-only: every vehicle's specializations and the fields of those that carry or mount
+-- another vehicle (what a header trailer, a deck or a cutter joint actually exposes).
+function Probe:logSpecInventory()
+    local env = self.env
+    local function fields(t, depth)
+        local out = {}
+        for k, v in pairs(t or {}) do
+            local kind = type(v)
+            if kind == "number" or kind == "boolean" or kind == "string" then
+                out[#out + 1] = string.format("%s=%s", tostring(k), tostring(v))
+            elseif kind == "table" and depth > 0 then
+                out[#out + 1] = string.format("%s={%s}", tostring(k), fields(v, depth - 1))
+            elseif kind == "table" then
+                local n = 0
+                for _ in pairs(v) do n = n + 1 end
+                out[#out + 1] = string.format("%s=<%d>", tostring(k), n)
+            end
+        end
+        table.sort(out)
+        return table.concat(out, " ")
+    end
+    for _, vehicle in pairs(vehicles(env)) do
+        local id = env.NetworkUtil.getObjectId(vehicle)
+        local names = {}
+        for _, spec in ipairs(vehicle.specializationNames or {}) do names[#names + 1] = spec end
+        log("spec inventory id=%s name=%s config=%s specs=%s", tostring(id), tostring(vehicle:getName()),
+            tostring(vehicle.configFileName), table.concat(names, ","))
+        for _, key in ipairs({ "spec_dynamicMountAttacher", "spec_dynamicMountable", "spec_attacherJoints",
+                               "spec_tensionBelts", "spec_cutter", "spec_attachable", "spec_foldable" }) do
+            local spec = vehicle[key]
+            if spec ~= nil and (key ~= "spec_attachable" or vehicle.spec_cutter ~= nil) then
+                log("spec inventory id=%s %s %s", tostring(id), key, string.sub(fields(spec, 2), 1, 3000))
+            end
+        end
+    end
+    log("spec inventory RESULT read-only")
 end
 
 function Probe:logMachineInventory()
