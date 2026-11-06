@@ -629,7 +629,8 @@ class Coordinator:
         self._unreachable: set[str] = set()        # implements no hitch could reach this session (not tried again)
         self._queue: list[tuple] = []               # requests waiting for the current job (start's arguments)
         self._blocked_since: dict[str, float] = {}   # worker owner -> when its helper was first seen BLOCKED
-        self._cleared: set[str] = set()             # workers whose way was cleared (once each)
+        self._cleared: set[str] = set()             # one clearance per continuous blockage episode
+        self._resume_progress: dict[tuple[int, str], tuple[float, int]] = {}  # progress, consecutive failed restarts
         self._after: list[list] = []              # their follow-up steps, run when Farmhand is free
         # Grain carts: workers of their own beside the job (one per harvested field), each with its own
         # executor (an executor runs one task at a time); STOP ends them with everything else.
@@ -730,6 +731,7 @@ class Coordinator:
         just before (kept for "continue"); ``retarget``: the stop a new destination makes."""
         with self._lock:
             self._queue.clear()
+            self._resume_progress.clear()  # a new user request never inherits stale retry failures
             self._stops += 1
             if retarget:
                 self._then_stops = self._stops
@@ -798,6 +800,7 @@ class Coordinator:
         (then it counts as cleared)."""
         if not blocked:
             self._blocked_since.pop(key, None)
+            self._cleared.discard(key)  # subsequent independent obstruction is another episode
             return False
         since = self._blocked_since.setdefault(key, time.monotonic())
         if time.monotonic() - since < self.WORKER_BLOCKED_S or key in self._cleared:
@@ -881,6 +884,8 @@ class Coordinator:
                 if w.operation in OPERATIONS and field is not None and field.coverage else None)
         log.info("worker %s on field %s ended: %s %s", w.tractor, w.field, w.operation,
                  "?" if done is None else f"{done:.3f}")
+        observed_worker = next((i for i in self.world.snapshot() if i.id == w.tractor), None)
+        stop_reason = observed_worker.ai_stop if observed_worker is not None else None
         try:
             if not self.world.stop(w.tractor, w.owner):
                 raise StepFailed("STOP_NOT_CONFIRMED")
@@ -891,8 +896,8 @@ class Coordinator:
         with self._lock:
             if w in self.workers:
                 self.workers.remove(w)
-            if w.after and w.operation != "collect":     # a collect's return waits for its load (_collect_ended)
-                self._after.append(w.after)
+            self._blocked_since.pop(w.owner, None)
+            self._cleared.discard(w.owner)
         if w.operation == "collect":
             self._collect_ended(w, done, full)
             return
@@ -906,11 +911,39 @@ class Coordinator:
                                                                     "destination": w.destination}})
             self.notify("COMBINE_FULL")
             return
+        # Resume an interrupted objective from the freshly observed remaining field work.
+        # Only engine-reported recoverable stops qualify: never undo an explicit player stop,
+        # exhausted supply, finished work, or an unverified outcome. A new period of actual
+        # field progress resets the no-progress retry budget, so later obstructions are handled.
+        recoverable = {"NOT_REACHABLE", "BLOCKED_BY_OBJECT", "COULD_NOT_PREPARE"}
+        if stop_reason in recoverable and done is not None and done < COVERAGE_REQUIRED:
+            key = (w.field, w.operation)
+            earlier, attempts = self._resume_progress.get(key, (None, 0))
+            attempts = 0 if earlier is None or done > earlier + 0.01 else attempts + 1
+            self._resume_progress[key] = (done, attempts)
+            if attempts < 3:
+                log.info("worker %s: %s at %.3f field coverage; recovering and resuming %s on %s",
+                         w.tractor, stop_reason, done, w.operation, w.field)
+                with self._lock:
+                    # NOT_REACHABLE can be route geometry, not a nearby parked vehicle:
+                    # never move unrelated equipment on mere proximity for that verdict.
+                    if stop_reason == "BLOCKED_BY_OBJECT":
+                        self._after.append({"job": "clear_worker", "work": {"tractor": w.tractor}})
+                    self._after.append({"job": "field_work", "work": {"field": w.field,
+                                        "operations": [w.operation], "destination": w.destination}})
+                self.notify("WORKER_BLOCKED")
+                return
+            log.info("worker %s: recovery paused after %d no-progress restarts", w.tractor, attempts)
+        if w.after and w.operation != "collect":
+            with self._lock:
+                self._after.append(w.after)
         finished = combine is not None and combine.ai_stop == "FINISHED" if w.operation == "harvest" else True
         worked = done is not None and done >= COVERAGE_REQUIRED and finished
         log.info("worker %s on field %s: GIANTS ended %s, measured %s: %s", w.tractor, w.field,
                  combine.ai_stop if combine is not None else "?", "?" if done is None else f"{done:.3f}",
                  "done" if worked else "not done")
+        if worked:
+            self._resume_progress.pop((w.field, w.operation), None)
         self.notify("WORKER_DONE" if worked else "WORKER_STOPPED")
         destination = self._destination(w.destination) if w.operation == "harvest" else None
         rig = self._harvest_rigs.get(w.field)

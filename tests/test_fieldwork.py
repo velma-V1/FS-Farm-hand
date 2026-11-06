@@ -997,6 +997,46 @@ class WorkerTests(unittest.TestCase):
     def unit(self, world, unit_id):
         return next(i for i in world.snapshot() if i.id == unit_id)
 
+    def test_a_later_obstruction_can_trigger_a_new_clearance(self):
+        c, _ = coordinated(self.world("plow"))
+        c.WORKER_BLOCKED_S = 0.0
+        self.assertTrue(c._blocked_long("worker-a", True))
+        self.assertFalse(c._blocked_long("worker-a", True))   # same blockage: no loop
+        self.assertFalse(c._blocked_long("worker-a", False))  # moved and working again
+        self.assertTrue(c._blocked_long("worker-a", True))    # a different blockage later
+        c._resume_progress[(7, "plow")] = (0.2, 2)
+        c.stop()
+        self.assertFalse(c._resume_progress)                  # a new objective starts with a clean retry state
+
+    def test_recoverable_stopped_worker_resumes_remaining_work_without_early_cleanup(self):
+        from companion.coordinator import Worker
+        world = self.world("plow")
+        world.items["t-1"] = replace(world.items["t-1"], ai_stop="BLOCKED_BY_OBJECT")
+        c, notices = coordinated(world)
+        w = Worker("worker-a", "t-1", 7, "plow", [{"task": "detach_pair"}])
+        with mock.patch.object(world, "stop", return_value=True), mock.patch.object(world, "release"):
+            c._worker_ended(w)
+            self.assertEqual([x["job"] for x in c._after], ["clear_worker", "field_work"])
+            self.assertEqual(c._after[1]["work"]["operations"], ["plow"])
+            self.assertNotIn([{"task": "detach_pair"}], c._after)
+            c._after.clear()
+            c._worker_ended(w)
+            self.assertEqual([x["job"] for x in c._after], ["clear_worker", "field_work"])
+            c._after.clear()
+            c._worker_ended(w)
+            self.assertEqual([x["job"] for x in c._after], ["clear_worker", "field_work"])
+            c._after.clear()
+            c._worker_ended(w)
+        self.assertNotIn("field_work", [x.get("job") for x in c._after if isinstance(x, dict)])
+        self.assertIn("WORKER_STOPPED", notices)
+        # A road-planner failure does not authorize moving unrelated parked equipment.
+        c._after.clear()
+        c._resume_progress.clear()
+        world.items["t-1"] = replace(world.items["t-1"], ai_stop="NOT_REACHABLE")
+        with mock.patch.object(world, "stop", return_value=True), mock.patch.object(world, "release"):
+            c._worker_ended(w)
+        self.assertEqual([x["job"] for x in c._after], ["field_work"])
+
     def test_worker_watch_survives_a_stale_game_snapshot(self):
         from companion.coordinator import Coordinator
 
