@@ -1339,7 +1339,7 @@ end
 -- where it and a lane each side and a run-up behind are clear (Hitch.openSpot on its route box
 -- grown by REPOSITION), so a trailer can come under its pipe (live ec7e8bafc78e4129-1: in the
 -- yard pocket a dropped seeder blocked the lane behind, the barn the front).
-Bridge.REPOSITION = { sideM = 6, behindM = 18, aheadM = 4 }
+Bridge.REPOSITION = { sideM = 6, behindM = 18, aheadM = 4, stayIfOpen = true }   -- a combine: lanes for a cart beside and behind
 -- Any other vehicle (moved out of the way: the user, 2026-10-30) needs only room around it.
 Bridge.CLEAR_AWAY = { sideM = 1.5, behindM = 2, aheadM = 2 }
 Bridge.REPOSITION_REACH_M = 80        -- how far out a spot GIANTS' navigation reaches is looked for
@@ -1369,6 +1369,16 @@ local function toOpenGround(env, spec, room, byAgent)
     if foot == nil then return nil, "RIG_GEOMETRY_UNKNOWN" end
     local big = Bridge.grown(foot, room)
     big.lMax = big.lMax + (room.rightM or 0)
+    if room.stayIfOpen then
+        -- Already standing where that room is clear: nothing to drive.
+        local x0, _, z0 = env.getWorldTranslation(v.rootNode)
+        local fx0, _, fz0 = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
+        local yaw0 = atan2(fx0, fz0)
+        if H.routePoseClear(env, big, x0, z0, yaw0, 0) == true and H.staticNear(env, big, x0, z0, yaw0, H.TELEPORT.clearM) == false then
+            log("reposition: the %s already stands on open ground", tostring(v.getName and v:getName() or "vehicle"))
+            return { alreadyOpen = true }
+        end
+    end
     local x, _, z = env.getWorldTranslation(v.rootNode)
     local fx, _, fz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
     -- At least the rig's own length away: driven to, not set down beside it. First where GIANTS'
@@ -1411,7 +1421,10 @@ function starters.reposition(env, spec)
     return toOpenGround(env, spec, lane ~= nil and { sideM = 2, behindM = lane, aheadM = 4 }
                         or spec.tractor.spec_pipe ~= nil and Bridge.REPOSITION or Bridge.CLEAR_AWAY)
 end
-steppers.reposition = function(env, task, dt) return steppers.farm_drive(env, task, dt) end
+steppers.reposition = function(env, task, dt)
+    if task.alreadyOpen then return "DONE", "ALREADY_OPEN" end
+    return steppers.farm_drive(env, task, dt)
+end
 
 -- PARK: a rig that tows a carrier to open ground with a clear lane spec.area m wide on its right, where
 -- a machine takes a header off the carrier from (its lock position's back faces that side), and room

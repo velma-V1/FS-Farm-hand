@@ -2242,6 +2242,16 @@ class Executor:
             reserved.append(owner)
             self.active = rig_ids
             before = (self._grain(combine), sum(u.level or 0.0 for u in trailer.fill_units))
+            if hasattr(self.world, "reposition") and self._farm_drives():
+                # Where a cart can come: lanes beside and behind the combine clear of scenery, else it is
+                # driven to the nearest such open ground first (the owner, 2026-11-06, field 91: "that is a
+                # bad position for the tractor to try to unload from, it is against the trees").
+                enter("REPOSITION")
+                try:
+                    self.world.reposition(combine.id, combine_owner)
+                except StepFailed as failure:
+                    log.info("overload: no open ground for the combine (%s); where it stands", failure.code)
+                combine = next(i for i in self.world.snapshot() if i.id == combine.id)
             enter("PIPE_OUT")
             self.world.pipe(combine.id, True, combine_owner)
             piped = True
