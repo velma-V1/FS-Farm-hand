@@ -427,3 +427,13 @@ The owner owns every field. Observation had kept only 64 owned fields, so 78+ (9
   - The cart's grain went 3771 -> 5954 l: 2183 l while the combine moved threshing on its lane, not turning (escort harvesting=2182.6).
   - The fixes that got there: a re-aimed run-up, the cart shadowing from the harvest's start, the folded trigger and learned pipe point as slot, and a 0.3 m spout margin.
 - OPEN DEFECT: at the headland the combine stopped with the cart still under the pipe, and GIANTS went on discharging, 1082 l standing (owner: no unloading without movement). The cart must leave the pipe when the combine stops or turns.
+
+## Colossus 9000 integrated header trailer (builds after db34526; 2026-11-06, save 1)
+
+Read from the mod's own XML and the running game: the Titan header (706, 16.6 m wide) is its own trailer. Its fold animation runs from time 0 (drawbar shown, transport wheels out) to time 1 (work position; GIANTS allows turn-on only at time 1, turnOnFoldDirection = 1). It has a second input joint, TRAILER, about 10 m beside its root (folding is disallowed while towed by it). The Colossus 9000 (701) has a rear TRAILER joint 5.44 m behind its AI root.
+
+- LIVE-PROVEN: "put the header in transport on the colossus". The header folded to its transport end (FOLDED); GIANTS detached it from the front; pull-clear backed the Colossus straight off 4.5 m.
+- LIVE, NOT DONE: the rear hitch onto the side drawbar. 1st run: ALIGN_REVERSE read the header's heading, not its towing axis, and DIVERGED (fixed: Hitch.towingDir, as plan_hitch). 2nd run: the reverse converged on heading and gap (4.1 -> 1.05 m) but held 1.2 m lateral, touched the drawbar and ended WAGON_MOVED (header moved 0.34 m, the guard stopped it). Next: the reverse controller's lateral correction for a rear-steered machine, and staging rather than reversing straight from 1.2 m aside.
+- State left: Colossus at (-70.8, -154.4); Titan header loose at (-84.4, -151.8), folded to its transport end.
+
+Not live-tested yet: harvest logistics prediction (ONE_TANK / NEEDS_CART / UNCERTAIN, dispatch at 60 %), the cover-based headland stop of transfer, and the player-driven combine cart (once and keep).
