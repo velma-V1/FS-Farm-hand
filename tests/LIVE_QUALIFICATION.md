@@ -437,3 +437,18 @@ Read from the mod's own XML and the running game: the Titan header (706, 16.6 m 
 - State left: Colossus at (-70.8, -154.4); Titan header loose at (-84.4, -151.8), folded to its transport end.
 
 Not live-tested yet: harvest logistics prediction (ONE_TANK / NEEDS_CART / UNCERTAIN, dispatch at 60 %), the cover-based headland stop of transfer, and the player-driven combine cart (once and keep).
+
+## Field 91 grain logistics and headland, 2026-11-06 afternoon (builds through d914868)
+
+- LIVE-PROVEN: the harvest's prediction from observation ("NEEDS_CART free_l 2494 / 1418, yield 88569-186146 l"), with the cart sent from the start. Right after a reload, field coverage can still lack the yield (UNCERTAIN, cart sent anyway).
+- LIVE-PROVEN 14:42-14:43, "harvest field 91 and unload at 40 percent": the cart caught up at ~16 km/h against the combine's 9.7, matched under the pipe and took 5046 l while it threshed. At the headland turn the cover shut and the trailer held 15730 l through the turn: 0 l standing.
+- LIVE DEFECT, fixed: a GIANTS run-up to a fixed point behind a moving combine drove the cart head on into the MF 8570's header as the combine came back from its turn. 73 relaunches followed (ESCORT_AHEAD_OF_COMBINE), so a cart in contact or stuck now waits and is not sent again; there is no run-up at a moving combine.
+- LIVE DEFECT, fixed: restarts ended COULD_NOT_PREPARE. Three causes, each from GIANTS' source: the pipe left out (Pipe:getIsAIReadyToDrive), the machine left unfolded for a drive it can't fold for while holding grain (Foldable / Combine:getIsFoldAllowed), and Farmhand's square-radius "on the field" test sending the helper to the middle of a long field (now the field outline).
+- LIVE DEFECT, fixed: the cart's cover changed 46 times in 80 s; it now moves only after the wish has held (1.5 s to open, 0.5 s to close).
+- Owner rules: moving-only was the test's rule; the product unloads a combine standing full. The tractor should stand a little farther from the header (1.3 m preferred, 0.8 m at least).
+- LIVE DEFECT, OPEN: "back the 3650 off" (straight reverse) jackknifed its loaded trailer by about 70 deg. A towed rig must not back off blind.
+
+## Colossus 9000 rear hitch, second session (build after d914868)
+
+- The reverse now steers its joint onto the axis (fixed: it steered the steering node, metres from a combine's rear joint).
+- LIVE DEFECT, OPEN: "hitch the header behind the colossus". The first stage aim 6.4 m ahead of the side drawbar was blocked at its start. The hitch then tried its other approach families (south, north of the header), and the Colossus drove itself into a tight spot beside the store's building. It was stopped there at (-81.4, -177.1); the header was unmoved at (-84.3, -151.7). An approach must not wander through alternatives in a cramped yard: it should make room along the towing axis, or stop and say so.
