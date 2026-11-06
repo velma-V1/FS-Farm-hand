@@ -1351,7 +1351,7 @@ function Bridge.grown(foot, room)
 end
 -- The rig to the nearest open ground where its route box grown by ``room`` is clear (rightM: a lane on
 -- its right only, beyond sideM), driven there by Farmhand's own drive at the heading found clear.
-local function toOpenGround(env, spec, room)
+local function toOpenGround(env, spec, room, byAgent)
     local v = spec.tractor
     local denied = idle(env, v, spec.farmId)
     if denied ~= nil then return nil, denied end
@@ -1386,9 +1386,14 @@ local function toOpenGround(env, spec, room)
     -- the GMC rig's nose against an object). 21a5e70740024850-1 (24 degrees off, corrected until
     -- OBSTACLE_AHEAD) was the old lattice search, which reached a heading only by chance; the exact
     -- goal curve (Drive.dubins) plans it.
-    return starters.farm_drive(env, { tractor = v, x = tx, z = tz, area = 0,
-                                      yaw = tyaw, farmId = spec.farmId,
-                                      owned = spec.owned, ghost = spec.ghost })
+    local target = { tractor = v, x = tx, z = tz, area = 0, yaw = tyaw, farmId = spec.farmId,
+                     owned = spec.owned, ghost = spec.ghost }
+    if byAgent then
+        -- The agent's stepper reads its target from this op's own spec.
+        spec.x, spec.z, spec.yaw = tx, tz, tyaw
+        return starters.navigate(env, spec)
+    end
+    return starters.farm_drive(env, target)
 end
 function starters.reposition(env, spec)
     -- area > 0: a transport moved where a machine can be driven up its ramps (live
@@ -1405,11 +1410,14 @@ steppers.reposition = function(env, task, dt) return steppers.farm_drive(env, ta
 Bridge.PARK = { sideM = 2, behindM = 2, aheadM = 12 }
 function starters.park(env, spec)
     if not (finite(spec.area) and spec.area > 0 and spec.area <= 40) then return nil, "INVALID_TARGET" end
+    -- A towed rig, a spot GIANTS' navigation reaches: driven there by GIANTS' agent (live 2026-11-06: the
+    -- MF 8570 towing its header trailer among the trees at field 2's entrance, Farmhand's own drive
+    -- NO_GOAL_PROGRESS 15 m short; the agent took the same rig 974 m from the store).
     return toOpenGround(env, spec, { sideM = Bridge.PARK.sideM, behindM = Bridge.PARK.behindM,
-                                     aheadM = Bridge.PARK.aheadM, rightM = spec.area })
+                                     aheadM = Bridge.PARK.aheadM, rightM = spec.area }, true)
 end
-steppers.park = steppers.reposition
-aborts.park = function(env, task) return aborts.farm_drive(env, task) end
+steppers.park = function(env, task, dt) return steppers.navigate(env, task, dt) end
+aborts.park = function(env, task) return aborts.navigate(env, task) end
 aborts.reposition = function(env, task) return aborts.farm_drive(env, task) end
 
 -- --------------------------------------------------------------- teleport
