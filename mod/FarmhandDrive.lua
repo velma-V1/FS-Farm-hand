@@ -2791,6 +2791,15 @@ function Drive.step(env, s, dt, Hitch)
             Hitch.halt(env, s, dt)
             return "CONTINUE"
         end
+        if result == "CONTINUE" and s.commandedAt ~= s.elapsed then
+            -- A frame that replanned, recovered or waited without commanding the vehicle: braked, never left
+            -- rolling (live 2026-11-05: 80 % of a drive's frames uncommanded, the MF 8570 rolled to 17 km/h
+            -- down a 7-8 degree slope with its route asking 3-10 km/h). Hitch.halt is GIANTS' own brake
+            -- (driveToPoint not allowed to drive, AIVehicleUtil 87-94), as every other stop.
+            pcall(Hitch.halt, env, s, dt)
+            s.commandedAt = s.elapsed
+            s.heldFrames = (s.heldFrames or 0) + 1
+        end
         return result
     end)
     if not ok then
@@ -2799,6 +2808,7 @@ function Drive.step(env, s, dt, Hitch)
     end
     if code ~= "CONTINUE" then
         s.result = code
+        if (s.heldFrames or 0) > 0 then say(string.format("[Farmhand] drive held braked on %d uncommanded frames", s.heldFrames)) end
         Drive.releaseGhost(env, s, Hitch)
         local summary = terrainSummary(s)
         if summary ~= nil then say(summary .. " (" .. tostring(code) .. ")") end

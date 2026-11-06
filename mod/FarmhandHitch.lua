@@ -327,6 +327,7 @@ function Hitch.releaseActive(s)
 end
 
 function Hitch.halt(env, s, dt)
+    s.commandedAt = s.elapsed
     pcall(env.AIVehicleUtil.driveToPoint, s.tractor, dt, 0, false, false, 0, 1, s.maxSpeedKmh)
     pcall(function() s.tractor:setCruiseControlState(env.Drivable.CRUISECONTROL_STATE_OFF) end)
     pcall(Hitch.releaseActive, s)
@@ -400,6 +401,7 @@ function Hitch.commandKmh(cap)
 end
 
 function Hitch.drive(env, s, dt, forwards, lx, lz)
+    s.commandedAt = s.elapsed            -- this frame commanded the vehicle (Drive.step brakes one that did not)
     local S, cap = Hitch.SPEED, s.maxSpeedKmh
     s.driveStartMs = s.driveStartMs or (s.elapsed or 0)
     local driven = (s.elapsed or 0) - s.driveStartMs
