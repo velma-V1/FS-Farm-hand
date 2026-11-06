@@ -19,6 +19,14 @@ local Hitch = {}
 -- attach-assist envelope can never become a long-range "snap".
 Hitch.LIMITS = { minSpeedKmh = 1, maxSpeedKmh = 5, maxDistanceM = 10, timeoutMs = 60000,
                  maxAssistRadiusM = 1.5, maxVerticalM = 1.0 }
+-- Precise motions run this much faster until within PRECISE_NEAR_M of the joint they make, then at their
+-- own precise speed (the owner, 2026-11-06: "add 50-100% to the speed during precise movement unless
+-- within 1 m of the hitch area").
+Hitch.PRECISE_FAST, Hitch.PRECISE_NEAR_M = 1.75, 1.0
+function Hitch.preciseKmh(kmh, gap)
+    if gap ~= nil and gap > Hitch.PRECISE_NEAR_M then return kmh * Hitch.PRECISE_FAST end
+    return kmh
+end
 -- Provisional values; tune at the first FS25 test.
 Hitch.DEFAULTS = {
     -- GIANTS driveToPoint stops accelerating whenever maxSpeed * (1 - fac^0.25) < 1
@@ -581,6 +589,8 @@ local function checkAndDrive(env, s, dt)
     if s.elapsed > s.timeoutMs then return "TIMEOUT" end
     local gap = distance(tx, tz, wx, wz)
     s.lastGap = gap
+    s.preciseKmh = s.preciseKmh or s.maxSpeedKmh
+    s.maxSpeedKmh = Hitch.preciseKmh(s.preciseKmh, gap)
     -- The observed joints in the wagon's frame: the error signal, never a root pose.
     local ahead = (tx - wx) * s.dirX + (tz - wz) * s.dirZ
     local lateral = (tx - wx) * s.dirZ - (tz - wz) * s.dirX

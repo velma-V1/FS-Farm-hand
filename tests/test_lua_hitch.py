@@ -293,8 +293,10 @@ class LuaHitchTests(unittest.TestCase):
         drives = self.drives(w)
         driving = [d for d in drives if d["allowed"]]
         self.assertTrue(driving)
-        # Always reverse, never above the session speed, steering left to GIANTS.
-        self.assertTrue(all(not d["forwards"] and d["maxSpeed"] <= COMMAND_KMH + 1e-9 and 0 < d["acc"] <= 1 for d in driving))   # throttle by the margin left
+        # Always reverse, never above the session speed (1.75x beyond 1 m of the joint: the owner, 2026-11-06),
+        # steering left to GIANTS.
+        self.assertTrue(all(not d["forwards"] and d["maxSpeed"] <= COMMAND_KMH * self.hitch.PRECISE_FAST + 1e-9
+                            and -1 <= d["acc"] <= 1 and d["acc"] != 0 for d in driving))   # throttle, or brake into the last metre
         self.assertEqual(drives[-1], {"dt": 100, "acc": 0, "allowed": False, "forwards": False,
                                       "lx": 0, "lz": 1, "maxSpeed": 3, "active": True})
         # Active while it drove (GIANTS steers only active vehicles), released by the brake.
@@ -544,7 +546,8 @@ class LuaHitchTests(unittest.TestCase):
             session, _ = self.align(w, maxSpeedKmh=speed)
             self.assertEqual(self.hitch.alignStep(w.env, session, 100), "CONTINUE")
             self.assertEqual(self.hitch.commandKmh(speed), max(speed * 0.65, min(speed, 1)))   # under the limit
-            self.assertLessEqual(self.drives(w)[-1]["maxSpeed"], self.hitch.commandKmh(speed))   # eased in from 1.5
+            self.assertLessEqual(self.drives(w)[-1]["maxSpeed"],                                 # eased in from 1.5
+                                 self.hitch.commandKmh(speed * self.hitch.PRECISE_FAST))            # (beyond 1 m)
 
     def test_driver_can_command_below_the_three_kmh_ceiling(self):
         w = self.world()
@@ -711,6 +714,15 @@ class LuaHitchTests(unittest.TestCase):
 
 class Lua51HitchTests(LuaHitchTests):
     runtime = lua51
+
+
+class PreciseSpeedTests(unittest.TestCase):
+    def test_precise_motions_are_faster_until_the_last_metre(self):
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        hitch = lua.execute((ROOT / "mod/FarmhandHitch.lua").read_text())
+        self.assertAlmostEqual(hitch.preciseKmh(4.0, 3.0), 7.0)          # the owner: +50-100 % away from it
+        self.assertEqual(hitch.preciseKmh(4.0, 0.8), 4.0)                # within 1 m: the precise speed
+        self.assertEqual(hitch.preciseKmh(4.0, None), 4.0)
 
 
 class PipeCollisionTests(unittest.TestCase):

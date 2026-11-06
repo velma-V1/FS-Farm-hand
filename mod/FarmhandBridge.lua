@@ -1039,6 +1039,7 @@ function steppers.reattach(env, task, dt)
     local conflict = Bridge.Hitch.driverConflict and Bridge.Hitch.driverConflict(v)
     if conflict ~= nil then pcall(Bridge.Hitch.halt, env, task.drive, dt); return "FAILED", conflict end
     if not v:getIsMotorStarted() and v:getCanMotorRun() then v:startMotor() end
+    task.drive.maxSpeedKmh = Bridge.Hitch.preciseKmh(R.creepKmh, pair.gap)
     Bridge.Hitch.holdActive(task.drive)
     v:raiseActive()
     -- The machine's joint pursues the line through the input joint along the implement's heading (a front
@@ -1191,6 +1192,7 @@ function steppers.mount(env, task, dt)
         return "FAILED", "MOUNT_NOT_LINED_UP"
     end
     if not v:getIsMotorStarted() and v:getCanMotorRun() then v:startMotor() end
+    task.drive.maxSpeedKmh = Bridge.Hitch.preciseKmh(M.creepKmh, ahead)
     Bridge.Hitch.holdActive(task.drive)
     v:raiseActive()
     -- Pure pursuit onto the line through the lock: the implement's aim lookaheadM along it past where the
