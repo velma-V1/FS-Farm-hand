@@ -1044,7 +1044,7 @@ local function reattachBack(env, task, pair, dt)
     pcall(Bridge.Hitch.halt, env, task.drive, dt)
     if not stopped(v) then return nil end
     log("reattach: backed %.2f m of %.2f (%s); creep from %.2f m off", moved, task.back,
-        open == true and "its length" or "behind not clear", pair.gap)
+        moved >= task.back and "its length" or open ~= true and "behind not clear" or "its time", pair.gap)
     task.back, task.from, task.startGap, task.drive.driveStartMs = nil, nil, pair.gap, nil
     return nil
 end
