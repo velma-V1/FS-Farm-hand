@@ -34,14 +34,14 @@ FIELD_SET_DOWN_M = 6.0        # and are set down this far beyond that margin, ou
 MOVED_ENOUGH_M = 3.0          # a blocker this far from where it stood counts as moved
 # Trips longer than this go to GIANTS' navigation first; what is left after it,
 # by the job's own arrival rule (``reached``), is Farmhand's own drive.
-LONG_LEG_M = 300.0
+LONG_LEG_M = 120.0      # (the owner, 2026-11-06: the shortest path, as a GPS finds it: GIANTS' map routes)
 # Teleport recovery, each try farther out while GIANTS still cannot start from where the rig
 # landed (the user, 2026-10-31: about 25 m, then up to about 150 m; live f08f97a7aef54634-1: the
 # nearest open spot was 4 m off inside the same yard pocket). The mod looks 50 m beyond each.
 TELEPORT_STEPS_M = (0.0, 25.0, 60.0, 100.0)
 # GIANTS' GOTO could not start from where the rig stands (cramped, against something).
 GOTO_START_CODES = frozenset({"NAVIGATE_BLOCKED_AT_START", "NAVIGATE_GOTO_INVALID", "GOTO_ENDED", "NAVIGATE_STALLED"})
-FALLBACK_CODES = frozenset({"NO_ROUTE", "START_NOT_CLEAR", "EGRESS_LIMIT", "EGRESS_DIVERGED", "EGRESS_BLOCKED",
+FALLBACK_CODES = frozenset({"NO_ROUTE", "DETOUR_LIMIT", "NO_GOAL_PROGRESS", "START_NOT_CLEAR", "EGRESS_LIMIT", "EGRESS_DIVERGED", "EGRESS_BLOCKED",
                             "EGRESS_NOT_CLEAR", "TELEPORT_CARGO", "NO_OPEN_SPOT"})
 
 ARRIVE_M = 3.0   # a place's point; for a field, any rig unit this close to its edge
@@ -147,6 +147,7 @@ class StandaloneMove:
         rest = None
         start_contact = False
         route_done = False
+        giants_failed = False             # GIANTS' route was tried and failed: Farmhand's own is the last
         if here is not None and hasattr(self.world, "map_id") and hasattr(self.world, "farm"):
             farm = self.world.farm()
             scope = (f"{farm.savegame_dir}#{farm.savegame}" if farm is not None
@@ -207,12 +208,13 @@ class StandaloneMove:
                 log.info("DRIVE %.0f m: GIANTS' navigation for the long leg", math.dist(here, goal.target))
                 self._long_leg(goal.vehicle_id, goal.target, owner)
             except Exception as failure:
-                # Boxed in where GIANTS cannot start, even from the nearest open ground: the
-                # blockers moved or the teleport recovery (``execute``), never Farmhand's own
-                # search over the whole trip (live bae54215f79642a0: minutes across the river).
-                if getattr(failure, "code", None) in GOTO_START_CODES | FALLBACK_CODES:
+                # GIANTS' map route failed: Farmhand finds its own (the owner, 2026-11-06: "if giants route
+                # fails farmhand finds a new route"), bounded so it never searches for minutes (live
+                # bae54215f79642a0: minutes across the river; now Drive.FIRST_ROUTE_LIMIT_MS and DETOUR_LIMIT).
+                if getattr(failure, "code", None) in {"STOPPED", "CANCELLED"}:
                     raise
-                log.info("GIANTS' navigation: %s; Farmhand's own drive", getattr(failure, "code", failure))
+                giants_failed = True
+                log.info("GIANTS' navigation: %s; Farmhand's own route", getattr(failure, "code", failure))
             else:
                 rest = self._rest_of_leg(goal)
                 if rest is None:
@@ -222,7 +224,7 @@ class StandaloneMove:
         try:
             self.world.farm_drive(goal.vehicle_id, target, owner, area)
         except Exception as failure:
-            if start_contact or getattr(failure, "code", None) not in FALLBACK_CODES \
+            if start_contact or giants_failed or getattr(failure, "code", None) not in FALLBACK_CODES \
                     or not hasattr(self.world, "navigate"):
                 raise
             log.info("DRIVE by Farmhand's own drive: %s; GIANTS GOTO to %s", failure.code, target)

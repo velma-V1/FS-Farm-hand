@@ -11,6 +11,7 @@ local pi, sin, cos, sqrt, floor, abs, atan2 = math.pi, math.sin, math.cos,
 local STEP, BIN, CELL = 4, pi / 8, 2
 local LIMIT = 6000
 -- A drive must come this much closer to its goal within this time (see the step's goal check).
+Drive.DETOUR_FACTOR, Drive.DETOUR_SLACK_M = 2.5, 40   -- driven more than 2.5x the direct way plus 40 m: DETOUR_LIMIT
 Drive.GOAL_PROGRESS_M = 2.0
 Drive.GOAL_PROGRESS_MS = 90000
 Drive.AWAY_M = 60.0        -- farther than this from the goal than its best: MOVING_AWAY
@@ -849,7 +850,7 @@ end
 
 local SECTION_SPANS = {4,8,12,16,2,1}
 Drive.SHUFFLE_SWITCHES = 6      -- gear changes in one planned shuffle
-Drive.FIRST_ROUTE_LIMIT_MS = 120000   -- the first route's search, at most
+Drive.FIRST_ROUTE_LIMIT_MS = 30000    -- the first route's search, at most (the owner, 2026-11-06: route wisely but not slowly; GIANTS' map route follows)
 Drive.LEARNED_ROUTE_LIMIT_MS = 180000 -- a taught short line must not loop for minutes before provider recovery
 Drive.LEAVE_M = 6                      -- a touched object left out this near the start
 Drive.SHUFFLE_LEGS = 16         -- legs driven in one drive's shuffles
@@ -2277,6 +2278,16 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
     -- sections for 10 minutes unmoved, and later 130 m driven the wrong way, both past the check below
     -- that only a moving frame reached). The first route's own search has its limit.
     -- A departure or retreat backs away by design, bounded by its own limits (EGRESS_LIMIT and the like).
+    -- A GPS's route, not a hunt (the owner, 2026-10-31 and 2026-11-06: "find the shortest path ... just like
+    -- a gps"): driven far beyond the direct way to the goal, the drive ends DETOUR_LIMIT and the caller takes
+    -- GIANTS' own shortest route (or says so) rather than wander on.
+    s.directM = s.directM or distance(x, z, s.targetX, s.targetZ)
+    if s.lastX ~= nil then s.drivenM = (s.drivenM or 0) + distance(x, z, s.lastX, s.lastZ) end
+    s.lastX, s.lastZ = x, z
+    if (s.drivenM or 0) > Drive.DETOUR_FACTOR * s.directM + Drive.DETOUR_SLACK_M then
+        say(string.format("[Farmhand] drive detour limit: %.0f m driven for a %.0f m direct way", s.drivenM, s.directM))
+        return "DETOUR_LIMIT"
+    end
     if s.initial == nil and s.egress == nil and s.retreat == nil then
         local toGoal = distance(x, z, s.targetX, s.targetZ)
         if s.goalBest == nil or toGoal < s.goalBest - Drive.GOAL_PROGRESS_M then

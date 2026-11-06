@@ -130,11 +130,13 @@ LANE_START_NEAR_M, LANE_START_TURN_RAD = 25.0, math.radians(30.0)
 OWN_STAGE_MIN_M = 15.0
 # A towing rig staged by Farmhand's own drive comes this far straight onto its aim.
 STRAIGHT_LEAD_M = 12.0
+PULL_AHEAD_NEAR_M = 4.0     # a joint this near the eye but past/beside it: pull straight ahead, then reverse
+PULL_AHEAD_M = 4.0          # until the joint is this far ahead of the eye on the towing axis
 MANEUVER_RETRIES = 2
 
 # GOTO drives to approaches per hitch (TRAVEL_NEAR and STAGE together); aims
 # GIANTS refuses outright (GOTO_INVALID) move nothing and do not count.
-MAX_APPROACH_DRIVES = 3
+MAX_APPROACH_DRIVES = 2      # aims tried before it says so (the owner, 2026-11-06: no touring a cramped yard)
 # A GOTO drive to an approach the game stopped for making no progress (mod/FarmhandBridge.lua
 # NAVIGATE_STALL_MS; live 4167b7fd4e8143db-1: 1.2 km, then stuck 12 m short): the tractor is
 # stopped, and like an ended GOTO what follows is decided by the observed joints.
@@ -3770,6 +3772,29 @@ class Executor:
                         break
                     if align_problem(error) is None:
                         break
+                    if (error.gap <= PULL_AHEAD_NEAR_M and abs(error.heading) <= ALIGN_MAX_HEADING_RAD
+                            and not aim.get("pulled") and self._farm_drives()):
+                        # Right at the joint but past it or beside it (live 2026-11-06: the Colossus 9000's
+                        # joint 1.03 m from its header's drawbar, 0.31 m past, 0.98 m aside; the re-approach
+                        # then toured the store yard): straight forward along the towing axis until the joint
+                        # is PULL_AHEAD_M ahead of the eye, then the plain reverse (the owner: "it just
+                        # needed to back up and hitch").
+                        aim["pulled"] = True
+                        enter("PULL_AHEAD")
+                        # The plan's final AI-root pose moved PULL_AHEAD_M on along the axis (the joint lands
+                        # on the axis, ahead of the eye), less the AI root's offset ahead of the vehicle root.
+                        fx, fz = math.sin(plan.final.yaw), math.cos(plan.final.yaw)
+                        root = tractor.ai_root or Pose(tractor.position[0], tractor.position[1], plan.final.yaw)
+                        hx, hz = math.sin(root.yaw), math.cos(root.yaw)
+                        lead = (root.x - tractor.position[0]) * hx + (root.z - tractor.position[1]) * hz
+                        target = (plan.final.x + fx * (PULL_AHEAD_M - lead), plan.final.z + fz * (PULL_AHEAD_M - lead))
+                        try:
+                            self.world.farm_drive(tractor.id, target, owner, 1.0, yaw=plan.final.yaw)
+                        except StepFailed as failure:
+                            log.info("pull ahead of the joint: %s", failure.code)
+                        tractor, wagon, error = self._joints("pulled ahead", ids, farm_id, owner, plan)
+                        if align_problem(error) is None:
+                            break
                     enter("LOCAL_MANEUVER")
                     try:
                         self.world.maneuver(tractor.id, wagon.id, plan, owner)

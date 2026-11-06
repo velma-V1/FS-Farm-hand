@@ -155,7 +155,7 @@ Acceptance:
 2026-11-04: nothing saved or read preferences, so the settings screen's "Preferred equipment: N saved" entry was removed (only implemented settings are listed). Re-add it with the feature. The per-purchase spending limit (settings `spending_limit`) is implemented and applies to every store and land purchase.
 
 ## Shortest sensible routes
-Status: OPEN
+Status: IN PROGRESS (owner, 2026-11-06: "find the shortest path ... just like a gps", "route wisely but not slowly", "if giants route fails farmhand finds a new route"). Done, automated-tested, not yet live-qualified: trips over 120 m take GIANTS' map route first; if it fails, Farmhand's own route (first search at most 30 s); an own drive ending past 2.5x the direct way + 40 m stops DETOUR_LIMIT; a hitch tries at most 2 approach aims and, right at the joint but past/beside it, pulls straight ahead along the towing axis and reverses.
 Priority: RELEASE-BLOCKER
 Found: 2026-10-31
 

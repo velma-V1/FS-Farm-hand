@@ -4176,6 +4176,7 @@ Bridge.REASONS = {
     NO_OPEN_SPOT = "there is no open ground nearby",
     NO_IMPLEMENT_TO_FOLD = "there is no implement of that kind on or beside that machine",
     NOT_MOVED = "it did not move",
+    DETOUR_LIMIT = "the only way found was far longer than the direct way, so it stopped instead of wandering",
     HEADING_UNKNOWN = "its heading is unknown",
     COMBINE_EMPTIED = "the combine's tank was emptied into the cart",
     PLAYER_LEFT = "you left the combine, so unloading it ended",

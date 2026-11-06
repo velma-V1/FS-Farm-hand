@@ -301,15 +301,15 @@ class StandaloneMoveTests(unittest.TestCase):
                                           "target": {"type": "place", "name": "farm barn"}})
         self.assertEqual(result.status, "COMPLETE", result)
         self.assertIn(("teleport", "611"), world.calls)
-        # A long trip (live bae54215f79642a0: GIANTS blocked at the start, no way onto open
-        # ground, then minutes of Farmhand's own search across the river): straight to the
-        # recovery, never Farmhand's own drive over the whole trip first.
+        # A long trip whose GIANTS route fails: Farmhand finds its own (the owner, 2026-11-06: "if giants route
+        # fails farmhand finds a new route"), once and bounded (Drive.FIRST_ROUTE_LIMIT_MS, DETOUR_LIMIT; live
+        # bae54215f79642a0 searched for minutes); only then the recovery.
         world = Pocket((unit("611", "GMC Sierra", "tractor", position=(-100.0, 500.0)),))
         Executor(world).execute({"version": 1, "request_id": "gmc-far", "farm_id": "1", "task": "move_pair",
                                  "tractor_name": "gmc", "target": {"type": "place", "name": "farm barn"}})
         names = [c[0] for c in world.calls]
         self.assertIn("teleport", names)
-        self.assertNotIn("drive", names[:names.index("teleport")])
+        self.assertEqual(names[:names.index("teleport")].count("drive"), 1)
         world = Pocket((unit("611", "GMC Sierra", "tractor", position=(-696.0, 139.0)),))
         world.teleport_recovery = False                       # turned off in Settings: never
         result = Executor(world).execute({"version": 1, "request_id": "gmc-barn", "farm_id": "1",
