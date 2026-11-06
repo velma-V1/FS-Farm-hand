@@ -238,7 +238,7 @@ Still open: the combine itself on the 379 + LB 56 26 for cross-map trips, and th
 To verify live: isDetachAllowed for the header (lowered?); the height gap at re-attach (Farmhand caps it at 0.5 m); the load fit; belts.
 
 ## Unload a combine on the move
-Status: IMPLEMENTED / AUTOMATED-TESTED / NOT YET LIVE-PROVEN
+Status: LIVE-PROVEN 2026-11-06 on field 91 (2183 l while harvesting; tests/LIVE_QUALIFICATION.md). Open: the cart stays under the pipe when the combine stops at a headland (1082 l transferred standing); the cart must leave the pipe then.
 Priority: RELEASE GATE (FINAL_FARMHAND_PRODUCT_SPEC.md 5)
 Found: 2026-11-05
 
