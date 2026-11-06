@@ -1967,10 +1967,19 @@ end
 
 -- nil, "OTHER_VEHICLE_NEAR" or "PERSON_TOO_CLOSE" for the tractor's points
 -- `points` (start frame) against s.others / s.player.
-local function pullConflict(s, points, vehicleM, playerM)
+-- ``from`` (optional): the points where the motion starts; a vehicle then counts only where the motion
+-- brings it nearer than it was at the start (a machine backing off the trailer its header was just set
+-- down on, its front over that trailer, moves only away from it).
+local function pullConflict(s, points, vehicleM, playerM, from)
+    local function nearest(list, other)
+        local best = math.huge
+        for _, pt in ipairs(list) do best = math.min(best, math.sqrt((pt[1] - other.x) ^ 2 + (pt[2] - other.y) ^ 2)) end
+        return best
+    end
     for _, pt in ipairs(points) do
         for _, other in ipairs(s.others) do
-            if math.sqrt((pt[1] - other.x) ^ 2 + (pt[2] - other.y) ^ 2) < vehicleM then return "OTHER_VEHICLE_NEAR" end
+            local d = math.sqrt((pt[1] - other.x) ^ 2 + (pt[2] - other.y) ^ 2)
+            if d < vehicleM and (from == nil or d < nearest(from, other) - 0.05) then return "OTHER_VEHICLE_NEAR" end
         end
         if s.player ~= nil and math.sqrt((pt[1] - s.player.x) ^ 2 + (pt[2] - s.player.y) ^ 2) < playerM then
             return "PERSON_TOO_CLOSE"
@@ -2060,7 +2069,7 @@ function Hitch.newPullClear(env, args)
         local along = 0
         while along <= maxDistance do
             local bad = pullConflict(s, pullPoints(s.reverse and -along or along, s.reverse),
-                                     Hitch.LOCAL.vehicleClearanceM, Hitch.LOCAL.playerClearanceM)
+                                     Hitch.LOCAL.vehicleClearanceM, Hitch.LOCAL.playerClearanceM, pullPoints(0, s.reverse))
             if bad == "OTHER_VEHICLE_NEAR" then return nil, "PULL_CLEAR_BLOCKED" end
             if bad == "PERSON_TOO_CLOSE" then return nil, "PULL_CLEAR_PERSON" end
             along = along + Hitch.LOCAL.sampleM
@@ -2095,7 +2104,7 @@ local function pullDrive(env, s, dt)
     end
     local others, player = surroundings(env, s)
     s.others, s.player = others, player
-    local bad = pullConflict(s, pullPoints(o.x, s.reverse), D.vehicleStopM, D.playerStopM)
+    local bad = pullConflict(s, pullPoints(o.x, s.reverse), D.vehicleStopM, D.playerStopM, pullPoints(0, s.reverse))
     if bad ~= nil then return bad end
     -- Progress is separation gained: a collision with anything unobserved stalls it.
     if o.away > s.bestSeparation + D.stallProgressM then
