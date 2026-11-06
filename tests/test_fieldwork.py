@@ -2396,6 +2396,15 @@ class UnloadAndSellTests(unittest.TestCase):
         combine = world.items["c-1"]
         world.items["c-1"] = replace(combine, fill_units=(combine.fill_units[0], replace(unit, level=level)))
 
+    def test_the_cart_counts_as_lined_up_only_behind_the_combine_facing_its_way(self):
+        # Live 2026-11-06, field 91: the cart arrived where the combine had been, the combine had turned.
+        e = Executor(MockWorld([], PLAYERS))
+        combine = Equipment("c", "harvester", "f", (0.0, 0.0), heading=0.0)
+        self.assertTrue(e._behind_combine(Equipment("t", "tractor", "f", (1.0, -30.0), heading=0.2), combine))
+        self.assertFalse(e._behind_combine(Equipment("t", "tractor", "f", (1.0, -30.0), heading=math.pi), combine))
+        self.assertFalse(e._behind_combine(Equipment("t", "tractor", "f", (1.0, 30.0), heading=0.0), combine))
+        self.assertFalse(e._behind_combine(Equipment("t", "tractor", "f", (40.0, -60.0), heading=0.0), combine))
+
     def test_the_cart_goes_alongside_only_once_the_tank_holds_the_share_asked(self):
         # The owner (2026-11-06): unloading starts at about 60-70 % of the combine's tank (a test: at 10 %).
         world, unit = self.cart_world()

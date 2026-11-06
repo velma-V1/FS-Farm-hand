@@ -2374,6 +2374,20 @@ class Executor:
     # The cart is driven up behind a combine farther than this first (ESCORT starts within 90 m),
     # to its run-up ESCORT_RUN_UP_M behind the combine on its line, at its heading.
     ESCORT_NEAR_M = 70.0
+    ESCORT_APPROACHES = 4          # run-ups re-aimed at the moving combine before the escort starts anyway
+    ESCORT_ALIGN_RAD = math.radians(45)
+
+    def _behind_combine(self, cart, combine) -> bool:
+        """The cart near the combine, behind it and roughly facing its way: the escort's follow can take it
+        from there along the combine's trail."""
+        if cart.heading is None or combine.heading is None:
+            return math.dist(cart.position, combine.position) <= self.ESCORT_NEAR_M
+        fx, fz = math.sin(combine.heading), math.cos(combine.heading)
+        dx, dz = cart.position[0] - combine.position[0], cart.position[1] - combine.position[1]
+        along, lateral = dx * fx + dz * fz, dx * fz - dz * fx
+        turned = abs((cart.heading - combine.heading + math.pi) % (2 * math.pi) - math.pi)
+        return (math.hypot(dx, dz) <= self.ESCORT_NEAR_M and along < 0 and abs(lateral) <= 15.0
+                and turned <= self.ESCORT_ALIGN_RAD)
     ESCORT_RUN_UP_M = 25.0
     ESCORT_FIELD_MARGIN_M = 30.0   # the combine this near the field's outline (as a disc) counts as there
     ESCORT_WAIT_S = 900.0
@@ -2442,10 +2456,17 @@ class Executor:
             reserved = True
             self.active = rig_ids
             before = sum(u.level or 0.0 for u in trailer.fill_units)
-            if math.dist(tractor.position, combine.position) > self.ESCORT_NEAR_M:
+            # Onto the combine's line behind it, facing its way, before the escort takes over. The combine
+            # moves on while the cart comes (live 2026-11-06, field 91: an 83 s approach to where it had been;
+            # it had turned at the headland meanwhile, the escort began 90 m off facing against it and fell
+            # behind, NO_SAFE_SLOT): re-aimed from where it is now until the cart is behind it.
+            for _ in range(self.ESCORT_APPROACHES):
+                observed = {i.id: i for i in self.world.snapshot()}
+                now, cart = observed.get(combine.id), observed.get(tractor.id)
+                if now is None or cart is None or self._behind_combine(cart, now):
+                    break
                 enter("APPROACH")
                 moved = True
-                now = next(i for i in self.world.snapshot() if i.id == combine.id)
                 yaw = now.heading or 0.0
                 aim = Pose(now.position[0] - math.sin(yaw) * self.ESCORT_RUN_UP_M,
                            now.position[1] - math.cos(yaw) * self.ESCORT_RUN_UP_M, yaw)
