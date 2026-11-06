@@ -1865,9 +1865,10 @@ function steppers.escort(env, task, dt)
         logMotionEnd("escort", code, task.session, Bridge.Hitch.describeEscort)
         for i, row in ipairs(task.session.rows or {}) do
             if i % 5 == 1 then
-                log("escort row t=%d mode=%s vc=%.1f v=%s err=%s lat=%s pipe=%s level=%.0f", row.t, row.mode, row.vc,
+                log("escort row t=%d mode=%s vc=%.1f v=%s err=%s lat=%s pipe=%s level=%.0f cover=%s/%s", row.t, row.mode, row.vc,
                     row.v and string.format("%.1f", row.v) or "?", row.err and string.format("%.2f", row.err) or "?",
-                    row.lat and string.format("%.2f", row.lat) or "?", tostring(row.pipe), row.level or 0)
+                    row.lat and string.format("%.2f", row.lat) or "?", tostring(row.pipe), row.level or 0,
+                    tostring(row.cover), tostring(row.want))
             end
         end
     end

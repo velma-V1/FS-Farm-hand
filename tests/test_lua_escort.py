@@ -306,7 +306,7 @@ class LuaEscortTests(unittest.TestCase):
         self.assertGreater(s.alongsideMs, 0, self.hitch.describeEscort(s))
         self.assertEqual(s.trailer.spec_cover.state, 1)                  # alongside, moving: open
         w.combineKmh = 0                                                 # it stops at a headland
-        self.runner(w, s, 10, None)
+        self.runner(w, s, 20, None)                                      # 1 s: past the 0.5 s hold
         self.assertEqual(s.trailer.spec_cover.state, 0)                  # closed: GIANTS discharges into nothing
         self.hitch.escortRestore(s)
         self.assertEqual(s.trailer.spec_cover.state, 1)                  # as it was found

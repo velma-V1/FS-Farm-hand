@@ -4174,6 +4174,7 @@ Hitch.ESCORT = {
     fullShare = 0.98,
     idleAiMs = 3000,            -- the combine's helper off (the player out of it) this long: COMBINE_STOPPED (PLAYER_LEFT)
     playerTurnDegS = 6,         -- a player's combine turning this fast: no slot beside it
+    coverOpenMs = 1500, coverCloseMs = 500,   -- the transfer wanted (or not) this long before the cover moves
     emptyShare = 0.03,          -- a one-time unloading is done with the tank this empty
     noSlotMs = 30000,           -- no clear slot beside the combine this long: NO_SAFE_SLOT
     stallMs = 30000, stallM = 1.0,
@@ -4469,8 +4470,13 @@ local function escortDrive(env, s, dt)
         local open = s.coverOpen or (cover.state > 0 and cover.state or 1)
         s.coverOpen = open
         local want = transfer and open or 0
-        if cover.state ~= want and (type(s.trailer.getIsNextCoverStateAllowed) ~= "function"
-                                    or s.trailer:getIsNextCoverStateAllowed(want)) then
+        -- Held steady before the cover moves (live 2026-11-06, field 91: changed 46 times in 80 s, the pipe out
+        -- 7 s over the trailer and nothing came in): opened after 1.5 s of transfer, closed after 0.5 s without.
+        if want ~= s.coverWant then s.coverWant, s.coverWantAt = want, s.elapsed end
+        local held = s.elapsed - (s.coverWantAt or 0) >= (want == 0 and E.coverCloseMs or E.coverOpenMs)
+        s.coverState = cover.state
+        if held and cover.state ~= want and (type(s.trailer.getIsNextCoverStateAllowed) ~= "function"
+                                             or s.trailer:getIsNextCoverStateAllowed(want)) then
             pcall(s.trailer.setCoverState, s.trailer, want)
             s.coverChanges = (s.coverChanges or 0) + 1
         end
@@ -4565,7 +4571,8 @@ local function escortDrive(env, s, dt)
         s.traceAt = s.elapsed + E.traceMs
         if #s.rows < E.traceMax then
             s.rows[#s.rows + 1] = { t = s.elapsed, mode = s.mode, vc = vc, v = s.measuredKmh, err = s.err,
-                                    lat = s.tL and (s.tL - ml) or nil, pipe = s.slotSource, level = level }
+                                    lat = s.tL and (s.tL - ml) or nil, pipe = s.slotSource, level = level,
+                                    cover = s.coverState, want = s.coverWant }
         end
     end
     local moved = distance(x, z, s.progressAt[1], s.progressAt[2])
