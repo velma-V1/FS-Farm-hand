@@ -1166,12 +1166,13 @@ class Executor:
     LEAVE_IMPLEMENT_M = 6.0  # a machine against a loose implement backs this far off it before a hitch
     def _line_up(self, vehicle_id, target, yaw, owner) -> None:
         """A short approach to a lined-up pose: Farmhand's own drive; where its search finds no way (live
-        2026-11-06: the MF 8570 beside its header trailer on a field-edge grade, 8000 nodes, NO_ROUTE),
+        2026-11-06: the MF 8570 beside its header trailer on a field-edge grade among trees, 8000 nodes, NO_ROUTE,
+        then NO_GOAL_PROGRESS),
         GIANTS' navigation agent, driven by Farmhand. What follows checks the pose it reached."""
         try:
             self.world.farm_drive(vehicle_id, target, owner, 0.0, yaw=yaw)
         except StepFailed as failure:
-            if failure.code != "NO_ROUTE" or not hasattr(self.world, "navigate"):
+            if failure.code not in ("NO_ROUTE", "NO_GOAL_PROGRESS") or not hasattr(self.world, "navigate"):
                 raise
             log.info("approach %s: %s by Farmhand's own drive; GIANTS' navigation", vehicle_id, failure.code)
             self.world.navigate(vehicle_id, Pose(target[0], target[1], yaw), owner)
