@@ -612,7 +612,11 @@ local function checkAndDrive(env, s, dt)
     local gx = wx + s.dirX * along
     local gz = wz + s.dirZ * along
     local node = tractor:getAIReverserNode() or tractor:getAISteeringNode()
-    local lx, _, lz = env.worldToLocal(node, gx, wy, gz)
+    -- The joint pursues the axis point, carried over to the steered node: on a machine whose node stands
+    -- far from its rear joint (a combine: no reverser node, live 2026-11-06 the Colossus 9000) the node
+    -- lined up on the axis while the joint stayed 1.2 m beside it and touched the drawbar.
+    local nx, _, nz = world(env, node)
+    local lx, _, lz = env.worldToLocal(node, nx + gx - tx, wy, nz + gz - tz)
     local over = Hitch.drive(env, s, dt, false, lx, lz)
     if over ~= nil then return over end
     return "CONTINUE"
