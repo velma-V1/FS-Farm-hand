@@ -983,8 +983,21 @@ class Executor:
                     and (not command.get("implement") or of_kind(implement, command["implement"]))
                     and named(implement, command.get("implement_name"))):
                 return vehicle_id, implement_id
-        # Nothing recorded (the companion restarted since the detach): a loose implement of the kind said
-        # just ahead of the named driven machine; REATTACH's own range and line-up checks decide.
+        # Nothing recorded (the companion restarted since the detach, or it never carried it): a loose
+        # implement of the kind said whose input joint matches a free front joint of the named driven
+        # machine, nearest first; the approach comes from the observed joints (_front_joint_pose).
+        if command.get("tractor_name") and command.get("implement"):
+            joined = sorted(((math.dist(vehicle.position, implement.position), vehicle.id, implement.id)
+                             for vehicle in observed.values()
+                             if vehicle.category in DRIVEN and vehicle.attached_to is None
+                             and named(vehicle, command["tractor_name"])
+                             for implement in observed.values()
+                             if implement.attached_to is None and implement.belted_to is None
+                             and of_kind(implement, command["implement"])
+                             and named(implement, command.get("implement_name"))
+                             and self._front_joint_pose(vehicle, implement) is not None))
+            if joined:
+                return joined[0][1], joined[0][2]
         if command.get("tractor_name") and command.get("implement"):
             for vehicle in observed.values():
                 if not (vehicle.category in DRIVEN and vehicle.attached_to is None and vehicle.heading is not None
@@ -1024,7 +1037,7 @@ class Executor:
             self.active = ids
             # Unrecorded (the companion restarted since the detach): where it stands, REATTACH decides.
             root = vehicle.ai_root or Pose(vehicle.position[0], vehicle.position[1], vehicle.heading or 0.0)
-            pose = self._front_reattach_pose(implement) or root
+            pose = self._front_reattach_pose(implement) or self._front_joint_pose(vehicle, implement) or root
             back = Pose(pose.x - math.sin(pose.yaw) * self.REATTACH_BEHIND_M,
                         pose.z - math.cos(pose.yaw) * self.REATTACH_BEHIND_M, pose.yaw)
             # Already in the creep's window (where it carried it, or up to REATTACH_BEHIND_M behind, lined up: live
@@ -1156,6 +1169,25 @@ class Executor:
             tmp.replace(self.attachments_file)
         except OSError as error:
             log.info("front attachments not saved: %s", error)
+
+    @staticmethod
+    def _front_joint_pose(vehicle, implement) -> Pose | None:
+        """Where ``vehicle``'s AI root stands carrying ``implement`` in front, from the observed joints:
+        a free front joint of the machine (ahead of its AI root) on the implement's active input joint of
+        the same type, at the implement's heading (a header faces the way its combine does). None when
+        no such pair is observed."""
+        if implement.heading is None:
+            return None
+        for out in vehicle.output_joints:
+            if not out.free or out.z <= 0:
+                continue
+            for joint in implement.input_joints:
+                if joint.active and joint.joint_type == out.joint_type and valid_position(joint.position):
+                    yaw = implement.heading
+                    sx, cz = math.sin(yaw), math.cos(yaw)
+                    ix, iz = joint.position
+                    return Pose(ix - out.z * sx - out.x * cz, iz - out.z * cz + out.x * sx, yaw)
+        return None
 
     def _front_reattach_pose(self, implement) -> Pose | None:
         """Where the machine stood when it carried ``implement`` in front, from where it lies now."""

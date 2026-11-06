@@ -1389,6 +1389,37 @@ class HarvestTests(unittest.TestCase):
         self.assertEqual(drives[0][1], 0.0)                                  # at the heading it carried it
         self.assertAlmostEqual(drives[0][0][1], 100.0 - Executor.REATTACH_BEHIND_M, places=6)
 
+    def test_a_header_never_carried_is_approached_from_the_observed_joints(self):
+        # Live 2026-11-06: the MF 8570 and its header reset at the store, nothing recorded; the combine's
+        # free CUTTER joint 1.78 m ahead of its AI root goes onto the header's CUTTER input joint, at
+        # the header's heading (facing south, 12.7 m east of the combine facing north).
+        from protocol.model import InputJoint, OutputJoint
+        drives = []
+
+        class Drives(MockWorld):
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None, via=None):
+                drives.append((target, yaw))
+                with self._lock:
+                    v = self._owned(vehicle_id, owner)
+                    self.items[vehicle_id] = replace(v, position=tuple(target), heading=yaw,
+                                                     ai_root=Pose(target[0], target[1], yaw))
+                return "ARRIVED"
+
+        combine, header = self.combine(at=(-108.9, -159.7))
+        combine = replace(combine, attached_to=None, name="MF 8570", output_joints=(OutputJoint(1, "CUTTER", 0.0, 1.782, True),
+                                                                     OutputJoint(2, "TRAILER", 0.0, -4.1, True)))
+        header = replace(header, attached_to=None, position=(-96.2, -158.2), heading=-math.pi, required_pto_torque=0.0,
+                         input_joints=(InputJoint(1, "CUTTER", (-96.2, -157.05), True),))
+        world = Drives([combine, header], PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
+        executor = Executor(world)
+        on = executor.execute({"version": 1, "farm_id": "farm-a", "target": "player_at_acceptance",
+                               "implement": "cutter", "tractor_name": "mf", "request_id": "r1", "task": "hitch_pair"})
+        self.assertEqual((on.status, on.reason), ("COMPLETE", "HITCH_OBSERVED"), on)
+        (x, z), yaw = drives[0]
+        self.assertAlmostEqual(yaw, -math.pi)
+        self.assertAlmostEqual(x, -96.2, places=3)
+        self.assertAlmostEqual(z, -157.05 + 1.782 + Executor.REATTACH_BEHIND_M, places=3)    # north of it, facing south
+
     def test_an_unreachable_header_is_set_down_in_front_of_the_combine_and_attached(self):
         # Live 2026-11-06: NO_ROUTE to the loose header beside a tree, at every staging distance. With
         # teleport recovery allowed the header is set down where the combine, as it stands, carries it
