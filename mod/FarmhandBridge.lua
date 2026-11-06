@@ -3664,6 +3664,7 @@ Bridge.NOTICES = {
     COMPLETE = "Farmhand: tractor and implement delivered",
     ACCEPTED_MOVE = "Farmhand: on my way",
     ACCEPTED_HITCH = "Farmhand: hitching a tractor to the implement",
+    FIELD_ALREADY_DONE = "Farmhand: the field already shows that done (measured) - nothing to work",
     ACCEPTED_MOUNT = "Farmhand: loading the header onto its trailer",
     ACCEPTED_UNMOUNT = "Farmhand: taking the header off its trailer",
     COMPLETE_UNMOUNT = "Farmhand: the header is attached again",

@@ -83,6 +83,8 @@ NAMES = ("tractor_name", "implement_name", "cargo_name")
 def result_notice(status: str, reason: str, complete: str = "COMPLETE") -> str:
     if status == "COMPLETE" and reason == "WORKERS_STARTED":
         return "WORKERS_STARTED"                  # the helpers work on; Farmhand is free
+    if status == "COMPLETE" and reason == "FIELD_ALREADY_DONE":
+        return "FIELD_ALREADY_DONE"
     if status == "COMPLETE":
         # Unhitched, but the tractor could not pull clear (nothing moved): say so.
         return complete + "_NOT_CLEAR" if reason == "DETACHED_NOT_CLEAR" else complete
@@ -1686,6 +1688,9 @@ class Coordinator:
         # A bounded test area is reported as such (live abf1610fc62543be-2: "a small test area"
         # measured on the field, then told to the player as if the whole field were done).
         reason = "AREA_WORK_OBSERVED" if work.get("area_m2") else "FIELD_WORK_OBSERVED"
+        if states and all(state.endswith(":ALREADY_DONE") for state in states):
+            # Nothing was worked: the field already showed it (live 2026-11-06: "harvest field 2", stubble).
+            reason = "FIELD_ALREADY_DONE"
         return Result("COMPLETE", reason, tuple(equipment), tuple(states))
 
     COMBINE_FULL_SHARE = 0.9          # a combine this full is emptied before its helper starts

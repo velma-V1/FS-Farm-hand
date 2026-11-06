@@ -997,6 +997,17 @@ class WorkerTests(unittest.TestCase):
     def unit(self, world, unit_id):
         return next(i for i in world.snapshot() if i.id == unit_id)
 
+    def test_a_field_already_done_is_said_so_never_as_work_completed(self):
+        # Live 2026-11-06: "harvest field 2" on stubble answered "field work complete".
+        from companion.coordinator import result_notice
+        world = self.world("plow", coverage=FieldCoverage((("PLOWED", 1.0),), (), 4000.0, (("NONE", 9),), 9))
+        c, notices = coordinated(world)
+        c.start("field_work", "here", work={"field": 7, "operations": ["plow"]})
+        until(lambda: c.last is not None)
+        self.assertEqual(c.last.reason, "FIELD_ALREADY_DONE")
+        self.assertIn("FIELD_ALREADY_DONE", notices)
+        self.assertEqual(result_notice("COMPLETE", "FIELD_WORK_OBSERVED", "COMPLETE_FIELD_WORK"), "COMPLETE_FIELD_WORK")
+
     def test_a_later_obstruction_can_trigger_a_new_clearance(self):
         c, _ = coordinated(self.world("plow"))
         c.WORKER_BLOCKED_S = 0.0
