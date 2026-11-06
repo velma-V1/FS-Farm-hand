@@ -85,6 +85,10 @@ class World(Protocol):
         StepFailed PLACE_NOT_CLEAR with nothing moved when that pose is not clear."""
         ...
 
+    def park(self, vehicle_id: str, owner: str, right_m: float) -> None:
+        """PARK: the reserved rig to open ground with a clear lane ``right_m`` wide on its right."""
+        ...
+
     def mount(self, vehicle_id: str, carrier_id: str, owner: str) -> str:
         """MOUNT: the reserved machine's raised front implement set down on the reserved carrier's GIANTS
         lock position; MOUNTED, or StepFailed with nothing set down when not lined up or pushed."""

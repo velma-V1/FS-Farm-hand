@@ -1457,6 +1457,52 @@ class HarvestTests(unittest.TestCase):
         self.assertTrue(of_kind(trailer, "trailer"))
         self.assertTrue(named(trailer, "header"))                                        # "the header trailer"
 
+    def test_the_header_comes_off_the_towed_trailer_parked_with_its_unloading_side_open(self):
+        # Live 2026-11-06: the trailer unhitched at field 2's entrance stood among trees, where no line-up
+        # to the header on it was found; the carrier is parked first where its right side is open.
+        from protocol.model import InputJoint, LockPosition
+        calls = []
+
+        class Site(MockWorld):
+            def reserve_rig(self, ids, owner, loose=False, carrier=False):
+                calls.append(("reserve", ids))
+                return self.reserve(ids[:2], owner)
+
+            def park(self, vehicle_id, owner, right_m):
+                calls.append(("park", vehicle_id, right_m))
+
+            def detach(self, tractor_id, wagon_id, owner):
+                calls.append(("detach", tractor_id, wagon_id))
+                with self._lock:
+                    self.items[tractor_id] = replace(self.items[tractor_id], attached_to=None)
+                    self.items[wagon_id] = replace(self.items[wagon_id], attached_to=None)
+
+            def pull_clear(self, tractor_id, wagon_id, owner):
+                calls.append(("pull_clear", tractor_id))
+
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None, via=None):
+                calls.append(("drive",))
+                with self._lock:
+                    v = self._owned(vehicle_id, owner)
+                    self.items[vehicle_id] = replace(v, position=tuple(target), heading=yaw,
+                                                     ai_root=Pose(target[0], target[1], yaw))
+
+        combine, header = self.combine(at=(0.0, 10.0))
+        combine = replace(combine, attached_to="t-9", name="MF 8570",
+                          output_joints=(OutputJoint(1, "CUTTER", 0.0, 1.78, True), OutputJoint(2, "TRAILER", 0.0, -4.1, False)))
+        trailer = Equipment("t-9", "implement", "farm-a", (0.0, 0.0), heading=0.0, name="MF 8570 Trailer",
+                            attached_to="c-1", lock_positions=(LockPosition("mf8570Header.xml", (-0.8, -1.4), -math.pi / 2, False),))
+        header = replace(header, attached_to=None, mounted_to="t-9", position=(-0.8, -1.4), heading=-math.pi / 2,
+                         required_pto_torque=0.0, input_joints=(InputJoint(1, "CUTTER", (0.4, -1.4), True),))
+        world = Site([combine, trailer, header], PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
+        result = Executor(world).execute({"version": 1, "farm_id": "farm-a", "target": "player_at_acceptance",
+                                          "implement": "cutter", "tractor_name": "mf 8570", "request_id": "r1",
+                                          "task": "unmount_front"})
+        self.assertEqual((result.status, result.reason), ("COMPLETE", "HITCH_OBSERVED"), result)
+        self.assertEqual([c[0] for c in calls[:4]], ["reserve", "park", "detach", "pull_clear"])
+        self.assertEqual(calls[1][2], Executor.UNMOUNT_LANE_M)
+        self.assertEqual(world.items["h-1"].attached_to, "c-1")
+
     def test_a_combine_carrying_nothing_a_trailer_takes_is_not_loaded(self):
         world = MockWorld(self.combine(), PLAYERS, fields=(field(7, 0.4, self.READY),), farm=FARM)
         result = Executor(world).execute({"version": 1, "farm_id": "farm-a", "target": "player_at_acceptance",

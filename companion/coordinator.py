@@ -55,6 +55,7 @@ JOBS = {"fetch_pair": ("deliver_tractor_and_forage_wagon", "ACCEPTED", "COMPLETE
         "move_pair": ("move_pair", "ACCEPTED_MOVE", "COMPLETE_MOVE"),
         "hitch_pair": ("hitch_pair", "ACCEPTED_HITCH", "COMPLETE_HITCH"),
         "mount_front": ("mount_front", "ACCEPTED_MOUNT", "COMPLETE_MOUNT"),
+        "unmount_front": ("unmount_front", "ACCEPTED_UNMOUNT", "COMPLETE_UNMOUNT"),
         "detach_pair": ("detach_pair", "ACCEPTED_DETACH", "COMPLETE_DETACH"),
         "field_work": ("field_work", "ACCEPTED_FIELD_WORK", "COMPLETE_FIELD_WORK"),
         "buy": ("buy", "ACCEPTED_BUY", "COMPLETE_BUY"),
@@ -232,7 +233,7 @@ def work_for(proposal: dict) -> dict | None:
     if command == "buy":
         return {"wants": proposal["wants"]}
     if command in ("fetch_pair", "hitch_pair", "move_pair", "load_tractor", "unload_tractor", "follow_me", "sell",
-                   "store", "mount_front"):
+                   "store", "mount_front", "unmount_front"):
         work = {k: proposal[k] for k in NAMES if k in proposal}
         if command in ("move_pair", "follow_me") and proposal.get("remember_route"):
             work["remember_route"] = True

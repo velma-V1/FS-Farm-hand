@@ -57,7 +57,7 @@ CONTACT_RESTARTS = 2
 STUCK_CODES = frozenset({"EGRESS_LIMIT", "EGRESS_DIVERGED", "EGRESS_BLOCKED", "EGRESS_NOT_CLEAR",
                          "EGRESS_NOT_AHEAD", "EGRESS_NOT_BEHIND", "START_NOT_CLEAR"})
 CONTACT_SETTLE_S = 10.0     # waited for it to stand before a restart
-DONE_TIMEOUT_S = {"pay": 15.0, "charge": 15.0, "teleport": 20.0, "place": 20.0, "worktool": 25.0, "reposition": 14700.0, "farm_drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "escort": 7300.0, "reach": 30.0, "reattach": 50.0, "mount": 80.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
+DONE_TIMEOUT_S = {"pay": 15.0, "charge": 15.0, "teleport": 20.0, "place": 20.0, "worktool": 25.0, "reposition": 14700.0, "park": 14700.0, "farm_drive": 14700.0, "navigate": 14700.0, "stage": 135.0, "maneuver": 190.0, "align": 70.0, "attach": 25.0, "detach": 25.0, "pull_clear": 40.0, "unpark": 75.0, "fold": 30.0, "belts": 15.0, "load": 105.0, "follow": 7300.0, "contract": 75.0, "land": 25.0, "pipe": 30.0, "overload": 310.0, "alongside": 105.0, "escort": 7300.0, "reach": 30.0, "reattach": 50.0, "mount": 80.0, "deliver": 14700.0, "backoff": 45.0, "fieldwork": 7300.0, "buy": 60.0, "save": 75.0, "block": 15.0, "open_gates": 20.0,
                   "stop": 25.0}
 TERMINAL = ("DONE", "FAILED", "UNVERIFIED")
 
@@ -437,6 +437,12 @@ class FS25World:
         if reservation is None or vehicle_id not in reservation[1]:
             raise StepFailed("NOT_RESERVED")
         self._run("reposition", tractor=int(vehicle_id), area=float(lane_m))
+
+    def park(self, vehicle_id: str, owner: str, right_m: float) -> None:
+        """The reserved rig to open ground with a clear lane ``right_m`` wide on its right, by
+        Farmhand's own drive (mod/FarmhandBridge.lua starters.park)."""
+        self._reserved(vehicle_id, owner)
+        self._run("park", tractor=int(vehicle_id), area=float(right_m))
 
     def teleport(self, vehicle_id: str, owner: str, min_m: float = 0.0, at: Pose | None = None) -> None:
         """Teleport recovery: the reserved rig and everything attached to the nearest open spot,

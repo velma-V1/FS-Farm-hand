@@ -13,7 +13,7 @@
       "const": 1
     },
     "command": {
-      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to, the pair nearest the requester, where it stands. unsupported: understood, but not something Farmhand does yet (reason). load_tractor: drive a free tractor (tractor_name) up a transport trailer's ramps (implement_name), belt it and raise the ramps ('load the tractor and secure it'). unload_tractor: release the belts and back the tractor off ('unload it'). sequence: several job commands in order (steps). follow_me: the named rig (tractor_name) follows the vehicle the player drives, with FollowMe, until stopped; only on the player's explicit 'follow me'. resume: continue the goal that was stopped, taken over or blocked, from what is already done ('continue'). retarget: give the goal a new destination ('take it to field 2 instead'). haul_tractor: take the named tractor (tractor_name) to the target on a transport and unload it there, from whatever is already done ('take the deutz to field 3 and unload it'). sell: the rig with the most cargo (tractor_name if said) takes it to the best paid sell point ('sell the grain'). store: the rig with the most cargo (tractor_name if said) takes it to the farm's own storage ('store the grain', 'put the grain in the silo'). harvest_policy: where harvested crop goes from now on, saved (destination; 'from now on sell the harvest'). mount_front: the named machine's front implement set down on its carrier ('load the header onto its trailer'). route: Farmhand's learned routes (action, name): the player's own driving recorded and kept ('record this route', 'stop recording and save as farm to shop', 'delete the route farm to shop'). contract: a GIANTS field contract taken, worked and collected (field, kind optional; 'do a contract', 'do the plow contract on field 12'). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop. land: buy or sell the farmland parcel a field lies on (land_action, field; 'buy field 12', 'sell field 12').",
+      "description": "fetch_pair: bring an available tractor and forage wagon, hitched. move_pair: move the hitched tractor and forage wagon the requester refers to ('this'; the pair nearest them). hitch_pair: hitch an available tractor to the forage wagon where it stands. detach_pair: unhitch the implement (of the named kind, else any) from the tractor it is hitched to, the pair nearest the requester, where it stands. unsupported: understood, but not something Farmhand does yet (reason). load_tractor: drive a free tractor (tractor_name) up a transport trailer's ramps (implement_name), belt it and raise the ramps ('load the tractor and secure it'). unload_tractor: release the belts and back the tractor off ('unload it'). sequence: several job commands in order (steps). follow_me: the named rig (tractor_name) follows the vehicle the player drives, with FollowMe, until stopped; only on the player's explicit 'follow me'. resume: continue the goal that was stopped, taken over or blocked, from what is already done ('continue'). retarget: give the goal a new destination ('take it to field 2 instead'). haul_tractor: take the named tractor (tractor_name) to the target on a transport and unload it there, from whatever is already done ('take the deutz to field 3 and unload it'). sell: the rig with the most cargo (tractor_name if said) takes it to the best paid sell point ('sell the grain'). store: the rig with the most cargo (tractor_name if said) takes it to the farm's own storage ('store the grain', 'put the grain in the silo'). harvest_policy: where harvested crop goes from now on, saved (destination; 'from now on sell the harvest'). mount_front: the named machine's front implement set down on its carrier ('load the header onto its trailer'). unmount_front: that implement taken off its carrier onto the named machine ('take the header off its trailer'). route: Farmhand's learned routes (action, name): the player's own driving recorded and kept ('record this route', 'stop recording and save as farm to shop', 'delete the route farm to shop'). contract: a GIANTS field contract taken, worked and collected (field, kind optional; 'do a contract', 'do the plow contract on field 12'). stop: cancel the current job now. status: report the current job. settings: open the Farmhand AI menu in game. report: save a diagnostics zip on the Desktop. land: buy or sell the farmland parcel a field lies on (land_action, field; 'buy field 12', 'sell field 12').",
       "enum": [
         "fetch_pair",
         "move_pair",
@@ -42,7 +42,8 @@
         "land",
         "join_fields",
         "route",
-        "mount_front"
+        "mount_front",
+        "unmount_front"
       ]
     },
     "into_field": {"description": "join_fields: the field the other is joined to ('add field 4 to field 5': 5).", "type": "integer", "minimum": 1, "maximum": 100000},
@@ -156,7 +157,7 @@
       "items": {"enum": ["plow", "cultivate", "sow", "fertilize", "harvest", "collect"]}
     },
     "implement": {
-      "description": "The implement to hitch or unhitch (a GIANTS specialization kind; default forage_wagon to hitch, any to unhitch). Only for fetch_pair, hitch_pair, detach_pair, mount_front.",
+      "description": "The implement to hitch or unhitch (a GIANTS specialization kind; default forage_wagon to hitch, any to unhitch). Only for fetch_pair, hitch_pair, detach_pair, mount_front, unmount_front.",
       "enum": [
         "forage_wagon",
         "plow",
@@ -257,7 +258,8 @@
                 "fetch_pair",
                 "hitch_pair",
                 "detach_pair",
-                "mount_front"
+                "mount_front",
+                "unmount_front"
               ]
             }
           }

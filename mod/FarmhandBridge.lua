@@ -1349,18 +1349,17 @@ function Bridge.grown(foot, room)
     big.aMin, big.aMax = foot.aMin - room.behindM, foot.aMax + room.aheadM
     return big
 end
-function starters.reposition(env, spec)
+-- The rig to the nearest open ground where its route box grown by ``room`` is clear (rightM: a lane on
+-- its right only, beyond sideM), driven there by Farmhand's own drive at the heading found clear.
+local function toOpenGround(env, spec, room)
     local v = spec.tractor
     local denied = idle(env, v, spec.farmId)
     if denied ~= nil then return nil, denied end
     local H = Bridge.Hitch
     local foot = H.routeFootprint(env, v)
     if foot == nil then return nil, "RIG_GEOMETRY_UNKNOWN" end
-    -- area > 0: a transport moved where a machine can be driven up its ramps (live
-    -- 8fa6ad416fa14943-1: the Deckover's run-in lane past a tree and the truck itself).
-    local lane = finite(spec.area) and spec.area > 0 and spec.area <= Bridge.REPOSITION_REACH_M and spec.area or nil
-    local big = Bridge.grown(foot, lane ~= nil and { sideM = 2, behindM = lane, aheadM = 4 }
-                             or v.spec_pipe ~= nil and Bridge.REPOSITION or Bridge.CLEAR_AWAY)
+    local big = Bridge.grown(foot, room)
+    big.lMax = big.lMax + (room.rightM or 0)
     local x, _, z = env.getWorldTranslation(v.rootNode)
     local fx, _, fz = env.localDirectionToWorld(v.rootNode, 0, 0, 1)
     -- At least the rig's own length away: driven to, not set down beside it. First where GIANTS'
@@ -1391,7 +1390,26 @@ function starters.reposition(env, spec)
                                       yaw = tyaw, farmId = spec.farmId,
                                       owned = spec.owned, ghost = spec.ghost })
 end
+function starters.reposition(env, spec)
+    -- area > 0: a transport moved where a machine can be driven up its ramps (live
+    -- 8fa6ad416fa14943-1: the Deckover's run-in lane past a tree and the truck itself).
+    local lane = finite(spec.area) and spec.area > 0 and spec.area <= Bridge.REPOSITION_REACH_M and spec.area or nil
+    return toOpenGround(env, spec, lane ~= nil and { sideM = 2, behindM = lane, aheadM = 4 }
+                        or spec.tractor.spec_pipe ~= nil and Bridge.REPOSITION or Bridge.CLEAR_AWAY)
+end
 steppers.reposition = function(env, task, dt) return steppers.farm_drive(env, task, dt) end
+
+-- PARK: a rig that tows a carrier to open ground with a clear lane spec.area m wide on its right, where
+-- a machine takes a header off the carrier from (its lock position's back faces that side), and room
+-- ahead for the machine to come round after unhitching.
+Bridge.PARK = { sideM = 2, behindM = 2, aheadM = 12 }
+function starters.park(env, spec)
+    if not (finite(spec.area) and spec.area > 0 and spec.area <= 40) then return nil, "INVALID_TARGET" end
+    return toOpenGround(env, spec, { sideM = Bridge.PARK.sideM, behindM = Bridge.PARK.behindM,
+                                     aheadM = Bridge.PARK.aheadM, rightM = spec.area })
+end
+steppers.park = steppers.reposition
+aborts.park = function(env, task) return aborts.farm_drive(env, task) end
 aborts.reposition = function(env, task) return aborts.farm_drive(env, task) end
 
 -- --------------------------------------------------------------- teleport
@@ -3630,6 +3648,8 @@ Bridge.NOTICES = {
     ACCEPTED_MOVE = "Farmhand: on my way",
     ACCEPTED_HITCH = "Farmhand: hitching a tractor to the implement",
     ACCEPTED_MOUNT = "Farmhand: loading the header onto its trailer",
+    ACCEPTED_UNMOUNT = "Farmhand: taking the header off its trailer",
+    COMPLETE_UNMOUNT = "Farmhand: the header is attached again",
     COMPLETE_MOUNT = "Farmhand: the header is locked on its trailer",
     COMPLETE_MOUNT_NOT_CLEAR = "Farmhand: the header is locked on its trailer; the machine could not back off it",
     COMPLETE_HITCH = "Farmhand: tractor and implement hitched",
@@ -4106,6 +4126,7 @@ Bridge.REASONS = {
     NO_GOTO_JOB = "the game's driver is not available",
     NO_HITCH_OPTION = "that model has no such hitch in the store",
     NO_OPEN_SPOT = "there is no open ground nearby",
+    NOTHING_ON_A_CARRIER = "no header is on a trailer for that machine",
     NO_CARRIER_FOR_IMPLEMENT = "no trailer here takes that implement",
     NOT_A_CARRIER = "that trailer has nothing to lock an implement on",
     NO_IMPLEMENT_FOR_CARRIER = "the machine carries nothing that trailer takes",

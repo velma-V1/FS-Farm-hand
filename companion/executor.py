@@ -1287,6 +1287,63 @@ class Executor:
         log.info("result %s %s states %s", status, reason, ",".join(states))
         return Result(status, reason, ids, tuple(states))
 
+    UNMOUNT_LANE_M = 18.0    # the clear lane a carrier needs on its unloading side (approach, machine, implement)
+
+    def _unmount_front(self, command, enter, states) -> Result:
+        """"Take the header off its trailer": a front implement a carrier holds attached to the named machine
+        again. A carrier the machine tows is first parked where its unloading side is open (PARK: the
+        implement's back, where the machine comes in, faces the carrier's right) and unhitched with its
+        pull-clear; then the front re-attach from the observed joints (its line-up, creep, GIANTS' attach)."""
+        owner, farm_id = command["request_id"], command["farm_id"]
+        observed = {i.id: i for i in self.world.snapshot()}
+        vehicle = next((v for v in observed.values() if v.category in DRIVEN and named(v, command.get("tractor_name"))
+                        and any(o.free and o.z > 0 for o in v.output_joints)), None)
+        held = [i for i in observed.values() if i.mounted_to is not None and i.attached_to is None
+                and (not command.get("implement") or of_kind(i, command["implement"]))
+                and vehicle is not None and self._front_joint_pose(vehicle, i) is not None]
+        if vehicle is None or not held:
+            return Result("BLOCKED", "NOTHING_ON_A_CARRIER", states=tuple(states))
+        implement = min(held, key=lambda i: math.dist(i.position, vehicle.position))
+        carrier = observed.get(implement.mounted_to)
+        if carrier is not None and carrier.attached_to == vehicle.id:
+            ids, reserved = (vehicle.id, carrier.id, implement.id), False
+            try:
+                enter("RESERVE")
+                if not self.world.reserve_rig(ids, owner):
+                    return Result("BLOCKED", "RESERVATION_CONFLICT", ids, tuple(states))
+                reserved = True
+                self.active = ids
+                enter("PARK")
+                self.world.park(vehicle.id, owner, self.UNMOUNT_LANE_M)
+                enter("DETACH")
+                self.world.detach(vehicle.id, carrier.id, owner)
+                enter("PULL_CLEAR")
+                self.world.pull_clear(vehicle.id, carrier.id, owner)
+            except Cancelled:
+                return self._cleanup(Result("CANCELLED", "CANCELLED_BY_REQUESTER", ids, tuple(states)), ids, owner, enter)
+            except (StepFailed, StepUnverified) as error:
+                status = "UNVERIFIED" if isinstance(error, StepUnverified) else "FAILED"
+                return self._cleanup(Result(status, error.code, ids, tuple(states)), ids, owner, enter)
+            done = self._cleanup(Result("COMPLETE", "PARKED", ids, tuple(states)), ids, owner, enter)
+            if done.status != "COMPLETE":
+                return done
+        attached = self._front_reattach({**command, "task": "hitch_pair"}, enter, states)
+        return Result(attached.status, attached.reason, attached.equipment_ids, tuple(states))
+
+    def _cleanup(self, result: Result, ids, owner, enter) -> Result:
+        """STOP the machine and RELEASE the reservation after a step; a cleanup not confirmed is UNVERIFIED."""
+        try:
+            enter("STOP")
+            if not self.world.stop(ids[0], owner):
+                raise ObservationMismatch("STOP_NOT_CONFIRMED")
+            enter("RELEASE")
+            self.world.release(owner)
+        except Exception as error:
+            log.info("cleanup not confirmed: %s %s", type(error).__name__, error)
+            result = Result("UNVERIFIED", "CLEANUP_NOT_CONFIRMED", result.equipment_ids, result.states)
+        self.active = ()
+        return result
+
     @staticmethod
     def _front_joint_pose(vehicle, implement) -> Pose | None:
         """Where ``vehicle``'s AI root stands carrying ``implement`` in front, from the observed joints:
@@ -2968,6 +3025,8 @@ class Executor:
             return self._front_reattach(command, enter, states)
         if command["task"] == "mount_front":
             return self._mount_front(command, enter, states)
+        if command["task"] == "unmount_front":
+            return self._unmount_front(command, enter, states)
         if command["task"] == "save_game":
             try:
                 enter("SAVE")

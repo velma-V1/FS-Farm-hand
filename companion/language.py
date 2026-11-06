@@ -682,6 +682,25 @@ _MOUNT = re.compile(r"^(?:please\s+)?(?:load|put|set|place|lay)\s+(?:the\s+|my\s
                     r"(?:\s+(?:with|using)\s+(?:the\s+|my\s+)?(?P<machine>[a-z0-9 ]{1,40}))?(?:\s+please)?$")
 
 
+# "take the header off its trailer", "unload the header", "put the header back on the mf 8570".
+_UNMOUNT = re.compile(r"^(?:please\s+)?(?:take|get|lift|unload)\s+(?:the\s+|my\s+|its\s+)?(?P<thing>[a-z0-9 ]{1,40}?)"
+                      r"(?:\s+(?:off|from)\s+(?:the\s+|its\s+|my\s+)?[a-z0-9 ]*?(?:trailer|cart|carrier|wagon))?"
+                      r"(?:\s+(?:with|onto|on)\s+(?:the\s+|my\s+)?(?P<machine>[a-z0-9 ]{1,40}))?(?:\s+please)?$")
+
+
+def unmount_front(words: str) -> dict | None:
+    match = _UNMOUNT.match(words)
+    if match is None or implement_kind(match["thing"]) != "cutter":
+        return None
+    if not re.search(r"\b(?:off|from|unload)\b", words):
+        return None
+    proposal = {"version": 1, "command": "unmount_front", "implement": "cutter"}
+    machine = match["machine"] or re.sub(r"\b(?:header|cutter|table)\b", "", match["thing"]).strip()
+    if machine:
+        proposal["tractor_name"] = re.sub(r"^(?:the|my)\s+", "", machine).strip()
+    return proposal
+
+
 def mount_front(words: str) -> dict | None:
     match = _MOUNT.match(words)
     if match is None or implement_kind(match["thing"]) != "cutter":
@@ -1070,7 +1089,7 @@ class RuleInterpreter:
         if re.fullmatch(r"(?:please\s+)?save(?:\s+the)?(?:\s+(?:game|farm|progress))?(?:\s+now)?", words):
             return {"version": 1, "command": "save_game"}
         work = (harvest_policy(words) or field_work(words) or plant(words) or sell(words) or store(words)
-                or unload_combine(words) or mount_front(words) or hitch_named(words) or buy(words) or transport(words))
+                or unmount_front(words) or unload_combine(words) or mount_front(words) or hitch_named(words) or buy(words) or transport(words))
         if work is not None:
             return work
         # "... with the gmc": the towing vehicle by its name.
