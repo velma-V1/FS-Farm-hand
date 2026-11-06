@@ -1235,6 +1235,18 @@ function Drive.travelSpeed(path, nextIndex, x, z, radius)
     return math.max(1.5, target)
 end
 
+-- The same braking taper towards the drive's own goal as towards its path's end: a path that runs on
+-- past the goal (a section planned beyond it, a loop to come in at its heading) must not carry the rig
+-- through the goal at speed (live 2026-11-06 10:55: the MF 8570 lining up to its header 13 km/h at
+-- ARRIVED, the section's end 79 m on).
+function Drive.goalSpeed(s, x, z)
+    if not (finite(s.targetX) and finite(s.targetZ)) or s.goals ~= nil then return math.huge end
+    local remaining = distance(x, z, s.targetX, s.targetZ)
+    local target = math.max(1.5, sqrt(2 * math.max(0, remaining - 2)) * 3.6)
+    if remaining < 15 then target = math.min(target, math.max(1.5, (remaining - 2) * 1.2)) end
+    return target
+end
+
 -- Courseplay's pure pursuit projects the controlled node onto the relevant
 -- segment, then aims a short distance along the path. A discrete waypoint
 -- lookahead cut across bends and let the loaded rig oscillate off its route.
@@ -2721,6 +2733,7 @@ local function frame(env, s, dt, Hitch, x, z, yaw)
     if point == nil then return "ROUTE_LOST" end
     local routeSpeed = Drive.travelSpeed(s.path, s.next, x, z, s.radius)
     if routeSpeed == nil then return "ROUTE_LOST" end
+    routeSpeed = math.min(routeSpeed, Drive.goalSpeed(s, x, z))
     local headingError = abs((yaw - point[3] + pi) % (2 * pi) - pi)
     s.commandKmh = Drive.trackingSpeed(routeSpeed,pathError,maxError,headingError)
     if s.commandKmh == nil then return "ROUTE_LOST" end

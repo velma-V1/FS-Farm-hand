@@ -582,6 +582,13 @@ class DrivePlannerTests(unittest.TestCase):
         self.assertLess(drive.travelSpeed(bent, 2, 0, 0, 6), 30)
         self.assertLess(drive.travelSpeed(straight, 4, 0, 76, 6), 8)
         self.assertLessEqual(drive.travelSpeed(straight, 2, 0, 0, 6), 64)
+        # A path that runs on past the drive's own goal still brakes for the goal (live 2026-11-06: 13 km/h
+        # at ARRIVED lining up to a header, the section's end 79 m on).
+        session = lua.table_from({"targetX": 0, "targetZ": 10})
+        self.assertLess(drive.goalSpeed(session, 0, 0), 10)
+        self.assertGreater(drive.goalSpeed(session, 0, -60), 30)
+        self.assertEqual(drive.goalSpeed(lua.table_from({"targetX": 0, "targetZ": 10, "goals": lua.table()}), 0, 0),
+                         float("inf"))
 
     def test_pure_pursuit_aim_is_interpolated_ahead_on_the_actual_path(self):
         lua = lua54.LuaRuntime(unpack_returned_tuples=True)

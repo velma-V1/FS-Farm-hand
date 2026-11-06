@@ -943,7 +943,7 @@ function aborts.attach() end
 -- is needed. DONE ATTACHED once the implement names it; REATTACH_NOT_IN_RANGE (the nearest pair's
 -- gap logged) when nothing is in range; nothing moves.
 Bridge.REATTACH = { xzM = 0.7, yM = 1.4, settleMs = 5000, creepM = 9.0, creepKmh = 3.0, lateralM = 1.0,
-                     headingDeg = 6, timeoutMs = 40000, implementMovedM = 0.3 }
+                     headingDeg = 6, timeoutMs = 40000, implementMovedM = 0.3, lookaheadM = 3, extraM = 1.5 }
 
 -- The free attacher joint of `v` and input joint of `impl` of one type nearest each other, their gap
 -- across and up, and the input joint's node.
@@ -1032,7 +1032,7 @@ function steppers.reattach(env, task, dt)
         return "FAILED", "IMPLEMENT_MOVED"
     end
     if task.elapsed > R.timeoutMs or pair.gap > task.startGap + 0.5
-            or math.sqrt((vx - task.from[1]) ^ 2 + (vz - task.from[2]) ^ 2) > task.startGap + 0.5 then
+            or math.sqrt((vx - task.from[1]) ^ 2 + (vz - task.from[2]) ^ 2) > task.startGap + R.extraM then
         pcall(Bridge.Hitch.halt, env, task.drive, dt)
         return "FAILED", "REATTACH_NOT_IN_RANGE"
     end
@@ -1041,9 +1041,18 @@ function steppers.reattach(env, task, dt)
     if not v:getIsMotorStarted() and v:getCanMotorRun() then v:startMotor() end
     Bridge.Hitch.holdActive(task.drive)
     v:raiseActive()
-    -- Steer the joint onto the input joint: GIANTS' driveToPoint at the input joint, in the steering frame.
+    -- The machine's joint pursues the line through the input joint along the implement's heading (a front
+    -- implement faces the way its machine does), lookaheadM past where the joint is, carried over to the
+    -- steering node (live 2026-11-06 10:55: aimed straight at the input joint 23 degrees off, the front
+    -- joint passed 1.09 m beside it).
     local node = v:getAISteeringNode()
-    local lx, _, lz = env.worldToLocal(node, pair.ix, 0, pair.iz)
+    local hx, _, hz = env.localDirectionToWorld(impl.rootNode, 0, 0, 1)
+    local norm = math.sqrt(hx * hx + hz * hz)
+    hx, hz = hx / norm, hz / norm
+    local along = math.min(0, (pair.jx - pair.ix) * hx + (pair.jz - pair.iz) * hz + R.lookaheadM)
+    local ax, az = pair.ix + hx * along, pair.iz + hz * along
+    local nx, ny, nz = env.getWorldTranslation(node)
+    local lx, _, lz = env.worldToLocal(node, nx + ax - pair.jx, ny, nz + az - pair.jz)
     Bridge.Hitch.drive(env, task.drive, dt, true, lx, math.max(lz, 1))
     return nil
 end
