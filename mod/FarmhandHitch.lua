@@ -4162,7 +4162,8 @@ Hitch.ESCORT = {
     gainKmhPerM = 1.5,          -- above the combine's speed per metre the trailer is behind its target
     catchUpKmh = 8,             -- at most this much above the combine's speed
     onLineM = 1.5,              -- the cart this near the slot's line before it moves up beside the combine
-    clearanceM = 0.8,           -- kept between the cart's and the combine rig's boxes
+    clearanceM = 0.8,           -- kept between the cart's and the combine rig's boxes, at least
+    preferredClearanceM = 1.3,  -- and this much where a spot under the pipe allows it
     followGapM = 8, turnGapM = 16,   -- the cart's front behind the combine rig's rear on its trail
     trailStepM = 1, trailBackM = 60, trailMax = 900, trailSearch = 60,
     lineDeg = 8, steadyMs = 2500,    -- the combine this straight this long before the cart comes alongside
@@ -4270,16 +4271,21 @@ local function escortTarget(s)
     -- out over it (AIDriveStrategyCombine, nearestObjectInTriggers -> setPipeState(2)) and the slot follows
     -- the real discharge point with the full margin (live 2026-11-06, field 91: the trigger 4.55 m out, the
     -- MF 8570's header 3.4 m: no spot kept the spout 0.8 m inside the trailer and the cart clear of it).
-    for _, shift in ipairs(s.slotSource == "trigger" and s.triggerShifts or s.shifts) do
-        local a, l = s.slotA + shift[1], s.slotL + side * shift[2]
-        local clear = true
-        for _, b in ipairs(s.combineBoxes) do
-            if bandsMeet(b, a + c.rear, a + c.front, l - c.halfW, l + c.halfW, E.clearanceM) then
-                clear = false
-                break
+    -- The preferred clearance from the combine rig first, then the least it may keep (the owner, 2026-11-06:
+    -- "a little too close to the combine header but it can't move too far from it either"): the spout
+    -- margin keeps every spot under the pipe either way.
+    for _, keep in ipairs({ E.preferredClearanceM, E.clearanceM }) do
+        for _, shift in ipairs(s.slotSource == "trigger" and s.triggerShifts or s.shifts) do
+            local a, l = s.slotA + shift[1], s.slotL + side * shift[2]
+            local clear = true
+            for _, b in ipairs(s.combineBoxes) do
+                if bandsMeet(b, a + c.rear, a + c.front, l - c.halfW, l + c.halfW, keep) then
+                    clear = false
+                    break
+                end
             end
+            if clear then return a, l end
         end
-        if clear then return a, l end
     end
     return nil
 end
