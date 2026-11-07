@@ -670,6 +670,31 @@ local function stepAgent(env, task, dt, codes)
     end
     if name == "DRIVING" and finite(curvature) then return nil end
     if name == "BLOCKED" then task.fromAt = task.elapsed end   -- its own bound below
+    if name == "NOT_REACHABLE" and not task.drove and not task.alone and task.spec.op == "navigate"
+            and #(v.getAttachedImplements and v:getAttachedImplements() or {}) > 0 then
+        -- GIANTS' agent with what the vehicle tows is not_reachable before it moved (live 2026-11-06: the
+        -- Titan header towed behind the Colossus, an agent attachment of its working size with no wheel
+        -- group, a rigid 20 m agent; the Colossus alone drove): planned once more for the vehicle alone,
+        -- what it tows Farmhand's own watch's to supervise (contact, stuck), as REACH's diagnostic does.
+        local ok, why = pcall(function()
+            v:deleteAgent()
+            Bridge.createAgent(v, 0.5)
+            local mission = env.g_currentMission
+            local y = env.getTerrainHeightAtWorldPos(mission.terrainRootNode, task.spec.x, 0, task.spec.z)
+            local dx, dz = 0, 0
+            if finite(task.spec.yaw) and math.abs(task.spec.yaw) <= 2 * math.pi then
+                dx, dz = math.sin(task.spec.yaw), math.cos(task.spec.yaw)
+            end
+            env.setVehicleNavigationAgentTarget(ai.agentId, task.spec.x, y, task.spec.z, dx, 0, dz)
+        end)
+        task.alone = true
+        if ok then
+            log("%s: not_reachable with what it tows; planned for the vehicle alone", task.op)
+            task.lastName, task.stateSince = nil, task.elapsed
+            return nil
+        end
+        log("%s: the vehicle-alone agent could not be made (%s)", task.op, tostring(why))
+    end
     if name == "TARGET_REACHED" or name == "NOT_REACHABLE" then
         logAgent(env, v, task.op .. " ended")
         return finish(codes.ended)

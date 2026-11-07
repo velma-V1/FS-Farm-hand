@@ -447,6 +447,22 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertAlmostEqual(width, 4.58, places=6)
         self.assertLess(height, 4.0)            # GIANTS' navigation map holds vehicles up to 4 m (the Colossus 4.1 m)
 
+    def test_navigate_not_reachable_with_its_tow_plans_once_for_the_vehicle_alone(self):
+        # Live 2026-11-06: the Colossus towing its Titan header, GIANTS' agent (the header a rigid attachment of its
+        # working size) not_reachable at once; the Colossus alone drove. Planned once more for it alone.
+        self.adopt()
+        self.agent([(0, 0, 4)] + [(0.01, 20.0, 1)] * 30 + [(0, 0, 5)])
+        self.lua.execute("""local w = ...
+            function w.tractor:getAttachedImplements() return { { object = {} } } end""", self.w)
+        self.w.moves = True
+        self.send(1, "navigate", self.POSE)
+        self.W.run(self.w, 4000)
+        calls = self.calls()
+        self.assertEqual(calls.count("createAgent"), 2, calls)
+        self.assertGreater(self.w.drove, 20)
+        self.assertEqual(self.results(1)[-1], (1, "DONE", "GOTO_ENDED"))
+        self.assertTrue(any("planned for the vehicle alone" in line for line in self.printed))
+
     def test_navigate_drives_giants_agent_itself_and_ends_where_it_says(self):
         self.adopt()
         self.agent([(0.01, 20.0, 1)] * 30 + [(0, 0, 5)])
