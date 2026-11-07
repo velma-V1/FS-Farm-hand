@@ -934,6 +934,23 @@ class DrivePlannerTests(unittest.TestCase):
         session.elapsed = drive.FIRST_ROUTE_LIMIT_MS + 1
         self.assertEqual(drive.step(env, session, 16, hitch), "NO_ROUTE")
         self.assertTrue(any("no route found in" in l for l in said))
+        # Searched over several frames: each replay restores the state the search began with, which
+        # had no planSince yet; the limit still counts from the first frame (live 2026-11-06: reset by
+        # every replay, the Colossus waited 164 s for NO_ROUTE).
+        said.clear()
+        replayed = lua.execute("""
+            local session = ...
+            local saved = {}
+            for k, v in pairs(session) do saved[k] = v end
+            saved.planSince, saved.result = nil, nil
+            session.result = nil
+            session.episode = {saved = saved, pose = {0, 0, 0}, jobs = {}, printed = 0}
+            return session
+        """, session)
+        replayed.planSince = 0
+        replayed.elapsed = drive.FIRST_ROUTE_LIMIT_MS + 1
+        self.assertEqual(drive.step(env, replayed, 16, hitch), "NO_ROUTE")
+        self.assertTrue(any("no route found in" in l for l in said))
         # A due departure has no initial search; it is tested separately below.
 
     def test_a_reverse_pushed_off_its_line_stops_there_says_why_and_searches_on(self):

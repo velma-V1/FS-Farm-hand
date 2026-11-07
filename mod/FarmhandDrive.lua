@@ -1807,13 +1807,16 @@ local function snapshot(s)
     return copy
 end
 
--- Back to the state a replayed planning step began with (its clock keeps running).
+-- Back to the state a replayed planning step began with (its clocks keep running: the first route's
+-- search start too, live 2026-11-06: reset by every replay, the 30 s limit never came and the
+-- Colossus waited 164 s for NO_ROUTE).
+local KEPT = { elapsed = true, episode = true, planSince = true }
 local function restore(s, saved)
     for k in pairs(s) do
-        if saved[k] == nil and k ~= "elapsed" and k ~= "episode" then s[k] = nil end
+        if saved[k] == nil and not KEPT[k] then s[k] = nil end
     end
     for k, v in pairs(saved) do
-        if k ~= "elapsed" and k ~= "episode" then s[k] = v end
+        if not KEPT[k] then s[k] = v end
     end
 end
 
