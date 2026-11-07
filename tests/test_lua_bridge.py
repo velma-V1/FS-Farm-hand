@@ -434,14 +434,18 @@ class LuaBridgeTests(unittest.TestCase):
             local t = w.tractor
             t.spec_aiDrivable.agentInfo.width = 3.95
             local seen = {}
-            function t:getAIAgentSize() return 16.6, 27, -9, 2, 4 end
+            function t:getAIAgentSize() return 16.6, 27, -9, 2, 4.1 end
             local made = t.createAgent
-            function t:createAgent() local wd = self:getAIAgentSize(); table.insert(seen, wd); return made(self) end
+            function t:createAgent()
+                local wd, _, _, _, h = self:getAIAgentSize(); table.insert(seen, {wd, h}); return made(self)
+            end
             hitch.routeFootprint = function() return { lMin = -2.6, lMax = 1.98 } end
             return seen""", self.w, self.hitch)
         self.send(1, "navigate", self.POSE)
         self.W.run(self.w, 1000)
-        self.assertAlmostEqual(list(widths.values())[0], 4.58, places=6)
+        width, height = list(widths.values())[0].values()
+        self.assertAlmostEqual(width, 4.58, places=6)
+        self.assertLess(height, 4.0)            # GIANTS' navigation map holds vehicles up to 4 m (the Colossus 4.1 m)
 
     def test_navigate_drives_giants_agent_itself_and_ends_where_it_says(self):
         self.adopt()

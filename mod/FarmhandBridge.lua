@@ -496,6 +496,7 @@ function Bridge.frontOffset(fo)
     return fo
 end
 
+Bridge.AGENT_MAX_HEIGHT_M = 3.9
 function Bridge.createAgent(v, cap)
     if not (finite(cap) and cap > 0) then return v:createAgent() end
     if cap < 1 then
@@ -509,7 +510,7 @@ function Bridge.createAgent(v, cap)
         -- vehicleMaxHeight): a combine taller than that finds no cell to drive in.
         v.getAIAgentSize = function(self, ...)
             local w, l, lo, fo, h = base(self, ...)
-            return w, l, lo, Bridge.frontOffset(fo), math.min(h or 0, 3.9)
+            return w, l, lo, Bridge.frontOffset(fo), math.min(h or 0, Bridge.AGENT_MAX_HEIGHT_M)
         end
         local ok, err = pcall(v.createAgent, v)
         v.collectAIAgentAttachments = ownCollect
@@ -520,25 +521,42 @@ function Bridge.createAgent(v, cap)
     end
     local own = rawget(v, "getAIAgentSize")
     local base = v.getAIAgentSize
+    local sized
     v.getAIAgentSize = function(self, ...)
         local w, l, lo, fo, h = base(self, ...)
         local floor = self.spec_aiDrivable and self.spec_aiDrivable.agentInfo and self.spec_aiDrivable.agentInfo.width or 0
-        return math.min(w, math.max(cap, floor)), l, lo, Bridge.frontOffset(fo), h
+        -- And under the 4 m GIANTS builds its navigation map for (AISystem vehicleMaxHeight): the Colossus
+        -- 9000 is 4.1 m (its XML), so no cell held it and every target was not_reachable.
+        sized = { math.min(w, math.max(cap, floor)), l, lo, Bridge.frontOffset(fo), math.min(h or 0, Bridge.AGENT_MAX_HEIGHT_M) }
+        return sized[1], sized[2], sized[3], sized[4], sized[5]
     end
     local ok, err = pcall(v.createAgent, v)
     v.getAIAgentSize = own
     if not ok then error(err) end
-    log("agent planned at most %.2f m wide", cap)
+    if sized ~= nil then
+        log("agent planned %.2f m wide (at most %.2f), %.2f long, %.2f high", sized[1], cap, sized[2] or 0, sized[5])
+    end
 end
 
 -- The rig's measured width (Farmhand's route box, Hitch.routeFootprint), for GIANTS' agent: GIANTS
 -- takes the widest attachment's static working width (live 2026-11-06: the Titan header towed
 -- lengthwise behind the Colossus, 16.6 m: not_reachable at once), the box what the rig is now
 -- (4.58 m there; a header carried in front its whole width). nil where unmeasured.
+-- In line, as GIANTS' agent drives it: each unit's width across the way it travels (a header towed
+-- lengthwise its 4 m, not its 16.6), at most the route box as it stands (live: 7.16 m with the header
+-- 4.5 degrees off line, over the 6 m GIANTS' roads are).
 function Bridge.measuredWidth(env, v)
     local ok, foot = pcall(Bridge.Hitch.routeFootprint, env, v)
     if not ok or foot == nil or not (finite(foot.lMax) and finite(foot.lMin)) then return nil end
     local width = foot.lMax - foot.lMin
+    local inLine = 0
+    for _, unit in ipairs(foot.units or {}) do
+        local size = unit.size
+        if size == nil or not (finite(size.width) and finite(size.length)) then inLine = nil; break end
+        local sideways = unit ~= foot.tractor and math.abs(Bridge.Hitch.travelOffset(env, unit)) > math.pi / 4
+        inLine = math.max(inLine, sideways and size.length or size.width)
+    end
+    if inLine ~= nil and inLine > 0 then width = math.min(width, inLine) end
     return width >= 1 and width or nil
 end
 
