@@ -1739,6 +1739,23 @@ class HarvestTests(unittest.TestCase):
         self.assertEqual([(s["task"], s.get("fold"), s.get("towed")) for s in steps][:3],
                          [("fold_implement", "transport", None), ("hitch_pair", None, True), ("move_pair", None, None)])
         self.assertEqual(field_steps((alone,), "harvest", 7, "farm-a"), (None, "NO_HARVESTER_WITH_HEADER"))
+        # Near the combine but far from the field (live 2026-11-06: the Colossus 20 m from its header in the dealer's
+        # lot, field 91 1 km off; attached in front there it is 16.6 m wide and no road takes it): towed.
+        steps, _ = field_steps(near, "harvest", 7, "farm-a", field_at=(100.0, 1200.0))
+        self.assertEqual([(s["task"], s.get("fold"), s.get("towed")) for s in steps][:3],
+                         [("fold_implement", "transport", None), ("hitch_pair", None, True), ("move_pair", None, None)])
+        # On in front, the field far, and made to be towed by it (a drawbar for a rear joint): in transport.
+        from protocol.model import InputJoint, OutputJoint
+        towable = replace(combine, output_joints=(OutputJoint(2, "trailerLow", 0.0, -4.5, True),))
+        drawbar = replace(header, input_joints=(InputJoint(1, "cutter", (100.0, 102.0), True),
+                                                InputJoint(2, "trailerLow", (108.0, 104.0), True)))
+        steps, _ = field_steps((towable, drawbar), "harvest", 7, "farm-a", field_at=(100.0, 1200.0))
+        self.assertEqual([(s["task"], s.get("fold"), s.get("towed")) for s in steps][:4],
+                         [("fold_implement", "transport", None), ("detach_pair", None, None), ("hitch_pair", None, True),
+                          ("move_pair", None, None)])
+        # Near the field: harvested as it stands.
+        self.assertEqual(field_steps((towable, drawbar), "harvest", 7, "farm-a", field_at=(100.0, 200.0))[0][0]["task"],
+                         "field_work")
 
     def test_a_crop_not_ready_or_no_combine_moves_nothing(self):
         from companion.coordinator import field_steps

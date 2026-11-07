@@ -488,6 +488,13 @@ def _tractor_to_free(items, kind: str, farm_id: str) -> str | None:
 
 
 HEADER_NEAR_M = 60.0     # a loose header this near its harvester is attached where it lies; farther, fetched in tow
+HEADER_FIELD_NEAR_M = 300.0   # ... and only this near the field: farther, a header made to be towed goes in tow
+
+
+def _towable(harvester, header) -> bool:
+    """The header has a second input joint the harvester can tow it by (a free rear joint of that type)."""
+    rear = {o.joint_type.casefold() for o in harvester.output_joints if o.z < 0}
+    return any(j.joint_type.casefold() in rear and j.joint_type.casefold() != "cutter" for j in header.input_joints)
 
 
 def _header_in_front(harvester, header) -> bool:
@@ -498,7 +505,7 @@ def _header_in_front(harvester, header) -> bool:
     return ((header.position[0] - harvester.position[0]) * fx + (header.position[1] - harvester.position[1]) * fz) > 0
 
 
-def _header_steps(harvesters, items, observed, farm_id, field):
+def _header_steps(harvesters, items, observed, farm_id, field, field_at=None):
     """The steps that bring a harvester its header for the field, and the harvester's words, or None.
     Towed behind it (the Colossus 9000's transport configuration): driven to the field, then the header
     unhitched, unfolded and attached in front. Loose: attached in front where it lies when near, else
@@ -522,12 +529,12 @@ def _header_steps(harvesters, items, observed, farm_id, field):
         for header in items:
             if of_kind(header, "cutter") and header.attached_to is None and usable(header, farm_id) \
                     and header.belted_to is None and getattr(header, "mounted_to", None) is None:
-                options.append((math.dist(harvester.position, header.position), harvester.id, name))
+                options.append((math.dist(harvester.position, header.position), harvester.id, name, header))
     if not options:
         return None
-    gap, _, name = min(options)
+    gap, _, name, header = min(options, key=lambda o: o[:2])
     by = {**on, "tractor_name": name}
-    if gap <= HEADER_NEAR_M:
+    if gap <= HEADER_NEAR_M and (field_at is None or math.dist(header.position, field_at) <= HEADER_FIELD_NEAR_M):
         return [{"task": "fold_implement", "fold": "work", **by}, {"task": "hitch_pair", **by}], name
     return [{"task": "fold_implement", "fold": "transport", **by}, {"task": "hitch_pair", "towed": True, **by},
             {**to_field, "tractor_name": name}, {"task": "detach_pair", **by},
@@ -535,7 +542,7 @@ def _header_steps(harvesters, items, observed, farm_id, field):
 
 
 def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: str, area_m2=None, crop=None,
-                tractor_name=None):
+                tractor_name=None, field_at=None):
     """The steps for one operation on ``field`` (an id or "smallest"), as executor
     intent fragments, or (None, why). ``crop`` (sowing only): the player's crop.
     ``tractor_name``: the machine the player named does it ("harvest field 91 with the colossus")."""
@@ -550,10 +557,25 @@ def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: st
                  **({"area_m2": area_m2} if area_m2 else {}), **by},
                 {"task": "move_pair", "implement": "cutter", "target": {"type": "origin"}, **by}]
         harvesters = [i for i in items if i.category == "harvester" and usable(i, farm_id) and named(i, tractor_name)]
-        if any(observed.get(i.attached_to) is not None and of_kind(observed[i.attached_to], "cutter")
-               and _header_in_front(i, observed[i.attached_to]) for i in harvesters):
+        ready = [i for i in harvesters if observed.get(i.attached_to) is not None
+                 and of_kind(observed[i.attached_to], "cutter") and _header_in_front(i, observed[i.attached_to])]
+        far = [i for i in ready if field_at is not None and _towable(i, observed[i.attached_to])
+               and math.dist(i.position, field_at) > HEADER_FIELD_NEAR_M]
+        if ready and len(far) < len(ready):
             return work, None
-        prepared = _header_steps(harvesters, items, observed, farm_id, field)
+        if far:
+            # Its header in front, the field far, and the header made to be towed by it (the Colossus 9000's
+            # Titan header: 16.6 m wide in front, no road takes it): to the field in transport.
+            name = _words(far[0].name)
+            by = {"implement": "cutter", "tractor_name": name}
+            for step in work:
+                step.setdefault("tractor_name", name)
+            return [{"task": "fold_implement", "fold": "transport", **by}, {"task": "detach_pair", **by},
+                    {"task": "hitch_pair", "towed": True, **by},
+                    {"task": "move_pair", "target": {"type": "field_entrance", "field": field}, "tractor_name": name},
+                    {"task": "detach_pair", **by}, {"task": "fold_implement", "fold": "work", **by},
+                    {"task": "hitch_pair", **by}] + work, None
+        prepared = _header_steps(harvesters, items, observed, farm_id, field, field_at)
         if prepared is None:
             return None, "NO_HARVESTER_WITH_HEADER"
         steps, name = prepared
@@ -1729,7 +1751,8 @@ class Coordinator:
                     log.info("job %d %s: field %s %s", job.number, operation, field.id, crop)
                     return Result("BLOCKED", crop, tuple(equipment), tuple(states))
                 steps, note = field_steps(tuple(self.world.snapshot()), operation, field.id, self.farm(),
-                                          work.get("area_m2"), work.get("crop"), work.get("tractor_name"))
+                                          work.get("area_m2"), work.get("crop"), work.get("tractor_name"),
+                                          tuple(field.center) if getattr(field, "center", None) else None)
                 if steps is None:
                     return Result("BLOCKED", note, tuple(equipment), tuple(states))
                 if note is not None:
