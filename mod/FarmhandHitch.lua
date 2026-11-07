@@ -2365,6 +2365,33 @@ end
 
 -- A unit's size box (GIANTS' vehicle size around its rootNode) in the start frame:
 -- its a/l extent and its top above the terrain under it. Errors on unknown sizes.
+-- A towed unit's travel axis against its own forward (radians, travel yaw minus root yaw): from the
+-- centre of its wheels to its active input joint, where that lies more than 45 degrees off its forward
+-- (a header towed lengthwise by its transport drawbar; live 2026-11-06 the Titan header at 91 degrees
+-- planned the Colossus rig 16.6 m wide and no way out of an open lot); 0 otherwise, or unreadable.
+function Hitch.travelOffset(env, unit)
+    local ok, offset = pcall(function()
+        local joint = unit:getActiveInputAttacherJoint()
+        local wheels = unit.spec_wheels and unit.spec_wheels.wheels or {}
+        if joint == nil or joint.node == nil or #wheels < 2 then return 0 end
+        local ax, az, count = 0, 0, 0
+        for _, wheel in ipairs(wheels) do
+            if wheel.repr ~= nil then
+                local wx, _, wz = env.getWorldTranslation(wheel.repr)
+                if finite(wx) and finite(wz) then ax, az, count = ax + wx, az + wz, count + 1 end
+            end
+        end
+        if count < 2 then return 0 end
+        local jx, _, jz = env.getWorldTranslation(joint.node)
+        local dx, dz = jx - ax / count, jz - az / count
+        if dx * dx + dz * dz < 0.25 then return 0 end
+        local fx, _, fz = env.localDirectionToWorld(unit.rootNode, 0, 0, 1)
+        local delta = (atan2(dx, dz) - atan2(fx, fz) + math.pi) % (2 * math.pi) - math.pi
+        return math.abs(delta) > math.rad(45) and delta or 0
+    end)
+    return ok and finite(offset) and offset or 0
+end
+
 local function unitBox(env, s, v)
     local size = v.size
     local w, l, h = size.width, size.length, size.height
@@ -2488,6 +2515,10 @@ function Hitch.routeFootprint(env, tractor)
             local ul, fl = math.sqrt(ufx * ufx + ufz * ufz), math.sqrt(fx * fx + fz * fz)
             assert(finite(ul) and ul > 0 and fl > 0)
             ufx, ufz = ufx / ul, ufz / ul
+            if unit ~= tractor then          -- the way it travels (Hitch.travelOffset), not its forward
+                local travel = atan2(ufx, ufz) + Hitch.travelOffset(env, unit)
+                ufx, ufz = math.sin(travel), math.cos(travel)
+            end
             if unit ~= tractor and (ux - x) * fx + (uz - z) * fz < -0.5
                     and (fx * ufx + fz * ufz) / fl < math.cos(math.rad(5)) then
                 box = unitBox(env, { last = { wx = ux, wz = uz }, dirX = ufx, dirZ = ufz }, unit)
@@ -2509,6 +2540,7 @@ function Hitch.routeFootprint(env, tractor)
         assert(height > 0 and aMax > aMin and lMax > lMin)
         return { tractor = tractor, units = units, excluded = excluded, masks = collisionMasks(env),
                  towLength = towLength, towed = towed, towMeasured = towMeasured,
+                 travelOffset = towed ~= nil and Hitch.travelOffset(env, towed) or 0,
                  hitchLimit = hitchLimit,
                  aMin = aMin, aMax = aMax, lMin = lMin, lMax = lMax, height = height,
                  unitRects = unitRects }
@@ -2619,7 +2651,10 @@ function Hitch.predictFromRootPose(env, foot, endX, endZ, endYaw)
     local hx, _, hz = world(env, joint.node)
     local rx, _, rz = world(env, trailer.rootNode)
     local rfx, _, rfz = env.localDirectionToWorld(trailer.rootNode, 0, 0, 1)
-    local trailerYaw = atan2(rfx, rfz)
+    -- The articulation turns the way it travels (foot.travelOffset); its box keeps its own yaw.
+    local travel = foot.travelOffset or 0
+    local trailerYaw = atan2(rfx, rfz) + travel
+    local travelYaw0 = trailerYaw
     local function offset(ox, oz, yaw, x, z)
         local dx, dz = x - ox, z - oz
         return dx * math.cos(yaw) - dz * math.sin(yaw),
@@ -2645,15 +2680,15 @@ function Hitch.predictFromRootPose(env, foot, endX, endZ, endYaw)
     end
     local trailerX, trailerZ = at(lastHx, lastHz, trailerYaw, -hitchSide, -hitchAhead)
     local poses = { { unit = truck, x = endX, z = endZ, yaw = endYaw },
-                    { unit = trailer, x = trailerX, z = trailerZ, yaw = trailerYaw } }
+                    { unit = trailer, x = trailerX, z = trailerZ, yaw = trailerYaw - travel } }
     for _, unit in ipairs(foot.units) do
         if unit ~= truck and unit ~= trailer then
             local ux, _, uz = world(env, unit.rootNode)
             local ufx, _, ufz = env.localDirectionToWorld(unit.rootNode, 0, 0, 1)
-            local side, ahead = offset(rx, rz, atan2(rfx, rfz), ux, uz)
+            local side, ahead = offset(rx, rz, travelYaw0, ux, uz)
             local px, pz = at(trailerX, trailerZ, trailerYaw, side, ahead)
             poses[#poses + 1] = { unit = unit, x = px, z = pz,
-                                  yaw = trailerYaw + atan2(ufx, ufz) - atan2(rfx, rfz),
+                                  yaw = trailerYaw + atan2(ufx, ufz) - travelYaw0,
                                   rigidFollower = true }
         end
     end
@@ -2677,13 +2712,14 @@ function Hitch.rigModel(env, foot)
     local hx, _, hz = world(env, joint.node)
     local rx, _, rz = world(env, trailer.rootNode)
     local rfx, _, rfz = env.localDirectionToWorld(trailer.rootNode, 0, 0, 1)
-    local trailerYaw = atan2(rfx, rfz)
+    -- Its state is the way it travels (foot.travelOffset); modelPoses gives back its own yaw.
+    local trailerYaw = atan2(rfx, rfz) + (foot.travelOffset or 0)
     local function offset(ox, oz, yaw, x, z)
         local dx, dz = x - ox, z - oz
         return dx * math.cos(yaw) - dz * math.sin(yaw), dx * math.sin(yaw) + dz * math.cos(yaw)
     end
     local model = { truck = truck, trailer = trailer, towLength = foot.towLength, trailerYaw = trailerYaw,
-                    followers = {} }
+                    travelOffset = foot.travelOffset or 0, followers = {} }
     model.truckSide, model.truckAhead = offset(tx, tz, truckYaw, hx, hz)
     model.hitchSide, model.hitchAhead = offset(rx, rz, trailerYaw, hx, hz)
     for _, unit in ipairs(foot.units) do
@@ -2708,7 +2744,7 @@ function Hitch.modelPoses(model, x, z, yaw, trailerYaw)
     local hx, hz = at(x, z, yaw, model.truckSide, model.truckAhead)
     local trailerX, trailerZ = at(hx, hz, trailerYaw, -model.hitchSide, -model.hitchAhead)
     local poses = { { unit = model.truck, x = x, z = z, yaw = yaw },
-                    { unit = model.trailer, x = trailerX, z = trailerZ, yaw = trailerYaw } }
+                    { unit = model.trailer, x = trailerX, z = trailerZ, yaw = trailerYaw - (model.travelOffset or 0) } }
     for _, f in ipairs(model.followers) do
         local px, pz = at(trailerX, trailerZ, trailerYaw, f.side, f.ahead)
         poses[#poses + 1] = { unit = f.unit, x = px, z = pz, yaw = trailerYaw + f.yaw, rigidFollower = true }

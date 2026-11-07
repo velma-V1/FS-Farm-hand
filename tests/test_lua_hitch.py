@@ -4,6 +4,7 @@ Stubs implement only the upstream-evidenced calls (adapters/EVIDENCE.md). The
 "physics" is a straight-line move and the candidate rule is a stub; these tests
 prove the bounded state machine, not driving, steering or GIANTS' attach range.
 """
+import math
 from pathlib import Path
 import unittest
 
@@ -723,6 +724,55 @@ class PreciseSpeedTests(unittest.TestCase):
         self.assertAlmostEqual(hitch.preciseKmh(4.0, 3.0), 7.0)          # the owner: +50-100 % away from it
         self.assertEqual(hitch.preciseKmh(4.0, 0.8), 4.0)                # within 1 m: the precise speed
         self.assertEqual(hitch.preciseKmh(4.0, None), 4.0)
+
+
+class SidewaysTowTests(unittest.TestCase):
+    """A header towed lengthwise by its transport drawbar (the Titan header behind the Colossus 9000,
+    live 2026-11-06): GIANTS' size is its working one (16.6 m wide, 4 m long) and its root faces 90
+    degrees off the way it travels. Its travel axis is its wheels' centre to its drawbar."""
+
+    RIG = """
+    local Hitch = ...
+    local function node(x, z, yaw) return { x = x, y = 0, z = z, yaw = yaw } end
+    local env = {}
+    env.getWorldTranslation = function(n) return n.x, n.y or 0, n.z end
+    env.localDirectionToWorld = function(n, x, y, z)
+        local s, c = math.sin(n.yaw), math.cos(n.yaw)
+        return x * c + z * s, y, -x * s + z * c
+    end
+    env.localToWorld = function(n, x, y, z)
+        local s, c = math.sin(n.yaw), math.cos(n.yaw)
+        return n.x + x * c + z * s, (n.y or 0) + y, n.z - x * s + z * c
+    end
+    env.getTerrainHeightAtWorldPos = function() return 0 end
+    env.CollisionFlag = setmetatable({}, { __index = function() return 1 end })
+    env.g_currentMission = { terrainRootNode = 1 }
+    -- The combine at the origin facing +z; the header 14 m behind it, its root facing -x (yaw -90),
+    -- its drawbar at its front end (toward the combine) and its transport wheels near its back end.
+    local header = { rootNode = node(0, -14, -math.pi / 2),
+                     size = { width = 16.6, length = 4.0, height = 2.0, widthOffset = 0, lengthOffset = 0,
+                              heightOffset = 0 },
+                     spec_wheels = { wheels = { { repr = node(-1.2, -20, 0) }, { repr = node(1.2, -20, 0) } } } }
+    local joint = { node = node(0, -6.2, 0), jointType = 3 }
+    function header:getActiveInputAttacherJoint() return joint end
+    local combine = { rootNode = node(0, 0, 0),
+                      size = { width = 3.95, length = 10.5, height = 4.0, widthOffset = 0, lengthOffset = 0,
+                               heightOffset = 0 } }
+    function combine:getAttachedImplements() return { { object = header } } end
+    return Hitch.travelOffset(env, header), Hitch.travelOffset(env, combine), Hitch.routeFootprint(env, combine)
+    """
+
+    def test_its_travel_axis_and_the_rig_box_run_the_way_it_is_towed(self):
+        lua = lua54.LuaRuntime(unpack_returned_tuples=True)
+        hitch = lua.execute((ROOT / "mod/FarmhandHitch.lua").read_text())
+        offset, none, foot = lua.execute(self.RIG, hitch)
+        self.assertAlmostEqual(abs(offset), math.pi / 2, places=6)
+        self.assertEqual(none, 0)                                   # no input joint: its forward
+        self.assertIsNotNone(foot)
+        width, length = foot.lMax - foot.lMin, foot.aMax - foot.aMin
+        self.assertLess(width, 5.0)                                 # was 16.6 m: no lot exit fitted it
+        self.assertGreater(length, 10.5 / 2 + 14 + 16.6 / 2 - 0.1)  # the header's 16.6 m runs behind
+        self.assertAlmostEqual(foot.travelOffset, offset)
 
 
 class PipeCollisionTests(unittest.TestCase):

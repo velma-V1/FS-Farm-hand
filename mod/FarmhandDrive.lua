@@ -110,7 +110,7 @@ function Drive.startPose(env, s, x, z, yaw)
     if model ~= nil then
         local ok, ty = pcall(function()
             local fx, _, fz = env.localDirectionToWorld(model.trailer.rootNode, 0, 0, 1)
-            return atan2(fx, fz)
+            return atan2(fx, fz) + (model.travelOffset or 0)     -- the way it travels (Hitch.travelOffset)
         end)
         if ok and finite(ty) then start.trailerYaw, start.model = ty, model end
     end
@@ -1083,7 +1083,7 @@ function Drive.reverseAim(env, foot, line, yaw, radius)
     local okD, dx,_,dz = pcall(env.localDirectionToWorld, towed.steeringAxleNode or towed.rootNode, 0,0,1)
     if not (ok and okD and finite(tx) and finite(tz) and finite(dx) and finite(dz)) then return nil end
     local function wrap(a) return (a+pi)%(2*pi)-pi end
-    local unitYaw = (math.atan2 or math.atan)(dx,dz)
+    local unitYaw = (math.atan2 or math.atan)(dx,dz) + (foot.travelOffset or 0)
     -- Courseplay's errors are in the travel direction (line.yaw + pi).
     local crossTrack = -((tx-line.x)*cos(line.yaw)-(tz-line.z)*sin(line.yaw))
     local orientation = wrap(line.yaw-unitYaw)
@@ -1108,7 +1108,7 @@ function Drive.towedLine(env, foot)
     local ok, tx,_,tz = pcall(env.getWorldTranslation, node)
     local okD, dx,_,dz = pcall(env.localDirectionToWorld, node, 0,0,1)
     if not (ok and okD and finite(tx) and finite(tz) and finite(dx) and finite(dz)) then return nil end
-    return { x = tx, z = tz, yaw = (math.atan2 or math.atan)(dx,dz) }
+    return { x = tx, z = tz, yaw = (math.atan2 or math.atan)(dx,dz) + (foot.travelOffset or 0) }
 end
 
 -- A rig left bent (its towed unit angled) whose route box, planned straight behind,
