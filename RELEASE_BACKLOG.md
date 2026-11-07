@@ -333,3 +333,8 @@ Add a giant sequoia/redwood forestry asset using GIANTS' existing GIANTSEQUOIA s
 - The global corridor grid does not account for the rig's turning radius, so it routes through corners the section planner cannot take.
 - GIANTS' map route is the intended path for this leg. Since 7ca9c61 its agent is capped under 3.9 m high and sized at the in-line width; with that, the Colossus alone navigated. The towed rig on GIANTS' route is NOT YET LIVE.
 - Open: the corridor should prefer corners the rig can turn, and the section speed should not crawl to 1.5 km/h at section ends while the next section is planned.
+
+## A grain cart that starts nearly full
+- Live 2026-11-06: the only cart, the 3650's Z 18051/2, held 16,922 of 19,600 l of wheat when the Colossus (25,000 l tank) went to field 91. Without a harvest destination, the escort fills the 2.7 t of room and ends CART_FULL (GRAIN_CART_FULL), and the combine then fills and stands.
+- Wanted: before the first escort, a cart without room for at least a meaningful share of the combine's tank delivers first when there is a destination. Without one, it says so at the start, not after one pass.
+
