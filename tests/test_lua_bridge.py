@@ -451,7 +451,7 @@ class LuaBridgeTests(unittest.TestCase):
         # Live 2026-11-06: the Colossus towing its Titan header, GIANTS' agent (the header a rigid attachment of its
         # working size) not_reachable at once; the Colossus alone drove. Planned once more for it alone.
         self.adopt()
-        self.agent([(0, 0, 4)] + [(0.01, 20.0, 1)] * 30 + [(0, 0, 5)])
+        self.agent([(0, 0, 4), (0, 0, 4)] + [(0.01, 20.0, 1)] * 30 + [(0, 0, 5)])
         self.lua.execute("""local w = ...
             function w.tractor:getAttachedImplements() return { { object = {} } } end""", self.w)
         self.w.moves = True
@@ -462,6 +462,9 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertGreater(self.w.drove, 20)
         self.assertEqual(self.results(1)[-1], (1, "DONE", "GOTO_ENDED"))
         self.assertTrue(any("planned for the vehicle alone" in line for line in self.printed))
+        # Then, still not reachable at its heading: the point at any heading (live: field 91's entrance).
+        self.assertTrue(any("any heading" in line for line in self.printed))
+        self.assertTrue(any(c.startswith("target:7:") for c in calls[calls.index("createAgent", 1):]), calls)
 
     def test_navigate_drives_giants_agent_itself_and_ends_where_it_says(self):
         self.adopt()

@@ -695,6 +695,21 @@ local function stepAgent(env, task, dt, codes)
         end
         log("%s: the vehicle-alone agent could not be made (%s)", task.op, tostring(why))
     end
+    if name == "NOT_REACHABLE" and not task.drove and not task.anyHeading and task.spec.op == "navigate"
+            and finite(task.spec.yaw) and math.abs(task.spec.yaw) <= 2 * math.pi then
+        -- Its target at that heading is what GIANTS cannot reach (live 2026-11-06: field 91's entrance
+        -- facing -0.55 rad, not_reachable for the Colossus alone, which drove to other targets): the point at
+        -- any heading, once; the companion judges where it arrived, as always.
+        task.anyHeading = true
+        local mission = env.g_currentMission
+        local ok = pcall(env.setVehicleNavigationAgentTarget, ai.agentId, task.spec.x,
+            env.getTerrainHeightAtWorldPos(mission.terrainRootNode, task.spec.x, 0, task.spec.z), task.spec.z, 0, 0, 0)
+        if ok then
+            log("%s: not_reachable at its heading; planned to the point at any heading", task.op)
+            task.lastName, task.stateSince = nil, task.elapsed
+            return nil
+        end
+    end
     if name == "TARGET_REACHED" or name == "NOT_REACHABLE" then
         logAgent(env, v, task.op .. " ended")
         return finish(codes.ended)
