@@ -956,6 +956,43 @@ class HitchCompositionTests(unittest.TestCase):
                                  ("align", tractor.id, wagon.id, plan)])
         self.assertEqual(world.attach_calls, [(plan.tractor_joint, plan.wagon_joint)])
 
+    def test_a_stalled_stage_to_the_straight_reverse_pose_is_driven_there_by_farmhand(self):
+        # Live 2026-11-06, the Colossus by its Titan header in the dealer's lot: GIANTS' stage to the pose a plain
+        # reverse hitches from looped into the trees and stalled 20 m short; the side aims after it ended
+        # cramped (LOCAL_PATH_BLOCKED). Farmhand's own drive onto that pose instead.
+        base = simple_world()
+        tractor, wagon = base.snapshot()
+        plan = plan_hitch(tractor, wagon)
+        drives, refused = [], []
+
+        class Stalls(MockWorld):
+            def maneuver(self, tractor_id, wagon_id, plan, owner):
+                if not refused:
+                    refused.append(1)
+                    raise StepFailed("LOCAL_PATH_LEAVES_AREA")
+                return super().maneuver(tractor_id, wagon_id, plan, owner)
+
+            def stage(self, tractor_id, wagon_id, pose, owner):
+                if pose == plan.staging:
+                    with self._lock:
+                        t = self.items[tractor_id]
+                        self._place(t, Pose(pose.x + 30.0, pose.z - 20.0, pose.yaw))   # drove, 36 m short
+                    raise StepFailed("NAVIGATE_STALLED")
+                return super().stage(tractor_id, wagon_id, pose, owner)
+
+            def farm_drive(self, vehicle_id, target, owner, area=0.0, yaw=None, **_):
+                drives.append((tuple(target), yaw))
+                with self._lock:
+                    t = self.items[vehicle_id]
+                    self._place(t, Pose(target[0], target[1], t.heading if yaw is None or abs(yaw) > 7 else yaw))
+                return "ARRIVED"
+
+        world = Stalls([tractor, wagon], PLAYERS)
+        result = Executor(world).execute(intent())
+        self.assertIn("ATTACH", result.states, result)                     # then the plain reverse hitched it
+        self.assertTrue(any(abs(yaw - plan.staging.yaw) < 1e-9 and math.dist(target, (plan.staging.x, plan.staging.z)) < 6
+                            for target, yaw in drives), drives)
+
     def test_travel_near_goes_by_farmhands_own_drive_first(self):
         # Live 4a63f2e75a1146d4-5: AutoDrive took 5.5 minutes over its network for 95 m to the seeder.
         base = simple_world()

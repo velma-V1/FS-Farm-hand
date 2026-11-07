@@ -3672,6 +3672,13 @@ class Executor:
                                     raise StepFailed("TRAPPED")
                                 aim["stuck"] = stalled
                                 continue
+                            if stalled and step == "STAGE" and pose == plan.staging \
+                                    and self._farm_staged(ids[0], pose, owner):
+                                # GIANTS' agent stalled on its way to the straight-reverse pose (live
+                                # 2026-11-06: the Colossus looped south into the trees, 20 m short, and
+                                # the side aims after it ended cramped): Farmhand's own drive onto it.
+                                aim["drives"] += 1
+                                return "ended"
                             aim["drives"] += 1
                             aim["stuck"] = stalled
                             if stalled:
