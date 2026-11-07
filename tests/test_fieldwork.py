@@ -1716,6 +1716,30 @@ class HarvestTests(unittest.TestCase):
         Executor(world).execute(work("harvest"))
         self.assertEqual((world.poses[0].x, world.poses[0].z), (390.0, 300.0))
 
+    def test_a_harvest_brings_the_combine_its_header_from_any_configuration(self):
+        # The owner, 2026-11-06 (the Colossus 9000 and its Titan header): fold is the trailer configuration,
+        # unfold the working one. Towed behind: to the field, then unhitched, unfolded, attached in front.
+        # Loose near: attached where it lies. Loose far: fetched in tow first.
+        from companion.coordinator import field_steps
+        combine, header = self.combine()
+        combine = replace(combine, name="Colossus 9000 3000HP")
+        towed = (combine, replace(header, position=(100.0, 86.0)))                  # behind it
+        steps, _ = field_steps(towed, "harvest", 7, "farm-a", tractor_name="colossus")
+        self.assertEqual([(s["task"], s.get("fold"), s.get("towed")) for s in steps],
+                         [("move_pair", None, None), ("detach_pair", None, None), ("fold_implement", "work", None),
+                          ("hitch_pair", None, None), ("field_work", None, None), ("move_pair", None, None)])
+        self.assertEqual(steps[0]["target"], {"type": "field_entrance", "field": 7})
+        self.assertTrue(all(s["tractor_name"] in ("colossus", "colossus 9000 3000hp") for s in steps), steps)
+        alone = replace(combine, attached_to=None)
+        near = (alone, replace(header, attached_to=None, position=(100.0, 120.0)))
+        steps, _ = field_steps(near, "harvest", 7, "farm-a")
+        self.assertEqual([(s["task"], s.get("fold")) for s in steps][:2], [("fold_implement", "work"), ("hitch_pair", None)])
+        far = (alone, replace(header, attached_to=None, position=(100.0, 400.0)))
+        steps, _ = field_steps(far, "harvest", 7, "farm-a")
+        self.assertEqual([(s["task"], s.get("fold"), s.get("towed")) for s in steps][:3],
+                         [("fold_implement", "transport", None), ("hitch_pair", None, True), ("move_pair", None, None)])
+        self.assertEqual(field_steps((alone,), "harvest", 7, "farm-a"), (None, "NO_HARVESTER_WITH_HEADER"))
+
     def test_a_crop_not_ready_or_no_combine_moves_nothing(self):
         from companion.coordinator import field_steps
         growing = FieldCoverage((("SOWN", 1.0),), (), 4000.0, (("WHEAT", 9),), 9)

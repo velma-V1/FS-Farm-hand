@@ -487,6 +487,53 @@ def _tractor_to_free(items, kind: str, farm_id: str) -> str | None:
     return _words(min(choices, key=lambda c: (c[0], c[1]))[2].name)
 
 
+HEADER_NEAR_M = 60.0     # a loose header this near its harvester is attached where it lies; farther, fetched in tow
+
+
+def _header_in_front(harvester, header) -> bool:
+    """The header hangs ahead of its harvester's root (worked from), not towed behind it (transport)."""
+    if harvester.heading is None:
+        return True
+    fx, fz = math.sin(harvester.heading), math.cos(harvester.heading)
+    return ((header.position[0] - harvester.position[0]) * fx + (header.position[1] - harvester.position[1]) * fz) > 0
+
+
+def _header_steps(harvesters, items, observed, farm_id, field):
+    """The steps that bring a harvester its header for the field, and the harvester's words, or None.
+    Towed behind it (the Colossus 9000's transport configuration): driven to the field, then the header
+    unhitched, unfolded and attached in front. Loose: attached in front where it lies when near, else
+    fetched in tow first (the owner, 2026-11-06: fold for the trailer, unfold for the work, by function)."""
+    on = {"implement": "cutter"}
+    to_field = {"task": "move_pair", "target": {"type": "field_entrance", "field": field}}
+    for harvester in harvesters:
+        name = _words(harvester.name)
+        if not name:
+            continue
+        by = {**on, "tractor_name": name}
+        towed = observed.get(harvester.attached_to)
+        if towed is not None and of_kind(towed, "cutter"):
+            return [{**to_field, "tractor_name": name}, {"task": "detach_pair", **by},
+                    {"task": "fold_implement", "fold": "work", **by}, {"task": "hitch_pair", **by}], name
+    options = []
+    for harvester in harvesters:
+        name = _words(harvester.name)
+        if not name or harvester.attached_to is not None:
+            continue
+        for header in items:
+            if of_kind(header, "cutter") and header.attached_to is None and usable(header, farm_id) \
+                    and header.belted_to is None and getattr(header, "mounted_to", None) is None:
+                options.append((math.dist(harvester.position, header.position), harvester.id, name))
+    if not options:
+        return None
+    gap, _, name = min(options)
+    by = {**on, "tractor_name": name}
+    if gap <= HEADER_NEAR_M:
+        return [{"task": "fold_implement", "fold": "work", **by}, {"task": "hitch_pair", **by}], name
+    return [{"task": "fold_implement", "fold": "transport", **by}, {"task": "hitch_pair", "towed": True, **by},
+            {**to_field, "tractor_name": name}, {"task": "detach_pair", **by},
+            {"task": "fold_implement", "fold": "work", **by}, {"task": "hitch_pair", **by}], name
+
+
 def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: str, area_m2=None, crop=None,
                 tractor_name=None):
     """The steps for one operation on ``field`` (an id or "smallest"), as executor
@@ -499,12 +546,20 @@ def field_steps(items: tuple[Equipment, ...], operation: str, field, farm_id: st
         # back where it was taken from with its header on (the user 2026-10-23: never left
         # in the field; live ab2795521e884f2d-4 said "bringing the equipment back" and left it).
         observed = {i.id: i for i in items}
-        if not any(i.category == "harvester" and usable(i, farm_id) and observed.get(i.attached_to) is not None
-                   and of_kind(observed[i.attached_to], "cutter") and named(i, tractor_name) for i in items):
-            return None, "NO_HARVESTER_WITH_HEADER"
-        return [{"task": "field_work", "field": field, "operation": "harvest", "implement": "cutter",
+        work = [{"task": "field_work", "field": field, "operation": "harvest", "implement": "cutter",
                  **({"area_m2": area_m2} if area_m2 else {}), **by},
-                {"task": "move_pair", "implement": "cutter", "target": {"type": "origin"}, **by}], None
+                {"task": "move_pair", "implement": "cutter", "target": {"type": "origin"}, **by}]
+        harvesters = [i for i in items if i.category == "harvester" and usable(i, farm_id) and named(i, tractor_name)]
+        if any(observed.get(i.attached_to) is not None and of_kind(observed[i.attached_to], "cutter")
+               and _header_in_front(i, observed[i.attached_to]) for i in harvesters):
+            return work, None
+        prepared = _header_steps(harvesters, items, observed, farm_id, field)
+        if prepared is None:
+            return None, "NO_HARVESTER_WITH_HEADER"
+        steps, name = prepared
+        for step in work:
+            step.setdefault("tractor_name", name)
+        return steps + work, None
     kind, note = implement_kind(items, operation, farm_id, crop)
     if kind is None:
         return None, note
