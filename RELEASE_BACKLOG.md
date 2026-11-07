@@ -327,3 +327,9 @@ Priority: MEDIUM
 Found: 2026-11-01
 
 Add a giant sequoia/redwood forestry asset using GIANTS' existing GIANTSEQUOIA split type where practical. Verify placement, cutting, splitting, transport, and sale without map-specific assumptions.
+
+## Long towed rigs at tight road junctions (Colossus 9000 with its header in tow)
+- Live 2026-11-06 19:07-19:14: the Colossus towing its Titan header (27 m long, 10.7 m tow) stopped at a left turn near (-58,-76). Farmhand's own section search plans this rig at radius 12.4 (sqrt(R^2 + tow^2)). It found no local path onto the corridor (NO_ROUTE, then NO_GOAL_PROGRESS).
+- The global corridor grid does not account for the rig's turning radius, so it routes through corners the section planner cannot take.
+- GIANTS' map route is the intended path for this leg. Since 7ca9c61 its agent is capped under 3.9 m high and sized at the in-line width; with that, the Colossus alone navigated. The towed rig on GIANTS' route is NOT YET LIVE.
+- Open: the corridor should prefer corners the rig can turn, and the section speed should not crawl to 1.5 km/h at section ends while the next section is planned.
