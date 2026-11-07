@@ -425,6 +425,24 @@ class LuaBridgeTests(unittest.TestCase):
         self.assertEqual(list(widths.values()), [6.0, 3.99, 6.8])
         self.assertEqual(self.lua.eval("function(t) return t:getAIAgentSize() end")(self.w.tractor)[0], 6.8)
 
+    def test_navigate_sizes_giants_agent_by_the_rig_as_measured(self):
+        # Live 2026-11-06: the Titan header towed lengthwise behind the Colossus, GIANTS' agent 16.6 m wide
+        # (the header's working width), not_reachable at once; Farmhand's route box measured 4.58 m.
+        self.adopt()
+        self.agent([(0.01, 20.0, 1)] * 3 + [(0, 0, 5)])
+        widths = self.lua.execute("""local w, hitch = ...
+            local t = w.tractor
+            t.spec_aiDrivable.agentInfo.width = 3.95
+            local seen = {}
+            function t:getAIAgentSize() return 16.6, 27, -9, 2, 4 end
+            local made = t.createAgent
+            function t:createAgent() local wd = self:getAIAgentSize(); table.insert(seen, wd); return made(self) end
+            hitch.routeFootprint = function() return { lMin = -2.6, lMax = 1.98 } end
+            return seen""", self.w, self.hitch)
+        self.send(1, "navigate", self.POSE)
+        self.W.run(self.w, 1000)
+        self.assertAlmostEqual(list(widths.values())[0], 4.58, places=6)
+
     def test_navigate_drives_giants_agent_itself_and_ends_where_it_says(self):
         self.adopt()
         self.agent([(0.01, 20.0, 1)] * 30 + [(0, 0, 5)])

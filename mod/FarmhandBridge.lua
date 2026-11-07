@@ -531,6 +531,17 @@ function Bridge.createAgent(v, cap)
     log("agent planned at most %.2f m wide", cap)
 end
 
+-- The rig's measured width (Farmhand's route box, Hitch.routeFootprint), for GIANTS' agent: GIANTS
+-- takes the widest attachment's static working width (live 2026-11-06: the Titan header towed
+-- lengthwise behind the Colossus, 16.6 m: not_reachable at once), the box what the rig is now
+-- (4.58 m there; a header carried in front its whole width). nil where unmeasured.
+function Bridge.measuredWidth(env, v)
+    local ok, foot = pcall(Bridge.Hitch.routeFootprint, env, v)
+    if not ok or foot == nil or not (finite(foot.lMax) and finite(foot.lMin)) then return nil end
+    local width = foot.lMax - foot.lMin
+    return width >= 1 and width or nil
+end
+
 local function startAgent(env, spec)
     local v = spec.tractor
     local denied = idle(env, v, spec.farmId)
@@ -544,7 +555,7 @@ local function startAgent(env, spec)
     local ok, why = pcall(function()
         local cruise = v.spec_drivable and v.spec_drivable.cruiseControl
         task.cruiseBefore = cruise and cruise.speed
-        Bridge.createAgent(v, spec.op == "reach" and spec.area or nil)
+        Bridge.createAgent(v, spec.op == "reach" and spec.area or Bridge.measuredWidth(env, v))
         task.agentMade = true
         local mission = env.g_currentMission
         local y = env.getTerrainHeightAtWorldPos(mission.terrainRootNode, spec.x, 0, spec.z)
