@@ -124,6 +124,7 @@ COMMAND_ARGS = {
     "unpark": ("tractor",),
     "teleport": ("tractor", "area", "x", "z", "yaw"),   # teleport recovery near (x, z) (the rig itself when x is beyond 50000), no nearer than area m, the search 50 m beyond it; yaw beyond +-2 pi: the rig's own
     "place": ("tractor", "x", "z", "yaw"),         # a loose implement set down at exactly (x, z, yaw) when that pose is clear, else refused (never slid)
+    "open_ground": ("tractor", "area"),          # the rig by GIANTS' agent to open ground with area m clear all round (stays where it already is)
     "park": ("tractor", "area"),                 # the rig to open ground with a clear lane area m wide on its right (a carrier unloaded from that side)
     "reposition": ("tractor", "area"),           # a vehicle to open ground nearby (a standing combine: lanes beside and behind it; area > 0: a clear lane that long behind the rig, at the heading it was found clear)
     "pay": ("direction", "area"),                 # Farmhand's pay: mode (0 none, 1 per hour, 2 per job, 3 per day, 4 the game's own wages), amount (0: GIANTS' rate)

@@ -1556,6 +1556,18 @@ function starters.park(env, spec)
     return toOpenGround(env, spec, { sideM = Bridge.PARK.sideM, behindM = Bridge.PARK.behindM,
                                      aheadM = Bridge.PARK.aheadM, rightM = spec.area }, true)
 end
+-- OPEN_GROUND: the rig by GIANTS' agent to the nearest open ground with spec.area m clear all round, or DONE
+-- ALREADY_OPEN where it stands with that room (a towed header unhitched there to be unfolded and taken on in
+-- front: live 2026-11-06, field 91's tree-lined, sloping entrance left the Colossus no way round it).
+function starters.open_ground(env, spec)
+    if not (finite(spec.area) and spec.area > 0 and spec.area <= 40) then return nil, "INVALID_TARGET" end
+    return toOpenGround(env, spec, { sideM = spec.area, behindM = spec.area, aheadM = spec.area, stayIfOpen = true }, true)
+end
+steppers.open_ground = function(env, task, dt)
+    if task.alreadyOpen then return "DONE", "ALREADY_OPEN" end
+    return steppers.navigate(env, task, dt)
+end
+aborts.open_ground = function(env, task) if not task.alreadyOpen then return aborts.navigate(env, task) end end
 steppers.park = function(env, task, dt) return steppers.navigate(env, task, dt) end
 aborts.park = function(env, task) return aborts.navigate(env, task) end
 aborts.reposition = function(env, task) return aborts.farm_drive(env, task) end

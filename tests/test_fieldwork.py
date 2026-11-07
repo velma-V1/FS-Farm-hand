@@ -1716,6 +1716,28 @@ class HarvestTests(unittest.TestCase):
         Executor(world).execute(work("harvest"))
         self.assertEqual((world.poses[0].x, world.poses[0].z), (390.0, 300.0))
 
+    def test_a_header_towed_behind_comes_off_on_open_ground_one_carried_in_front_where_it_is(self):
+        # Live 2026-11-06: set down at field 91's tree-lined, sloping entrance, the Colossus could not come round to
+        # the unfolded header's front (OBSTACLE_AHEAD). A towed header comes off only on open ground.
+        rooms = []
+
+        class Open(MockWorld):
+            def open_ground(self, vehicle_id, owner, room_m):
+                rooms.append((vehicle_id, room_m))
+
+        base = {"version": 1, "farm_id": "farm-a", "target": "player_at_acceptance", "implement": "cutter",
+                "task": "detach_pair"}
+        combine, header = self.combine()
+        for at, expected in (((100.0, 86.0), [("c-1", Executor.HEADER_ROOM_M)]), ((100.0, 104.0), [])):
+            with self.subTest(behind=at[1] < 100):
+                rooms.clear()
+                world = Open([combine, replace(header, position=at, required_pto_torque=0.0)], PLAYERS,
+                             fields=(field(7, 0.4, self.READY),),
+                             farm=FARM)
+                result = Executor(world).execute(dict(base, request_id=f"r{int(at[1])}"))
+                self.assertEqual(result.status, "COMPLETE", result)
+                self.assertEqual(rooms, expected)
+
     def test_a_harvest_brings_the_combine_its_header_from_any_configuration(self):
         # The owner, 2026-11-06 (the Colossus 9000 and its Titan header): fold is the trailer configuration,
         # unfold the working one. Towed behind: to the field, then unhitched, unfolded, attached in front.
@@ -1753,6 +1775,10 @@ class HarvestTests(unittest.TestCase):
         self.assertEqual([(s["task"], s.get("fold"), s.get("towed")) for s in steps][:4],
                          [("fold_implement", "transport", None), ("detach_pair", None, None), ("hitch_pair", None, True),
                           ("move_pair", None, None)])
+        # Loose beside it at the field, made to be towed: set up from tow all the same (on open ground).
+        loose = (replace(towable, attached_to=None), replace(drawbar, attached_to=None, position=(100.0, 113.0)))
+        steps, _ = field_steps(loose, "harvest", 7, "farm-a", field_at=(100.0, 200.0))
+        self.assertEqual([(s["task"], s.get("towed")) for s in steps][1], ("hitch_pair", True))
         # Near the field: harvested as it stands.
         self.assertEqual(field_steps((towable, drawbar), "harvest", 7, "farm-a", field_at=(100.0, 200.0))[0][0]["task"],
                          "field_work")

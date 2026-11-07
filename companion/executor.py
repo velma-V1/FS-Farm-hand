@@ -197,7 +197,7 @@ UNPARK_REFUSALS = frozenset({
     "LOCAL_AREA_UNKNOWN", "NOT_STOPPED", "NOT_ROOT_VEHICLE", "UNPARK_DOOR_CLOSED"})
 
 CANCELLABLE_STEPS = frozenset({"RESERVE", "FIELD_WORK", "PULL_CLEAR", "UNPARK", "TAILGATE", "TRAVEL_NEAR", "STAGE", "LOCAL_MANEUVER", "ALIGN_REVERSE", "ATTACH",
-                               "DETACH", "DELIVER", "RAMPS_DOWN", "APPROACH", "LOAD", "BELTS", "UNBELT", "UNLOAD",
+                               "DETACH", "OPEN_GROUND", "DELIVER", "RAMPS_DOWN", "APPROACH", "LOAD", "BELTS", "UNBELT", "UNLOAD",
                                "RAMPS_UP", "FOLLOW"})
 
 
@@ -1165,6 +1165,7 @@ class Executor:
         except OSError as error:
             log.info("front attachments not saved: %s", error)
 
+    HEADER_ROOM_M = 10.0     # clear all round where a towed header comes off to be set up for work
     LEAVE_IMPLEMENT_M = 6.0  # a machine against a loose implement backs this far off it before a hitch
     def _line_up(self, vehicle_id, target, yaw, owner) -> None:
         """A short approach to a lined-up pose: Farmhand's own drive; where its search finds no way (live
@@ -3521,6 +3522,17 @@ class Executor:
                 used = next((j for j in tractor.output_joints if not j.free), None)
                 if used is not None:
                     self._tailgate_down(tractor, used.index, owner)
+                held = next((i for i in self.world.snapshot() if i.id == ids[1]), None)
+                if (held is not None and of_kind(held, "cutter") and tractor.heading is not None
+                        and hasattr(self.world, "open_ground")
+                        and (held.position[0] - tractor.position[0]) * math.sin(tractor.heading)
+                        + (held.position[1] - tractor.position[1]) * math.cos(tractor.heading) < 0):
+                    # A header towed behind its harvester comes off to be unfolded and taken on in front: on
+                    # open ground with its working width clear all round (live 2026-11-06: set down at field 91's
+                    # tree-lined, sloping entrance, the Colossus could not come round to its front, OBSTACLE_AHEAD).
+                    enter("OPEN_GROUND")
+                    self.world.open_ground(ids[0], owner, self.HEADER_ROOM_M)
+                    tractor, _ = self._pair(ids, farm_id, owner, attached=True)
                 before = {i.id: i for i in self.world.snapshot()}
                 enter("DETACH")
                 self.world.detach(ids[0], ids[1], owner)

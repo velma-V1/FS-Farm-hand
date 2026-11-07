@@ -532,9 +532,13 @@ def _header_steps(harvesters, items, observed, farm_id, field, field_at=None):
                 options.append((math.dist(harvester.position, header.position), harvester.id, name, header))
     if not options:
         return None
-    gap, _, name, header = min(options, key=lambda o: o[:2])
+    gap, harvester_id, name, header = min(options, key=lambda o: o[:2])
     by = {**on, "tractor_name": name}
-    if gap <= HEADER_NEAR_M and (field_at is None or math.dist(header.position, field_at) <= HEADER_FIELD_NEAR_M):
+    # One made to be towed by it is always set up from tow, on open ground (the detach's OPEN_GROUND; live 2026-11-06:
+    # unfolded on field 91's sloping, tree-lined entrance, the Colossus could not come round to its front).
+    towable = _towable(observed[harvester_id], header)
+    if not towable and gap <= HEADER_NEAR_M and (field_at is None
+                                                 or math.dist(header.position, field_at) <= HEADER_FIELD_NEAR_M):
         return [{"task": "fold_implement", "fold": "work", **by}, {"task": "hitch_pair", **by}], name
     return [{"task": "fold_implement", "fold": "transport", **by}, {"task": "hitch_pair", "towed": True, **by},
             {**to_field, "tractor_name": name}, {"task": "detach_pair", **by},
